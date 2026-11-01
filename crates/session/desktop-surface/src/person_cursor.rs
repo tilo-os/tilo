@@ -192,7 +192,7 @@ impl PersonCursors {
                     ui::icons::Icon::MessageSquare,
                     &label,
                 )
-                .on_click(move || activation.set(Some(clicked.get())));
+                .on_own_device_effect(move || activation.set(Some(clicked.get())));
                 self.controls.push(Box::new(CursorControl {
                     source,
                     selected,
@@ -346,6 +346,22 @@ mod tests {
             marker: Rect::new(10.0, 20.0, 42.0, 52.0),
         }
     }
+    /// Answer the press a cursor's message button published, as the window's
+    /// host does: the button reports its own action and the host runs it.
+    fn answer_presses(cursors: &mut PersonCursors, doc: &mut automerge::AutoCommit, most: usize) {
+        let mut edits = ui::widget::Edits::lend(doc);
+        let mut answered = 0usize;
+        for control in cursors.children_mut() {
+            answered =
+                answered.saturating_add(ui::widget::controls::start_pending_control_invocations(
+                    control,
+                    &mut edits,
+                    &automerge::ROOT,
+                ));
+        }
+        assert_eq!(answered, most, "one press, one answer");
+    }
+
     #[test]
     fn semantics_follow_key_not_name_or_pointer_and_departures_retire_controls() {
         let room = "11111111-1111-4111-8111-111111111111";
@@ -361,6 +377,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
+        answer_presses(&mut cursors, &mut doc, 1);
         assert_eq!(
             cursors.take_activation(),
             Some(source.clone()),

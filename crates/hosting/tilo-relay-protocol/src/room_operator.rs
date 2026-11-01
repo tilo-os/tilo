@@ -1,11 +1,12 @@
-//! The JSON-lines protocol between `tilo-room-service` and the
-//! `tilo-relay room` child it runs for each short-lived room, or for its one
+//! The JSON-lines protocol between a room's operator and the
+//! `tilo-relay room` child it runs for it — a short-lived room, or one
 //! persistent room.
 //!
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
 //! The child writes one [`RoomEvent`] per line to its stdout, each behind
 //! [`LINE_PREFIX`], so nothing else the child prints can be mistaken for one.
-//! Both binaries ship in one image, so the protocol changes in one commit;
+//! Operator and room relay are built from one tree, so the protocol changes
+//! in one commit;
 //! [`VERSION`] is announced in [`RoomEvent::Started`] and a reader refuses
 //! any other. Neither side skips a line it cannot decode: an unknown
 //! command, event or field is an error.

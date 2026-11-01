@@ -1,6 +1,6 @@
 use super::*;
 use crate::{RuntimeServices as _, standalone::Standalone};
-use tilo_action_broker::collab_broker_capnp::BrokerActor;
+use tilo_action_broker::collab_app_broker::BrokerActor;
 use tilo_actions::remote::Caller;
 
 #[test]

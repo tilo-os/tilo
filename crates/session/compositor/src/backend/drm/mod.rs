@@ -58,9 +58,12 @@ use smithay::reexports::drm::control::{
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Point, Transform};
+use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
 
 use super::{Backend, BackendError, failed};
-use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
+use crate::output::{
+    ModeRequest, OutputChange, apply_placement, find_mode, logical_width, refresh_interval,
+};
 use crate::pacing::Pacing;
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
@@ -85,6 +88,10 @@ type Renderers = GpuManager<Api>;
 type Renderer<'a> = MultiRenderer<'a, 'a, Api, Api>;
 
 /// One lit output.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a display fact of its own — queued, dark, built in, HDR-capable — not one state"
+)]
 struct Lit {
     output: Output,
     connector: connector::Handle,
@@ -104,6 +111,12 @@ struct Lit {
     /// When the last frame was queued.
     queued_at: Instant,
     vrr: Vrr,
+    /// Why adaptive sync cannot be engaged here, when it cannot.
+    vrr_unavailable: Option<AdaptiveSyncUnavailable>,
+    /// Whether the display's EDID asks for HDR, and why HDR cannot be
+    /// driven here when it does.
+    sink_hdr: bool,
+    hdr_unavailable: Option<HdrUnavailable>,
     color: LitColor,
     /// What clients on this output are told to allocate, when its planes
     /// can show their buffers directly.
@@ -250,6 +263,8 @@ fn renderer_for(
 pub struct DrmBackend {
     inner: Rc<RefCell<Inner>>,
     input: Rc<RefCell<libinput::Input>>,
+    /// The loop the assists' timer is armed on.
+    handle: LoopHandle<'static, LoopData>,
 }
 
 impl DrmBackend {
@@ -357,7 +372,11 @@ impl DrmBackend {
             })
             .map_err(|error| failed("udev source", error.error))?;
 
-        Ok(Self { inner, input })
+        Ok(Self {
+            inner,
+            input,
+            handle: handle.clone(),
+        })
     }
 }
 
@@ -365,6 +384,42 @@ impl Backend for DrmBackend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         render_ready(&self.inner, state);
         Ok(())
+    }
+
+    fn describe(&self) -> &'static str {
+        "drm-kms"
+    }
+
+    fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
+        let inner = self.inner.borrow();
+        let profiles = color::color_profiles();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .filter(|lit| !lit.dark)
+            .map(|lit| crate::settings_bridge::Capability {
+                connector: lit.output.name(),
+                builtin: lit.builtin,
+                sink_hdr: lit.sink_hdr,
+                hdr_unavailable: lit.hdr_unavailable,
+                sink_vrr: lit.vrr_unavailable.is_none(),
+                vrr_unavailable: lit.vrr_unavailable,
+                unavailable_reason: None,
+                color_profiles: profiles.clone(),
+            })
+            .collect()
+    }
+
+    fn output_hdr(&self, output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        let inner = self.inner.borrow();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .find(|lit| lit.output == *output && lit.color.hdr_on)
+            .and_then(|lit| lit.color.pass.as_ref())
+            .and_then(|pass| pass.wanted().hdr.clone())
     }
 
     fn backdrop(
@@ -431,6 +486,30 @@ impl Backend for DrmBackend {
             &mut renderer,
             state,
             target,
+        )
+    }
+
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<crate::backend::Screenshot, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.active {
+            // Another session has the GPU.
+            return Err(BackendError("the session is not active".into()).into());
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        crate::capture::read_back_scaled::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            target,
+            max,
         )
     }
 
@@ -581,17 +660,29 @@ impl Backend for DrmBackend {
         self.inner.borrow_mut().config = config.clone();
     }
 
-    fn set_input_config(&mut self, state: &mut State, config: input_config::InputConfig) {
-        self.input.borrow_mut().set_config(config, state);
+    fn set_input_config(&mut self, _state: &mut State, config: input_config::InputConfig) {
+        self.input.borrow_mut().set_config(config);
+        libinput::arm_ticker(&self.input, &self.handle);
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
+    fn set_assists(&mut self, state: &mut State, assists: &crate::Assists) {
+        let released = self
+            .input
+            .borrow_mut()
+            .set_assists(assists, std::time::Instant::now());
+        for event in released {
+            state.handle_input(event);
+        }
+        libinput::arm_ticker(&self.input, &self.handle);
+    }
+
+    fn next_deadline(&self, state: &State) -> Option<Instant> {
         let inner = self.inner.borrow();
         inner
             .gpus
             .values()
             .flat_map(|gpu| gpu.outputs.values())
-            .filter(|lit| !lit.queued && !lit.dark)
+            .filter(|lit| !lit.queued && !lit.dark && state.redraw_owed(&lit.output))
             .map(|lit| lit.next_frame)
             .min()
     }
@@ -599,7 +690,7 @@ impl Backend for DrmBackend {
 
 /// Draw every output that is not waiting for a vertical blank and whose
 /// next frame is due.
-fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
+fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
         return;
@@ -626,7 +717,7 @@ fn render_gpu(
     renderers: &mut Renderers,
     primary: DrmNode,
     config: &DisplayConfig,
-    state: &State,
+    state: &mut State,
     now: Instant,
 ) {
     let Gpu {
@@ -652,6 +743,10 @@ fn render_gpu(
         if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
+        // Nothing new to show: an idle output draws nothing.
+        if !state.take_redraw(&lit.output) {
+            continue;
+        }
         // The build starts at its deadline; a wakeup a refresh or more
         // past it is off the grid, and starts it.
         let start = if now.saturating_duration_since(lit.next_frame) < lit.interval {
@@ -675,6 +770,7 @@ fn render_gpu(
         let wanted = color::Wanted {
             profile: config.color_profiles.get(&name).cloned(),
             hdr: config.hdr.get(&name).cloned(),
+            filter: crate::a11y::visual(&lit.output).color_filter,
         };
         // An output another GPU shows gets a copy in its swapchain's
         // format; only one the primary draws directly changes depth.
@@ -945,6 +1041,7 @@ impl Lit {
                     "variable refresh refused"
                 );
                 self.vrr = Vrr::Unable;
+                self.vrr_unavailable = Some(AdaptiveSyncUnavailable::DriverRejected);
             }
         }
     }
@@ -1246,7 +1343,7 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
-                render_ready(&vblank_inner, &data.state);
+                render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
         })
@@ -1508,19 +1605,6 @@ fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut
     state.rearrange();
 }
 
-/// An output's width in the logical layout: its mode over its scale,
-/// turned.
-fn logical_width(output: &Output) -> i32 {
-    let size = output
-        .current_mode()
-        .map(|mode| output.current_transform().transform_size(mode.size))
-        .unwrap_or_default();
-    size.to_f64()
-        .to_logical(output.current_scale().fractional_scale())
-        .to_i32_round::<i32>()
-        .w
-}
-
 /// Drive `info`'s connector from `crtc` in `mode` and make it an output
 /// right of the others.
 /// A connector to light: its name, the CRTC and mode to drive it with and
@@ -1536,6 +1620,57 @@ fn monitor_identity(
     let card = card.file_name()?.to_str()?;
     let edid = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")).ok()?;
     tilo_wayland_ext::edid::parse_monitor_identity(&edid)
+}
+
+/// Whether the display on `connector` of `card` asks for HDR in its EDID: a
+/// CTA-861 extension carrying the HDR static metadata block. Only a display
+/// that says it wants HDR is offered it, since a PQ signal on a panel that
+/// does not understand it arrives washed out.
+fn edid_wants_hdr(card: &DrmNode, connector: &str) -> bool {
+    let connector = connector
+        .rsplit_once('/')
+        .map_or(connector, |(_, label)| label);
+    let Some(card) = card.dev_path().and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }) else {
+        return false;
+    };
+    let Ok(edid) = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")) else {
+        return false;
+    };
+    // The base block is 128 bytes and says how many extension blocks follow.
+    let extensions = edid.get(126).copied().unwrap_or(0);
+    for index in 0..extensions {
+        let start = usize::from(index.saturating_add(1)).saturating_mul(128);
+        let Some(block) = edid.get(start..start.saturating_add(128)) else {
+            break;
+        };
+        // A CTA-861 extension: its data block collection runs from byte 4 to
+        // its DTD offset.
+        if block.first() != Some(&0x02) {
+            continue;
+        }
+        let end = block
+            .get(2)
+            .map_or(4, |offset| usize::from(*offset))
+            .clamp(4, block.len());
+        let mut at = 4;
+        while at < end {
+            let Some(&header) = block.get(at) else {
+                break;
+            };
+            let length = usize::from(header & 0x1f);
+            let body = block.get(at.saturating_add(1)..at.saturating_add(1).saturating_add(length));
+            // An extended data block whose extended tag is the HDR static
+            // metadata block.
+            if header >> 5 == 7 && body.and_then(|body| body.first()) == Some(&0x06) {
+                return true;
+            }
+            at = at.saturating_add(1).saturating_add(length);
+        }
+    }
+    false
 }
 
 /// The output of the connector `name` (`info`) on the card `card`, named
@@ -1631,6 +1766,10 @@ fn light(
     } else {
         Vrr::Unable
     };
+    let sink_hdr = edid_wants_hdr(&gpu.node, name);
+    let hdr_unavailable = sink_hdr
+        .then(|| color::hdr_supported(gpu.manager.device(), info.handle()).err())
+        .flatten();
     let feedback = if gpu.render == primary {
         renderers
             .single_renderer(&primary)
@@ -1664,6 +1803,9 @@ fn light(
         wake: None,
         queued_at: Instant::now(),
         vrr,
+        vrr_unavailable: (vrr == Vrr::Unable).then_some(AdaptiveSyncUnavailable::DriverUnsupported),
+        sink_hdr,
+        hdr_unavailable,
         color: LitColor::default(),
         feedback,
         next_frame: Instant::now(),

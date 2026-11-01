@@ -58,7 +58,7 @@ impl ChatApp {
     }
 
     /// Who is in voice channel `channel`: this person first while they are,
-    /// then everyone the room's presence places there.
+    /// then everyone the workspace's presence places there.
     /// Whether this person is in the call now. The call panel stays open
     /// after the call ended for a reason, to say why; then they are no
     /// longer in it, for their own count and for everyone else's list.
@@ -71,8 +71,8 @@ impl ChatApp {
         if self.in_call() && self.call.channel == channel {
             people.push(self.me.id.clone());
         }
-        // What the room's presence says, and who the room's call counts in.
-        let present = self.room_voice.get(channel).into_iter().flatten();
+        // What the workspace's presence says, and who the workspace's call counts in.
+        let present = self.workspace_voice.get(channel).into_iter().flatten();
         let counted = self.voice_in(channel).iter().map(|member| &member.user);
         for person in present.chain(counted) {
             if !self.is_me(person) && !people.contains(person) {

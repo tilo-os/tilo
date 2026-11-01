@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use calloop::generic::Generic;
 use calloop::{EventSource, Interest, PostAction, Readiness, Token};
-use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use tracing::{debug, info, info_span, instrument, trace, warn};
 use wayland_egl as wegl;
 use winit::platform::pump_events::PumpStatus;
 use winit::platform::scancode::PhysicalKeyExtScancode;
@@ -612,7 +612,10 @@ impl<F: FnMut(WinitEvent)> ApplicationHandler for WinitEventLoopApp<'_, F> {
             | WindowEvent::TouchpadPressure { .. }
             | WindowEvent::RotationGesture { .. }
             | WindowEvent::PanGesture { .. }
-            | WindowEvent::ActivationTokenDone { .. } => (),
+            | WindowEvent::ActivationTokenDone { .. }
+            | WindowEvent::PrivateIme(_)
+            | WindowEvent::KeyboardLayoutChanged(_)
+            | WindowEvent::PenSample { .. } => (),
         }
     }
 }

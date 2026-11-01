@@ -1003,6 +1003,16 @@ impl HistoryHost {
     ) -> Vec<super::pending_controls::ContinuationCommand> {
         self.pending_controls.drain_commands()
     }
+    /// Answer presses of History's own controls that its retained chrome
+    /// queued: this surface hosts the controls it presents. Answers how many
+    /// ran.
+    pub(crate) fn answer_own_controls(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> usize {
+        crate::widget::controls::start_pending_control_invocations(self, doc, path)
+    }
     /// The changes the timeline shows selected.
     pub(crate) fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
         self.timeline
@@ -1631,7 +1641,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label).on_click(move || {
+        Button::new(id, label).on_effect(move || {
             queue.borrow_mut().push_back(command);
             super::note_news();
         })
@@ -1713,7 +1723,7 @@ impl HistoryHost {
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
-                        .on_click(move || {
+                        .on_view(move || {
                             clicked.set(true);
                             super::note_news();
                         }),
@@ -1782,7 +1792,7 @@ impl HistoryHost {
                                         "history-mode-type-to-confirm",
                                         &[("phrase", phrase.clone().into())],
                                     ))
-                                    .on_change(move |value| {
+                                    .on_change_view(move |value| {
                                         changed.borrow_mut().replace_range(.., value)
                                     }),
                             ));
@@ -1804,7 +1814,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label).on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_effect(move || callback.invoke()),
                         ));
                     } else {
                         let command =
@@ -1817,7 +1827,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label).on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_effect(move || callback.invoke()),
                         ));
                     }
                     let commands = self.pending_controls.commands();
@@ -1833,7 +1843,7 @@ impl HistoryHost {
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
                         Button::new(&cancel_id, "history-mode-cancel")
-                            .on_click(move || callback.invoke()),
+                            .on_effect(move || callback.invoke()),
                     ));
                 }
                 toolbar = toolbar.push(Box::new(row));
@@ -2041,7 +2051,7 @@ impl HistoryHost {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
             let close = self.commands.clone();
             Some(
-                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_click(
+                Button::icon_only("history-back-live", crate::icons::Icon::X, &label).on_view(
                     move || {
                         close.borrow_mut().push_back(Command::Live);
                         super::note_news();
@@ -2061,7 +2071,7 @@ impl HistoryHost {
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )
-                .on_click(move || {
+                .on_view(move || {
                     clicked.set(true);
                     super::note_news();
                 }),
@@ -2144,7 +2154,7 @@ impl HistoryHost {
                     TextInput::from_state(&self.name_draft)
                         .with_id("history-name-field")
                         .with_placeholder("history-panel-name")
-                        .on_submit(move |_| {
+                        .on_submit_view(move |_| {
                             commands
                                 .borrow_mut()
                                 .push_back(Command::Review(review::ReviewCommand::Name));
@@ -2196,7 +2206,7 @@ impl HistoryHost {
             .push(Box::new(
                 Button::new("history-back-now", "history-preview-now")
                     .role(ButtonRole::Plain)
-                    .on_click(move || {
+                    .on_view(move || {
                         now.borrow_mut().push_back(Command::Now);
                         super::note_news();
                     }),
@@ -2405,6 +2415,11 @@ pub(crate) trait HistoryChromeApi: Widget {
         token: &super::pending_controls::ContinuationToken,
     ) -> bool;
     fn drain_pending_control_commands(&self) -> Vec<super::pending_controls::ContinuationCommand>;
+    fn answer_own_controls(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> usize;
     #[cfg(test)]
     fn queue_pending_control_command_for_test(
         &self,
@@ -2717,6 +2732,13 @@ impl HistoryChromeApi for HistoryHost {
     }
     fn drain_pending_control_commands(&self) -> Vec<super::pending_controls::ContinuationCommand> {
         HistoryHost::drain_pending_control_commands(self)
+    }
+    fn answer_own_controls(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> usize {
+        HistoryHost::answer_own_controls(self, doc, path)
     }
     #[cfg(test)]
     fn queue_pending_control_command_for_test(

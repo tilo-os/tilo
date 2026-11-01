@@ -2648,7 +2648,11 @@ mod command_path_tests {
             (folder, "go-to"),
             ("path", Path::new("in")),
         );
-        assert!(relative.unwrap_err().contains("absolute"));
+        let refused = relative.unwrap_err();
+        assert!(
+            refused.contains("`path`") && refused.contains("does not decode"),
+            "a relative path is refused where its argument decodes, before the window sees it: {refused}"
+        );
 
         let browsed = crate::files_app::published::tree(&files, &doc).remove(0);
         let holiday = crate::search_provider::entry_resource_id(&downloads.join("holiday.jpg"));
@@ -2679,7 +2683,11 @@ mod command_path_tests {
             (notes, "copy-to"),
             ("folder", Path::new("documents")),
         );
-        assert!(relative.unwrap_err().contains("absolute"));
+        let refused = relative.unwrap_err();
+        assert!(
+            refused.contains("`folder`") && refused.contains("does not decode"),
+            "a relative folder is refused where its argument decodes: {refused}"
+        );
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its

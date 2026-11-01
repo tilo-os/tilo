@@ -2871,6 +2871,13 @@ fn path_actions_refuse_a_relative_path() {
         let mut arguments = serde_json::Map::new();
         arguments.insert("path".into(), "photo.png".into());
         let error = PhotosEffect::decode(id, &arguments).unwrap_err();
-        assert!(error.contains("absolute"), "{id}: {error}");
+        assert!(
+            matches!(
+                &error,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{id}: {error}"
+        );
     }
 }

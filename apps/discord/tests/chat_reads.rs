@@ -6,13 +6,13 @@
 )]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
-//! back in its answer, and Chat's `read-room` is the JSON the planners
+//! back in its answer, and Chat's `read-workspace` is the JSON the planners
 //! read.
 
 use chat::effects::ChatEffect;
 use chat::record::Chat;
 use chat::resource::ChatShell;
-use discord::tilo::{self, RoomChat};
+use discord::tilo::{self, WorkspaceChat};
 use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionOutput;
@@ -76,7 +76,7 @@ fn a_verb_answers_the_ids_it_created() {
 }
 
 #[test]
-fn read_room_is_what_the_planners_read() {
+fn read_workspace_is_what_the_planners_read() {
     let (mut app, channel) = begun();
     let root = created(
         app.call_on_output(
@@ -95,18 +95,18 @@ fn read_room_is_what_the_planners_read() {
         .unwrap(),
     );
     let read = app
-        .effect(&ChatEffect::ReadRoom {
+        .effect(&ChatEffect::ReadWorkspace {
             message: Some(reply.clone()),
             channel: None,
         })
         .unwrap()
         .value
         .unwrap();
-    let layout = RoomChat::from_chat(&read);
+    let layout = WorkspaceChat::from_chat(&read);
     assert!(layout.channels.iter().any(|c| c.id == channel), "{read}");
     assert!(
         layout.categories.is_empty(),
-        "a room opens with no categories"
+        "a workspace opens with no categories"
     );
     let message = tilo::message(&read, &reply).expect("the asked message");
     assert_eq!(message.text, "answer");
@@ -132,7 +132,7 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
     let picture = "cd".repeat(32);
     let submission = json!({
         "id": report,
-        "destination": {"room": "room", "provider": "demo-chat", "channel": channel},
+        "destination": {"room": "workspace", "provider": "demo-chat", "channel": channel},
         "feedback": {
             "text": "Saving does nothing",
             "context": [],
@@ -152,7 +152,7 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
     .unwrap();
     let id = chat::feedback::message_id(report);
     let read = app
-        .effect(&ChatEffect::ReadRoom {
+        .effect(&ChatEffect::ReadWorkspace {
             message: Some(id.clone()),
             channel: None,
         })

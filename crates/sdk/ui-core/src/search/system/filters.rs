@@ -159,7 +159,7 @@ impl SearchFilters {
     pub fn kinds(&self) -> impl Iterator<Item = &ResourceKind> {
         self.kinds.iter().map(|chip| &chip.kind)
     }
-    /// Paint into the CommandPalette host strip. Return the row reservation for the next layout.
+    /// Paint into a host's filter band. Return the row reservation for the next layout.
     pub fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,

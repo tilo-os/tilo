@@ -130,7 +130,7 @@ impl Rooms {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        if governed.peer().authority() != governor {
+        if &governed.record.authority != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current room authority",
             ));
@@ -238,7 +238,7 @@ impl Rooms {
         }
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        if governed.peer().authority() != governor {
+        if &governed.record.authority != governor {
             return Err(CollaborationError::new(
                 "record governor differs from current room authority",
             ));
@@ -341,7 +341,7 @@ impl Rooms {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        if governed.peer().authority() != governor {
+        if &governed.record.authority != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current room authority",
             ));
@@ -474,7 +474,7 @@ impl Rooms {
         app_id_for(catalogue, app, record)?;
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        if governed.peer().authority() != governor {
+        if &governed.record.authority != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current room authority",
             ));

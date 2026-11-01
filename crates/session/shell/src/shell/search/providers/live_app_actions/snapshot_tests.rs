@@ -14,8 +14,8 @@ use tilo_actions::remote::{CatalogueResource, CatalogueRow, pending};
 
 use super::tests::{chrome, exported, local_action, page};
 use super::{LiveAppActionsProvider, PROVIDER_ID};
+use crate::shell::collab_app_broker::{ActionDirectoryRoot, PublishedSurface};
 use crate::shell::collab_broker::CrdtRoute;
-use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, PublishedSurface};
 use crate::shell::search::{
     QueryIncompleteReason, ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage,
     SearchProvider, SearchResult,
@@ -112,10 +112,9 @@ fn assert_listing_settles_under_churn() {
     const CONNECTIONS: usize = 20;
     const ROWS: usize = 4;
     let chrome = chrome();
-    let directory =
-        crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-            chrome.borrow().tree_handle(),
-        );
+    let directory = crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
+        chrome.borrow().tree_handle(),
+    );
     let broker = directory.broker.clone();
     let template = broker
         .action_directory_root_page(None, 256)
@@ -286,7 +285,7 @@ fn an_unchanged_republication_moves_nothing() {
     tokio::task::LocalSet::new().block_on(&runtime, async {
         let chrome = chrome();
         let directory =
-            crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+            crate::shell::collab_app_broker::tests::local_directory_fixture_with_membership(
                 chrome.borrow().tree_handle(),
             );
         let broker = directory.broker.clone();

@@ -27,10 +27,12 @@
 //! cell resolve field-by-field (value vs. formula vs. style merge independently).
 
 pub const SHEET_SCHEMA_ID: &str = "tilo.sheet";
-pub const SHEET_SCHEMA_VERSION: i64 = 1;
+pub const SHEET_SCHEMA_VERSION: u64 = 1;
 
 pub const KEY_SHEET_SCHEMA: &str = "schema";
-pub const KEY_SHEET_SCHEMA_VERSION: &str = "schema_version";
+/// The workbook's schema version, under the one key every Tilo document
+/// keeps it (`tilo_resource::evolution`).
+pub const KEY_SHEET_SCHEMA_VERSION: &str = tilo_resource::evolution::VERSION_KEY;
 pub const KEY_SHEETS: &str = "sheets";
 pub const KEY_SHEET_META: &str = "meta";
 pub const KEY_SHEET_PRESERVED: &str = "preserved";

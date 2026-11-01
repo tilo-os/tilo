@@ -42,14 +42,14 @@ pub struct Context {
     /// The message's Tilo link, for the line a cut or a large file adds.
     #[serde(default)]
     pub link: String,
-    /// Where the room's resources open on the web, for the link a shared
-    /// window or resource carries; none when the room's host serves no web
+    /// Where the workspace's resources open on the web, for the link a shared
+    /// window or resource carries; none when the workspace's host serves no web
     /// page.
     #[serde(default)]
     pub links: Option<Box<Links>>,
 }
 
-/// Where a room's host serves its resources on the web: what `share-link`
+/// Where a workspace's host serves its resources on the web: what `share-link`
 /// mints its links from (`ResourceViewLocator`), less the record, which
 /// each message names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -58,8 +58,9 @@ pub struct Links {
     pub web_entry: String,
     /// The host's browser origin.
     pub origin: String,
-    /// The room.
-    pub room: String,
+    /// The workspace.
+    #[serde(alias = "room")]
+    pub workspace: String,
     /// The certified host device key, hex.
     pub host_device: String,
 }
@@ -67,7 +68,7 @@ pub struct Links {
 impl Links {
     /// The link that opens `reference` in the record `provider`
     /// (`record:<app>:<record>`) on the web: the URL `share-link` mints for
-    /// it on the room's host.
+    /// it on the workspace's host.
     ///
     /// # Errors
     /// Why there is no such link: `provider` names no record, or the link
@@ -90,7 +91,7 @@ impl Links {
         };
         let locator = ui::tilo_actions::remote::ResourceViewLocator {
             origin: self.origin.clone(),
-            room: self.room.clone(),
+            room: self.workspace.clone(),
             host_device: self.host_device.clone(),
             provider: provider.to_owned(),
             web_entry: Some(self.web_entry.clone()),

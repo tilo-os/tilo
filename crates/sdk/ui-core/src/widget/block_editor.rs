@@ -5626,16 +5626,16 @@ impl TableModeControl {
                 "table-edit-visual"
             },
         )
-        .on_click(move || clicked.set(true));
+        .on_view(move || clicked.set(true));
         let structure = std::rc::Rc::new(std::cell::Cell::new(None));
         let row_request = structure.clone();
         let column_request = structure.clone();
         let add_row =
             crate::widget::Button::new(&format!("notes.table-add-row:{id}"), "table-add-row")
-                .on_click(move || row_request.set(Some(true)));
+                .on_view(move || row_request.set(Some(true)));
         let add_column =
             crate::widget::Button::new(&format!("notes.table-add-column:{id}"), "table-add-column")
-                .on_click(move || column_request.set(Some(false)));
+                .on_view(move || column_request.set(Some(false)));
         Self {
             button,
             requested,
@@ -12414,11 +12414,26 @@ impl BlockEditor {
         let mut structural = None;
         for (id, control) in &mut self.table_mode_controls {
             control.button.handle_event(event, ctx);
+            control.add_row.handle_event(event, ctx);
+            control.add_column.handle_event(event, ctx);
+            // These controls publish their press; the editor hosts them,
+            // so the presses are answered here, before the toggle and the
+            // structure they ask for are taken.
+            let path = ctx.path;
+            for button in [
+                &mut control.button,
+                &mut control.add_row,
+                &mut control.add_column,
+            ] {
+                crate::widget::controls::start_pending_control_invocations(
+                    button,
+                    &mut ctx.edits(),
+                    path,
+                );
+            }
             if control.requested.replace(false) {
                 toggle = Some(id.clone());
             }
-            control.add_row.handle_event(event, ctx);
-            control.add_column.handle_event(event, ctx);
             if let Some(row) = control.structure.take() {
                 structural = Some((id.clone(), row));
             }

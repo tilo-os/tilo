@@ -20,7 +20,7 @@ fn window() -> (App, UnixStream, Rc<Cell<u32>>) {
     let pressed = Rc::new(Cell::new(0));
     let count = Rc::clone(&pressed);
     let button =
-        crate::widget::Button::new("go", "Go").on_click(move || count.set(count.get() + 1));
+        crate::widget::Button::new("go", "Go").on_effect(move || count.set(count.get() + 1));
     let column = crate::widget::Column::new().push(Box::new(button));
     let mut app = app_with_root(crate::State::new(), Box::new(column));
     let (app_side, shell_side) = UnixStream::pair().unwrap();

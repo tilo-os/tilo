@@ -133,8 +133,7 @@ impl crate::ChannelHandle {
         command: &Request,
         parent: [u8; 16],
     ) -> Result<registry_types::ModerationCase, runtime_portal::NotAvailable> {
-        let failed =
-            |message: String| runtime_portal::NotAvailable::Capnp(capnp::Error::failed(message));
+        let failed = runtime_portal::NotAvailable::Refused;
         command.validate().map_err(failed)?;
         if parent == [0; 16] || uuid::Uuid::from_bytes(parent).to_string() != command.invocation {
             return Err(failed("external moderation invocation differs".into()));
@@ -143,15 +142,11 @@ impl crate::ChannelHandle {
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(failed("external moderation request exceeds bound".into()));
         }
-        let mut request = self.inner.local_file_clipboard_request();
-        request.get().set_command_json(&bytes);
-        request.get().set_on_behalf_of(&parent);
-        let response = request.send().promise.await?;
-        let bytes = response.get()?.get_reply_json()?;
+        let bytes = self.local_file_envelope(bytes, &parent).await?;
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(failed("external moderation response exceeds bound".into()));
         }
-        let case = serde_json::from_slice(bytes).map_err(|e| failed(e.to_string()))?;
+        let case = serde_json::from_slice(&bytes).map_err(|e| failed(e.to_string()))?;
         validate_receipt(command, &case).map_err(failed)?;
         Ok(case)
     }

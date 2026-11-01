@@ -1,22 +1,5 @@
-// Regression: completing a semantic open does not retire its selected view.
-struct SelectedViewDirectory;
-impl runtime_collab::raw::action_directory::Server for SelectedViewDirectory {
-    fn resolve(
-        self: Rc<Self>,
-        _params: runtime_collab::raw::action_directory::ResolveParams,
-        mut results: runtime_collab::raw::action_directory::ResolveResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        let mut row = directory_state("selected-r1").borrow().row();
-        row.action = Some("open-direct-conversation".into());
-        row.descriptor.as_mut().unwrap().action = "open-direct-conversation".into();
-        row.visibility.as_mut().unwrap().action = "open-direct-conversation".into();
-        capnp::capability::Promise::from(runtime_collab::write_action_directory_row(
-            results.get().init_resolution().init_found(),
-            &row,
-        ))
-    }
-}
-
+// Completing a person's open of a conversation does not retire the view it
+// selected, and grants no further commands.
 struct SelectedViewOwner {
     fail_open: std::sync::atomic::AtomicBool,
     oversized: std::sync::atomic::AtomicBool,
@@ -68,105 +51,178 @@ impl crate::services::person_chat::PersonChatServices for SelectedViewOwner {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn terminal_person_open_retains_selected_events_and_reads_not_original_commands() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut env = Environment::new();
-        env.route.app_id = "so.tilo.chat".into();
-        env.authority = CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
-        let owner = Arc::new(SelectedViewOwner {
-            fail_open: std::sync::atomic::AtomicBool::new(true),
-            oversized: std::sync::atomic::AtomicBool::new(false),
-            changes: tokio::sync::watch::channel(0).0,
-            certificate: env.cert.clone(),
-        });
-        let mut services = env.membership.services();
-        services.person_chat = Some(owner.clone());
-        let rig = Rig::with_services(&env, services).await;
-        let handle = &rig.worker.handle;
-        handle.publish_action_directory("so.tilo.chat", capnp_rpc::new_client(SelectedViewDirectory)).await.unwrap();
-        let (_, binding) = handle.resolve_published_action_for_invocation(
-            903, "selected-r1", "workspace:atlas", "open-direct-conversation",
-        ).await.unwrap();
-        let peer = "a".repeat(64);
-        let argument = serde_json::json!({"public_key":peer}).to_string();
-        let command = serde_json::json!({"operation":"open","public_key":peer}).to_string();
-        let original = id(0x005e_1ec7);
-        handle.invoke_resolved_published_action_durable(
-            original.0.as_bytes(), &binding, "selected-r1", "workspace:atlas",
-            "open-direct-conversation", Some(&argument), "{}",
-        ).await.unwrap();
-        let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-        assert!(handle.person_chat(command.as_bytes(), original.0.as_bytes()).await.is_err());
-        assert!(handle.subscribe_person_chat(&peer, original.0.as_bytes()).await.is_err(), "failed owner open cannot mint authority");
+async fn a_persons_open_conversation_keeps_its_selected_view_but_no_command_authority() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.route.app_id = "so.tilo.chat".into();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let owner = Arc::new(SelectedViewOwner {
+                fail_open: std::sync::atomic::AtomicBool::new(true),
+                oversized: std::sync::atomic::AtomicBool::new(false),
+                changes: tokio::sync::watch::channel(0).0,
+                certificate: env.cert.clone(),
+            });
+            let mut services = env.membership.services();
+            services.person_chat = Some(owner.clone());
+            services.local_person = Some(Arc::new(super::signed_worker::NativePerson(
+                env.authority.clone(),
+            )));
+            let rig = Rig::with_services(&env, services).await;
+            let caller = super::signed_worker::native_person(&env.route, &env.cert);
+            let handle = &rig.worker.handle;
+            let peer = "a".repeat(64);
+            let open = || NamedActionDirectory {
+                revision: "selected-r1",
+                action: "open-direct-conversation",
+            };
+            let command = serde_json::json!({"operation":"open","public_key":peer}).to_string();
+            let (original, delivered) =
+                invoke_as_person(&rig, &caller, open(), serde_json::json!({"public_key": peer}))
+                    .await;
+            assert!(
+                handle
+                    .person_chat(command.as_bytes(), original.0.as_bytes())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                selected(handle, &peer, original).await.is_err(),
+                "a failed owner open mints no authority"
+            );
 
-        // Even an otherwise valid original cannot enter through task ownership.
-        let old_owner = {
-            let mut pending = rig.state.pending_invocations.lock().unwrap();
-            let entry = pending.get_mut(&delivered.id).unwrap();
-            std::mem::replace(&mut entry.owner, InvocationOwner::NativeTask {
-                task: "task:private".into(), agent: "scribe".into(), epoch: 1,
-            })
-        };
-        owner.fail_open.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert!(handle.person_chat(command.as_bytes(), original.0.as_bytes()).await.is_err());
-        assert!(handle.subscribe_person_chat(&peer, original.0.as_bytes()).await.is_err());
-        rig.state.pending_invocations.lock().unwrap().get_mut(&delivered.id).unwrap().owner = old_owner;
+            // Even a valid original cannot enter through task ownership.
+            owner
+                .fail_open
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let person_owner = std::mem::replace(
+                &mut rig
+                    .state
+                    .pending_invocations
+                    .lock()
+                    .unwrap()
+                    .get_mut(&delivered.id)
+                    .unwrap()
+                    .owner,
+                InvocationOwner::NativeTask {
+                    task: "task:private".into(),
+                    agent: "scribe".into(),
+                    epoch: 1,
+                },
+            );
+            assert!(
+                handle
+                    .person_chat(command.as_bytes(), original.0.as_bytes())
+                    .await
+                    .is_err()
+            );
+            assert!(selected(handle, &peer, original).await.is_err());
+            rig.state
+                .pending_invocations
+                .lock()
+                .unwrap()
+                .get_mut(&delivered.id)
+                .unwrap()
+                .owner = person_owner;
 
-        handle.person_chat(command.as_bytes(), original.0.as_bytes()).await.unwrap();
-        let completed = tilo_actions::InvocationUpdate::Succeeded {
-            invocation: original, output: tilo_actions::ActionOutput::default(),
-        };
-        handle.update_invocation(delivered.id, &serde_json::to_string(&completed).unwrap()).await.unwrap();
-        // Subscription starts after the semantic handler has already completed.
-        let stream = handle.subscribe_person_chat(&peer, original.0.as_bytes()).await.unwrap();
-        assert_eq!(stream.next().await.unwrap(), 0);
-        let snapshot = stream.read().await.unwrap();
-        let snapshot: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
-        assert_eq!(snapshot["peer"], peer);
-        assert_eq!(snapshot["messages"], serde_json::json!([]));
-        let read = serde_json::json!({"operation":"read","public_key":peer}).to_string();
-        assert!(handle.person_chat(read.as_bytes(), original.0.as_bytes()).await.is_err(), "a retained terminal original is not command authority");
-        rig.state.pending_invocations.lock().unwrap().remove(&delivered.id);
-        owner.changes.send_replace(1);
-        assert_eq!(stream.next().await.unwrap(), 1);
-        assert!(stream.read().await.is_ok(), "selected reads survive pending-original removal");
-        owner.oversized.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert!(stream.read().await.is_err(), "bound before copying a service reply");
-        owner.oversized.store(false, std::sync::atomic::Ordering::SeqCst);
-        owner.fail_open.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert!(stream.read().await.is_err(), "each fetch must reauthorize at the owner");
-        owner.fail_open.store(false, std::sync::atomic::Ordering::SeqCst);
-        for operation in ["read", "send"] {
-            let bytes = if operation == "read" {
-                serde_json::json!({"operation":operation,"public_key":peer})
-            } else {
-                serde_json::json!({"operation":operation,"public_key":peer,"text":"no","invocation":original.0})
-            }.to_string();
-            assert!(handle.person_chat(bytes.as_bytes(), original.0.as_bytes()).await.is_err());
-        }
-        assert!(handle.subscribe_person_chat(&"b".repeat(64), original.0.as_bytes()).await.is_err());
+            handle
+                .person_chat(command.as_bytes(), original.0.as_bytes())
+                .await
+                .unwrap();
+            let completed = tilo_actions::InvocationUpdate::Succeeded {
+                invocation: original,
+                output: tilo_actions::ActionOutput::default(),
+            };
+            handle
+                .update_invocation(delivered.id, &serde_json::to_string(&completed).unwrap())
+                .await
+                .unwrap();
+            // The view is selected after the open already completed.
+            let (stream, (generation, snapshot)) =
+                selected(handle, &peer, original).await.unwrap();
+            assert_eq!(generation, 0);
+            let snapshot: serde_json::Value = serde_json::from_slice(&snapshot).unwrap();
+            assert_eq!(snapshot["peer"], peer);
+            assert_eq!(snapshot["messages"], serde_json::json!([]));
+            for command in [
+                serde_json::json!({"operation":"read","public_key":peer}),
+                serde_json::json!({"operation":"send","public_key":peer,"text":"no","invocation":original.0}),
+            ] {
+                assert!(
+                    handle
+                        .person_chat(command.to_string().as_bytes(), original.0.as_bytes())
+                        .await
+                        .is_err(),
+                    "a retained terminal original is no command authority"
+                );
+            }
+            assert!(
+                selected(handle, &"b".repeat(64), original).await.is_err(),
+                "the original selects only its own conversation"
+            );
+            rig.state
+                .pending_invocations
+                .lock()
+                .unwrap()
+                .remove(&delivered.id);
+            owner.changes.send_replace(1);
+            assert_eq!(
+                stream.read().await.unwrap().0,
+                1,
+                "selected reads survive the original's removal"
+            );
 
-        use crate::test_support::{Grants as _, KindSet};
-        env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
-        env.membership.write().workspaces[0].allow_app(
-            tilo_action_policy::Subject::agent("scribe"), &env.route.app_id, KindSet::ALL,
-        );
-        let agent = rig.caller(&env, 905, Some("scribe")).await;
-        let model_original = id(0x005e_1ec8);
-        agent.handle.invoke_resolved_published_action_durable(
-            model_original.0.as_bytes(), &binding, "selected-r1", "workspace:atlas",
-            "open-direct-conversation", Some(&argument), "{}",
-        ).await.unwrap();
-        rig.stream.as_ref().unwrap().read().await.unwrap();
-        assert!(handle.person_chat(command.as_bytes(), model_original.0.as_bytes()).await.is_err());
-        assert!(handle.subscribe_person_chat(&peer, model_original.0.as_bytes()).await.is_err());
+            use crate::test_support::{Grants as _, KindSet};
+            env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
+            env.membership.write().workspaces[0].allow_app(
+                tilo_action_policy::Subject::agent("scribe"),
+                &env.route.app_id,
+                KindSet::ALL,
+            );
+            let agent = rig.caller(&env, 905, Some("scribe")).await;
+            let request =
+                named_action_request(&rig, open(), serde_json::json!({"public_key": peer})).await;
+            super::signed_worker::receipt(
+                super::signed_worker::ask(
+                    &agent.handle,
+                    tilo_actions::remote::RemoteActionMessage::Invoke(request.clone()),
+                )
+                .await
+                .unwrap(),
+            );
+            rig.stream.as_ref().unwrap().read().await.unwrap();
+            assert!(
+                handle
+                    .person_chat(command.as_bytes(), request.invocation.0.as_bytes())
+                    .await
+                    .is_err(),
+                "an agent's open is not the person's"
+            );
+            assert!(selected(handle, &peer, request.invocation).await.is_err());
 
-        // A waiting stream grants no authority after actual certificate loss.
-        *env.authority.certificate.lock().unwrap() = None;
-        owner.changes.send_replace(2);
-        assert!(stream.next().await.is_err());
-        assert!(stream.read().await.is_err(), "selected reads cannot survive worker certificate loss");
-        drop(stream);
-        rig.stop().await;
-    }).await;
+            // A selected view ends with the worker's certificate.
+            *env.authority.certificate.lock().unwrap() = None;
+            owner.changes.send_replace(2);
+            assert!(
+                stream.read().await.is_err(),
+                "selected reads cannot survive worker certificate loss"
+            );
+            drop(stream);
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The conversation with `peer` that `original` selects, and its first read.
+async fn selected(
+    handle: &runtime_collab::ChannelHandle,
+    peer: &str,
+    original: tilo_actions::InvocationId,
+) -> Result<(runtime_collab::PersonChatStream, (u64, Vec<u8>)), runtime_portal::NotAvailable> {
+    let stream = handle
+        .subscribe_person_chat(peer, original.0.as_bytes())
+        .await?;
+    let read = stream.read().await?;
+    Ok((stream, read))
 }

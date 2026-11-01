@@ -675,8 +675,13 @@ impl RoomActivityPane {
         .filter(|action| match action {
             DetailAction::MorningSource => self.selected_morning_source().is_some(),
             DetailAction::Open => !detail.resources.is_empty(),
-            DetailAction::Compare | DetailAction::Restore => detail.can_compare,
-            DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
+            DetailAction::Compare => detail.can_compare,
+            DetailAction::Restore => detail.can_compare && self.selection_is_writable(detail),
+            DetailAction::Undo => {
+                detail.can_undo
+                    && self.selected_agent_run().is_none()
+                    && self.selection_is_writable(detail)
+            }
             DetailAction::UndoTask => self.can_undo_agent_run(),
             DetailAction::Split => self.split_candidate().is_some(),
             DetailAction::Merge => self.merge_candidate().is_some(),
@@ -835,6 +840,11 @@ impl RoomActivityPane {
             }
             Ok(pane.apply_detail_action(action, tree, records))
         };
+        // The host decides what its history may take: a desktop that only
+        // shows one refuses every change of it here, where it knows.
+        if is_document_write(action) && !self.host.mutations_available() {
+            return Err(t("activity-served-read-only"));
+        }
         match action {
             wire::FOCUSED => {
                 let focused: wire::Focused = read(arguments)?;
@@ -870,8 +880,26 @@ impl RoomActivityPane {
             }
             wire::SPLIT => detail(self, &read(arguments)?, DetailAction::Split, tree),
             wire::MERGE => detail(self, &read(arguments)?, DetailAction::Merge, tree),
-            wire::UNDO => detail(self, &read(arguments)?, DetailAction::Undo, tree),
-            wire::RESTORE => detail(self, &read(arguments)?, DetailAction::Restore, tree),
+            wire::UNDO | wire::RESTORE => {
+                let range: wire::Range = read(arguments)?;
+                if !self.select_range(&range) {
+                    return Err(t("activity-history-gone"));
+                }
+                // A record the host holds no writer for reads, and does not
+                // go back: refuse rather than answer a change that never was.
+                if !self
+                    .selection_detail()
+                    .is_some_and(|detail| self.selection_is_writable(&detail))
+                {
+                    return Err(t("activity-served-read-only"));
+                }
+                let action = if action == wire::UNDO {
+                    DetailAction::Undo
+                } else {
+                    DetailAction::Restore
+                };
+                Ok(self.apply_detail_action(action, tree, records))
+            }
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
             wire::UNDO_RECORD => {
                 let query: wire::RecordQuery = read(arguments)?;

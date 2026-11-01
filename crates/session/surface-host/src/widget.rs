@@ -1,12 +1,13 @@
 //! A toolkit widget shown on a rectangle of the desktop: a surface that is
 //! a widget tree of its own rather than an app (the desktop's strips and
-//! window bars). The toolkit's portable host runs it (input in, frames
-//! out) and the frame is rasterized on the CPU as an app's is.
+//! window bars). The toolkit's portable host runs it (input in, frames out)
+//! and the frame is drawn as an app's is.
 
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost, WindowPicture};
 use ui::headless::FrameHarness;
+use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
+use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -17,15 +18,22 @@ use tilo_compositor::HostKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
-use crate::canvas::Canvas;
-use crate::{Placement, RASTER_THREADS, buffer_for, key_event, modifiers_state, mouse_input};
+use crate::frames::Frames;
+use crate::{Placement, key_event, modifiers_state, mouse_input};
+
+/// The colour a widget tree draws on: nothing, so the desktop shows through
+/// wherever it painted nothing.
+const TRANSPARENT: Color = Color::TRANSPARENT;
 
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
     host: FrameHarness,
     placement: Placement,
-    canvas: Canvas,
-    buffer: MemoryRenderBuffer,
+    frames: Frames,
+    /// The frame the layer shows, to know what of the next one changed.
+    retained: RetainedFrames,
+    /// Moves whenever the layer may show pixels of another frame entirely.
+    generation: u64,
     scene: vello::Scene,
     below: bool,
     /// Set by the tree while keys should come to it rather than to the
@@ -35,6 +43,15 @@ pub struct WidgetHost {
     modifiers: ModifiersState,
     /// The tree covers the outputs' bounding box, following them.
     covers: bool,
+    /// Other clients' windows the tree names, drawn by the compositor in
+    /// their own pixels: a surface showing other apps' windows (the
+    /// workspace overview) never draws their buffers itself.
+    pictures: Option<Rc<dyn Fn() -> Vec<WindowPicture>>>,
+    /// The regions the tree drew translucent material in last frame, in its
+    /// physical pixels: bounds, blur deviation, texel size.
+    backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
+    /// The blurred backdrops the compositor made, by region.
+    provided: Vec<Option<ui::peniko::ImageData>>,
     /// A frame is owed: input arrived or the placement changed.
     owed: bool,
     /// Moves with every frame the tree drew: what it publishes changes only
@@ -65,16 +82,23 @@ impl WidgetHost {
             ui::permissions::UserId(String::new()),
         );
         host.set_caller_palette_enabled(false);
+        // Each frame is compared with the one the layer shows, so only what
+        // changed is drawn again.
+        host.track_scene_parts(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         Self {
             host,
             placement,
-            canvas: Canvas::new(size, RASTER_THREADS),
-            buffer: buffer_for(size),
+            frames: Frames::new(size),
+            retained: RetainedFrames::default(),
+            generation: 0,
             scene: vello::Scene::new(),
             below,
             keyboard: None,
+            pictures: None,
+            backdrops: Vec::new(),
+            provided: Vec::new(),
             modifiers: ModifiersState::empty(),
             covers: false,
             owed: true,
@@ -109,6 +133,15 @@ impl WidgetHost {
         self
     }
 
+    /// Draw the windows `pictures` names over the tree, where the tree's
+    /// drawing puts them: what the compositor shows of a window's own
+    /// pixels.
+    #[must_use]
+    pub fn with_window_pictures(mut self, pictures: Rc<dyn Fn() -> Vec<WindowPicture>>) -> Self {
+        self.pictures = Some(pictures);
+        self
+    }
+
     /// Take keys from the focused window while `wants` holds: the tree
     /// sets it while a menu or field of its own is open.
     #[must_use]
@@ -129,6 +162,24 @@ impl WidgetHost {
         self.revision
     }
 
+    /// Whether the tree has a frame to draw by what a live host draws for: input, a new
+    /// placement or layout ([`Self::relayout`]), queued work (a wake, an invocation), a motion
+    /// or a deadline that came due. A widget reporting itself dirty is not a reason on its own:
+    /// leaves report so by default (a text field always does), so a host that drew for it would
+    /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
+    /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
+    pub fn wants_frame(&mut self) -> bool {
+        if self.owed {
+            return true;
+        }
+        let frame = self.host.frame_schedule();
+        frame.queued_work
+            || frame.needs_animation_frame
+            || frame
+                .next_wake_deadline
+                .is_some_and(|deadline| deadline <= ui::time::now())
+    }
+
     /// Where the tree is shown.
     pub const fn placement(&self) -> Placement {
         self.placement
@@ -145,10 +196,19 @@ impl WidgetHost {
         let _ = self.host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         if size != self.placement.physical_size() {
-            self.canvas = Canvas::new(size, RASTER_THREADS);
-            self.buffer = buffer_for(size);
+            self.frames.resize(size);
+            // What the tree drew for the old size says nothing of this one.
+            self.generation = self.generation.wrapping_add(1);
+            self.retained.forget();
         }
         self.placement = placement;
+        self.owed = true;
+    }
+
+    /// Draw the tree with `theme`: the person's palette, tokens and fonts,
+    /// as the session's presentation settings hand them to every surface.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.host.set_theme(theme);
         self.owed = true;
     }
 
@@ -222,12 +282,57 @@ impl SurfaceHost for WidgetHost {
                 i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),
                 i32::try_from(self.placement.size.1).unwrap_or(i32::MAX),
             ),
-            buffer: self.buffer.clone(),
+            frame: self.frames.frame(),
         }]
+    }
+
+    fn withholds_captures(&self) -> bool {
+        self.host.capture_protected()
     }
 
     fn below_windows(&self) -> bool {
         self.below
+    }
+
+    fn window_pictures(&self) -> Vec<WindowPicture> {
+        self.pictures
+            .as_ref()
+            .map_or_else(Vec::new, |pictures| pictures())
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        self.backdrops
+            .iter()
+            .map(
+                |(bounds, blur_px, texels)| tilo_compositor::BackdropRequest {
+                    rect: (
+                        f64::from(ox) + bounds.x0 / scale,
+                        f64::from(oy) + bounds.y0 / scale,
+                        bounds.width() / scale,
+                        bounds.height() / scale,
+                    ),
+                    texels: *texels,
+                    blur: blur_px * f64::from(texels.0) / bounds.width().max(1.0),
+                },
+            )
+            .collect()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.provided.resize(images.len(), None);
+        self.provided.truncate(images.len());
+        for (slot, image) in images.into_iter().enumerate() {
+            if let (Some(image), Some(provided)) = (image, self.provided.get_mut(slot)) {
+                *provided = Some(ui::raster::rgba8_premultiplied(
+                    image.rgba,
+                    image.texels.0,
+                    image.texels.1,
+                ));
+            }
+        }
+        self.owed = true;
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -238,7 +343,7 @@ impl SurfaceHost for WidgetHost {
         if self.below {
             // The desktop under the windows takes the pointer wherever the
             // compositor offers it: there is nothing beneath it.
-            let (width, height) = self.canvas.size();
+            let (width, height) = self.frames.size();
             return lx < f64::from(width) && ly < f64::from(height);
         }
         #[allow(
@@ -247,7 +352,7 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.canvas.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -317,15 +422,63 @@ impl SurfaceHost for WidgetHost {
         self.input(&key_event(key));
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`). The images are
+        // this tree's: every host on the thread provides its own before it
+        // draws.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
+        // The tree lays out with the wells in effect, so a placement made
+        // now reports to them, and a policy reading them in the same frame
+        // sees the windows where the tree just laid them out.
+        // What was owed is consumed by this frame whether or not the tree drew anything of
+        // its own.
+        let owed = std::mem::take(&mut self.owed);
         let drew = self.with_wells(|host| host.poll_frame().unwrap_or(false));
-        if !(drew || std::mem::take(&mut self.owed)) {
-            return;
+        if !(drew || owed) {
+            return false;
         }
         self.revision = self.revision.wrapping_add(1);
+        let scale = self.placement.scale;
         self.scene.reset();
         self.scene
-            .append(self.host.scene(), Some(Affine::scale(self.placement.scale)));
-        self.canvas.present(&self.scene, None, &mut self.buffer);
+            .append(self.host.scene(), Some(Affine::scale(scale)));
+        self.backdrops = self
+            .host
+            .backdrops()
+            .regions
+            .iter()
+            .map(|region| {
+                (
+                    region.rect,
+                    region.blur_px,
+                    ui::backdrop::backdrop_texels(region.rect),
+                )
+            })
+            .collect();
+        let size = self.frames.size();
+        let key = TargetKey {
+            width: size.0,
+            height: size.1,
+            to_device: Affine::scale(scale),
+            base_color: TRANSPARENT,
+            generation: self.generation,
+        };
+        let parts = self.host.scene_parts();
+        let damage = match self.retained.repaint(&self.scene, parts, key) {
+            // Nothing of what it shows changed: there is nothing to draw.
+            Repaint::Regions(changed) if changed.is_empty() => return false,
+            Repaint::Regions(changed) => Some(changed),
+            Repaint::Full(_) => None,
+        };
+        self.retained.presented(&self.scene, parts, key);
+        self.frames.present(&self.scene, damage.as_deref());
+        true
     }
 }

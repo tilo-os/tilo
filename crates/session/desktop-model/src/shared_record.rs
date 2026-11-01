@@ -11,15 +11,19 @@
 //! Shape, at the record's root:
 //!
 //! ```text
-//! workspaces: { <id>: { order: f64, workspace: <Workspace JSON, no strips>, arrangement? } }
+//! workspaces: { <id>: { order: f64, workspace: <map, no strips>, arrangement? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author? } }
 //! groups:     { <id>: { strip: <id>, order: f64, place? } }
-//! windows:    { <id>: { group: <id>, order: f64, tab: <Tab JSON>, author?, record? } }
+//! windows:    { <id>: { group: <id>, order: f64, tab: <map>, author?, record? } }
 //! ```
 //!
 //! A workspace's `arrangement` is its kind when that is not the strips, and
-//! a group's `place` where it stands on the canvas (as JSON): each its own
-//! field, so people moving different windows at once each keep their move.
+//! a group's `place` where it stands on the canvas: each its own field.
+//! A workspace, a window and a place are maps of their own fields too, not
+//! one blob of text each, so two people editing different fields of the same
+//! one at once — renaming a workspace while the other gives it a shortcut —
+//! each keep their change, as people moving different windows at once keep
+//! their moves.
 //! What only one device decides (which window is focused, widths,
 //! maximization) is never written. [`read`] tolerates what concurrency
 //! leaves behind: a window whose group was removed meanwhile gets a group
@@ -27,6 +31,7 @@
 //! removed is placed in the first one, so nothing anyone opened vanishes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use tilo_automerge::json;
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
@@ -100,6 +105,21 @@ impl<D: ReadDoc> At<'_, D> {
         }
     }
 
+    /// The JSON value at `key`, whole: a field that is a map of its own.
+    /// Desktops saved before these fields were maps hold the same value as
+    /// JSON text; it reads the same and becomes a map on its next change.
+    fn json(&self, obj: &ObjId, key: &str) -> Option<serde_json::Value> {
+        let (value, id) = self.get(obj, key)?;
+        match (&value, self.heads) {
+            (Value::Object(_), Some(heads)) => json::read_at(self.doc, &id, heads, None).ok(),
+            (Value::Object(_), None) => json::read_value(self.doc, &value, &id).ok(),
+            (Value::Scalar(scalar), _) => match scalar.as_ref() {
+                ScalarValue::Str(text) => serde_json::from_str(text).ok(),
+                scalar => json::scalar_json(scalar).ok(),
+            },
+        }
+    }
+
     fn number(&self, obj: &ObjId, key: &str) -> Option<f64> {
         match self.get(obj, key)? {
             (Value::Scalar(scalar), _) => match scalar.as_ref() {
@@ -146,12 +166,12 @@ impl<D: ReadDoc> At<'_, D> {
 // Through `serde_json::Value`, the input `DesktopTree::from_json` reads: one
 // copy of the workspace and window deserializers serves both. Not generic, so
 // every reader of the record shares these instead of instantiating its own.
-fn workspace_from(json: &str) -> Option<Workspace> {
-    serde_json::from_value(serde_json::from_str(json).ok()?).ok()
+fn workspace_from(value: serde_json::Value) -> Option<Workspace> {
+    serde_json::from_value(value).ok()
 }
 
-fn tab_from(json: &str) -> Option<Tab> {
-    serde_json::from_value(serde_json::from_str(json).ok()?).ok()
+fn tab_from(value: serde_json::Value) -> Option<Tab> {
+    serde_json::from_value(value).ok()
 }
 
 fn parse_id(text: Option<String>) -> Option<u64> {
@@ -222,10 +242,7 @@ impl Parts {
             if blind {
                 parts.blind.insert(id);
             }
-            let Some(mut workspace) = at
-                .text(&entry, WORKSPACE)
-                .and_then(|json| workspace_from(&json))
-            else {
+            let Some(mut workspace) = at.json(&entry, WORKSPACE).and_then(workspace_from) else {
                 continue;
             };
             workspace.id = WorkspaceId(id);
@@ -261,8 +278,8 @@ impl Parts {
         }
         for (id, entry) in at.entries(GROUPS) {
             if let Some(place) = at
-                .text(&entry, PLACE)
-                .and_then(|json| serde_json::from_str::<CanvasPlace>(&json).ok())
+                .json(&entry, PLACE)
+                .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
             {
                 parts.places.insert(id, place);
             }
@@ -273,7 +290,7 @@ impl Parts {
                 .push((at.number(&entry, ORDER).unwrap_or(0.0), id, id));
         }
         for (id, entry) in at.entries(WINDOWS) {
-            let Some(mut tab) = at.text(&entry, TAB).and_then(|json| tab_from(&json)) else {
+            let Some(mut tab) = at.json(&entry, TAB).and_then(tab_from) else {
                 continue;
             };
             tab.id = id;
@@ -417,12 +434,20 @@ pub fn canonical(desktop: &SharedDesktop) -> SharedDesktop {
     read(&doc, None).unwrap_or_default()
 }
 
-/// One entry as written: its parent and order, and its text fields.
+/// What a field of an entry holds: text of its own, or a value made of
+/// fields of its own (a workspace, a window, a place on the canvas).
+#[derive(Clone, Debug, PartialEq)]
+enum Field {
+    Text(String),
+    Json(serde_json::Value),
+}
+
+/// One entry as written: its parent and order, and its fields.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
     parent: Option<(&'static str, u64)>,
     order: f64,
-    texts: Vec<(&'static str, String)>,
+    fields: Vec<(&'static str, Field)>,
 }
 
 /// `n` as an order step.
@@ -545,6 +570,23 @@ pub fn write(
     Ok(changed)
 }
 
+/// `value` written as the field `key` of `obj`: the document is the only
+/// thing that can refuse a value made of JSON.
+fn write_json(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    key: &'static str,
+    value: &serde_json::Value,
+) -> Result<(), automerge::AutomergeError> {
+    json::write(doc, obj, key, value).map_err(|error| match error {
+        json::JsonError::Automerge(error) => error,
+        shape @ json::JsonError::Shape { .. } => automerge::AutomergeError::InvalidValueType {
+            expected: "a JSON value".to_owned(),
+            unexpected: shape.to_string(),
+        },
+    })
+}
+
 /// The held orders of the entries in `level` under `parent`.
 fn held_orders(level: &BTreeMap<u64, HeldEntry>, parent: Option<u64>) -> HashMap<u64, f64> {
     level
@@ -562,7 +604,7 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
         desktop
             .authors
             .get(&id)
-            .map(|author| (AUTHOR, author.clone()))
+            .map(|author| (AUTHOR, Field::Text(author.clone())))
     };
     let mut want = Levels::default();
     let workspaces = &desktop.tree.workspaces;
@@ -572,58 +614,62 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
         let mut bare = workspace.clone();
         bare.strips.clear();
         bare.arrangement = Arrangement::default();
-        let json = serde_json::to_string(&bare).unwrap_or_default();
-        let mut texts = vec![(WORKSPACE, json)];
+        let bare = serde_json::to_value(&bare).unwrap_or_default();
+        let mut fields = vec![(WORKSPACE, Field::Json(bare))];
         if workspace.arrangement.kind != ArrangementKind::Strips {
-            texts.push((ARRANGEMENT, workspace.arrangement.kind.as_str().to_owned()));
+            fields.push((
+                ARRANGEMENT,
+                Field::Text(workspace.arrangement.kind.as_str().to_owned()),
+            ));
         }
         want.workspaces.insert(
             workspace.id.0,
             Entry {
                 parent: None,
                 order,
-                texts,
+                fields,
             },
         );
         let ids: Vec<u64> = workspace.strips.iter().map(|s| s.id.0).collect();
         let strip_orders = orders(&ids, &held_orders(&held.strips, Some(workspace.id.0)));
         for (strip, order) in workspace.strips.iter().zip(strip_orders) {
-            let mut texts = vec![(NAME, strip.name.clone())];
-            texts.extend(author(strip.id.0));
+            let mut fields = vec![(NAME, Field::Text(strip.name.clone()))];
+            fields.extend(author(strip.id.0));
             let parent = Some((WORKSPACE, workspace.id.0));
             want.strips.insert(
                 strip.id.0,
                 Entry {
                     parent,
                     order,
-                    texts,
+                    fields,
                 },
             );
             let ids: Vec<u64> = strip.window_groups.iter().map(|g| g.id).collect();
             let group_orders = orders(&ids, &held_orders(&held.groups, Some(strip.id.0)));
             for (group, order) in strip.window_groups.iter().zip(group_orders) {
                 let parent = Some((STRIP, strip.id.0));
-                let texts = workspace
+                let fields = workspace
                     .arrangement
                     .place_of(group.id)
-                    .and_then(|place| serde_json::to_string(&place).ok())
-                    .map(|json| vec![(PLACE, json)])
+                    .and_then(|place| serde_json::to_value(place).ok())
+                    .map(|place| vec![(PLACE, Field::Json(place))])
                     .unwrap_or_default();
                 want.groups.insert(
                     group.id,
                     Entry {
                         parent,
                         order,
-                        texts,
+                        fields,
                     },
                 );
                 let ids: Vec<u64> = group.tabs.iter().map(|t| t.id).collect();
                 let tab_orders = orders(&ids, &held_orders(&held.windows, Some(group.id)));
                 for (tab, order) in group.tabs.iter().zip(tab_orders) {
-                    let mut texts = vec![(TAB, serde_json::to_string(tab).unwrap_or_default())];
-                    texts.extend(author(tab.id));
+                    let written = serde_json::to_value(tab).unwrap_or_default();
+                    let mut fields = vec![(TAB, Field::Json(written))];
+                    fields.extend(author(tab.id));
                     if let Some(record) = records.get(&tab.id) {
-                        texts.push((RECORD, (*record).clone()));
+                        fields.push((RECORD, Field::Text((*record).clone())));
                     }
                     let parent = Some((GROUP, group.id));
                     want.windows.insert(
@@ -631,7 +677,7 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
                         Entry {
                             parent,
                             order,
-                            texts,
+                            fields,
                         },
                     );
                 }
@@ -647,19 +693,33 @@ struct HeldEntry {
     entry: Entry,
 }
 
+/// What a field of an entry holds, as the record keeps it.
+#[derive(Clone, Copy)]
+enum Shape {
+    Text,
+    Json,
+}
+use Shape::{Json, Text};
+
 /// What `doc` holds of each kind of entry, by id.
 fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
     let at = At { doc, heads: None };
-    let level = |key: &str, parent: Option<&'static str>, fields: &[&'static str]| {
+    let level = |key: &str, parent: Option<&'static str>, fields: &[(&'static str, Shape)]| {
         at.entries(key)
             .into_iter()
             .map(|(id, obj)| {
                 let parent =
                     parent.and_then(|field| parse_id(at.text(&obj, field)).map(|id| (field, id)));
                 let order = at.number(&obj, ORDER).unwrap_or(f64::NAN);
-                let texts = fields
+                let fields = fields
                     .iter()
-                    .filter_map(|field| at.text(&obj, field).map(|text| (*field, text)))
+                    .filter_map(|(field, shape)| {
+                        let value = match shape {
+                            Shape::Text => Field::Text(at.text(&obj, field)?),
+                            Shape::Json => Field::Json(at.json(&obj, field)?),
+                        };
+                        Some((*field, value))
+                    })
                     .collect();
                 (
                     id,
@@ -668,7 +728,7 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
                         entry: Entry {
                             parent,
                             order,
-                            texts,
+                            fields,
                         },
                     },
                 )
@@ -676,10 +736,14 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
             .collect()
     };
     Levels {
-        workspaces: level(WORKSPACES, None, &[WORKSPACE, ARRANGEMENT]),
-        strips: level(STRIPS, Some(WORKSPACE), &[NAME, AUTHOR]),
-        groups: level(GROUPS, Some(STRIP), &[PLACE]),
-        windows: level(WINDOWS, Some(GROUP), &[TAB, AUTHOR, RECORD]),
+        workspaces: level(WORKSPACES, None, &[(WORKSPACE, Json), (ARRANGEMENT, Text)]),
+        strips: level(STRIPS, Some(WORKSPACE), &[(NAME, Text), (AUTHOR, Text)]),
+        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json)]),
+        windows: level(
+            WINDOWS,
+            Some(GROUP),
+            &[(TAB, Json), (AUTHOR, Text), (RECORD, Text)],
+        ),
     }
 }
 
@@ -752,14 +816,18 @@ fn reconcile(
         if before.is_none_or(|b| b.order.to_bits() != entry.order.to_bits()) {
             doc.put(&obj, ORDER, entry.order)?;
         }
-        for (field, text) in &entry.texts {
-            let same = before.is_some_and(|b| b.texts.iter().any(|(f, t)| f == field && t == text));
+        for (field, value) in &entry.fields {
+            let same =
+                before.is_some_and(|b| b.fields.iter().any(|(f, v)| f == field && v == value));
             if !same {
-                doc.put(&obj, *field, text.as_str())?;
+                match value {
+                    Field::Text(text) => doc.put(&obj, *field, text.as_str())?,
+                    Field::Json(value) => write_json(doc, &obj, field, value)?,
+                }
             }
         }
-        for (field, _) in before.map(|b| b.texts.as_slice()).unwrap_or_default() {
-            if !entry.texts.iter().any(|(f, _)| f == field) {
+        for (field, _) in before.map(|b| b.fields.as_slice()).unwrap_or_default() {
+            if !entry.fields.iter().any(|(f, _)| f == field) {
                 doc.delete(&obj, *field)?;
             }
         }

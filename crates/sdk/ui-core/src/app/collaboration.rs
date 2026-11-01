@@ -311,6 +311,12 @@ impl App {
     pub(super) fn broadcast_doc_delta(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
+        // A surface's record is the desktop's own: it syncs with no one, so
+        // there is no document route to broadcast it on.
+        if self.collaboration.manager.hosts_surface() {
+            self.broadcast_room_index_delta();
+            return;
+        }
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {
                 Ok((delta, heads)) if !delta.is_empty() => {
@@ -787,7 +793,6 @@ impl App {
                 &crate::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 },
             );
             self.publish_continuation_metadata();
-            self.publish_playback_handoff();
             self.publish_search_index();
             self.broadcast_doc_delta();
             self.publish_action_surface();
@@ -972,13 +977,6 @@ impl App {
                 payload,
             } => {
                 self.apply_remote_presence(user_id, key, payload);
-            }
-            CollabEvent::ActionArrived {
-                type_id,
-                payload,
-                from_user_id,
-            } => {
-                self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
             }
             event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
                 self.apply_document_collab_event(event);
@@ -1312,33 +1310,6 @@ impl App {
             );
         }
         self.collaboration.context_participants = current;
-    }
-
-    /// Every app in the room is handed every action; the one whose registry
-    /// knows the type applies it, so the owner stays the only writer.
-    /// `before` MUST be read ahead of apply: a baseline left behind the
-    /// incoming change means the user's next Ctrl+Z reverts someone else's
-    /// edit along with their own keystroke.
-    fn apply_collab_action_arrived(&mut self, type_id: &str, payload: &[u8], from_user_id: &str) {
-        let before = self.state.doc.get_heads();
-        let applied = self.root_widget.apply_room_action(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            type_id,
-            payload,
-        );
-        if applied {
-            self.invalidate_widget_resource_cache();
-            // Named after the publisher so local Ctrl+Z walks past it
-            // instead of through it.
-            self.state.record_committed_action_authored(
-                before,
-                None,
-                None,
-                Some(crate::permissions::UserId(from_user_id.to_string())),
-            );
-            self.needs_sync = true;
-            self.layout.request_rebuild();
-        }
     }
 
     /// Bypasses the collab manager's socket/poll path — for tests using a

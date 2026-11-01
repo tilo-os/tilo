@@ -6,8 +6,8 @@ mod remote;
 #[path = "person_chat_tests.rs"]
 mod tests;
 use tilo_action_broker::services::person_chat::{PersonChatCommand, PersonChatServices};
-use tilo_joined_room::{DirectConversation, DirectConversationPage, DirectMessageSend};
 use tilo_peer_state::caller_authority::CallerAuthority;
+use tilo_peer_state::owner::{DirectConversation, DirectConversationPage, DirectMessageSend};
 
 impl PersonChatServices for NativeOwnerCommitService {
     fn subscribe(
@@ -93,12 +93,12 @@ impl PersonChatServices for NativeOwnerCommitService {
 }
 
 fn check_local_governor(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     caller: &tilo_user_identity::DeviceCert,
 ) -> Result<(), String> {
     owner.with_current(room, |view| {
-        if caller != view.device() || view.governor() != view.device() {
+        if caller != view.device() || view.room_host() != view.device() {
             return Err(
                 "private conversations require the actual governor or authenticated RPC".into(),
             );
@@ -133,7 +133,7 @@ fn check_snapshot_bound(messages: usize, bytes: usize) -> Result<(), String> {
 }
 
 fn read_all(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     peer: &str,
     authority: &CallerAuthority,

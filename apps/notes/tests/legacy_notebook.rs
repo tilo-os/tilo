@@ -119,7 +119,7 @@ fn read(app: &mut TestApp<NotesShell>, arguments: serde_json::Value) -> serde_js
 }
 
 #[test]
-fn a_room_notebook_from_before_the_record_opens_with_its_notes() {
+fn a_workspace_notebook_from_before_the_record_opens_with_its_notes() {
     ui::i18n::I18nManager::init("en-US");
     let Legacy {
         mut doc,
@@ -202,7 +202,7 @@ fn a_room_notebook_from_before_the_record_opens_with_its_notes() {
     assert!(body(&app, todo).contains(&"fixed".to_owned()));
 }
 
-/// A window notebook from before the record is brought into a new room
+/// A window notebook from before the record is brought into a new workspace
 /// notebook with its notes, not as untitled notes without bodies.
 #[test]
 fn a_window_notebook_from_before_the_record_is_adopted_with_its_notes() {

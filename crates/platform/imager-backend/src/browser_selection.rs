@@ -417,9 +417,6 @@ impl Selection {
 }
 
 #[cfg(unix)]
-pub(crate) mod pinned;
-
-#[cfg(unix)]
 pub(crate) fn check_cancel(cancel: &std::sync::atomic::AtomicBool) -> io::Result<()> {
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
         Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))

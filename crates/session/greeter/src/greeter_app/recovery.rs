@@ -259,13 +259,13 @@ impl GreeterApp {
                         .role(ButtonRole::Plain)
                         .control_size(ControlSize::Regular)
                         .with_enabled(!pending)
-                        .on_click(move || cancel.cancel_recovery.set(true)),
+                        .on_view(move || cancel.cancel_recovery.set(true)),
                 ),
                 Box::new(
                     Button::new("greeter.recovery-save", &t("greeter-recovery-save"))
                         .role(ButtonRole::Primary)
                         .control_size(ControlSize::Regular)
-                        .on_click(move || requests.recover.set(true)),
+                        .on_effect(move || requests.recover.set(true)),
                 ),
             ],
         )

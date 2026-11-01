@@ -1,20 +1,21 @@
 //! The now-playing card on the controls page: the song and the transport
 //! that steers it (the toolkit's [`MediaTransport`]), the speaker group it
-//! plays on, and, where there is a choice, the player it steers and where
-//! its sound goes. Every control is one of the panel's effects, so a person,
-//! an agent and a script reach the player through the same door.
+//! plays on, what another of the person's devices hands over, and, where
+//! there is a choice, the player it steers and where its sound goes. Every
+//! control is one of the panel's effects, so a person, an agent and a script
+//! reach the player through the same door.
 
 use ui::LocalState;
 use ui::TextRole;
 use ui::framework::ViewCx;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Column, Container, Dropdown, Element, MediaTransport, Text, TransportActions, TransportFeed,
-    TransportState,
+    Button, Column, Container, Dropdown, Element, MediaTransport, Text, TransportActions,
+    TransportFeed, TransportState,
 };
 
 use crate::effect::QsEffect;
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::now_playing::NowPlaying;
 use crate::resource::QuickSettings;
 
@@ -37,6 +38,9 @@ struct Choices {
     outputs: Vec<(String, String)>,
     output: String,
     speakers: Option<String>,
+    /// The handoff to continue here: its request, and the line that says
+    /// what it is.
+    offer: Option<(String, String)>,
 }
 
 impl Choices {
@@ -73,8 +77,30 @@ impl Choices {
             outputs,
             output,
             speakers: playing.speakers.clone(),
+            offer: playing.offer.as_ref().map(|offer| {
+                let line = t_args(
+                    "qs-now-playing-offer",
+                    &[
+                        ("device", offer.source_label.clone().into()),
+                        ("title", offer.title.clone().into()),
+                        ("position", playhead(offer.position_ms).into()),
+                    ],
+                );
+                (offer.request_id.clone(), line)
+            }),
         }
     }
+}
+
+/// The playhead as the card's copy says it: `1:23`.
+fn playhead(position_ms: f64) -> String {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a playhead in a recording is far inside u64's seconds"
+    )]
+    let seconds = (position_ms.max(0.0) / 1_000.0).round() as u64;
+    ui::format::timecode(seconds)
 }
 
 fn transport_state(playing: &NowPlaying) -> TransportState {
@@ -134,6 +160,14 @@ pub(super) fn card(cx: &ViewCx<QuickSettings>, parts: &Parts) -> Element {
                     .with_role(TextRole::Caption)
                     .with_id("qs-now-playing-speakers"),
             ));
+        }
+        if let Some((request, label)) = &choices.offer {
+            card = card.push(Box::new(actions.bind_effect_invocation(
+                Button::new("qs-now-playing-resume", label),
+                &QsEffect::ResumePlayback {
+                    request: request.clone(),
+                },
+            )));
         }
         if choices.players.len() > 1 {
             let mut players =

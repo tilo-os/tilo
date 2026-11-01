@@ -129,7 +129,7 @@ pub fn paint_entry_emphasised(
 /// The series a legend has hidden, where each entry was last painted, and
 /// the latest visibility change for the host to read.
 #[derive(Debug, Default)]
-pub(crate) struct SeriesToggles {
+pub struct SeriesToggles {
     hidden: HashSet<String>,
     hits: Vec<(String, Rect)>,
     changed: Option<(String, bool)>,

@@ -144,11 +144,16 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     let mut app = ChatApp::new_ephemeral();
     let mut state = ui::State::new();
     let stranger = "peer@9007495404254172154";
-    let mut room = crate::testing::Room::default();
-    crate::testing::starter(&mut room, stranger, "You", "Y");
-    crate::testing::say(&mut room, stranger, "c_chat", "Retained foreign message");
-    state.doc = room.chat.clone();
-    app.attach_room(&room);
+    let mut workspace = crate::testing::Workspace::default();
+    crate::testing::starter(&mut workspace, stranger, "You", "Y");
+    crate::testing::say(
+        &mut workspace,
+        stranger,
+        "c_chat",
+        "Retained foreign message",
+    );
+    state.doc = workspace.chat.clone();
+    app.attach_workspace(&workspace);
     app.sync(&state.doc, &state.root);
     assert_eq!(
         app.user(stranger)
@@ -213,12 +218,12 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         );
     }
 
-    // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
+    // Phase: your_own_name_is_known_before_the_workspace_has_heard_of_you.
     {
         let mut app = ChatApp::new_ephemeral();
         app.me.name = "Ada".to_string();
         app.users.clear();
-        app.room_names.clear();
+        app.workspace_names.clear();
         assert_eq!(
             app.display_name(&app.me.id.clone()),
             "Ada",
@@ -233,7 +238,7 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
     }
 
-    // Phase: people_sharing_a_name_are_numbered_as_the_room_numbers_them.
+    // Phase: people_sharing_a_name_are_numbered_as_the_workspace_numbers_them.
     {
         use ui::permissions::UserId;
         let mut app = ChatApp::new_ephemeral();
@@ -242,7 +247,7 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         presence.set_self_participant(UserId(me.clone()), "Sam");
         presence.set_display_name(UserId("a-peer".into()), "sam");
         presence.set_display_name(UserId("z-peer".into()), "Kim");
-        app.adopt_room(&presence);
+        app.adopt_workspace(&presence);
         assert_eq!(app.user_name("a-peer"), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
         assert_eq!(app.user_name("z-peer"), "Kim");
@@ -253,7 +258,7 @@ fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         );
 
         presence.set_display_name(UserId("a-peer".into()), "Alex");
-        app.adopt_room(&presence);
+        app.adopt_workspace(&presence);
         assert_eq!(app.user_name("a-peer"), "Alex");
         assert_eq!(
             app.user_name(&me),
@@ -304,7 +309,7 @@ fn a_call_names_each_person_once_by_their_devices_name() {
             video: None,
         }],
     );
-    app.adopt_room(&presence);
+    app.adopt_workspace(&presence);
     assert_eq!(app.voice_people(&channel), vec!["crane".to_owned()]);
     assert_eq!(app.user_name("crane"), "Clever Crane");
     let offered = app
@@ -317,7 +322,7 @@ fn a_call_names_each_person_once_by_their_devices_name() {
 
 /// Someone who renamed themself is listed among Contacts by the name they
 /// go by here now, the one presence carries for their person, not the one
-/// the room's list was read with; once they are gone, by the room's.
+/// the workspace's list was read with; once they are gone, by the workspace's.
 #[test]
 fn a_contact_goes_by_the_name_they_go_by_here_now() {
     use ui::permissions::UserId;
@@ -330,13 +335,13 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     let mut presence = PresenceCtx::default();
     presence.set_display_name(UserId("ada-device".into()), "Ada");
     presence.set_persons([(UserId("ada-device".into()), UserId("ada-root".into()))]);
-    app.adopt_room(&presence);
+    app.adopt_workspace(&presence);
     assert_eq!(app.contact_name(&listed), "Ada");
 
-    app.adopt_room(&PresenceCtx::default());
+    app.adopt_workspace(&PresenceCtx::default());
     assert_eq!(
         app.contact_name(&listed),
         "Swift Lynx",
-        "gone: the room's name"
+        "gone: the workspace's name"
     );
 }

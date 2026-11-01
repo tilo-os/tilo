@@ -48,7 +48,7 @@ pub const INTENTS: u64 =
 /// Messages read back per channel when a session could not be resumed.
 pub const BACKFILL_LIMIT: u32 = 100;
 /// The newest messages read from each text channel the first time the
-/// worker meets its server, so an adopting room starts with its history.
+/// worker meets its server, so an adopting workspace starts with its history.
 pub const HISTORY_LIMIT: u32 = 50;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A rejected token is asked for again this often, so a new one set with
@@ -931,7 +931,7 @@ pub fn link_token() -> String {
     })
 }
 
-/// The address the `/link` button opens: the room's web entry, with the
+/// The address the `/link` button opens: the workspace's web entry, with the
 /// token where the page takes link secrets from (and moves them out of the
 /// address bar before anything else runs).
 #[must_use]

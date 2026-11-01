@@ -1,7 +1,7 @@
 //! Transport-neutral collaboration governance state.
 //!
-//! Both the native Cap'n Proto service and peer-network drain validate against
-//! this state. It deliberately contains no socket, framing, RPC, or UI request
+//! Both the native service and the peer-network drain validate against this
+//! state. It deliberately contains no socket, framing, RPC, or UI request
 //! types, so transport retirement cannot fork authorization and audit behavior.
 
 use std::collections::{HashMap, VecDeque};

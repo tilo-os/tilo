@@ -64,6 +64,11 @@ mod sys {
         for program in [&compat, &parser, &paths] {
             seccomp::install(program).map_err(|error| format!("seccomp: {error}"))?;
         }
+        // The parser policy above refuses `exec`: no program this worker
+        // starts would run, so try no helper process at all (the PDF
+        // engine's own among them) and take the in-process path instead of
+        // failing on the refusal.
+        tilo_sandbox::confine::declare_no_exec();
         Ok(())
     }
 

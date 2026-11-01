@@ -32,6 +32,8 @@ serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 tempfile.workspace = true
 tilo-ask-password = { path = "../ask-password" }
+# The enrolment description is published through the crash-safe write path.
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-seal = { path = "../tilo-seal" }
 # Where NetworkManager keeps an unlock network's saved connection.
 tilo-nm = { path = "../tilo-nm" }

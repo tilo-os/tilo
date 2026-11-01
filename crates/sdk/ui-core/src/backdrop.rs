@@ -44,8 +44,24 @@ use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 use crate::floating_surface::Material;
+use crate::part_paint::Lens;
+pub use crate::part_paint::Sampling;
 use crate::theme::Theme;
 use crate::tokens::{Finish, SurfaceRole};
+
+/// What a backdrop brush asks of the pass: how blurred, through what lens,
+/// at what corner radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sample {
+    /// Blur standard deviation, logical pixels; `0` shows what is below
+    /// straight.
+    pub blur: f32,
+    /// The lens: refraction at the rim, and whether the sample is shown as
+    /// cells.
+    pub lens: Lens,
+    /// The part's corner radius, which the lens rings follow.
+    pub radius: f64,
+}
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
@@ -268,21 +284,38 @@ pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
     path: &vello::kurbo::BezPath,
-    (blur, refraction, radius): (f32, f32, f64),
+    sample: Sample,
     theme: &Theme,
     tint: Color,
 ) -> bool {
-    let translucent = !(theme.reduce_transparency || theme.forced_colors) && blur > 0.0;
-    let recorded = translucent
-        .then(|| record(scene, transform, path, blur, tint))
-        .flatten();
+    let Sample { blur, lens, radius } = sample;
+    // Unblurred, a cell-sampled backdrop is still a backdrop: the
+    // Pixelated set shows what lies below without smoothing it.
+    let blurring = if lens.sampling == Sampling::Blocky {
+        if theme.reduce_transparency || theme.forced_colors {
+            return false;
+        }
+        blur
+    } else if theme.reduce_transparency || theme.forced_colors || blur <= 0.0 {
+        return false;
+    } else {
+        blur
+    };
+    let recorded = record(scene, transform, path, blurring, lens, tint);
     let Some((image, brush_transform)) = recorded else {
         return false;
     };
+    // A cell-sampled backdrop is a few texels across, each one cell: drawn
+    // up at the cell grid, its texels are the cells, so it reads as pixels
+    // with no smoothing of its own.
+    let quality = match lens.sampling {
+        Sampling::Smooth => ImageQuality::Medium,
+        Sampling::Blocky => ImageQuality::Low,
+    };
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
-        .with_quality(ImageQuality::Medium);
-    if refraction > 0.0 {
+        .with_quality(quality);
+    if lens.refraction > 0.0 {
         let body = RoundedRect::from_rect(path.bounding_box(), radius);
         // The rings fill the rounded box; a path that is not that box
         // keeps them inside it.
@@ -290,7 +323,14 @@ pub(crate) fn fill_backdrop_sample(
         if clipped {
             scene.push_clip_layer(Fill::NonZero, transform, path);
         }
-        refract(scene, transform, &body, &brush, brush_transform, refraction);
+        refract(
+            scene,
+            transform,
+            &body,
+            &brush,
+            brush_transform,
+            lens.refraction,
+        );
         if clipped {
             scene.pop_layer();
         }
@@ -390,6 +430,7 @@ pub(crate) fn fill_with_ground(
                 transform,
                 shape,
                 theme.tokens.colors.surfaces.material_blur_px,
+                Lens::default(),
                 ground,
             )
         {
@@ -476,6 +517,10 @@ pub struct RecordedBackdrop {
     pub bounds: Rect,
     /// Blur standard deviation in recording pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur.
+    pub sampling: crate::part_paint::Sampling,
+    /// The cell's side in recording pixels, for [`crate::part_paint::Sampling::Blocky`].
+    pub cell_px: f64,
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
@@ -487,12 +532,39 @@ pub struct RecordedBackdrop {
 }
 
 impl RecordedBackdrop {
+    /// This surface's backdrop as a region of a target that draws it at
+    /// `rect`, `scale` target pixels per recording pixel, over `below`
+    /// (handed what the recording saw below the surface). The one mapping
+    /// from a recording to a region, so a field the pass reads is never
+    /// left behind on the way.
+    #[must_use]
+    pub fn into_region(
+        self,
+        rect: Rect,
+        scale: f64,
+        below: impl FnOnce(Scene) -> Scene,
+    ) -> BackdropRegion {
+        BackdropRegion {
+            image: self.image,
+            rect,
+            blur_px: self.blur_px * scale,
+            sampling: self.sampling,
+            cell_px: self.cell_px * scale,
+            below: below(self.below),
+            ground: self.ground,
+        }
+    }
+
     /// How far outside its bounds the surface's blurred pixels depend on what is drawn: the
     /// kernel's reach, and what the halved passes' texels add to it (at most a quarter of the
     /// deviation, twice over, once a texel is that large).
     #[must_use]
     pub fn reach(&self) -> f64 {
-        (self.blur_px.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
+        let sigma = match self.sampling {
+            Sampling::Smooth => self.blur_px,
+            Sampling::Blocky => self.blur_px.max(self.cell_px * 0.5),
+        };
+        (sigma.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
     }
 }
 
@@ -724,6 +796,7 @@ fn record(
     transform: Affine,
     shape: &impl Shape,
     blur_px: f32,
+    lens: Lens,
     ground: Color,
 ) -> Option<(ImageData, Affine)> {
     RECORDING.with(|slot| {
@@ -749,7 +822,21 @@ fn record(
             return None;
         }
         recording.next_slot = slot_index.saturating_add(1);
-        let (width, height) = (texels(bounds.width()), texels(bounds.height()));
+        let device_scale = transform.determinant().abs().sqrt();
+        let (width, height) = match lens.sampling {
+            // One texel per cell, at most the placeholder's own edge: the
+            // image is the cells themselves.
+            crate::part_paint::Sampling::Blocky => {
+                let cell = f64::from(lens.cell.max(1.0));
+                (cells(bounds.width(), cell), cells(bounds.height(), cell))
+            }
+            crate::part_paint::Sampling::Smooth => {
+                (texels(bounds.width()), texels(bounds.height()))
+            }
+        };
+        // A cell's side in recording pixels: the lens states it in logical
+        // pixels at the part's own coordinates.
+        let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
         let image =
             provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
@@ -767,7 +854,9 @@ fn record(
             bounds,
             // The theme's radius is logical; a host drawing through a device
             // scale records in device pixels.
-            blur_px: f64::from(blur_px) * transform.determinant().abs().sqrt(),
+            blur_px: f64::from(blur_px) * device_scale,
+            sampling: lens.sampling,
+            cell_px: cell_px * device_scale,
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
@@ -811,6 +900,19 @@ fn texels(logical: f64) -> u32 {
         .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
 }
 
+/// Placeholder texels for a cell-sampled edge of `logical` pixels: one
+/// texel per cell of `cell`, so the image's texels are the cells.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 1..=MAX_PLACEHOLDER_EDGE before the cast"
+)]
+fn cells(logical: f64, cell: f64) -> u32 {
+    (logical / cell.max(1.0))
+        .ceil()
+        .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
+}
+
 /// The opaque `ground`-coloured image a surface draws in `slot`.
 fn placeholder(slot: PlaceholderKey, width: u32, height: u32, ground: Color) -> ImageData {
     let rgba = ground.to_rgba8().to_u8_array();
@@ -847,6 +949,12 @@ pub struct BackdropRegion {
     pub rect: Rect,
     /// Blur standard deviation in target pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur: smoothly, or at one
+    /// colour per cell of `cell_px` target pixels (a surface shown as
+    /// pixels).
+    pub sampling: Sampling,
+    /// The cell's side in target pixels, for [`Sampling::Blocky`].
+    pub cell_px: f64,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
     /// The opaque panel ground: what the backdrop shows where nothing below
@@ -868,12 +976,9 @@ impl BackdropFrame {
         Self {
             regions: surfaces
                 .into_iter()
-                .map(|surface| BackdropRegion {
-                    image: surface.image,
-                    rect: surface.bounds,
-                    blur_px: surface.blur_px,
-                    below: surface.below,
-                    ground: surface.ground,
+                .map(|surface| {
+                    let rect = surface.bounds;
+                    surface.into_region(rect, 1.0, |below| below)
                 })
                 .collect(),
         }
@@ -1364,6 +1469,17 @@ impl BackdropBlur {
     }
 }
 
+/// The blur `region` is drawn with, in target pixels: its own, and for a
+/// cell-sampled backdrop at least half a cell, so each cell (one texel of
+/// the placeholder the last pass resamples onto) is the average of what
+/// lies below it rather than one point of it.
+fn region_sigma(region: &BackdropRegion) -> f64 {
+    match region.sampling {
+        Sampling::Smooth => region.blur_px,
+        Sampling::Blocky => region.blur_px.max(region.cell_px * 0.5),
+    }
+}
+
 /// Decide the source rectangle, the halvings and the kernel for `region`,
 /// or `None` when it has nothing to blur.
 #[allow(
@@ -1372,7 +1488,7 @@ impl BackdropBlur {
     reason = "sizes are rounded, positive and bounded by the device's texture limit before the cast"
 )]
 fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
-    let sigma = region.blur_px;
+    let sigma = region_sigma(region);
     if !sigma.is_finite() || sigma <= 0.0 || region.image.width == 0 || region.image.height == 0 {
         return None;
     }

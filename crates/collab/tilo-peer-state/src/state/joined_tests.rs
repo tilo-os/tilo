@@ -56,10 +56,10 @@ fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still
         peer.certificate(&guest.device_public_key, now).is_err(),
         "the expired guest's expiry is still checked when it is used"
     );
-    assert_eq!(
+    assert!(matches!(
         peer.certificate(&member.device_public_key, now),
-        Ok(&member)
-    );
+        Ok(cert) if cert == &member
+    ));
 }
 
 #[test]

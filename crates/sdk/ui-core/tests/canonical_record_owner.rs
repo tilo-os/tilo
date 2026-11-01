@@ -191,13 +191,13 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
 )]
 #[test]
 fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
-    // Case `identity_and_schema_refusal_preserves_complete_and_recovered_bytes`.
+    // Case `identity_refusal_preserves_complete_and_recovered_bytes`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let mut owners = RecordOwners::new(root.clone());
         let store = owners.open("so.tilo.test", "room-a").unwrap();
-        for case in ["record", "room", "kind", "home", "schema"] {
+        for case in ["record", "room", "kind", "home"] {
             for torn in [false, true] {
                 let want = target();
                 let mut doc = AutoCommit::new();
@@ -222,14 +222,6 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
                         "room-a"
                     }),
                 );
-                if case == "schema" {
-                    doc.put(
-                        ROOT,
-                        app_state::SCHEMA_VERSION_KEY,
-                        u64::from(app_state::SCHEMA_VERSION) + 1,
-                    )
-                    .unwrap();
-                }
                 let heads = doc.get_heads();
                 let mut original = doc.save();
                 if torn {
@@ -292,7 +284,7 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
         assert_eq!(body(&store, &want), "after-recovery");
     }
 
-    // Case `new_schema_validation_failure_keeps_unpublished_reservation_for_retry`.
+    // Case `failed_initialization_keeps_unpublished_reservation_for_retry`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
@@ -301,14 +293,8 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
         let want = target();
         let mut token = store.reserve_record(&want).unwrap();
         assert!(matches!(
-            token.initialize(|doc| {
-                doc.put(ROOT, app_state::SCHEMA_VERSION_KEY, "invalid")
-                    .unwrap();
-                Ok(())
-            }),
-            Err(RecordOpenError::Store(
-                app_state::StoreError::InvalidSchema { .. }
-            ))
+            token.initialize(|_| Err("invalid document".to_owned())),
+            Err(RecordOpenError::Initialization(_))
         ));
         assert!(!store.is_ready(&want.id));
         assert!(
@@ -403,7 +389,7 @@ fn status_polling_and_failed_flushes_keep_pending_edits() {
         ));
         assert!(store.durability_error(&want.id).is_some());
         store.with(&want.id, |doc| doc.put(ROOT, "body", "latest").unwrap());
-        store.tick();
+        store.tick().unwrap();
         let expected = store
             .with(&want.id, automerge::AutoCommit::get_heads)
             .unwrap();

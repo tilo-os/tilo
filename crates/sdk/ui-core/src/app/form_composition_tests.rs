@@ -30,7 +30,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
                 )),
         )
         .with_actions(Actions::new(
-            Button::new("save", "Save changes").on_click(crate::testing::record_click("saved")),
+            Button::new("save", "Save changes").on_effect(crate::testing::record_click("saved")),
         ));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(form));
     app.init_layout();

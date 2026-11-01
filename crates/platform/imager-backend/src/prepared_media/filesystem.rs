@@ -7,8 +7,6 @@ use std::{io, sync::atomic::AtomicBool};
 #[cfg(target_os = "linux")]
 mod native;
 #[cfg(target_os = "linux")]
-mod root;
-#[cfg(target_os = "linux")]
 pub use native::{MediaFilesystemGrant, check_writable_directory};
 /// Check whether the descriptor's filesystem is writable on a supported host.
 ///

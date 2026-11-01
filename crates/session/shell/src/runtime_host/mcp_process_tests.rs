@@ -156,7 +156,7 @@ fn mcp_process_owns_and_reaps_its_children() {
         }
         .encode()
         .unwrap();
-        let endpoint = session.broker.capnp_socket().to_path_buf();
+        let endpoint = session.broker.app_socket().to_path_buf();
         let workspace_id = session.room.clone();
         let (ready, admitted) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
@@ -167,12 +167,11 @@ fn mcp_process_owns_and_reaps_its_children() {
                 .unwrap();
             runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
                 let fd = runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
-                let connection = runtime_portal::CapnpClient::from_connected_fd(
-                    fd,
-                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                let (broker, _end) = runtime_collab::CollabClient::from_connected_fd(
+                    // SAFETY: just connected; this takes its only owner.
+                    unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) },
                 )
                 .unwrap();
-                let broker = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                 let channel = tilo_test_env::within(
                     "the signed client to join its channel",
                     broker.join_channel(&workspace_id, &presentation),

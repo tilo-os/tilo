@@ -2,7 +2,7 @@
 use super::{GovernedRoom, Rooms, StatePeer, SystemTime};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::room_actions::{ViewDocument, ViewReadPolicy};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -115,25 +115,19 @@ impl Rooms {
         // cannot slip between a prior policy lookup and the first key access.
         room.view_read_policy(caller, &source.app_id, &source.record)
             .ok_or("resource read not permitted")?;
-        let channel =
-            collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-        let keys = match room.participation.clone() {
-            Some(participant) => participant
-                .channels
-                .lock()
-                .await
-                .existing_keys(channel)
-                .ok(),
-            None => None,
+        let route = collab_types::ChannelRoute::new(&source.app_id, &source.record);
+        let keys = match room.route_keys(&route).await {
+            Some(Ok(keys)) => Some(keys),
+            _ => None,
         };
         let primary_governor = (source.record.is_empty()
             && room.peer().holds_document(&source.app_id, ""))
-        .then_some(room.peer().authority().device_public_key);
+        .then_some(room.record.authority.device_public_key);
         if keys.is_none() && primary_governor.is_none() {
-            return Err(if room.participation.is_none() {
-                "this relay takes part in no channel of the source's room".into()
-            } else {
+            return Err(if room.seals() {
                 "source channel keys unavailable".into()
+            } else {
+                "this host takes part in no channel of the source's room".into()
             });
         }
         let retained = self
@@ -166,14 +160,14 @@ fn replay_source(
 ) -> Result<Vec<u8>, String> {
     let channel =
         collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-    let mut ciphers = tilo_browser_peer::document::Ciphers::new();
+    let mut ciphers = tilo_peer_state::document_frame::Ciphers::new();
     if let Some(keys) = keys {
         ciphers.insert(
             source.clone(),
-            tilo_browser_peer::document::content_key_reader(keys),
+            tilo_peer_state::document_frame::content_key_reader(keys),
         );
     }
-    let mut reassembly = tilo_browser_peer::document::Reassembly::default();
+    let mut reassembly = tilo_peer_state::document_frame::Reassembly::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
     let mut found = false;
@@ -204,10 +198,13 @@ fn replay_source(
         if bytes > MAX_VIEW_DOCUMENT_BYTES {
             return Err("source replay exceeds read budget".into());
         }
-        let frame =
-            tilo_browser_peer::document::open_frame(&retained.body, retained.author, &mut ciphers)
-                .map_err(|error| error.to_string())?
-                .ok_or("source frame missing")?;
+        let frame = tilo_peer_state::document_frame::open_frame(
+            &retained.body,
+            retained.author,
+            &mut ciphers,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or("source frame missing")?;
         if let Some(frame) = reassembly
             .accept(frame)
             .map_err(|error| error.to_string())?

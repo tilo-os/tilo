@@ -3,7 +3,7 @@ name = "tilo-delivery-protocol"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Wire contract of Tilo's browser-facing delivery: the signed transport descriptor and its session authentication, the bootstrap exchange, the private action vocabulary, the v2 live envelope and the workspace join contract."
+description = "Wire contract of Tilo's browser-facing delivery: the private action vocabulary, the v2 live envelope and the workspace join contract."
 license = "MIT OR Apache-2.0"
 
 # Browsers, the action broker and both hosts speak these records without
@@ -11,9 +11,9 @@ license = "MIT OR Apache-2.0"
 # endpoint or runtime dependencies. The Iroh join transport is in
 # `tilo-relay-session` (client) and `tilo-relay` (host).
 [package.metadata.cargo-machete]
-# getrandom 0.3 is a feature-only edge that selects JS entropy for transitive
+# getrandom 0.2 and 0.3 are feature-only edges that select JS entropy for transitive
 # WASM cryptography.
-ignored = ["getrandom03"]
+ignored = ["getrandom", "getrandom03"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -31,13 +31,9 @@ serde_bytes.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 postcard = { workspace = true, features = ["use-std"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
-rand.workspace = true
-getrandom.workspace = true
 blake3.workspace = true
-hex.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
-web-time = { version = "1", features = ["serde"] }
 tokio = { workspace = true, features = ["io-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -47,10 +43,6 @@ uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
-# The descriptor tests verify against a real governed workspace; production
-# callers supply theirs through `descriptor::CommittedWorkspace`.
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-automerge-isolate.workspace = true
 
 [lints]
 workspace = true

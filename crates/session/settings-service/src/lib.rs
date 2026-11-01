@@ -6,7 +6,10 @@
 //! section's model and recorded in the settings document with what made it
 //! and who. The service keeps them, so the palette, agents, scripts and the
 //! desktop's search change them through those actions whether or not
-//! Settings is open; Settings' window is one view of them.
+//! Settings is open; Settings' window is one view of them. Each change is a
+//! step of the person who made it: `undo` and `redo` are published beside a
+//! section and take back their last step on it, reading the settings
+//! document's own history, as they do in Settings' window.
 //!
 //! Beside them it publishes every setting people look for by name
 //! ([`settings_store::index`]) that search can change in place, under
@@ -124,7 +127,12 @@ impl SettingsService {
     #[must_use]
     pub fn new(person: &str) -> Self {
         let mut service = Self {
-            records: SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+            records: SettingsRecords::of_person_named(
+                settings_sections::APP_ID,
+                settings_sections::APP_TITLE,
+                person,
+                &[settings_sections::declare],
+            ),
             invoker: ActionInvoker::actor(person),
             seen: None,
             published: Vec::new(),

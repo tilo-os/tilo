@@ -87,8 +87,8 @@ pub(crate) enum MenuTarget {
     Category(Id),
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
-    /// The room itself: what can be made in it.
-    Room,
+    /// The workspace itself: what can be made in it.
+    Workspace,
     /// Someone else in the call, by person or guest id: how loud they play
     /// on this device.
     CallParticipant(String),
@@ -125,11 +125,11 @@ pub(crate) enum MenuAction {
     DeleteMessage,
     /// Put a message's text on the clipboard.
     CopyText,
-    /// Report someone else's message to the room's moderators.
+    /// Report someone else's message to the workspace's moderators.
     ReportMessage,
-    /// Report a message's author to the room's moderators.
+    /// Report a message's author to the workspace's moderators.
     ReportAuthor,
-    /// As a moderator, ban a message's author from the room.
+    /// As a moderator, ban a message's author from the workspace.
     BanAuthor,
     /// Stop sharing the window a message of yours shares.
     StopSharing,
@@ -203,9 +203,9 @@ impl MenuAction {
             MenuAction::Delete,
         ]
     }
-    /// Menu items for the room: the window bar's Create, and a right click
+    /// Menu items for the workspace: the window bar's Create, and a right click
     /// in the conversation.
-    pub fn for_room() -> [MenuAction; 2] {
+    pub fn for_workspace() -> [MenuAction; 2] {
         [MenuAction::NewChannelHere, MenuAction::NewCategory]
     }
     /// Menu items for a category row.
@@ -243,7 +243,7 @@ impl MenuAction {
         ]
     }
     /// Menu items for someone else's message: reporting it or its sender,
-    /// and removing it, which only the room's moderators may.
+    /// and removing it, which only the workspace's moderators may.
     pub fn for_others_message() -> [MenuAction; 6] {
         [
             MenuAction::AddReaction,

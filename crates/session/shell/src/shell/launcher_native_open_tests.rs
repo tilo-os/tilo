@@ -95,7 +95,8 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok((view.device().clone(), member.person, member.policy.node()))
         })
         .unwrap();
@@ -144,7 +145,7 @@ fn a_member_opens_an_app_the_governor_authorized_before_its_document_arrives() {
                     .check_workspace_administration(view.device().device_public_key, now)
                     .is_err()
             );
-            Ok((view.device().clone(), view.governor().user_public_key))
+            Ok((view.device().clone(), view.owner()))
         })
         .unwrap();
     assert_eq!(
@@ -186,8 +187,11 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
     );
     let signing_identity = SigningKey::from_bytes(&[72; 32]);
     let viewer_key = SigningKey::from_bytes(&[71; 32]);
-    let mut viewer =
-        tilo_joined_room::testing::certificate(&signing_identity, &viewer_key, "Read-only device");
+    let mut viewer = tilo_peer_state::owner::testing::certificate(
+        &signing_identity,
+        &viewer_key,
+        "Read-only device",
+    );
     viewer.capabilities = tilo_user_identity::DeviceCapabilities::member();
     viewer.capabilities.foreign = true;
     tilo_user_identity::sign_device_cert(&mut viewer, &signing_identity).unwrap();
@@ -195,8 +199,8 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
     let governor = owner
         .with_current(room, |view| {
             assert_ne!(view.device(), &viewer);
-            assert_ne!(view.governor(), &viewer);
-            assert_ne!(view.governor().user_public_key, viewer.user_public_key);
+            assert_ne!(view.room_host(), &viewer);
+            assert_ne!(view.owner(), viewer.user_public_key);
             assert!(view.peer().certificates().contains(&viewer));
             assert!(
                 view.peer()
@@ -207,10 +211,10 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
             assert!(
                 view.peer()
                     .workspace()
-                    .check_workspace_administration(view.governor().device_public_key, now)
+                    .check_workspace_administration(view.room_host().device_public_key, now)
                     .is_ok()
             );
-            Ok(view.governor().clone())
+            Ok(view.room_host().clone())
         })
         .unwrap();
     assert!(matches!(
@@ -229,7 +233,8 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         .with_current(room, |view| {
             Ok(view
                 .peer()
-                .permissions(governor.device_public_key, now)?
+                .permissions(governor.device_public_key, now)
+                .map_err(|error| error.to_string())?
                 .policy
                 .grants)
         })
@@ -260,9 +265,9 @@ fn admit_viewer(
     use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse};
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let certificate = owner
-        .with_current(room, |view| Ok(view.governor().clone()))
+        .with_current(room, |view| Ok(view.room_host().clone()))
         .unwrap();
-    let mut governor = tilo_joined_room::testing::governor::TestGovernor::empty_interactive(
+    let mut governor = tilo_peer_state::owner::testing::governor::TestGovernor::empty_interactive(
         certificate,
         governor_key.clone(),
         &room.to_string(),
@@ -366,7 +371,8 @@ fn access_as(
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok(member
                 .policy
                 .app_authors(app, &tilo_action_policy::Context::at_time(now)))
@@ -443,7 +449,8 @@ fn an_app_authorized_by_the_room_opens_like_the_one_already_here() {
         .with_current(room, |view| {
             let member = view
                 .peer()
-                .permissions(view.device().device_public_key, now)?;
+                .permissions(view.device().device_public_key, now)
+                .map_err(|error| error.to_string())?;
             Ok((view.device().clone(), member.person))
         })
         .unwrap();

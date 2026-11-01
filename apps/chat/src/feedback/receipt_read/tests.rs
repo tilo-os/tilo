@@ -112,11 +112,11 @@ fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
         .unwrap();
 }
 
-fn fixture_submission(room: &str) -> Submission {
+fn fixture_submission(workspace: &str) -> Submission {
     Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: room.into(),
+            room: workspace.into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
@@ -144,12 +144,14 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     };
     use ui::record::{RecordCheckout, RecordKind, RecordOwners};
 
-    let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let temp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(temp.path().join("profile"));
-    let records = owners.open(crate::definition().app_id(), room).unwrap();
+    let records = owners
+        .open(crate::definition().app_id(), workspace)
+        .unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
-    let submission = fixture_submission(room);
+    let submission = fixture_submission(workspace);
     records
         .reserve_record(&checkout)
         .unwrap()
@@ -178,8 +180,12 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         .unwrap();
     records.try_flush().unwrap();
     let views = Rc::new(
-        ui::application_view::InstanceViewStore::new(temp.path().join("profile"), "device", room)
-            .unwrap(),
+        ui::application_view::InstanceViewStore::new(
+            temp.path().join("profile"),
+            "device",
+            workspace,
+        )
+        .unwrap(),
     );
     let target = LaunchTarget::Record {
         checkout,

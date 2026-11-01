@@ -52,13 +52,13 @@ const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
 /// Inset of a card's content from its edge.
 const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 /// The compact music card's artwork.
-const COMPACT_ART: f64 = ui::tokens::Spacing::BASE.s12 as f64;
-/// The resize handle in a card's free corner, an icon's size, and the edge
-/// band along its free side that resizes too.
-pub(super) const GRIP: f64 = ui::tokens::Metrics::BASE.icon_md as f64;
+const COMPACT_ART: f64 = ui::tokens::Layout::BASE.desk_art as f64;
+/// The resize handle in a card's free corner, and the edge band along its
+/// free side that resizes too.
+pub(super) const GRIP: f64 = ui::tokens::Layout::BASE.desk_grip as f64;
 const GRIP_EDGE: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
-/// The remove badge on a hovered glance, an icon's size.
-pub(super) const BADGE: f64 = ui::tokens::Metrics::BASE.icon_md as f64;
+/// The remove badge on a hovered glance.
+pub(super) const BADGE: f64 = ui::tokens::Layout::BASE.desk_badge as f64;
 
 /// Run `paint` at `alpha`, in a layer only while it is fading.
 pub(super) fn with_alpha(
@@ -1092,14 +1092,14 @@ pub(super) fn paint_band_control(
     ui::widget::Button::paint(scene, transform, text, theme, &face);
 }
 
-/// The resize handle: three short diagonal strokes in the card's free
-/// corner, brighter under the pointer.
+/// The resize handle: the corner grip in the card's free corner, pointing
+/// the way a drag grows the card, brighter under the pointer.
 pub(super) fn paint_grip(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
     grip: Rect,
-    anchor: (bool, bool),
+    (right, bottom): (bool, bool),
     hovered: bool,
 ) {
     let color = if hovered {
@@ -1107,7 +1107,16 @@ pub(super) fn paint_grip(
     } else {
         ui::paint::with_alpha_scaled(theme.tokens.colors.text_dim, 0.7)
     };
-    ui::surface::corner_resize_grip(scene, transform, grip, anchor, color);
+    // The handle stands on the side the card is free on (the display's
+    // middle is behind it), so its arrow points out of the card: the way a
+    // drag grows it.
+    let icon = match (right, bottom) {
+        (true, true) => ui::icons::Icon::ArrowUpLeft,
+        (true, false) => ui::icons::Icon::ArrowDownLeft,
+        (false, true) => ui::icons::Icon::ArrowUpRight,
+        (false, false) => ui::icons::Icon::ArrowDownRight,
+    };
+    ui::icons::draw_icon(scene, transform, grip, icon, color, 1.4);
 }
 
 /// The remove badge on a hovered glance: a small round X on the overlay

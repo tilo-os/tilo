@@ -1,7 +1,7 @@
 //! A nested Tilo session the tool drives: where it is, the environment its own tools act on it
 //! in, and the session's actions the tool uses (open an app, restart it, install a package).
 //!
-//! The session is `dist/dev/nested-session.sh` (or `nested-pair.sh`) over the build in
+//! The session is `dist/dev/nested-session.sh` over the build in
 //! `target/nested-session`. Everything here goes through the session's own tools and actions:
 //! `tilo-install` installs, the launcher starts apps, the shell's actions open and close them.
 
@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) const SESSION_SCRIPT: &str = "dist/dev/nested-session.sh";
-pub(crate) const PAIR_SCRIPT: &str = "dist/dev/nested-pair.sh";
 pub(crate) const BUILD_DIR: &str = "target/nested-session";
 /// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a
 /// build shared read-only between sessions, as `nested-session.sh` honours it.

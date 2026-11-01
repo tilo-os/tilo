@@ -14,7 +14,8 @@
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
 use std::collections::HashMap;
@@ -37,6 +38,7 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
+        shell_bar: true,
         ..Options::default()
     }
 }
@@ -395,6 +397,7 @@ fn an_apps_notification_is_counted_on_the_bar() {
             &wake.handle(),
             std::sync::Arc::new(tilo_portal::NoCapture),
             &side,
+            None,
         )
         .unwrap(),
     );
@@ -663,8 +666,13 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
         )
         .unwrap();
     until(&mut session, |session| says(session, "Backup finished"));
-    // The centre opened, so the person saw them: every row is read and its header says so.
-    until(&mut session, |session| says(session, "All read"));
+    // The centre opened, so the person saw them: every notice is read, and the desk's count
+    // the bell shows is none.
+    until(&mut session, |session| {
+        desk(session).unread == 0 && desk(session).notices.iter().all(|notice| notice.read)
+    });
+    // The view draws each notice with its Dismiss; pressing it runs the desk's
+    // `dismiss-notice` on that notice, as any action on the desk runs.
     press(&mut session, "Dismiss");
     until(&mut session, |session| desk(session).notices.is_empty());
     assert!(

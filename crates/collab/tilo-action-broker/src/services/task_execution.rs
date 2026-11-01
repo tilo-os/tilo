@@ -30,10 +30,10 @@ impl NativeTaskBinding {
     ///
     /// # Errors
     /// The binding does not name its starter.
-    pub fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String> {
+    pub fn actor(&self) -> Result<crate::collab_app_broker::BrokerActor, String> {
         let starter = self.starter.clone().ok_or("native task starter absent")?;
         Ok(
-            crate::collab_broker_capnp::BrokerActor::agent(format!("agent:{}", self.agent_id))
+            crate::collab_app_broker::BrokerActor::agent(format!("agent:{}", self.agent_id))
                 .for_person(starter)
                 .session_delegated()
                 .working_on(&self.task_id),
@@ -79,11 +79,26 @@ impl NativeTaskActionRequirement {
         run: &TrackerRun,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, roles};
         let doc = peer
             .admitted_room()
             .ok_or("tracker action policy unavailable")?;
         let policy = tilo_desktop_model::projection::room_policy_of(doc, room);
+        self.check_tracker_policy(&policy, room, run, now)
+    }
+
+    /// [`Self::check_tracker`] for a room whose grants are already at hand,
+    /// as the session hosting the run holds them.
+    ///
+    /// # Errors
+    /// The run's binding, its epoch or the room's grants refuse the action.
+    pub fn check_tracker_policy(
+        &self,
+        policy: &tilo_action_policy::RoomPolicy,
+        room: &str,
+        run: &TrackerRun,
+        now: std::time::SystemTime,
+    ) -> Result<(), String> {
+        use tilo_action_policy::{Answer, Authority, Context, roles};
         let node = tilo_actions::action_node(
             &policy.node(),
             &self.app,
@@ -450,6 +465,19 @@ pub trait TrackerRuns: Send + Sync {
         _issue: &str,
         _epoch: u64,
         _presentation: Option<&runtime_collab::TaskPresentation>,
+    ) {
+    }
+
+    /// What run `epoch` of issue `issue` in `room` reported of itself: its
+    /// agent took it up, took in the messages sent to it, is working, said
+    /// something, ended. A tracker that keeps the run itself records it here;
+    /// one that reads it from a record of its own has nothing to record.
+    fn reported(
+        &self,
+        _room: &str,
+        _issue: &str,
+        _epoch: u64,
+        _update: &runtime_collab::TaskRunUpdate,
     ) {
     }
 }

@@ -22,7 +22,7 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::Fifo {
                     limit: ACTION_EMITTER_QUEUE_LIMIT,
                 },
@@ -37,7 +37,7 @@ impl<I> ActionEmitter<I> {
     pub fn new_replace_one(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: crate::control_custody::ControlHolder::new(
+            pending: crate::control_custody::ControlHolder::unowned(
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
             available: true,
@@ -47,7 +47,7 @@ impl<I> ActionEmitter<I> {
     /// Construct already registered, including for emitting inside a builder.
     pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
         let mut emitter = Self::new(binding);
-        emitter.pending = crate::control_custody::ControlHolder::registered(
+        emitter.pending = crate::control_custody::ControlHolder::in_domain(
             domain,
             crate::control_custody::ControlProducerDiscipline::Fifo {
                 limit: ACTION_EMITTER_QUEUE_LIMIT,
@@ -72,7 +72,7 @@ impl<I> ActionEmitter<I> {
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
-            self.pending.emit(invocation);
+            let _ = self.pending.emit(invocation);
         }
         Ok(())
     }

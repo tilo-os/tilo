@@ -263,7 +263,10 @@ impl GovernedRoom {
         if !self.peer.certificates().iter().any(|cert| cert == caller) {
             return Err("private conversation caller certificate is not current".into());
         }
-        let member = self.peer.permissions(caller.device_public_key, now)?;
+        let member = self
+            .peer
+            .permissions(caller.device_public_key, now)
+            .map_err(|error| error.to_string())?;
         let person = hex::encode(caller.user_public_key);
         if member.foreign {
             return Err("foreign devices cannot access person conversations".into());
@@ -567,9 +570,7 @@ mod tests {
             join::InviteGrant {
                 workspace_id: room.record.workspace_id,
                 room: room.record.room.clone(),
-                authority: room.record.authority.clone(),
                 issuer: room.record.authority.clone(),
-                delegation: None,
                 role: join::MemberRole::Editor,
                 nonce: [device_seed; 16],
                 recipient_user_public_key: Some(cert.user_public_key),
@@ -634,6 +635,7 @@ mod tests {
             "Conversations",
             &governor,
             &key,
+            None,
             SystemTime::now(),
         )
         .unwrap();
@@ -718,7 +720,7 @@ mod tests {
         assert_eq!(public_peer, room.peer.durable().unwrap());
         assert_eq!(public_record, std::fs::read(&room.path).unwrap());
         // Custody loads from disk, not a hidden in-memory native owner.
-        let reopened = GovernedRoom::open(room.path.clone(), &governor, &key).unwrap();
+        let reopened = GovernedRoom::open(room.path.clone(), &governor, &key, None).unwrap();
         assert_restored_conversation(&reopened, &alice, &bob, &conversation);
     }
 
@@ -780,6 +782,7 @@ mod tests {
             "Private device bounds",
             &governor,
             &key,
+            None,
             SystemTime::now(),
         )
         .unwrap();
@@ -800,7 +803,7 @@ mod tests {
         room.store_peer().unwrap();
         room.persist().unwrap();
         let before = std::fs::read(room.private_path()).unwrap();
-        let reopened = GovernedRoom::open(room.path.clone(), &governor, &key).unwrap();
+        let reopened = GovernedRoom::open(room.path.clone(), &governor, &key, None).unwrap();
         let peer = hex::encode(bob.user_public_key);
         for operation in [
             PrivateOperation::Contacts,
@@ -866,6 +869,7 @@ mod tests {
             "Invited",
             &governor,
             &key,
+            None,
             SystemTime::now(),
         )
         .unwrap();
@@ -936,6 +940,7 @@ mod tests {
             "Membership",
             &governor,
             &key,
+            None,
             SystemTime::now(),
         )
         .unwrap();

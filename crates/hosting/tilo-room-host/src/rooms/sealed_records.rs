@@ -8,7 +8,11 @@
 //! opening that history over the record's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
 //! its bound, so its copy goes on following the record however long the
-//! room keeps writing.
+//! room keeps writing. Every other device taking part in a channel does the
+//! same with its own copy and publishes the checkpoint
+//! ([`tilo_peer_state::PeerPublicationMut::compact_sealed_history`]): the
+//! governor's copy follows that checkpoint like any other member write, and
+//! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
@@ -61,19 +65,29 @@ impl RecordKeys {
 }
 
 impl GovernedRoom {
-    /// Whether this relay takes part in the channel of `record` of `app` and
+    /// The content keys of `route`'s channel as the device this host runs on
+    /// holds them, without opening a channel it has none of: `None` when
+    /// this host runs on a device that takes part in no channel of the room.
+    /// A host that is its device's one peer reads its own participation,
+    /// under the room's lock its callers hold.
+    pub(super) async fn route_keys(
+        &self,
+        route: &collab_types::ChannelRoute,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        if let Some(participant) = &self.participation {
+            let channel = route.channel(self.room());
+            participant.learn_route(channel, route);
+            return Some(participant.channels.lock().await.existing_keys(channel));
+        }
+        let device = self.device.as_ref()?;
+        device.channel_keys(self.room(), route, false).await
+    }
+
+    /// Whether this host takes part in the channel of `record` of `app` and
     /// holds its keys: it can then read the record's sealed writes.
     pub(super) async fn takes_part_in_channel(&self, app: &str, record: &str) -> bool {
-        let Some(participant) = self.participation.as_ref() else {
-            return false;
-        };
-        let channel = collab_types::document_channel_id(app, self.room(), record);
-        participant
-            .channels
-            .lock()
-            .await
-            .existing_keys(channel)
-            .is_ok()
+        let route = collab_types::ChannelRoute::new(app, record);
+        matches!(self.route_keys(&route).await, Some(Ok(_)))
     }
 
     /// The keys of `record` of `app`'s channel when the record is sealed:
@@ -81,8 +95,8 @@ impl GovernedRoom {
     ///
     /// # Errors
     ///
-    /// The record is sealed and this relay does not take part in its channel,
-    /// or the channel's keys cannot be read.
+    /// The record is sealed and this host's device does not take part in its
+    /// channel, or the channel's keys cannot be read.
     pub(super) async fn record_keys(
         &self,
         app: &str,
@@ -91,13 +105,12 @@ impl GovernedRoom {
         if !self.peer.publication().is_sealed_record(app, record) {
             return Ok(None);
         }
-        let participant = self
-            .participation
-            .as_ref()
-            .ok_or("the record is sealed and this relay does not take part in its channel")?;
         let room = self.room();
-        let channel = collab_types::document_channel_id(app, room, record);
-        let keys = participant.channels.lock().await.existing_keys(channel)?;
+        let route = collab_types::ChannelRoute::new(app, record);
+        let keys = self
+            .route_keys(&route)
+            .await
+            .ok_or("the record is sealed and this host takes part in no channel")??;
         Ok(Some(RecordKeys {
             keys,
             artifact: collab_types::document_artifact_id(app, room, record),
@@ -105,8 +118,8 @@ impl GovernedRoom {
     }
 
     /// The plaintext of `op`, a member's sealed write of `record` of `app`,
-    /// opened with its channel's keys: `None` when this relay does not
-    /// take part in the room's channels or holds no keys for this one yet.
+    /// opened with its channel's keys: `None` when this host takes no part in
+    /// the room's channels or holds no keys for this one yet.
     ///
     /// # Errors
     ///
@@ -117,12 +130,9 @@ impl GovernedRoom {
         record: &str,
         op: &SignedOp,
     ) -> Result<Option<Vec<u8>>, String> {
-        let Some(participant) = self.participation.as_ref() else {
-            return Ok(None);
-        };
         let room = self.room();
-        let channel = collab_types::document_channel_id(app, room, record);
-        let Ok(keys) = participant.channels.lock().await.existing_keys(channel) else {
+        let route = collab_types::ChannelRoute::new(app, record);
+        let Some(Ok(keys)) = self.route_keys(&route).await else {
             return Ok(None);
         };
         let keys = RecordKeys {
@@ -257,18 +267,11 @@ impl crate::compaction::ParticipantKeys for Rooms {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ChannelContentKeys>> + Send + 'a>>
     {
         Box::pin(async move {
-            let state = self.room(&route.cluster_id).await.ok()?;
-            let participant = state.lock().await.participation.clone()?;
-            let channel = collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record_id,
-            );
-            participant
-                .channels
-                .lock()
-                .await
-                .existing_keys(channel)
+            let device = self.device_keys()?;
+            let named = collab_types::ChannelRoute::new(&route.app_id, &route.record_id);
+            device
+                .channel_keys(&route.cluster_id, &named, false)
+                .await?
                 .ok()
         })
     }
@@ -301,7 +304,7 @@ impl Rooms {
         for state in rooms {
             let (name, workspace_id, routes) = {
                 let mut room = state.lock().await;
-                if room.participation.is_none() {
+                if !room.seals() {
                     continue;
                 }
                 let plaintext = room.peer().plaintext_routes();
@@ -378,20 +381,16 @@ impl Rooms {
         let payloads = self.inner.host.access.shell_payloads().clone();
         let rooms: Vec<_> = self.inner.rooms.lock().await.values().cloned().collect();
         let mut out = Vec::new();
+        let device = self.device_keys();
         for state in rooms {
-            let (participant, name, workspace_id, routes) = {
+            let (name, workspace_id, routes) = {
                 let room = state.lock().await;
-                let Some(participant) = room.participation.clone() else {
+                if !room.seals() {
                     continue;
-                };
+                }
                 let mut routes = room.peer().plaintext_routes();
                 routes.extend(room.peer().sealed_routes());
-                (
-                    participant,
-                    room.room().to_owned(),
-                    room.workspace_id(),
-                    routes,
-                )
+                (room.room().to_owned(), room.workspace_id(), routes)
             };
             let Some(workspace) = self
                 .inner
@@ -407,12 +406,17 @@ impl Rooms {
             let store = workspace.lock().await.store.clone();
             drop(workspace);
             for (app, record) in routes {
-                let keys = participant
-                    .channels
-                    .lock()
-                    .await
-                    .existing_keys(collab_types::document_channel_id(&app, &name, &record))
-                    .ok();
+                let keys = match &device {
+                    Some(device) => device
+                        .channel_keys(
+                            &name,
+                            &collab_types::ChannelRoute::new(&app, &record),
+                            false,
+                        )
+                        .await
+                        .and_then(Result::ok),
+                    None => None,
+                };
                 let open = |op: &SignedOp| {
                     let keys = keys.as_ref()?;
                     let metadata = op.encryption?;
@@ -448,24 +452,35 @@ impl Rooms {
         app: &str,
         record: &str,
     ) -> Result<Option<RecordKeys>, String> {
-        let Some(participant) = room.participation.clone() else {
+        if !room.seals() {
             return room.record_keys(app, record).await;
-        };
+        }
         let held_in_the_clear = room.peer().holds_document(app, record)
             && !room.peer().publication().is_sealed_record(app, record);
         if held_in_the_clear && !self.resealing() {
             return room.record_keys(app, record).await;
         }
         let name = room.room();
-        let channel = collab_types::document_channel_id(app, name, record);
-        let mut participation = participant.channels.lock().await;
-        let keys = if let Ok(keys) = participation.existing_keys(channel) {
-            keys
-        } else {
-            participant.learn_route(channel, &collab_types::ChannelRoute::new(app, record));
-            self.open_record_channel(room, &participant, &mut participation, channel)
-                .await?;
+        let route = collab_types::ChannelRoute::new(app, record);
+        let channel = route.channel(name);
+        let keys = if let Some(participant) = &room.participation {
+            let mut participation = participant.channels.lock().await;
+            if participation.existing_keys(channel).is_err() {
+                participant.learn_route(channel, &route);
+                self.open_record_channel(room, participant, &mut participation, channel)
+                    .await?;
+            }
             participation.existing_keys(channel)?
+        } else {
+            // The device's own channel service opens the record's channel
+            // when it has none yet, as the room's writes ask it to.
+            let Some(device) = &room.device else {
+                return room.record_keys(app, record).await;
+            };
+            device
+                .channel_keys(name, &route, true)
+                .await
+                .ok_or("the record is sealed and this host takes part in no channel")??
         };
         Ok(Some(RecordKeys {
             keys,

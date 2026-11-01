@@ -11,8 +11,9 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, DoorError};
 use tilo_browser_peer::{
-    DocumentRoute, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
+    LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
 };
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::delegation::Delegation;
 use tilo_relay_protocol::live::{LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};

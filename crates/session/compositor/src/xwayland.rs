@@ -16,19 +16,36 @@ use std::os::unix::net::UnixStream;
 use smithay::desktop::Window;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::selection::SelectionTarget;
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
-use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
 
 use crate::policy::WindowRequest;
 use crate::state::State;
 use crate::{Error, LoopData, io};
 
+/// The directory Xwayland listens in: the compositor opens its sockets
+/// there, so it has to exist before the server starts. A session cannot rely
+/// on the X server package's tmpfiles having made it.
+fn socket_directory() -> Result<(), Error> {
+    const DIRECTORY: &str = "/tmp/.X11-unix";
+    match std::fs::create_dir(DIRECTORY) {
+        Ok(()) => {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(DIRECTORY, std::fs::Permissions::from_mode(0o1777))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 /// Start Xwayland and return its display number (for `DISPLAY`). Clients
 /// may connect at once: Xwayland accepts on the sockets prepared for it.
 pub(crate) fn start(handle: &LoopHandle<'static, LoopData>, state: &State) -> Result<u32, Error> {
+    socket_directory()?;
     let (xwayland, client) = XWayland::spawn(
         &state.display,
         None,
@@ -46,7 +63,7 @@ pub(crate) fn start(handle: &LoopHandle<'static, LoopData>, state: &State) -> Re
                 x11_socket,
                 display_number,
             } => {
-                start_wm(&wm_handle, data, x11_socket, client.clone());
+                start_wm(&wm_handle, data, x11_socket, client.clone(), display_number);
                 data.state.start_xdnd(display_number);
             }
             XWaylandEvent::Error => tracing::warn!("Xwayland did not start"),
@@ -60,10 +77,24 @@ fn start_wm(
     data: &mut LoopData,
     socket: UnixStream,
     client: smithay::reexports::wayland_server::Client,
+    display: u32,
 ) {
-    match X11Wm::start_wm(handle.clone(), socket, client) {
+    match X11Wm::start_wm(handle.clone(), socket, client.clone()) {
         Ok(wm) => data.state.xwm = Some(wm),
-        Err(error) => tracing::warn!(%error, "X11 window manager did not start"),
+        Err(error) => {
+            tracing::warn!(%error, "X11 window manager did not start");
+            return;
+        }
+    }
+    // The session's own connection to the X server: it reads what a window
+    // says about its program, gives X input focus and tells X clients how
+    // dense the display is and which pointer to draw.
+    match crate::x11_windows::X11Windows::connect(display, client) {
+        Ok(mut x11) => {
+            x11.publish_x_hints(&mut data.state);
+            data.x11_windows = Some(x11);
+        }
+        Err(error) => tracing::warn!(%error, "X11 windows have no identity"),
     }
 }
 
@@ -71,11 +102,28 @@ impl XWaylandShellHandler for State {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.xwayland_shell
     }
+
+    /// Xwayland associates a window's `wl_surface` only after the window
+    /// mapped, so the keyboard focus the policy gave it had no surface to
+    /// go to yet: it is given now. A window another one took the focus from
+    /// since is no longer activated and keeps it.
+    fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, window: X11Surface) {
+        if !window.is_activated() {
+            return;
+        }
+        if let Some(element) = self.element_of(&window) {
+            self.focus_window(&element, SERIAL_COUNTER.next_serial());
+        }
+    }
 }
 
 impl XWaylandShellHandler for LoopData {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.state.xwayland_shell
+    }
+
+    fn surface_associated(&mut self, xwm: XwmId, surface: WlSurface, window: X11Surface) {
+        XWaylandShellHandler::surface_associated(&mut self.state, xwm, surface, window);
     }
 }
 
@@ -285,6 +333,17 @@ impl State {
 
 /// The loop's data answers the window manager's events with the state's
 /// handler: the window manager runs in the loop, the protocol in the state.
+impl LoopData {
+    fn remember_icon(&mut self, window: &X11Surface) {
+        let id = window.window_id();
+        let icon = self
+            .x11_windows
+            .as_ref()
+            .and_then(|x11| x11.window_icon(id));
+        self.state.icons.set(crate::state::x11_window_id(id), icon);
+    }
+}
+
 impl XwmHandler for LoopData {
     fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
         self.state.xwm_state(xwm)
@@ -299,6 +358,12 @@ impl XwmHandler for LoopData {
     }
 
     fn map_window_request(&mut self, xwm: XwmId, window: X11Surface) {
+        // What the window says about its program is kept before it shows, so
+        // the desktop knows whose window it is from the first frame.
+        if let Some(x11) = self.x11_windows.as_mut() {
+            x11.learn(&window);
+        }
+        self.remember_icon(&window);
         self.state.map_window_request(xwm, window);
     }
 
@@ -311,7 +376,26 @@ impl XwmHandler for LoopData {
     }
 
     fn destroyed_window(&mut self, xwm: XwmId, window: X11Surface) {
+        if let Some(x11) = self.x11_windows.as_mut() {
+            x11.forget(window.window_id());
+        }
+        self.state
+            .icons
+            .set(crate::state::x11_window_id(window.window_id()), None);
         self.state.destroyed_window(xwm, window);
+    }
+
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        let renamed = matches!(
+            property,
+            WmWindowProperty::Class | WmWindowProperty::StartupId | WmWindowProperty::Pid
+        );
+        if renamed {
+            if let Some(x11) = self.x11_windows.as_mut() {
+                x11.learn(&window);
+            }
+            self.remember_icon(&window);
+        }
     }
 
     fn configure_request(

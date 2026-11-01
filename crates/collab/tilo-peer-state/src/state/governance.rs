@@ -3,9 +3,9 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey, Subject,
-    SystemTime, Transactable, TransportOrigin, administrator_grant_id, err, governed_map,
-    member_role_from_role, now_ns, room,
+    GrantId, MembershipError, NeighbourMsg, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
+    SigningKey, Subject, SystemTime, Transactable, TransportOrigin, administrator_grant_id, err,
+    governed_map, member_role_from_role, now_ns, room,
 };
 
 impl PeerGovernance<'_> {
@@ -269,7 +269,7 @@ impl PeerGovernance<'_> {
         Ok(rows)
     }
     pub fn owner_user_public_key(self) -> [u8; 32] {
-        self.peer.core.authority.user_public_key
+        self.peer.core.owner
     }
     /// Issue a membership refresh challenge for a governed device.
     ///
@@ -280,6 +280,7 @@ impl PeerGovernance<'_> {
     pub fn membership_challenge(
         self,
         workspace_id: u64,
+        host: &DeviceCert,
         device_cert: &DeviceCert,
         request_id: [u8; 32],
         nonce: [u8; 32],
@@ -290,22 +291,25 @@ impl PeerGovernance<'_> {
         // membership is decided once the governor holds it
         // ([`PeerGovernanceMut::renew_member_certificate`]).
         if self.renewal_of(device_cert, now)?.is_none() {
-            self.peer.certificate(&device_cert.device_public_key, now)?;
+            self.peer
+                .certificate(&device_cert.device_public_key, now)
+                .map_err(|error| error.to_string())?;
+            // A device the room admitted and then removed is refused as
+            // removed, not as a stranger.
             match self.peer.permissions(device_cert.device_public_key, now) {
                 Ok(_) => {}
-                Err(error)
-                    if error.contains("no room membership")
-                        && self.peer.has_governed_admission(device_cert) =>
+                Err(MembershipError::NoMembership)
+                    if self.peer.has_governed_admission(device_cert) =>
                 {
                     return Err("member has been removed".into());
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.to_string()),
             }
         }
         crate::join::MembershipChallenge::new(
             &self.peer.core.room,
             workspace_id,
-            &self.peer.core.authority,
+            host,
             device_cert,
             request_id,
             nonce,
@@ -342,7 +346,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_governance_writer(key, now)?;
-        let authority = self.peer.core.authority.clone();
+        let owner = self.peer.core.owner;
         let mut doc = self
             .peer
             .core
@@ -363,7 +367,7 @@ impl PeerGovernanceMut<'_> {
                 identity.device_cert.device_public_key == entry.revoked_device_public_key
                     && identity.device_cert.user_public_key == entry.user_public_key
             });
-            if entry.user_public_key != authority.user_public_key && !certified {
+            if entry.user_public_key != owner && !certified {
                 return Err("governed revocation root mismatch".into());
             }
             verified.insert(entry.clone()).map_err(err)?;
@@ -378,7 +382,7 @@ impl PeerGovernanceMut<'_> {
         let mut changed = false;
         for (id, bytes, mut identity) in rows {
             let root = identity.device_cert.user_public_key;
-            let own_row = identity.device_cert == authority;
+            let own_row = root == owner;
             let mut list = RevocationList::new();
             for entry in &identity.revocations {
                 list.insert(entry.clone()).map_err(err)?;
@@ -410,53 +414,6 @@ impl PeerGovernanceMut<'_> {
             self.peer.core.revocations = verified;
         }
         Ok(changed)
-    }
-    /// Record a verified workspace delegation in pinned governance.
-    pub fn install_workspace_delegation(
-        self,
-        delegation: crate::join::WorkspaceDelegation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
-        if self
-            .peer
-            .core
-            .certificates
-            .get(&delegation.delegate.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(&delegation.delegate)
-        {
-            return Err("delegated workspace service is absent from governed roster".into());
-        }
-        let cached = self
-            .peer
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?;
-        let mut document = (**cached).clone();
-        document.set_actor(self.peer.room_actor_of(key));
-        match crate::governance::install_workspace_delegation(
-            &mut document,
-            &self.peer.core.authority,
-            delegation,
-            key,
-            now,
-        )? {
-            crate::governance::GovernanceOutcome::Unchanged => Ok(false),
-            crate::governance::GovernanceOutcome::Applied { changes } => {
-                let room = self.peer.core.room.clone();
-                let outcome = self.peer.receive_from(
-                    // The shared governance transaction has already verified
-                    // either the owner or its persisted room delegation.
-                    TransportOrigin::RelayDelta(self.peer.core.authority.device_public_key),
-                    NeighbourMsg::SyncResp { changes, room },
-                    now,
-                )?;
-                Ok(outcome.changed || outcome.metadata_changed)
-            }
-        }
     }
     /// Atomically records a verified single-use invitation redemption, its
     /// independent root-certified device, and its room role, written by
@@ -551,7 +508,7 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("room governance missing")?;
         let person = hex::encode(device.user_public_key);
-        let owner = self.peer.core.authority.user_public_key == device.user_public_key;
+        let owner = self.peer.core.owner == device.user_public_key;
         if !owner
             && doc
                 .policy()
@@ -571,7 +528,6 @@ impl PeerGovernanceMut<'_> {
             revocations: Vec::new(),
             admission: None,
             admissions: Vec::new(),
-            workspace_delegations: Vec::new(),
             delegate: None,
         };
         let before = doc.get_heads();
@@ -839,7 +795,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
-        if user_public_key == self.peer.core.authority.user_public_key {
+        if user_public_key == self.peer.core.owner {
             return Err("workspace owner cannot be removed".into());
         }
         let mut doc = self
@@ -882,7 +838,7 @@ impl super::StatePeer {
     fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
         self.require_member_writer(key, now)?;
-        let member = self.permissions(device, now)?;
+        let member = self.membership(device, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy

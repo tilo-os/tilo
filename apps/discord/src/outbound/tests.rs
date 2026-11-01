@@ -40,20 +40,20 @@ fn chat(messages: &[Value]) -> Value {
 
 fn context() -> Context {
     Context {
-        avatars: "https://rooms.example/avatars/".into(),
+        avatars: "https://workspaces.example/avatars/".into(),
         link: "https://app.example/#m".into(),
         links: None,
     }
 }
 
-const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 
 fn linked() -> Context {
     Context {
         links: Some(Box::new(Links {
             web_entry: "https://tilo.example/".into(),
             origin: "https://lounge.tilo.example".into(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             host_device: "ab".repeat(32),
         })),
         ..context()
@@ -73,13 +73,34 @@ fn shared(id: &str, text: &str, share: &Value) -> Value {
     )
 }
 
+/// The host sends the workspace under the key it has always sent it under, so
+/// a context from a host that still does is read the same.
+#[test]
+fn a_context_naming_the_workspace_as_room_is_read() {
+    let context: Context = serde_json::from_value(json!({
+        "avatars": "https://workspaces.example/avatars/",
+        "link": "https://app.example/#m",
+        "links": {
+            "web_entry": "https://tilo.example/",
+            "origin": "https://lounge.tilo.example",
+            "room": WORKSPACE,
+            "host_device": "ab".repeat(32),
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        context.links.map(|links| links.workspace).as_deref(),
+        Some(WORKSPACE)
+    );
+}
+
 /// A window shared live goes across as a line that says so and opens the
-/// resource on the room's web entry, where `share-link` would send its
+/// resource on the workspace's web entry, where `share-link` would send its
 /// reader; its words go first unless they only repeat its name.
 #[test]
 fn a_live_share_links_to_where_it_opens_on_the_web() {
     let url = format!(
-        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{WORKSPACE}/so.tilo.notes/notes:plan/notes.page:1"
     );
     let chat = chat(&[
         shared(
@@ -142,7 +163,7 @@ fn an_ended_share_is_edited_to_say_it_is_no_longer_shared() {
 #[test]
 fn a_closed_share_reads_as_not_live_right_now() {
     let url = format!(
-        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{WORKSPACE}/so.tilo.notes/notes:plan/notes.page:1"
     );
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
@@ -209,7 +230,7 @@ fn a_post_goes_out_through_the_channels_webhook_under_the_authors_name() {
     assert_eq!(send.username, "Ada");
     assert_eq!(
         send.avatar_url.as_deref(),
-        Some("https://rooms.example/avatars/av1")
+        Some("https://workspaces.example/avatars/av1")
     );
     assert_eq!(send.avatar_blob.as_deref(), Some("av1"));
     assert_eq!(send.content, "hello");

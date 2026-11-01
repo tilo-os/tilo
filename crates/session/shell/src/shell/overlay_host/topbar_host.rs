@@ -283,9 +283,7 @@ impl ShellOverlayHost {
             watching: 0,
             top_bar: state.top_bar_presence(),
             own: Some(own),
-            invite: tilo_desktop::chrome::Invite::when(
-                crate::shell::invite_policy::may_invite_here(&state),
-            ),
+            invite: tilo_desktop::chrome::Invite::when(state.may_invite_here()),
             waved: state.wave_notice.clone(),
             arrived: state.arrival_notice.clone(),
         };

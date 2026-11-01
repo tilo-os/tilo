@@ -153,7 +153,7 @@ pub(crate) fn settle_feedback_channel(
 /// in plain words, instead of posting one that never reaches it.
 pub(crate) fn settle_files(
     doc: &mut automerge::AutoCommit,
-    files: chat::record::RoomFiles,
+    files: chat::record::WorkspaceFiles,
 ) -> Result<(), String> {
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn the_chat_learns_what_files_the_host_keeps() {
         let mut doc = prepared_chat();
-        let files = chat::record::RoomFiles {
+        let files = chat::record::WorkspaceFiles {
             largest: 25 << 20,
             member_hourly: 250 << 20,
         };

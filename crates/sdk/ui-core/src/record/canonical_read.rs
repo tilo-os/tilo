@@ -26,9 +26,6 @@ pub(super) fn finish_created(
             .map_err(|error| format!("incoming canonical history refused: {error}"))?;
         Ok::<_, String>(doc)
     })??;
-    let label = store.document_path().to_path_buf();
-    app_state::validate_canonical_schema_of(&incoming, &label)
-        .map_err(|error| error.to_string())?;
     let loaded = store.load_complete().map_err(|error| error.to_string())?;
     let mut doc = if let Some(mut existing) = loaded {
         validate(&existing)
@@ -46,10 +43,6 @@ pub(super) fn finish_created(
     };
     incoming_validator(&doc)
         .map_err(|error| format!("final canonical history refused: {error}"))?;
-    app_state::validate_canonical_schema_of(&doc, &label).map_err(|error| error.to_string())?;
-    if let Some(reason) = store.refusal() {
-        return Err(reason.to_string());
-    }
     let mut writer = store.writer();
     if !writer.is_enabled() {
         return Err(writer

@@ -5,22 +5,17 @@
     reason = "radial hierarchy projection is bounded floating-point geometry"
 )]
 
-use crate::widget::ModelPath;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 const ARC_STEPS: u32 = 64;
 
@@ -127,67 +122,49 @@ struct Lineage<'a> {
     color: Option<Color>,
 }
 
-pub struct SunburstChart {
+pub struct SunburstMarks {
     root: SunburstNode,
     style: SunburstStyle,
     center_title: String,
     center_subtitle: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<String>,
-    activated: Option<String>,
+    frame: PlotFrame<String>,
 }
+
+/// A hierarchy as rings of sectors, the root at the centre.
+pub type SunburstChart = Plot<SunburstMarks>;
 
 impl SunburstChart {
     pub fn new(root: SunburstNode) -> Self {
-        Self {
+        Plot::from_marks(SunburstMarks {
             root,
             style: SunburstStyle::default(),
             center_title: String::new(),
             center_subtitle: String::new(),
-            height: 440.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(440.0, 180.0),
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: SunburstStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
     #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
-        self.center_title = title.into();
-        self.center_subtitle = subtitle.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(180.0);
+        self.marks.center_title = title.into();
+        self.marks.center_subtitle = subtitle.into();
         self
     }
     pub fn set_root(&mut self, root: SunburstNode) {
-        self.root = root;
-        self.inspection.hovered = None;
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
+        self.marks.root = root;
+        self.marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self
-            .segments()
-            .iter()
-            .any(|segment| segment.id == id)
-            .then(|| id.to_owned());
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.anchor_hovered();
-        self.inspection.hovered.is_some()
+        let known = self.marks.segments().iter().any(|segment| segment.id == id);
+        self.inspect_item(known.then(|| id.to_owned()))
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl SunburstMarks {
     fn depth(&self) -> usize {
         self.style
             .max_depth
@@ -196,8 +173,15 @@ impl SunburstChart {
             .max(1)
     }
     fn geometry(&self) -> (Point, f64, f64, f64) {
-        let center = self.rect.center();
-        let outer = (self.rect.width().min(self.rect.height()) / 2.0 - 16.0).max(1.0);
+        let rect = self.frame.rect;
+        let top = if self.frame.title.is_empty() {
+            0.0
+        } else {
+            34.0
+        };
+        let rect = Rect::new(rect.x0, rect.y0 + top, rect.x1, rect.y1);
+        let center = rect.center();
+        let outer = (rect.width().min(rect.height()) / 2.0 - 16.0).max(1.0);
         let inner = outer * self.style.inner_radius.clamp(0.0, 0.75);
         let band = (outer - inner) / f64::from(u32::try_from(self.depth()).unwrap_or(u32::MAX));
         (center, inner, outer, band)
@@ -351,20 +335,23 @@ impl SunburstChart {
     }
 }
 
-impl InteractiveChart for SunburstChart {
+impl PlotMarks for SunburstMarks {
     type Hover = String;
-    fn inspection(&mut self) -> &mut ChartInspection<String> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "SunburstChart";
+    const LABEL: &'static str = "Sunburst chart";
+
+    fn frame(&self) -> &PlotFrame<String> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self.hit_test(self.inspection.pointer);
+    fn frame_mut(&mut self) -> &mut PlotFrame<String> {
+        &mut self.frame
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(id) = &self.inspection.hovered else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+    fn hit(&self, point: Point) -> Option<String> {
+        self.hit_test(point)
+    }
+    fn activation(&self, id: &String) -> Option<String> {
+        Some(id.clone())
     }
     fn keyboard_items(&self) -> Vec<String> {
         self.segments()
@@ -386,25 +373,41 @@ impl InteractiveChart for SunburstChart {
             center.y + radius * angle.sin(),
         ))
     }
-}
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.segments()
+            .into_iter()
+            .map(|segment| {
+                crate::widget::plot::value_item(
+                    &segment.id,
+                    &segment.path,
+                    &segment.detail,
+                    segment.value,
+                )
+            })
+            .collect()
+    }
 
-impl Widget for SunburstChart {
-    crate::widget::chart_navigation::chart_leaf!();
-
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.follow_keyboard_anchor();
+        crate::widget::chart_navigation::draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         let (base_center, inner, _, band) = self.geometry();
         for segment in self.segments() {
             let half_gap = (self.style.angular_gap / 2.0).min((segment.end - segment.start) * 0.2);
             let mid = segment.start.midpoint(segment.end);
-            let lift = if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
+            let lift = if self.frame.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 self.style.hover_offset
             } else {
                 0.0
@@ -431,7 +434,7 @@ impl Widget for SunburstChart {
                 segment.end - half_gap,
             );
             scene.fill(Fill::NonZero, transform, color, None, &path);
-            if self.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
+            if self.frame.inspection.hovered.as_deref() == Some(segment.id.as_str()) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -461,6 +464,7 @@ impl Widget for SunburstChart {
             &self.center_subtitle,
         );
         if let Some(id) = self
+            .frame
             .inspection
             .hovered
             .as_deref()
@@ -477,58 +481,12 @@ impl Widget for SunburstChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 170.0,
                 (&segment.path, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .segments()
-            .into_iter()
-            .map(|segment| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(&segment.id)
-                    .with_name(&segment.path)
-                    .with_description(if segment.detail.is_empty() {
-                        format!("Value {}", segment.value)
-                    } else {
-                        segment.detail
-                    })
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name("Sunburst chart")
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        let segments = self.segments();
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            segments.into_iter().map(|segment| segment.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "SunburstChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 

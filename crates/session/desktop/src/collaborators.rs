@@ -2039,8 +2039,21 @@ fn rows_of(
                 // targets remain visible through interaction presence.
                 recent: Vec::new(),
                 followable: !participant.invited && (!is_agent || has_view),
-                availability: ui::Availability::Available,
-                call: None,
+                // How available they are and the call they are in are
+                // presence's, said of them as they arrive (and of a known
+                // member again each frame); a row nothing said of is a
+                // person at their machine, in no call.
+                availability: participant
+                    .availability
+                    .as_deref()
+                    .and_then(ui::Availability::from_id)
+                    .unwrap_or(ui::Availability::Available),
+                call: participant
+                    .call
+                    .as_deref()
+                    .and_then(ui::CallPresence::decode)
+                    .map(|call| call.name)
+                    .filter(|name| !name.is_empty()),
                 join: None,
             }
         })

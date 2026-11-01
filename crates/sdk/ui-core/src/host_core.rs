@@ -14,9 +14,11 @@ use crate::widget::Widget;
 
 mod controls;
 mod keys;
+mod tooltips;
 
 pub(crate) use controls::{ControlHost, json_argument};
 pub(crate) use keys::{KeyHost, RootEvent};
+pub(crate) use tooltips::TooltipLayer;
 
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct HostTree<'a> {
@@ -414,6 +416,37 @@ pub(crate) trait HostCore {
     /// Every tree the layout maps can name: the app root and what the host
     /// lays out around and over it.
     fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
+
+    /// The widgets the host shows, for the lookups that must see what a
+    /// container places itself (a desktop's strip of windows, a window's
+    /// bar) and so stays out of the layout maps: the app while it is live,
+    /// and what stands over it.
+    fn presentation_roots(&self) -> Vec<&dyn Widget>;
+
+    /// Whether what drives the pointer can hover at all (a touch screen
+    /// cannot).
+    fn pointer_hovers(&self) -> bool;
+
+    /// The tooltip the laid-out surface offers at logical `point`: the
+    /// smallest-area widget there offering one, with the side of its control
+    /// it prefers (so a nested icon button beats its enclosing toolbar).
+    fn tooltip_target_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
+        if !self.pointer_hovers() {
+            return None;
+        }
+        let mut targets = self.tree().tooltips_at(point);
+        for root in self.presentation_roots() {
+            tooltips::targets_under(root, point, &mut targets);
+        }
+        crate::widget::tooltip::smallest_target(targets)
+    }
 
     /// The walk the layout maps were admitted against.
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted;
@@ -904,16 +937,22 @@ pub(crate) trait HostCore {
     /// about to change under the host's maps.
     fn history_commands_arrived(&mut self);
 
+    /// Answer presses the registered History's own controls queued: History
+    /// hosts the chrome it presents, and a press reaches it as an accepted
+    /// control intent. Whether any ran.
+    fn service_history_own_controls(&mut self) -> bool;
+
     /// Carry out what the registered History and the History surfaces
     /// embedded in the app asked of their held-back controls: review,
     /// confirm or cancel each, while History still holds input. Whether
     /// anything asked.
     fn service_pending_history_commands(&mut self) -> bool {
+        let answered = self.service_history_own_controls();
         let commands = self
             .registered_history_mut()
             .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
         let embedded = crate::history_mode::embedded::drain_pending_commands(self.host_root_mut());
-        let asked = !commands.is_empty() || !embedded.is_empty();
+        let asked = answered || !commands.is_empty() || !embedded.is_empty();
         if asked {
             self.history_commands_arrived();
         }

@@ -106,8 +106,8 @@ mod tests {
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(
             keys,
-            ["draft", "tilo:schema_version"],
-            "the canonical record contains only the app draft and framework metadata"
+            ["draft"],
+            "the canonical record contains only the app draft: at its first version it names none"
         );
         assert_eq!(Containers::read(&doc).unwrap(), Containers::default());
     }

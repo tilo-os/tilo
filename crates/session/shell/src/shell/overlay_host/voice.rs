@@ -8,7 +8,7 @@
 //! calls' own rule). The channel this device is in is what its people see as
 //! this person's call; leaving clears it.
 
-use tilo_action_broker::collab_broker_capnp::PublishedSurface;
+use tilo_action_broker::collab_app_broker::PublishedSurface;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,

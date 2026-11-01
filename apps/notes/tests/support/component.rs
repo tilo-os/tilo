@@ -35,8 +35,12 @@ pub fn try_restored_component(
         HostContextInputs {
             records: f.records.clone(),
             views: Rc::new(
-                InstanceViewStore::new(f.state_root.clone(), "fixture-device", canonical::ROOM)
-                    .unwrap(),
+                InstanceViewStore::new(
+                    f.state_root.clone(),
+                    "fixture-device",
+                    canonical::WORKSPACE,
+                )
+                .unwrap(),
             ),
             device_id: "fixture-device".into(),
             instance_id: instance,

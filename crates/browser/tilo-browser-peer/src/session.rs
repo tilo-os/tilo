@@ -29,10 +29,11 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
-use crate::document::{
-    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
-};
+use crate::document::sign_frame;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::document_frame::{
+    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
+};
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
 /// Longest wait between reconnect attempts.
@@ -3256,8 +3257,10 @@ impl Task {
             }
             let held_before = self.held_outbound.len();
             for (route, keys) in changes.keys {
-                self.ciphers
-                    .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
+                self.ciphers.insert(
+                    route.clone(),
+                    Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),
+                );
                 self.release_live(&route, client);
                 let held = self
                     .held_inbound
@@ -3462,7 +3465,7 @@ impl Task {
             }),
             Err(reason) => self.emit(&PeerEvent::CommitRefused {
                 route: emitted,
-                changes: crate::document::claimed_changes(&entry.body),
+                changes: tilo_peer_state::document_frame::claimed_changes(&entry.body),
                 reason,
             }),
         }

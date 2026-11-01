@@ -10,8 +10,8 @@ license.workspace = true
 # The protocol server, the desktop element model and the renderers: pixman
 # composites headless outputs on the CPU, GLES real ones; the TTY backend's
 # session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
-# does the X11 window of the nested development backend. renderer_multi
-# lets the primary GPU render for displays on other GPUs.
+# does the window of the nested development backend. renderer_multi lets the
+# primary GPU render for displays on other GPUs.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "desktop",
@@ -24,9 +24,14 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
-    "backend_x11",
+    "backend_winit",
     "xwayland",
 ] }
+# The window of the nested development backend: the toolkit's winit fork, the
+# same one smithay's backend builds; it opens a Wayland window where the
+# desktop is Wayland and an X11 one otherwise (X11 comes with smithay's own
+# winit dependency).
+winit.workspace = true
 # Turns an output's ICC profile into the lookup table its colour pass reads.
 qcms.workspace = true
 tracing.workspace = true
@@ -36,6 +41,11 @@ tilo-frame-metrics = { path = "../frame-metrics" }
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
+# What a window's content is in and what an output displays, in the
+# vocabulary a share stream and the colour pass speak.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# `wp_color_management_v1`'s objects, which `tilo-wayland-ext` dispatches.
+wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 # Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
 # smithay's window manager speaks selections but not XDND.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
@@ -52,8 +62,9 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
 wayland-client.workspace = true
-wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 
 [lints]
 workspace = true

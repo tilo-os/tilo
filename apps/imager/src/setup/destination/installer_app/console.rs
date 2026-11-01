@@ -90,6 +90,7 @@ impl InstallerApp {
                     Err(refusal) => wire::error(refusal.code, &refusal.message),
                     Ok(admitted) => {
                         match DestinationEffect::from_payload(&admitted.encoded.payload)
+                            .map_err(|error| error.to_string())
                             .and_then(|effect| self.apply(effect))
                         {
                             Ok(output) => wire::answer(&json!({

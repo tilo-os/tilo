@@ -22,6 +22,7 @@
 pub mod builtin;
 mod draw;
 mod motion;
+pub(crate) mod shader;
 pub mod wasm;
 
 #[cfg(test)]
@@ -36,7 +37,7 @@ pub use draw::{Painted, cached_parts, paint_part};
 pub use motion::{Moment, PartMotion};
 pub use tilo_theme_sdk::{
     Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartPainter,
-    PartScene, PartState, PartTokens, States, Stop, Transition,
+    PartScene, PartState, PartTokens, Sampling, ShaderSource, States, Stop, Transition,
 };
 
 use vello::kurbo::{BezPath, Point, Shape};
@@ -161,6 +162,7 @@ pub fn part_tokens(
         reduce_transparency: theme.reduce_transparency || theme.forced_colors,
         backdrop: false,
         params: theme.finish(role).params().clone(),
+        shader: crate::tokens::shader_source(theme.finish(role).shader()),
     }
 }
 

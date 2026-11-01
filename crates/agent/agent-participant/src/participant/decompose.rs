@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use tilo_actions::door::ActionDescriptor;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::running::Running;
 use super::waits::{Arrival, added_lines, pending_brief, replan_for_news, short_app};

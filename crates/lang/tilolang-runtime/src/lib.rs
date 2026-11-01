@@ -23,6 +23,7 @@ pub mod engine;
 pub mod error;
 mod exec;
 pub mod flow;
+pub mod foreign;
 pub mod handles;
 mod host_res;
 mod host_rich;

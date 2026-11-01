@@ -20,6 +20,12 @@ use app_host::{PackageStore, Pinning};
 fn main() {
     const ITERATIONS: u32 = 10;
 
+    // A test runner lists and runs every target by executing it, and this one
+    // measures installations for minutes. Only a benchmark run asks for that.
+    if !std::env::args().skip(1).any(|arg| arg == "--bench") {
+        return;
+    }
+
     // Build once: this benchmark measures installation rather than package
     // construction or signing.
     let (bytes, _id) = common::build_tapp(1024);

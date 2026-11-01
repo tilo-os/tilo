@@ -1,7 +1,7 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId, RecordOpenError,
+    AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
     RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
     Reserved, Transactable, validate_identity,
 };
@@ -73,7 +73,6 @@ impl RecordSet {
             automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
         )
         .map_err(error)?;
-        app_state::validate_document_schema(&doc, Path::new(want.id.as_str()))?;
         validate_identity(&doc, want, &self.home)?;
         doc.set_actor(automerge::ActorId::from(actor));
         let history = crate::state::UndoLog::new(&mut doc);
@@ -107,7 +106,15 @@ impl RecordSet {
         cache.put_document(key(&self.package_id, &self.home, id), doc, Some(actor))
     }
 
-    pub(super) fn flush_portable(&mut self, only: Option<&RecordId>) -> Result<(), String> {
+    /// Hand the open records to the cache. With `accepted_is_written` the
+    /// cache's "the host has not acknowledged yet" is what a store commit-
+    /// ting on its own thread says for bytes it holds
+    /// ([`RecordSet::try_flush_written`]), not a failure.
+    pub(super) fn flush_portable(
+        &mut self,
+        only: Option<&RecordId>,
+        accepted_is_written: bool,
+    ) -> Result<(), String> {
         let cache = self
             .portable
             .as_ref()
@@ -133,6 +140,9 @@ impl RecordSet {
                 // acknowledgement will come to say so.
                 Ok(()) if edited => cache.durability_changed(&key),
                 Ok(()) => {}
+                Err(e)
+                    if accepted_is_written
+                        && e == crate::portable_storage::PENDING_ACKNOWLEDGEMENT => {}
                 Err(e) => errors.push(format!("{id}: {e}")),
             }
         }
@@ -204,18 +214,11 @@ impl RecordReservation {
             )
         };
         let mut doc = AutoCommit::new().with_actor(actor.clone());
-        doc.put(
-            ROOT,
-            app_state::SCHEMA_VERSION_KEY,
-            u64::from(app_state::SCHEMA_VERSION),
-        )
-        .map_err(error)?;
         super::genesis(&mut doc, &self.checkout, &workspace, initialize)?;
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         if doc.get_actor() != &actor {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        app_state::validate_document_schema(&doc, Path::new(self.checkout.id.as_str()))?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit_with(
             automerge::transaction::CommitOptions::default()

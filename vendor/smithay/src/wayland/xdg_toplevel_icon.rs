@@ -21,7 +21,7 @@ use wayland_protocols::xdg::{
 
 use wayland_server::{
     backend::{ClientId, GlobalId},
-    protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
+    protocol::{wl_buffer::WlBuffer, wl_shm, wl_surface::WlSurface},
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
@@ -30,7 +30,7 @@ use crate::{
     wayland::{
         compositor::{self, Cacheable},
         shell::xdg::XdgShellSurfaceUserData,
-        shm::ShmBufferUserData,
+        shm::{self, BufferData, ShmBufferUserData},
     },
 };
 
@@ -64,32 +64,98 @@ pub trait XdgToplevelIconHandler:
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ToplevelIconCachedState {
-    icon: Option<XdgToplevelIconV1>,
+    icon: Option<Arc<ToplevelIconData>>,
 }
 
 impl ToplevelIconCachedState {
-    fn data(&self) -> Option<&IconData> {
-        let icon = self.icon.as_ref()?;
-        let data = icon
-            .data::<XdgToplevelIconUserData>()
-            .unwrap()
-            .constructed
-            .get()
-            .unwrap();
-        Some(data)
+    /// The icon the toplevel has, if it has one.
+    pub fn icon(&self) -> Option<&Arc<ToplevelIconData>> {
+        self.icon.as_ref()
     }
 
     /// Icon name getter
     pub fn icon_name(&self) -> Option<&str> {
-        self.data()?.icon_name.as_deref()
+        self.icon.as_ref()?.icon_name()
     }
 
     /// List of icon buffers and buffer scale
-    pub fn buffers(&self) -> &[(WlBuffer, i32)] {
-        let Some(data) = self.data() else {
-            return &[];
-        };
-        &data.buffers
+    pub fn buffers(&self) -> &[ToplevelIconBuffer] {
+        self.icon.as_ref().map_or(&[], |icon| icon.buffers())
+    }
+}
+
+/// What an icon object held when it was assigned to a toplevel: its name and
+/// the pixels of every size it offers.
+///
+/// The pixels are a copy, because the protocol lets a client destroy the icon
+/// object, and then its buffers, right after assigning it, and the toplevel
+/// still shows the icon it was given.
+#[derive(Debug, Clone, Default)]
+pub struct ToplevelIconData {
+    icon_name: Option<String>,
+    buffers: Vec<ToplevelIconBuffer>,
+}
+
+impl ToplevelIconData {
+    /// The icon name the client set, if it set one.
+    pub fn icon_name(&self) -> Option<&str> {
+        self.icon_name.as_deref()
+    }
+
+    /// The pixels the icon offers, one entry per size and scale.
+    pub fn buffers(&self) -> &[ToplevelIconBuffer] {
+        &self.buffers
+    }
+}
+
+/// The pixels an icon offers for one size and scale.
+#[derive(Debug, Clone)]
+pub struct ToplevelIconBuffer {
+    buffer: WlBuffer,
+    scale: i32,
+    format: wl_shm::Format,
+    width: i32,
+    height: i32,
+    stride: i32,
+    pixels: Arc<[u8]>,
+}
+
+impl ToplevelIconBuffer {
+    /// The buffer these pixels were read from; the client may have destroyed
+    /// it since, and the pixels stay readable all the same.
+    pub fn buffer(&self) -> &WlBuffer {
+        &self.buffer
+    }
+
+    /// The scale the client added these pixels for.
+    pub fn scale(&self) -> i32 {
+        self.scale
+    }
+
+    /// The shm format the pixels are in.
+    pub fn format(&self) -> wl_shm::Format {
+        self.format
+    }
+
+    /// Width of the icon in pixels; an icon is square, so this is also its
+    /// height.
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    /// Height of the icon in pixels.
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    /// Bytes per row of [`pixels`][Self::pixels].
+    pub fn stride(&self) -> i32 {
+        self.stride
+    }
+
+    /// The pixels as the client wrote them: `stride * height` bytes.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
     }
 }
 
@@ -109,20 +175,74 @@ struct IconData {
     buffers: Vec<(WlBuffer, i32)>,
 }
 
+impl IconData {
+    /// What the icon holds, with the pixel data copied out of the client's
+    /// pool. `None` for an icon with neither a name nor pixels, which the
+    /// protocol says resets the toplevel's icon.
+    fn snapshot(&self) -> Option<ToplevelIconData> {
+        let buffers: Vec<ToplevelIconBuffer> = self
+            .buffers
+            .iter()
+            .filter_map(|(buffer, scale)| {
+                let shm = buffer.data::<ShmBufferUserData>()?;
+                let data = shm.data;
+                let pixels = copy_pixels(buffer, data)?;
+                Some(ToplevelIconBuffer {
+                    buffer: buffer.clone(),
+                    scale: *scale,
+                    format: data.format,
+                    width: data.width,
+                    height: data.height,
+                    stride: data.stride,
+                    pixels,
+                })
+            })
+            .collect();
+        if self.icon_name.is_none() && buffers.is_empty() {
+            return None;
+        }
+        Some(ToplevelIconData {
+            icon_name: self.icon_name.clone(),
+            buffers,
+        })
+    }
+}
+
+/// The pixels `buffer` holds, copied so that they outlive the client's pool.
+fn copy_pixels(buffer: &WlBuffer, data: BufferData) -> Option<Arc<[u8]>> {
+    let offset = usize::try_from(data.offset).ok()?;
+    let stride = usize::try_from(data.stride).ok()?;
+    let height = usize::try_from(data.height).ok()?;
+    let length = stride.checked_mul(height)?;
+    let end = offset.checked_add(length)?;
+    shm::with_buffer_contents(buffer, |contents, mapped, _| {
+        if end > mapped {
+            return None;
+        }
+        // SAFETY: just checked that the range lies inside the mapping.
+        let bytes = unsafe { std::slice::from_raw_parts(contents.add(offset), length) };
+        Some(Arc::from(bytes))
+    })
+    .ok()
+    .flatten()
+}
+
 /// User data of [XdgToplevelIconV1]
 #[derive(Debug, Default)]
 pub struct XdgToplevelIconUserData {
     builder: Mutex<IconData>,
-    constructed: OnceLock<IconData>,
+    constructed: OnceLock<Option<Arc<ToplevelIconData>>>,
     buffer_destruction_hooks: Mutex<Vec<(WlBuffer, HookId)>>,
 }
 
 impl XdgToplevelIconUserData {
-    fn freeze(&self) {
-        if self.constructed.get().is_none() {
-            let data = std::mem::take(&mut *self.builder.lock().unwrap());
-            self.constructed.set(data).unwrap();
-        }
+    fn freeze(&self) -> Option<Arc<ToplevelIconData>> {
+        self.constructed
+            .get_or_init(|| {
+                let data = std::mem::take(&mut *self.builder.lock().unwrap());
+                data.snapshot().map(Arc::new)
+            })
+            .clone()
     }
 
     fn is_immutable(&self) -> bool {
@@ -178,7 +298,9 @@ impl XdgToplevelIconUserData {
         let list = &mut guard.buffers;
 
         for (existing_buffer, existing_scale) in list.iter_mut() {
-            let existing_data = &existing_buffer.data::<ShmBufferUserData>().unwrap().data;
+            let Some(existing_data) = existing_buffer.data::<ShmBufferUserData>().map(|shm| shm.data) else {
+                continue;
+            };
 
             let same_width = existing_data.width == shm.data.width;
             let same_height = existing_data.height == shm.data.height;
@@ -277,19 +399,16 @@ impl<D: XdgToplevelIconHandler> Dispatch<XdgToplevelIconManagerV1, (), D> for Xd
                 let data = toplevel.data::<XdgShellSurfaceUserData>().unwrap();
                 let wl_surface = data.wl_surface.clone();
 
+                // An icon that carries neither a name nor pixels resets the
+                // toplevel's icon, just like a null icon does.
+                let icon = icon.and_then(|icon| {
+                    let icon_data = icon.data::<XdgToplevelIconUserData>()?;
+                    icon_data.freeze()
+                });
+
                 compositor::with_states(&data.wl_surface, |states| {
                     let mut state = states.cached_state.get::<ToplevelIconCachedState>();
-                    let pending = state.pending();
-                    match icon {
-                        Some(icon) => {
-                            let icon_data = icon.data::<XdgToplevelIconUserData>().unwrap();
-                            icon_data.freeze();
-                            pending.icon = Some(icon);
-                        }
-                        None => {
-                            *pending = Default::default();
-                        }
-                    }
+                    state.pending().icon = icon;
                 });
 
                 state.set_icon(toplevel, wl_surface);
@@ -323,6 +442,7 @@ impl<D: XdgToplevelIconHandler> Dispatch<XdgToplevelIconV1, XdgToplevelIconUserD
                         "Request made after the icon has been assigned to a toplevel via 'set_icon'"
                             .to_string(),
                     );
+                    return;
                 }
 
                 data.set_icon_name(icon_name);
@@ -335,6 +455,7 @@ impl<D: XdgToplevelIconHandler> Dispatch<XdgToplevelIconV1, XdgToplevelIconUserD
                         "Request made after the icon has been assigned to a toplevel via 'set_icon'"
                             .to_string(),
                     );
+                    return;
                 }
 
                 let Some(shm) = buffer.data::<ShmBufferUserData>() else {

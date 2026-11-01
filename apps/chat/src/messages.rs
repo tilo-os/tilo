@@ -6,7 +6,7 @@
 //! head is full ([`crate::parts::post_part`]); anything done to a message
 //! (an edit, a reaction, a reply in its thread, an agent's record of its
 //! work on it) goes to the part that holds it. What a part's verb records
-//! from the room's chat record — who a mention names — is filled in where it
+//! from the workspace's chat record — who a mention names — is filled in where it
 //! is invoked ([`Chained::prepare`]), so the verb reads only its own part
 //! and replays the same everywhere.
 //!
@@ -38,7 +38,7 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
 /// its author's. Removing someone else's is moderation (`remove-message`),
-/// which the room's roles decide.
+/// which the workspace's roles decide.
 fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
     if author(cx)? == message.author.0 {
         Ok(())
@@ -392,7 +392,7 @@ impl ChatPart {
     /// Change what a shared window lets people do.
     ///
     /// Switch a window you share live between `view` and `edit`, in place:
-    /// the room grants what the new access gives from then on, and takes
+    /// the workspace grants what the new access gives from then on, and takes
     /// back what the old one gave.
     #[action(item = messages)]
     pub fn set_share_access(
@@ -444,7 +444,7 @@ impl ChatPart {
 
     /// Deliver message.
     ///
-    /// Adds a message someone outside the room wrote (a seeded
+    /// Adds a message someone outside the workspace wrote (a seeded
     /// conversation, an import, an integration relaying a line), shown to
     /// every reader under their name; it stays yours, as a bridge's post
     /// does. Given when it was written, delivering it again changes nothing.
@@ -549,7 +549,7 @@ impl ChatPart {
 
     /// Remove message.
     ///
-    /// Someone else's message, as a moderator: the room's roles decide who
+    /// Someone else's message, as a moderator: the workspace's roles decide who
     /// may (Moderators and the owner).
     #[action(item = messages, moderation, destructive)]
     pub fn remove_message(&mut self, message: &Id) -> Result<(), Refusal> {
@@ -867,7 +867,7 @@ impl Chained for ChatPart {
         Ok(())
     }
 
-    /// The channel a post goes to, as everyone in the room sees it named
+    /// The channel a post goes to, as everyone in the workspace sees it named
     /// (`#general`). A direct conversation is never named.
     fn carry(previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {
         Some(Self::CARRY_COUNTS.with(chat_part::CarryCounts {

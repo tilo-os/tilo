@@ -1030,7 +1030,7 @@ impl NotesApp {
         let can_react = me.is_some()
             && !dispatcher.is_past()
             && dispatcher.may(&tilo_actions::ActionNeed::reactions());
-        // Shared with whoever belongs to the notebook's room, here now or not.
+        // Shared with whoever belongs to the notebook's workspace, here now or not.
         let shared = people.is_some_and(|people| dispatcher.is_shared(people));
         let offered = can_react && (shared || !groups.is_empty());
         (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
@@ -4281,7 +4281,7 @@ mod tests {
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
         host.flush().unwrap();
-        // Notes keeps one record per room: the room's own document.
+        // Notes keeps one record per workspace: the workspace's own document.
         assert!(host.record().is_package_primary());
         let directory = profile
             .path()

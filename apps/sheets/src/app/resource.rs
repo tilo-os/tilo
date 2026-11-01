@@ -131,7 +131,7 @@ impl SheetsApp {
     }
 
     /// How a comment's `author` is named to the person reading it: by the
-    /// name the room knows them by, their own included; never by a raw
+    /// name the workspace knows them by, their own included; never by a raw
     /// participant id. Before anyone has named them, the reader is "You"
     /// and anyone else "Someone"; a record from before ids, whose author
     /// field holds a name, reads as that name.
@@ -165,7 +165,7 @@ impl SheetsApp {
         }
     }
 
-    /// Name comment authors from the room's roster.
+    /// Name comment authors from the workspace's roster.
     pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
         self.people = Some(people);
         self.pending.redraw = true;

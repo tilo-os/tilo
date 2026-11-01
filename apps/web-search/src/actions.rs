@@ -377,7 +377,6 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 #[must_use]
 pub fn publication() -> CollabRequest {
     CollabRequest::PublishActions {
-        app_id: APP_ID.to_string(),
         actions: descriptors()
             .iter()
             .map(|descriptor| ExportedAction {
@@ -791,10 +790,9 @@ mod tests {
                 );
             }
         }
-        let CollabRequest::PublishActions { app_id, actions } = publication() else {
+        let CollabRequest::PublishActions { actions } = publication() else {
             panic!("a publication publishes actions");
         };
-        assert_eq!(app_id, APP_ID);
         assert_eq!(actions.len(), 2);
     }
 

@@ -398,6 +398,11 @@ pub struct ThemeDocument {
     /// How surfaces stand off what is below them.
     #[serde(default)]
     pub depth: Depth,
+    /// How the shared components answer the pointer (hover and press). A
+    /// document that states none takes the stock response, or the still one
+    /// when its motion curve is `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<crate::tokens::Response>,
 }
 
 fn text_field_ok(value: &str) -> bool {
@@ -442,6 +447,7 @@ impl ThemeDocument {
                 ThemeMaterial::stock()
             },
             depth: Depth::STOCK,
+            response: None,
         }
     }
 
@@ -490,6 +496,9 @@ impl ThemeDocument {
         }
         self.shape.border.validate()?;
         self.depth.validate()?;
+        if let Some(response) = &self.response {
+            response.validate()?;
+        }
         self.material.roles().validate()?;
         let selector = &self.material.selector;
         if !within(selector.rim_span, &SelectorFinish::RIM_SPAN_ADMITTED) {
@@ -595,10 +604,13 @@ pub enum Preset {
     Block,
     /// [`Self::Block`] on the light ladder (`themes/block-light.json`).
     BlockLight,
+    /// Square and bordered, every surface shown as coarse pixels of what
+    /// lies below it (`themes/pixelated.json`).
+    Pixelated,
 }
 
 /// The shipped themes that are plain documents, by preset.
-const SHIPPED_DOCUMENTS: [(Preset, &str); 4] = [
+const SHIPPED_DOCUMENTS: [(Preset, &str); 5] = [
     (Preset::Glass, include_str!("../themes/glass.json")),
     (
         Preset::GlassLight,
@@ -609,10 +621,11 @@ const SHIPPED_DOCUMENTS: [(Preset, &str); 4] = [
         Preset::BlockLight,
         include_str!("../themes/block-light.json"),
     ),
+    (Preset::Pixelated, include_str!("../themes/pixelated.json")),
 ];
 
 impl Preset {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Dark,
         Self::DarkCool,
         Self::DarkGraphite,
@@ -624,6 +637,7 @@ impl Preset {
         Self::GlassLight,
         Self::Block,
         Self::BlockLight,
+        Self::Pixelated,
     ];
 
     /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
@@ -641,6 +655,7 @@ impl Preset {
             Self::GlassLight => "glass-light",
             Self::Block => "block",
             Self::BlockLight => "block-light",
+            Self::Pixelated => "pixelated",
         }
     }
 
@@ -659,13 +674,14 @@ impl Preset {
             Self::GlassLight => "Glass light",
             Self::Block => "Block",
             Self::BlockLight => "Block light",
+            Self::Pixelated => "Pixelated",
         }
     }
 
     #[must_use]
     pub const fn palette(self) -> Palette {
         match self {
-            Self::Dark | Self::Glass | Self::Block => Palette::dark(),
+            Self::Dark | Self::Glass | Self::Block | Self::Pixelated => Palette::dark(),
             Self::DarkCool => Palette::dark_cool(),
             Self::DarkGraphite => Palette::dark_graphite(),
             Self::DarkSoft => Palette::dark_soft(),
@@ -727,6 +743,7 @@ impl Preset {
             "glasslight" => Self::GlassLight,
             "block" | "blockdark" => Self::Block,
             "blocklight" => Self::BlockLight,
+            "pixelated" | "pixel" => Self::Pixelated,
             _ => return None,
         })
     }

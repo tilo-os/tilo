@@ -233,14 +233,11 @@ suites = [
   "os/tests/test_signing_recovery.py",
   "os/tests/test_signing_spool_transport.py",
   "os/tests/test_stage_kernel_checkpoint.py",
-  "os/tests/test_supervised_disk.py",
-  "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
-  "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_dev_provenance.py",
   "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
@@ -503,8 +500,6 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
-  # ... and the room-load report fields equal to the room load bench's.
-  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -538,6 +533,13 @@ inputs = [
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_tilo_mcp_server.py",
+]
+
+[[group]]
+name = "agent-trials"
+inputs = ["examples/agent-trials/"]
+suites = [
+  "examples/agent-trials/documents-and-forms/tests/test_pack.py",
 ]
 
 [[group]]
@@ -671,13 +673,6 @@ suites = [
 name = "desktop-open-times"
 inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
-
-[[group]]
-name = "browser-auth-e2e"
-# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
-# drives Chrome through tools/web/chrome.mjs.
-inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
-suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
 
 [[group]]
 name = "browser-benchmark-scripts"
@@ -1137,9 +1132,11 @@ inputs = [
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
   "docs/developers/tasks/",
-  # The portability lint compiles in the policy gate's rules table, and the
-  # capability check the table of what each capability's code uses.
-  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
+  # The portability lint compiles in the policy gate's rules table and counts
+  # against its baseline; the capability check reads the table of what each
+  # capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_portability_baseline.toml",
+  "tools/policy/app_capability_usage.toml",
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
   "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py",
@@ -1266,14 +1263,12 @@ inputs = [
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
-  "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
   "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
   "apps/imager/tests/profile_transport.rs",
-  "apps/imager/tests/prepared_extract_cli.rs",
 ]
 
 [[cargo]]
@@ -1447,6 +1442,17 @@ readers = [
 
 
 [[cargo]]
+package = "tilo-session"
+# The first-boot unit the image ships, and the components that name where
+# each binary is installed.
+inputs = [
+  "os/usr/lib/systemd/system/shell-firstboot.service",
+  "os/components.toml",
+]
+readers = ["crates/session/session/tests/firstboot.rs"]
+
+
+[[cargo]]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
@@ -1529,10 +1535,6 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
-
-[[unrequired]]
-suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
@@ -1847,10 +1849,6 @@ reason = "destructive, root: loop devices"
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
-
-[[unrequired]]
-suite = "os/tests/test_direct_sparse_transfer.py"
-reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"

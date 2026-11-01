@@ -31,8 +31,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tilo_joined_room::voice::Participation as Ticket;
 use tilo_moq::client::Client;
+use tilo_peer_state::owner::voice::Participation as Ticket;
 
 pub(crate) use registry::Registry;
 

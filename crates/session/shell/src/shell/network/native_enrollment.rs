@@ -141,18 +141,23 @@ impl ShellNetwork {
 
     /// Who governs each room, as the native owner, once open, has the room:
     /// this device's enrolled device and the room's governor. The same
-    /// device when this one governs it.
+    /// device when this one governs it. Holds the network weakly
+    /// ([`Self::room_governors`]'s caller is the channel service it holds).
     pub(crate) fn room_governors(
         network: &std::sync::Arc<Self>,
     ) -> crate::shell::channel_policy::Governors {
-        let network = std::sync::Arc::clone(network);
+        // Reached from the channel service the network holds, which the host
+        // it runs asks for keys: a strong reference here would keep the two
+        // alive in a circle.
+        let network = std::sync::Arc::downgrade(network);
         Box::new(move |room| {
             network
+                .upgrade()?
                 .opened_native_owner()?
                 .with_current(room, |view| {
                     Ok((
                         view.device().device_public_key,
-                        view.governor().device_public_key,
+                        view.room_host().device_public_key,
                     ))
                 })
                 .ok()
@@ -289,11 +294,6 @@ impl ShellNetwork {
             if let Err(error) = self.connect_native_room(owner.clone(), room) {
                 tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
-        }
-        // Whichever of the owner and this device's host opens second mends
-        // the replicas of the rooms that host governs.
-        if let Some(host) = self.room_host() {
-            self.mend_own_rooms(&host);
         }
         owner
     }
@@ -479,7 +479,7 @@ impl ShellNetwork {
             tracing::warn!(%error, "could not renew this device's certificate before enrolling");
         }
         let result = self
-            .wait_on(tilo_joined_room::enroll::prepare_and_complete(
+            .wait_on(tilo_peer_state::owner::enroll::prepare_and_complete(
                 client,
                 identity,
                 topic,
@@ -544,7 +544,7 @@ impl ShellNetwork {
         &self,
         owner: &NativeWorkspaceOwner,
         identity_topic: u64,
-        enrollment: &tilo_joined_room::VerifiedNativeEnrollment,
+        enrollment: &tilo_peer_state::owner::VerifiedNativeEnrollment,
     ) -> Result<RoomId, String> {
         let identity = self
             .host_identity

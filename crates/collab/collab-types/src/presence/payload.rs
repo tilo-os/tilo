@@ -135,7 +135,7 @@ impl Availability {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Collaborator {
     pub id: String,
     pub name: String,

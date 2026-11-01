@@ -17,8 +17,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 
 use super::shell::{
-    HAIRLINE_ALPHA, PRESS_SCALE, SELECTION_MIN_STEP, SelectionState, SelectionTier, lightness_step,
-    panel_ground,
+    HAIRLINE_ALPHA, SELECTION_MIN_STEP, SelectionState, SelectionTier, lightness_step, panel_ground,
 };
 use crate::floating_surface::Material;
 use crate::theme::Theme;
@@ -141,11 +140,13 @@ pub fn selector_tier(theme: &Theme, state: SelectionState, ground: Color) -> Sel
     } else {
         Color::TRANSPARENT
     };
+    // The press's scale is the theme's response role: a theme may let a
+    // selector keep its size under the finger, or sink further.
     SelectionTier {
         fill,
         border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),
         inner_glow: if lifted { finish.rim() } else { None },
-        scale: if state.pressed { PRESS_SCALE } else { 1.0 },
+        scale: f64::from(theme.tokens.response.step(state.hover, state.pressed).scale),
     }
 }
 

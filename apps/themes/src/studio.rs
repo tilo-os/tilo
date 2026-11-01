@@ -332,6 +332,7 @@ impl Theme {
                 ..ThemeMaterial::stock()
             },
             depth: ui::tokens::Depth::STOCK,
+            response: None,
         }
     }
 
@@ -516,9 +517,9 @@ impl Studio {
     ) -> Result<(), Refusal> {
         let mut document: ThemeDocument = serde_json::from_str(&document)
             .map_err(|error| Refusal::new(format!("not a theme document: {error}")))?;
-        document
-            .validate()
-            .map_err(|reason| Refusal::new(reason.to_owned()))?;
+        if let Some(reason) = ui::Theme::refusal(&document) {
+            return Err(Refusal::new(reason));
+        }
         let findings = document.findings();
         if !findings.is_empty() {
             return Err(Refusal::new(format!(

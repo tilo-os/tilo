@@ -1,14 +1,14 @@
-//! What sharing a window gives: a grant of the room's, on the one resource
+//! What sharing a window gives: a grant of the workspace's, on the one resource
 //! the window shows.
 //!
 //! A share's access is no promise of the card's. While the share is live,
-//! its room grants the members what the access names on that resource only
+//! its workspace grants the members what the access names on that resource only
 //! (`view`: reading it; `edit`: changing it too), as far as the person
 //! sharing holds it, and takes it back when the share ends. Chat asks for
 //! both through the workspace's session (`tilo_actions::remote::node_target`),
-//! and the room decides every write the grant then covers.
+//! and the workspace decides every write the grant then covers.
 //!
-//! The room's answer to whether this person may change what someone else
+//! The workspace's answer to whether this person may change what someone else
 //! shares reaches their desktop, so a window on an item shared with them
 //! to edit lets them edit it.
 //!
@@ -29,12 +29,12 @@ use crate::app::ChatApp;
 use crate::model::Message;
 use crate::record::ShareAccess;
 
-/// The grants of this person's shares and what the room lets them do with
+/// The grants of this person's shares and what the workspace lets them do with
 /// the resources others share.
 #[derive(Default)]
 pub(crate) struct ShareGrants {
     door: Option<RemoteActions>,
-    /// What each of this person's shares last asked the room: to grant
+    /// What each of this person's shares last asked the workspace: to grant
     /// what an access gives, or (`None`) to take it back, by message.
     asked: HashMap<String, Option<ShareAccess>>,
     /// Asks still on their way, kept until they settle.
@@ -50,18 +50,18 @@ enum Editable {
     Answered(bool),
 }
 
-/// The node of the room's tree that `reference`, which `provider`
+/// The node of the workspace's tree that `reference`, which `provider`
 /// (`record:<app>:<record>`) keeps, stands at: an item of the record
 /// (`<kind>/<field>/<item>`), or the whole record. `None` for what names
 /// neither.
 pub(crate) fn share_node(
-    room: &str,
+    workspace: &str,
     provider: &str,
     reference: &tilo_reference::ResourceRef,
 ) -> Option<TreePath> {
     let (app, record) = crate::live_share::app_and_record(provider)?;
     let id = reference.id.as_str();
-    let at = |kind: &str| TreePath::room(room).app(app).kind(kind);
+    let at = |kind: &str| TreePath::room(workspace).app(app).kind(kind);
     if let Some((collection, item)) = id.rsplit_once('/')
         && let Some((kind, field)) = collection.split_once('/')
         && !field.contains('/')
@@ -80,7 +80,7 @@ pub(crate) fn share_node(
 
 impl ShareGrants {
     /// Ask again whether this person may change what `message` shares: the
-    /// share's grant may have reached the room since.
+    /// share's grant may have reached the workspace since.
     pub(crate) fn ask_again(&mut self, message: &str) {
         if matches!(self.editable.get(message), Some((Editable::Answered(_), _))) {
             self.editable.remove(message);
@@ -91,8 +91,14 @@ impl ShareGrants {
         self.door.get_or_insert_with(RemoteActions::current)
     }
 
-    fn ask(&mut self, room: &str, node: &TreePath, action: &str, arguments: serde_json::Value) {
-        let target = node_target(room, &node.to_string(), action);
+    fn ask(
+        &mut self,
+        workspace: &str,
+        node: &TreePath,
+        action: &str,
+        arguments: serde_json::Value,
+    ) {
+        let target = node_target(workspace, &node.to_string(), action);
         let argument = match arguments {
             serde_json::Value::Object(map) => InvokeArgument::Json(map),
             _ => InvokeArgument::None,
@@ -115,7 +121,7 @@ fn permits(call: &InvocationCall) -> Option<bool> {
                 .and_then(|value| value.get("undoable"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            // A room that cannot say promises nothing.
+            // A workspace that cannot say promises nothing.
             _ => false,
         }
     }))
@@ -137,14 +143,14 @@ fn pending(call: &InvocationCall) -> bool {
 }
 
 impl ChatApp {
-    /// Ask the room to grant what each of this person's live shares gives
+    /// Ask the workspace to grant what each of this person's live shares gives
     /// and take back what each ended one gave, once per change (a share
     /// switched in place included); and ask, of each share of someone
     /// else's and again whenever it is switched or ends, whether this
     /// person may change what it shares (on a view-only share: whether
     /// they may anyway).
     pub(crate) fn follow_share_grants(&mut self) {
-        let Ok(room) = ui::framework::reference::room() else {
+        let Ok(workspace) = ui::framework::reference::room() else {
             return;
         };
         let shares: Vec<(String, bool, bool, ShareAccess, Option<TreePath>)> = self
@@ -152,7 +158,11 @@ impl ChatApp {
             .iter()
             .filter_map(|m: &Message| {
                 let share = m.share.as_ref()?;
-                let node = share_node(&room, m.source_provider.as_deref()?, m.reference.as_ref()?);
+                let node = share_node(
+                    &workspace,
+                    m.source_provider.as_deref()?,
+                    m.reference.as_ref()?,
+                );
                 Some((
                     m.id.clone(),
                     self.is_me(&m.author),
@@ -177,15 +187,15 @@ impl ChatApp {
                 grants.asked.insert(message.clone(), now);
                 match now {
                     // Asked again under the same share id when switched: the
-                    // room replaces what the share's grants give.
+                    // workspace replaces what the share's grants give.
                     Some(access) => grants.ask(
-                        &room,
+                        &workspace,
                         &node,
                         SHARE_NODE_ACTION,
                         serde_json::json!({ "share": message, "access": access.as_str() }),
                     ),
                     None => grants.ask(
-                        &room,
+                        &workspace,
                         &node,
                         UNSHARE_NODE_ACTION,
                         serde_json::json!({ "share": message }),
@@ -195,7 +205,7 @@ impl ChatApp {
                 // Asked of every live share of someone else's: the answer
                 // also lets this person's window change an item shared to
                 // edit. Asked again when the share is switched or ends, so
-                // their window offers exactly what the room keeps.
+                // their window offers exactly what the workspace keeps.
                 let ask = match grants.editable.get(&message) {
                     None => live,
                     Some((Editable::Asking(call), asked)) => {
@@ -211,7 +221,7 @@ impl ChatApp {
                     Some((Editable::Answered(_), asked)) => *asked != now,
                 };
                 if ask {
-                    let target = node_target(&room, &node.to_string(), NODE_PERMITS_ACTION);
+                    let target = node_target(&workspace, &node.to_string(), NODE_PERMITS_ACTION);
                     let call = grants.door().invoke(target, InvokeArgument::None, None);
                     grants
                         .editable
@@ -226,7 +236,7 @@ impl ChatApp {
     }
 
     /// Whether this person may change what `message` shares whatever the
-    /// share gives, as the room answered.
+    /// share gives, as the workspace answered.
     pub(crate) fn can_already_edit(&self, message: &str) -> bool {
         matches!(
             self.live_shares.grants.editable.get(message),
@@ -245,37 +255,37 @@ mod tests {
 
     #[test]
     fn a_share_stands_at_the_item_or_the_record_it_shares() {
-        let room = "00000000-0000-0000-0000-000000000001";
+        let workspace = "00000000-0000-0000-0000-000000000001";
         let note = reference("notes.notebook.pages", "notes.notebook/pages/p1");
         assert_eq!(
-            share_node(room, "record:so.tilo.notes:", &note).map(|node| node.to_string()),
+            share_node(workspace, "record:so.tilo.notes:", &note).map(|node| node.to_string()),
             Some(format!(
-                "room:{room}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
+                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
             )),
-            "a note of the room's notebook"
+            "a note of the workspace's notebook"
         );
         assert_eq!(
-            share_node(room, "record:so.tilo.notes:r1", &note).map(|node| node.to_string()),
+            share_node(workspace, "record:so.tilo.notes:r1", &note).map(|node| node.to_string()),
             Some(format!(
-                "room:{room}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
+                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
             ))
         );
         let deck = reference("slides.deck", "d1");
         assert_eq!(
-            share_node(room, "record:so.tilo.slides:d1", &deck).map(|node| node.to_string()),
+            share_node(workspace, "record:so.tilo.slides:d1", &deck).map(|node| node.to_string()),
             Some(format!(
-                "room:{room}/app:so.tilo.slides/kind:slides.deck/resource:d1"
+                "room:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
             "a whole record"
         );
         assert_eq!(
             share_node(
-                room,
+                workspace,
                 "record:so.tilo.notes:",
                 &reference("notes.notebook", "notes.notebook")
             ),
             None,
-            "the room's whole notebook stands at no node a share may name"
+            "the workspace's whole notebook stands at no node a share may name"
         );
     }
 }

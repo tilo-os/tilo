@@ -857,10 +857,11 @@ impl Store {
 
     /// The entry keyed by `key`, if there is one.
     pub fn lookup(&self, key: &str) -> Option<Recorded> {
-        self.read(&Self::desktop_id(key))
+        self.entry(&Self::desktop_id(key))
     }
 
-    fn read(&self, desktop_id: &str) -> Option<Recorded> {
+    /// The entry `desktop_id` names, if there is one.
+    pub fn entry(&self, desktop_id: &str) -> Option<Recorded> {
         let path = self.entry_path(desktop_id)?;
         let contents = std::fs::read_to_string(&path).ok()?;
         let groups = crate::entry::unlocalised_groups(&contents);
@@ -893,16 +894,20 @@ impl Store {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no usable identity"))?;
         std::fs::create_dir_all(&self.entries)?;
         let icon = match &identity.icon {
-            Some(icon) => Some(self.write_icon(&slug(&identity.key), icon)?),
+            Some(icon) => Some(
+                self.write_icon(&slug(&identity.key), icon)?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             None => self
-                .read(&desktop_id)
+                .entry(&desktop_id)
                 .and_then(|_| existing_icon(&path))
                 .or_else(|| Some(GENERIC_ICON.to_owned())),
         };
         // The newest copy is the one the entry starts; the copy it replaces
         // and the ones before it stay known while they are there.
         let locations = self
-            .read(&desktop_id)
+            .entry(&desktop_id)
             .map(|recorded| {
                 other_copies(
                     std::iter::once(recorded.program).chain(recorded.locations),
@@ -1029,7 +1034,7 @@ impl Store {
     ///
     /// The entry could not be rewritten.
     pub fn fall_back(&self, desktop_id: &str) -> io::Result<Option<PathBuf>> {
-        let Some(recorded) = self.read(desktop_id) else {
+        let Some(recorded) = self.entry(desktop_id) else {
             return Ok(None);
         };
         if std::fs::metadata(&recorded.program).is_ok() {
@@ -1112,7 +1117,7 @@ impl Store {
         identity
     }
 
-    fn write_icon(&self, slug: &str, icon: &Icon) -> io::Result<String> {
+    fn write_icon(&self, slug: &str, icon: &Icon) -> io::Result<PathBuf> {
         std::fs::create_dir_all(&self.icons)?;
         for format in [IconFormat::Png, IconFormat::Svg] {
             if format != icon.format {
@@ -1124,7 +1129,40 @@ impl Store {
             .icons
             .join(format!("{slug}.{}", icon.format.extension()));
         tilo_files::native::atomic::write(&path, &icon.bytes)?;
-        Ok(path.to_string_lossy().into_owned())
+        Ok(path)
+    }
+
+    /// Keep the artwork `identity` brings where an entry's icon lives, and
+    /// answer where: what an offer to add the app shows, and the file its
+    /// entry will name once it is added. `None` when the app brings none,
+    /// and its entry names the system's generic application icon instead.
+    ///
+    /// # Errors
+    ///
+    /// The artwork could not be written.
+    pub fn keep_icon(&self, identity: &Identity) -> io::Result<Option<PathBuf>> {
+        match &identity.icon {
+            Some(icon) => self.write_icon(&slug(&identity.key), icon).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Forget the artwork kept for `identity`: nothing the person has names
+    /// it any more.
+    ///
+    /// # Errors
+    ///
+    /// An icon file could not be removed.
+    pub fn discard_icon(&self, identity: &Identity) -> io::Result<()> {
+        let slug = slug(&identity.key);
+        for format in [IconFormat::Png, IconFormat::Svg] {
+            match std::fs::remove_file(self.icons.join(format!("{slug}.{}", format.extension()))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) enum Hit {
     AddChannel {
         category: Id,
     },
-    /// Make a channel or a category: what can be made in the room.
+    /// Make a channel or a category: what can be made in the workspace.
     AddCategory,
     Reaction {
         msg: Id,

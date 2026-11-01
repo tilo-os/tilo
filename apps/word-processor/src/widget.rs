@@ -502,31 +502,23 @@ fn zoom_field() -> ui::widget::NumberInput {
         .with_accessible_name(t("a11y-zoom"))
 }
 
-/// The inspector's line-spacing menu, reporting the index of the spacing
-/// picked into `pick`.
-fn line_spacing_menu(pick: &std::rc::Rc<std::cell::Cell<Option<usize>>>) -> ui::widget::Dropdown {
+/// The inspector's line-spacing menu: it keeps the spacing it shows, and a
+/// pick shows there until the editor reads it
+/// ([`Editor::drain_hosted_fields`]).
+fn line_spacing_menu() -> ui::widget::Dropdown {
     let labels: Vec<String> = block_layout::LINE_SPACINGS
         .iter()
         .map(|spacing| line_spacing_label(*spacing))
         .collect();
-    let pick = std::rc::Rc::clone(pick);
-    let names = labels.clone();
     ui::widget::Dropdown::from_state(labels, &ui::LocalState::new(String::new()))
-        .on_change(move |label| {
-            if let Some(index) = names.iter().position(|name| name == label) {
-                pick.set(Some(index));
-            }
-        })
         .control_size(ControlSize::Small)
         .with_accessible_name(t("a11y-line-spacing"))
 }
 
-/// The inspector's paragraph-style menu; a pick lands in `choice` as the
-/// style's id.
-fn style_pick_menu(choice: &std::rc::Rc<std::cell::Cell<Option<String>>>) -> ui::widget::Dropdown {
-    let choice = std::rc::Rc::clone(choice);
+/// The inspector's paragraph-style menu: it keeps the style id it shows, and
+/// a pick shows there until the editor reads it.
+fn style_pick_menu() -> ui::widget::Dropdown {
     ui::widget::Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
-        .on_change(move |id| choice.set(Some(id.to_owned())))
         .control_size(ControlSize::Small)
         .with_accessible_name(t("panel-style"))
 }
@@ -1145,19 +1137,19 @@ pub struct Editor {
     editing_field: Option<NumField>,
     /// The inspector's style property fields.
     num_inputs: Vec<NumSlot>,
-    /// The inspector's line-spacing menu, the choice it made, and where it
-    /// was drawn.
+    /// The inspector's line-spacing menu, the value it last showed, and where
+    /// it was drawn.
     line_spacing: ui::widget::Dropdown,
-    line_spacing_pick: std::rc::Rc<std::cell::Cell<Option<usize>>>,
+    line_spacing_shown: String,
     line_spacing_rect: Rect,
     /// A failed save, shown as an error banner under the toolbar until the
     /// next save succeeds or it is dismissed; holds the banner's dismiss
     /// control as last drawn.
     save_error: Option<Rect>,
-    /// The inspector's paragraph-style menu: the style it picked, the
+    /// The inspector's paragraph-style menu: the style it last showed, the
     /// `(id, name)` choices it offers, and where it was drawn.
     style_pick: ui::widget::Dropdown,
-    style_pick_choice: std::rc::Rc<std::cell::Cell<Option<String>>>,
+    style_pick_shown: String,
     style_pick_options: Vec<(String, String)>,
     style_pick_rect: Rect,
     /// The inspector's scrolled column and how far it scrolls.
@@ -1368,9 +1360,7 @@ impl Editor {
         reason = "the constructor lists every child widget and its initial state in one place"
     )]
     pub fn new() -> Self {
-        let line_spacing_pick = std::rc::Rc::new(std::cell::Cell::new(None));
-        let style_pick_choice = std::rc::Rc::new(std::cell::Cell::new(None));
-        let mut widget = Self {
+        Self {
             inner: WordProcessor::new(),
             rect: Rect::ZERO,
             lifecycle: EditorLifecycle {
@@ -1454,12 +1444,12 @@ impl Editor {
                 rect: Rect::ZERO,
             })
             .collect(),
-            line_spacing: ui::widget::Dropdown::new(Vec::new(), ""),
-            line_spacing_pick: std::rc::Rc::clone(&line_spacing_pick),
+            line_spacing: line_spacing_menu(),
+            line_spacing_shown: String::new(),
             line_spacing_rect: Rect::ZERO,
             save_error: None,
-            style_pick: ui::widget::Dropdown::new(Vec::new(), ""),
-            style_pick_choice: std::rc::Rc::clone(&style_pick_choice),
+            style_pick: style_pick_menu(),
+            style_pick_shown: String::new(),
             style_pick_options: Vec::new(),
             style_pick_rect: Rect::ZERO,
             panel_body: Rect::ZERO,
@@ -1525,10 +1515,7 @@ impl Editor {
             pending_local: None,
             #[cfg(test)]
             last_dispatched: None,
-        };
-        widget.line_spacing = line_spacing_menu(&line_spacing_pick);
-        widget.style_pick = style_pick_menu(&style_pick_choice);
-        widget
+        }
     }
 
     /// Take part in the framework: read the document from its live state and

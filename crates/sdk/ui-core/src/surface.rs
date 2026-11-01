@@ -1607,7 +1607,12 @@ mod tests {
         document.material.control = finish;
         document.shape.border = border;
         document.depth = depth;
-        let theme = Theme::from_document(&document).unwrap();
+        let theme = Theme::from_document(&document).unwrap_or_else(|| {
+            panic!(
+                "the test's finish is a theme: {:?}",
+                Theme::refusal(&document)
+            )
+        });
         let mut scene = Scene::new();
         let ground = theme.tokens.colors.surfaces.content;
         scene.fill(

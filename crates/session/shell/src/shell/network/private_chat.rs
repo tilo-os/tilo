@@ -33,15 +33,15 @@ impl ShellNetwork {
             if caller != &certificate || view.device() != &certificate {
                 return Err("private caller differs from actual native custody".into());
             }
-            if view.governor() == &certificate {
+            if view.room_host() == &certificate {
                 return Ok(None);
             }
             let (hint, _) =
                 IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                     .map_err(|_| "private governor transport hint invalid")?;
             if hint.room != room.to_string()
-                || &hint.governing_authority != view.governor()
-                || &hint.host_device_certificate != view.governor()
+                || &hint.host_device_certificate != view.room_host()
+                || &hint.host_device_certificate != view.room_host()
             {
                 return Err("private transport differs from current governor".into());
             }
@@ -56,7 +56,7 @@ impl ShellNetwork {
                 network: self.clone(),
                 room,
                 caller: certificate,
-                governor: view.governor().clone(),
+                governor: view.room_host().clone(),
                 relay: hint.endpoint_addr,
             }))
         })

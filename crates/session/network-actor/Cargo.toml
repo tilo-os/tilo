@@ -37,7 +37,6 @@ tilo-desktop-model = { path = "../desktop-model" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -66,7 +65,7 @@ tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, 
 fnv.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
-tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

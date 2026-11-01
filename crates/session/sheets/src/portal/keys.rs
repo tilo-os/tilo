@@ -6,15 +6,11 @@ use ui::widget::{EventCtx, PromptOutcome, SecretPrompt, Widget};
 use ui::winit::keyboard::{Key, NamedKey, PhysicalKey};
 
 use super::view::{PROMPT_ID, Parts, field_id};
-use super::{Body, Dialog, DraftValue, Field, Focus, PortalEffect};
+use super::{Body, Dialog, DraftValue, Field, Focus};
 
 pub(super) struct Keys {
     pub(super) content: ui::widget::Element,
     pub(super) parts: Parts,
-}
-
-fn index(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 /// The stop after (or before) `at` among `count`, around the end.
@@ -63,10 +59,6 @@ impl Keys {
         self.parts.shown.get().focus
     }
 
-    fn send(&self, effect: &PortalEffect) {
-        self.parts.send(effect);
-    }
-
     /// Up and Down: the next (or last) choice, around the end.
     fn select_next(&self, dialog: &Dialog, reverse: bool) {
         let count = dialog.choices();
@@ -74,16 +66,15 @@ impl Keys {
             return;
         }
         let next = step(dialog.selected, count, reverse);
-        let effect = if matches!(dialog.body, Body::Launcher { .. }) {
+        if matches!(dialog.body, Body::Launcher { .. }) {
             self.parts.focus(Focus::Icons);
-            PortalEffect::Icon { index: index(next) }
+            self.parts.icon(next);
         } else {
             if matches!(dialog.body, Body::Entry { .. } | Body::Draft { .. }) {
                 self.parts.focus(Focus::Choices);
             }
-            PortalEffect::Select { index: index(next) }
-        };
-        self.send(&effect);
+            self.parts.select(next);
+        }
     }
 
     /// Tab on a draft: this page's rows, then the answers.
@@ -107,9 +98,7 @@ impl Keys {
         };
         self.parts.focus(focus);
         if focus == Focus::Choices {
-            self.send(&PortalEffect::Select {
-                index: index(next.saturating_sub(answers)),
-            });
+            self.parts.select(next.saturating_sub(answers));
         }
     }
 
@@ -151,9 +140,9 @@ impl Keys {
         match prompt.take_outcome() {
             Some(PromptOutcome::Submit(answer)) => {
                 *self.parts.seat.answer.borrow_mut() = Some(answer);
-                self.send(&PortalEffect::Submit);
+                self.parts.submit();
             }
-            Some(PromptOutcome::Cancel) => self.send(&PortalEffect::Cancel),
+            Some(PromptOutcome::Cancel) => self.parts.cancel(),
             None => {}
         }
     }
@@ -164,7 +153,7 @@ impl Keys {
         let draft = matches!(dialog.body, Body::Draft { .. });
         let focus = self.focus();
         match key {
-            Key::Named(NamedKey::Escape) => self.send(&PortalEffect::Cancel),
+            Key::Named(NamedKey::Escape) => self.parts.cancel(),
             Key::Named(NamedKey::Tab) if draft => self.draft_tab(dialog, shift),
             Key::Named(NamedKey::Enter) => {
                 // A prose field takes Enter as a new line; Ctrl+Enter answers.
@@ -176,14 +165,12 @@ impl Keys {
                 self.parts.confirm();
             }
             Key::Named(NamedKey::PageDown) if draft && dialog.reviewing_more() => {
-                self.send(&PortalEffect::Next);
+                self.parts.next_page();
             }
-            Key::Named(NamedKey::PageUp) if draft => self.send(&PortalEffect::Back),
+            Key::Named(NamedKey::PageUp) if draft => self.parts.back(),
             Key::Named(NamedKey::Space) if draft => match focus {
-                Focus::Flag(at) => self.send(&PortalEffect::Toggle { index: index(at) }),
-                Focus::Choices => self.send(&PortalEffect::Select {
-                    index: index(dialog.selected),
-                }),
+                Focus::Flag(at) => self.parts.toggle(at),
+                Focus::Choices => self.parts.select(dialog.selected),
                 _ => return false,
             },
             Key::Named(NamedKey::ArrowDown | NamedKey::Tab) if !draft => {
@@ -204,9 +191,7 @@ impl Keys {
             || modifiers.shift_key()
             || modifiers.super_key();
         if shortcuts && chord {
-            self.send(&PortalEffect::Bind {
-                keys: pressed_keys(physical, modifiers),
-            });
+            self.parts.bind(pressed_keys(physical, modifiers));
             return;
         }
         let paged = dialog.page.is_some();
@@ -214,35 +199,27 @@ impl Keys {
             Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => self.select_next(dialog, false),
             Key::Named(NamedKey::ArrowUp) => self.select_next(dialog, true),
             Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp) if paged => {
-                self.send(&PortalEffect::Back);
+                self.parts.back();
             }
             Key::Named(NamedKey::ArrowRight | NamedKey::PageDown) if dialog.reviewing_more() => {
-                self.send(&PortalEffect::Next);
+                self.parts.next_page();
             }
             Key::Named(NamedKey::Enter) => match dialog.body {
-                Body::Answers { .. } => self.send(&PortalEffect::Answer {
-                    index: index(dialog.selected),
-                }),
+                Body::Answers { .. } => self.parts.answer(dialog.selected),
                 _ => self.parts.confirm(),
             },
-            Key::Named(NamedKey::Escape) => self.send(&PortalEffect::Cancel),
-            Key::Named(NamedKey::Backspace | NamedKey::Delete) if shortcuts => {
-                self.send(&PortalEffect::Unbind);
-            }
+            Key::Named(NamedKey::Escape) => self.parts.cancel(),
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) if shortcuts => self.parts.unbind(),
             Key::Named(NamedKey::Space) => match &dialog.body {
-                Body::Devices(_) => self.send(&PortalEffect::Toggle {
-                    index: index(dialog.selected),
-                }),
+                Body::Devices(_) => self.parts.toggle(dialog.selected),
                 Body::Answers {
                     remember: Some(_), ..
-                } => self.send(&PortalEffect::Remember),
+                } => self.parts.remember(),
                 _ => {}
             },
             // Any other key on a shortcut row is what it would be bound
             // to; the shell says why it is not taken without a modifier.
-            _ if shortcuts => self.send(&PortalEffect::Bind {
-                keys: pressed_keys(physical, modifiers),
-            }),
+            _ if shortcuts => self.parts.bind(pressed_keys(physical, modifiers)),
             _ => {}
         }
     }

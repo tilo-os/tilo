@@ -2,7 +2,7 @@
 //!
 //! The assertions in these tests predate the native collaboration service,
 //! so the adapter deliberately retains their request/event-shaped driving
-//! code while putting every byte on the production Cap'n Proto endpoint.
+//! code while putting every byte on the production collaboration endpoint.
 
 #![allow(
     dead_code,
@@ -167,7 +167,7 @@ pub fn spawn_with_agent_grants(
     denied: &[(&str, &str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
-    shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
+    shell::shell::collab_app_broker::tests::secure_socket_parent(parent)
         .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(

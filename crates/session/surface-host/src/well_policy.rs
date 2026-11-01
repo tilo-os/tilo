@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use smithay::utils::{Logical, Point, Rectangle};
+use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{Arrangement, WindowInfo, WindowPolicy};
 use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
@@ -116,7 +116,7 @@ impl WellPolicy {
         &self,
         tab: Option<&str>,
         window: &WindowInfo,
-        outputs: &[Rectangle<i32, Logical>],
+        outputs: &[LayoutRect],
     ) -> (i32, i32) {
         if let Some(size) = tab
             .and_then(|key| self.wells.well(key))
@@ -129,18 +129,18 @@ impl WellPolicy {
 
     /// The room the well of tab `key` leaves a window that opened with no well (the frame has
     /// not laid out): off the output.
-    fn place_of(&self, tab: Option<&str>) -> Option<Point<i32, Logical>> {
+    fn place_of(&self, tab: Option<&str>) -> Option<LayoutPoint> {
         let well = tab.and_then(|key| self.wells.well(key))?;
         if well.width() < 1.0 || well.height() < 1.0 {
             return None;
         }
-        Some(Point::from((round(well.x0), round(well.y0))))
+        Some(LayoutPoint::from((round(well.x0), round(well.y0))))
     }
 }
 
 /// The size a window opens at when its well has none: what the client asked for, or a share of
 /// the output, never under its smallest.
-fn initial_extent(window: &WindowInfo, outputs: &[Rectangle<i32, Logical>]) -> (i32, i32) {
+fn initial_extent(window: &WindowInfo, outputs: &[LayoutRect]) -> (i32, i32) {
     let (width, height) = outputs
         .first()
         .map_or((1280, 800), |output| (output.size.w, output.size.h));
@@ -214,11 +214,7 @@ impl WellPolicy {
 }
 
 impl WindowPolicy for WellPolicy {
-    fn initial_size(
-        &mut self,
-        window: &WindowInfo,
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Option<(i32, i32)> {
+    fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
         let tab = self.tab(window);
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
@@ -230,18 +226,18 @@ impl WindowPolicy for WellPolicy {
         &mut self,
         window: &WindowInfo,
         _size: (i32, i32),
-        _outputs: &[Rectangle<i32, Logical>],
-    ) -> Point<i32, Logical> {
+        _outputs: &[LayoutRect],
+    ) -> LayoutPoint {
         let tab = self.tab(window);
         self.pending.retain(|id| *id != window.id);
         self.place_of(tab.as_deref())
-            .unwrap_or_else(|| Point::from((OFFSTAGE, 0)))
+            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
     }
 
     fn arrange(
         &mut self,
-        windows: &[(WindowInfo, Rectangle<i32, Logical>)],
-        _outputs: &[Rectangle<i32, Logical>],
+        windows: &[(WindowInfo, LayoutRect)],
+        _outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
         // A window the compositor lists has shown its buffer.
         self.pending
@@ -273,7 +269,7 @@ impl WindowPolicy for WellPolicy {
                 // No well on screen: the window waits off it, with the size it has.
                 arrangements.push(Arrangement {
                     id: window.id,
-                    location: Point::from((OFFSTAGE, 0)),
+                    location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
                 });
                 continue;
@@ -281,7 +277,7 @@ impl WindowPolicy for WellPolicy {
             if well.width() < 1.0 || well.height() < 1.0 {
                 arrangements.push(Arrangement {
                     id: window.id,
-                    location: Point::from((OFFSTAGE, 0)),
+                    location: LayoutPoint::from((OFFSTAGE, 0)),
                     size: None,
                 });
                 continue;
@@ -292,7 +288,7 @@ impl WindowPolicy for WellPolicy {
             let configured = (current.size.w, current.size.h) != size;
             arrangements.push(Arrangement {
                 id: window.id,
-                location: Point::from((round(well.x0), round(well.y0))),
+                location: LayoutPoint::from((round(well.x0), round(well.y0))),
                 size: configured.then_some(size),
             });
         }

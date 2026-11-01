@@ -1,4 +1,4 @@
-//! The bridge live against a real Discord server: a room on an in-process
+//! The bridge live against a real Discord server: a workspace on an in-process
 //! relay with Chat and the guild record, the bridge bot installed from its
 //! program file, and this binary started again as the `discord-worker`
 //! under the connector host. Ada's side is scripted through her own Chat
@@ -12,7 +12,7 @@
 //! live_bridge <token-file> <guild-id>
 //! ```
 //!
-//! The room is linked to the server as a hosted room links it
+//! The workspace is linked to the server as a hosted workspace links it
 //! (`tilo_relay::room_bots::discord`), and the worker runs with the settings
 //! that link gives it.
 //!
@@ -212,8 +212,8 @@ impl Rest {
     }
 }
 
-/// The room, as the governor's copy holds its records.
-struct Room {
+/// The workspace, as the governor's copy holds its records.
+struct Workspace {
     rooms: Rooms,
     id: String,
     cert: DeviceCert,
@@ -222,7 +222,7 @@ struct Room {
     ada: String,
 }
 
-impl Room {
+impl Workspace {
     async fn doc(&self, app: &str) -> AutoCommit {
         AutoCommit::load(
             &self
@@ -260,7 +260,7 @@ impl Room {
             .unwrap()
     }
 
-    /// The chat's first part of messages, as the room holds it.
+    /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
         self.rooms
             .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
@@ -447,7 +447,7 @@ async fn live(token: String, guild_id: String) -> usize {
     .await
     .unwrap();
     let rooms = relay.rooms().unwrap().clone();
-    let room = Room {
+    let workspace = Workspace {
         id: rooms.create(&server_name).await.unwrap().room,
         rooms,
         cert: cert.clone(),
@@ -456,8 +456,8 @@ async fn live(token: String, guild_id: String) -> usize {
         ada: hex::encode(ADA),
     };
 
-    // Connected as a hosted room connects it: from the bridge's inputs,
-    // as the room's owner.
+    // Connected as a hosted workspace connects it: from the bridge's inputs,
+    // as the workspace's owner.
     let bridged = DiscordLink::from_inputs(
         &[("guild", guild_id.clone()), ("server", server_name.clone())]
             .into_iter()
@@ -466,14 +466,17 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .unwrap()
     .unwrap();
-    discord::connect(&room.rooms, &room.id, &cert, &bridged)
+    discord::connect(&workspace.rooms, &workspace.id, &cert, &bridged)
         .await
         .unwrap();
-    room.chat_as({
-        let ada = room.ada.clone();
-        move |doc| chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())
-    })
-    .await;
+    workspace
+        .chat_as({
+            let ada = workspace.ada.clone();
+            move |doc| {
+                chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())
+            }
+        })
+        .await;
 
     let secrets = ui::secrets::SecretStore::memory(APP);
     secrets
@@ -501,12 +504,12 @@ async fn live(token: String, guild_id: String) -> usize {
         .await
         .unwrap();
     let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
-    keep_member(&room.rooms, &room.id, &cert, &certifier, &bot)
+    keep_member(&workspace.rooms, &workspace.id, &cert, &certifier, &bot)
         .await
         .unwrap();
     let mut runner = BotRunner::new(
-        room.rooms.clone(),
-        room.id.clone(),
+        workspace.rooms.clone(),
+        workspace.id.clone(),
         cert.clone(),
         certifier.device_key(&bot.installation),
         bot,
@@ -535,7 +538,7 @@ async fn live(token: String, guild_id: String) -> usize {
         return report.failed;
     };
     let imported = settle(&mut runner, "import", || async {
-        let guild = room.guild().await;
+        let guild = workspace.guild().await;
         let general = guild
             .by_discord(MappedKind::Channel, &first_text)
             .map(|mapping| mapping.tilo.clone())?;
@@ -555,7 +558,7 @@ async fn live(token: String, guild_id: String) -> usize {
         report.case("import", false, "the layout never came into Chat");
         return report.failed;
     };
-    let names: Vec<String> = room
+    let names: Vec<String> = workspace
         .chat()
         .await
         .channels
@@ -570,7 +573,7 @@ async fn live(token: String, guild_id: String) -> usize {
         let id = channel["id"].as_str().unwrap_or_default();
         let found = settle(&mut runner, "webhooks", || async {
             let hooks = rest.get(&format!("/channels/{id}/webhooks")).await;
-            let guild = room.guild().await;
+            let guild = workspace.guild().await;
             hooks.as_array().and_then(|hooks| {
                 hooks
                     .iter()
@@ -594,7 +597,7 @@ async fn live(token: String, guild_id: String) -> usize {
         format!("{hooked:?}"),
     );
 
-    // Roles: the room's roles in Discord, and their overwrites on channels.
+    // Roles: the workspace's roles in Discord, and their overwrites on channels.
     let wanted = ["Viewer", "Commenter", "Editor", "Moderator", "Owner"];
     let roles = settle(&mut runner, "roles", || async {
         let roles = rest.get(&format!("/guilds/{guild_id}/roles")).await;
@@ -624,16 +627,17 @@ async fn live(token: String, guild_id: String) -> usize {
     );
 
     // Layout: a channel made in Tilo appears in Discord.
-    room.act(
-        &room.owner,
-        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "made-in-tilo".parse().unwrap(),
-            category: None,
-            kind: None,
-            topic: None,
-        }),
-    )
-    .await;
+    workspace
+        .act(
+            &workspace.owner,
+            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                name: "made-in-tilo".parse().unwrap(),
+                category: None,
+                kind: None,
+                topic: None,
+            }),
+        )
+        .await;
     let made = settle(&mut runner, "channel from Tilo", || async {
         rest.get(&format!("/guilds/{guild_id}/channels"))
             .await
@@ -651,9 +655,9 @@ async fn live(token: String, guild_id: String) -> usize {
     );
 
     // Tilo to Discord: a post under Ada's name through the webhook.
-    let first = room.ada_says(&general, "hello from Tilo").await;
+    let first = workspace.ada_says(&general, "hello from Tilo").await;
     let sent = settle(&mut runner, "post", || async {
-        room.discord_of(MappedKind::Message, &first).await
+        workspace.discord_of(MappedKind::Message, &first).await
     })
     .await
     .unwrap_or_default();
@@ -668,16 +672,17 @@ async fn live(token: String, guild_id: String) -> usize {
         link(&guild_id, &first_text, Some(&sent)),
     );
 
-    room.act_on_messages(
-        &room.ada,
-        chat::parts::ChatPart::EDIT_MESSAGE.with(chat::messages::chat_part::EditMessage {
-            message: Id::from_raw(&first),
-            text: "hello from Tilo, edited".into(),
-            body: None,
-            mentions: None,
-        }),
-    )
-    .await;
+    workspace
+        .act_on_messages(
+            &workspace.ada,
+            chat::parts::ChatPart::EDIT_MESSAGE.with(chat::messages::chat_part::EditMessage {
+                message: Id::from_raw(&first),
+                text: "hello from Tilo, edited".into(),
+                body: None,
+                mentions: None,
+            }),
+        )
+        .await;
     let edited = settle(&mut runner, "edit", || async {
         (rest
             .get(&format!("/channels/{first_text}/messages/{sent}"))
@@ -688,16 +693,17 @@ async fn live(token: String, guild_id: String) -> usize {
     .await;
     report.case("Tilo->Discord edit", edited.is_some(), "content rewritten");
 
-    room.act_on_messages(
-        &room.ada,
-        chat::parts::ChatPart::paths()
-            .messages
-            .item(&Id::from_raw(&first))
-            .reactions
-            .react("👍")
-            .into(),
-    )
-    .await;
+    workspace
+        .act_on_messages(
+            &workspace.ada,
+            chat::parts::ChatPart::paths()
+                .messages
+                .item(&Id::from_raw(&first))
+                .reactions
+                .react("👍")
+                .into(),
+        )
+        .await;
     let reacted = settle(&mut runner, "reaction", || async {
         let path = format!(
             "/channels/{first_text}/messages/{sent}/reactions/{}",
@@ -712,13 +718,14 @@ async fn live(token: String, guild_id: String) -> usize {
     .await;
     report.case("Tilo->Discord reaction", reacted.is_some(), "👍 by the bot");
 
-    room.act_on_messages(
-        &room.ada,
-        chat::demo::post(&general, "a reply from Tilo", Some(&first)),
-    )
-    .await;
+    workspace
+        .act_on_messages(
+            &workspace.ada,
+            chat::demo::post(&general, "a reply from Tilo", Some(&first)),
+        )
+        .await;
     let thread = settle(&mut runner, "reply", || async {
-        let thread = room.discord_of(MappedKind::Thread, &first).await?;
+        let thread = workspace.discord_of(MappedKind::Thread, &first).await?;
         rest.get(&format!("/channels/{thread}/messages"))
             .await
             .as_array()?
@@ -737,28 +744,29 @@ async fn live(token: String, guild_id: String) -> usize {
 
     let bytes = b"the minutes, from Tilo".to_vec();
     let blob = blobs.store(&bytes).unwrap();
-    room.act_on_messages(
-        &room.ada,
-        chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
-            message: chat::messages::NewMessage {
-                channel: Id::from_raw(&general),
-                text: "notes from Tilo".into(),
-                parent: None,
-                body: None,
-                attachment: Some(chat::record::AttachmentUpdate {
-                    kind: "file".into(),
-                    name: "notes.txt".into(),
-                    blob,
-                    width: 0,
-                    height: 0,
-                    size: bytes.len() as u64,
-                }),
-                mentions: None,
-                written: None,
-            },
-        }),
-    )
-    .await;
+    workspace
+        .act_on_messages(
+            &workspace.ada,
+            chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+                message: chat::messages::NewMessage {
+                    channel: Id::from_raw(&general),
+                    text: "notes from Tilo".into(),
+                    parent: None,
+                    body: None,
+                    attachment: Some(chat::record::AttachmentUpdate {
+                        kind: "file".into(),
+                        name: "notes.txt".into(),
+                        blob,
+                        width: 0,
+                        height: 0,
+                        size: bytes.len() as u64,
+                    }),
+                    mentions: None,
+                    written: None,
+                },
+            }),
+        )
+        .await;
     let file = settle(&mut runner, "file", || async {
         rest.get(&format!("/channels/{first_text}/messages?limit=20"))
             .await
@@ -775,19 +783,20 @@ async fn live(token: String, guild_id: String) -> usize {
         link(&guild_id, &first_text, file["id"].as_str()),
     );
 
-    let doomed = room.ada_says(&general, "deleted in Tilo").await;
+    let doomed = workspace.ada_says(&general, "deleted in Tilo").await;
     let doomed_sent = settle(&mut runner, "post to delete", || async {
-        room.discord_of(MappedKind::Message, &doomed).await
+        workspace.discord_of(MappedKind::Message, &doomed).await
     })
     .await
     .unwrap_or_default();
-    room.act_on_messages(
-        &room.ada,
-        chat::parts::ChatPart::DELETE_MESSAGE.with(chat::messages::chat_part::DeleteMessage {
-            message: Id::from_raw(&doomed),
-        }),
-    )
-    .await;
+    workspace
+        .act_on_messages(
+            &workspace.ada,
+            chat::parts::ChatPart::DELETE_MESSAGE.with(chat::messages::chat_part::DeleteMessage {
+                message: Id::from_raw(&doomed),
+            }),
+        )
+        .await;
     let deleted = settle(&mut runner, "delete", || async {
         let (status, _) = rest
             .call(
@@ -835,10 +844,10 @@ async fn live(token: String, guild_id: String) -> usize {
         .await;
     let posted = posted["id"].as_str().unwrap_or_default().to_owned();
     let landed = settle(&mut runner, "Discord post", || async {
-        room.message("hello from Discord").await.map(drop)
+        workspace.message("hello from Discord").await.map(drop)
     })
     .await;
-    let shown = room.shown_as("hello from Discord").await;
+    let shown = workspace.shown_as("hello from Discord").await;
     report.case(
         "Discord->Tilo post",
         landed.is_some() && shown.as_deref() == Some("Bo"),
@@ -852,7 +861,10 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await;
     let edited = settle(&mut runner, "Discord edit", || async {
-        room.message("hello from Discord, edited").await.map(drop)
+        workspace
+            .message("hello from Discord, edited")
+            .await
+            .map(drop)
     })
     .await;
     report.case(
@@ -869,7 +881,7 @@ async fn live(token: String, guild_id: String) -> usize {
         )
         .await;
         let answered = settle(&mut runner, "Discord thread reply", || async {
-            room.message("Bo answers in the thread").await
+            workspace.message("Bo answers in the thread").await
         })
         .await;
         report.case(
@@ -890,7 +902,7 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await;
     let file = settle(&mut runner, "Discord file", || async {
-        room.message("notes from Discord").await
+        workspace.message("notes from Discord").await
     })
     .await;
     let attachment = file.map(|(_, m)| format!("{:?}", m.attachment));
@@ -911,7 +923,7 @@ async fn live(token: String, guild_id: String) -> usize {
         .await;
     let doomed = doomed["id"].as_str().unwrap_or_default().to_owned();
     settle(&mut runner, "Discord post to delete", || async {
-        room.message("deleted in Discord").await.map(drop)
+        workspace.message("deleted in Discord").await.map(drop)
     })
     .await;
     rest.call(
@@ -921,7 +933,8 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await;
     let gone = settle(&mut runner, "Discord delete", || async {
-        room.message("deleted in Discord")
+        workspace
+            .message("deleted in Discord")
             .await
             .is_none()
             .then_some(())

@@ -1,8 +1,9 @@
 //! Emission-time custody for registered local controls.
 //!
 //! Registration is deliberately separate from authority. Only the ordinary
-//! action doors can authorize or execute a descriptor. Unregistered private
-//! producers remain legacy-compatible and explicitly unqualified for History.
+//! action doors can authorize or execute a descriptor. A control built before
+//! any host reports on a domain of its own; a host that adopts it keeps the
+//! same queue, so there is one place a report ever sits.
 //!
 //! Registered queues are sealed in installation preorder. Each producer keeps
 //! its own FIFO or replacement discipline; there is no global temporal order.
@@ -33,17 +34,6 @@ pub enum EmitError {
     Closed,
     Exhausted,
 }
-/// Result of emitting through a retained raw replace-one slot.
-///
-/// `LegacyPending` is transitional pre-registration compatibility. Mounted
-/// roots receive either an opaque queued identity or suppression and can never
-/// recover a registered invocation through the compatibility take path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RawControlEmission {
-    LegacyPending,
-    Queued(ControlRequestId),
-    Suppressed,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CustodyAttachment {
     Initial,
@@ -64,11 +54,10 @@ pub enum CustodyError {
     Closed,
 }
 /// This is an inventory, never an assertion that arbitrary private storage was
-/// observed. Legacy compatibility is retained until downstream migration ends.
+/// observed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControlCoverage {
     pub registered: usize,
-    pub legacy_compatibility_unqualified: bool,
     pub unsafe_late_attachments: usize,
 }
 #[derive(Clone)]
@@ -175,10 +164,7 @@ impl ControlDomain {
             leases: BTreeSet::new(),
             producers: Vec::new(),
             order: Vec::new(),
-            coverage: ControlCoverage {
-                legacy_compatibility_unqualified: true,
-                ..ControlCoverage::default()
-            },
+            coverage: ControlCoverage::default(),
         })))
     }
     pub(crate) fn finish_initial_installation(&self) {
@@ -310,13 +296,41 @@ impl ControlDomain {
             producer,
         }
     }
+    /// Take `outbox`'s queue into this domain: the control that made its own
+    /// domain before a host was there now reports here, keeping what it has
+    /// already queued. Only a queue whose own domain has no owner can be
+    /// adopted, so a report never changes hands between two hosts.
+    fn adopt(&self, outbox: &mut ControlOutbox) {
+        if let Some(own) = outbox.domain.upgrade() {
+            own.release(&outbox.producer);
+        }
+        let mut state = self.0.borrow_mut();
+        state.producers.push(outbox.producer.clone());
+        state
+            .order
+            .push(DomainEntry::Producer(outbox.producer.clone()));
+        state.coverage.registered += 1;
+        outbox.owner_incarnation = state.incarnation;
+        outbox.domain = self.downgrade();
+    }
+
+    /// Drop `producer` from this domain's inventory, keeping its queue.
+    fn release(&self, producer: &Rc<RefCell<Producer>>) {
+        let mut state = self.0.borrow_mut();
+        state.producers.retain(|own| !Rc::ptr_eq(own, producer));
+        state.order.retain(|entry| match entry {
+            DomainEntry::Producer(own) => !Rc::ptr_eq(own, producer),
+            DomainEntry::Child(_) => true,
+        });
+        state.coverage.registered = state.coverage.registered.saturating_sub(1);
+    }
+
     pub fn coverage(&self) -> ControlCoverage {
         let mut result = self.0.borrow().coverage.clone();
         for child in self.children() {
             let coverage = child.coverage();
             result.registered += coverage.registered;
             result.unsafe_late_attachments += coverage.unsafe_late_attachments;
-            result.legacy_compatibility_unqualified |= coverage.legacy_compatibility_unqualified;
         }
         result
     }
@@ -458,38 +472,54 @@ impl ControlOutbox {
         self.domain.upgrade().is_some_and(|old| old.same(domain))
     }
 }
-/// Storage shared by the nine emitters and the palette's replace-one slot.
-/// Automatic private taking survives *only* in this unqualified migration mode.
+/// A control's queued intent: the producer it reports through, and — until a
+/// host adopts it — the domain the control made for itself, so the queue is
+/// the same one before and after mounting. There is no second place a report
+/// can sit.
 pub(crate) struct ControlHolder {
     discipline: ControlProducerDiscipline,
-    storage: HolderStorage,
-}
-enum HolderStorage {
-    Legacy {
-        pending: VecDeque<(ControlInvocation, crate::bound_dispatch::Input)>,
-        emitted: bool,
-    },
-    Registered(ControlOutbox),
+    /// The control's own domain, until a host adopts the queue.
+    unowned: Option<ControlDomain>,
+    /// The queue. Made on the first report while unowned, the host's own
+    /// producer once adopted.
+    queue: Option<ControlOutbox>,
+    /// Whether this control reported while no host had adopted it: the
+    /// reports are the control's own, so a host attaching later cannot take
+    /// them as its own.
+    reported: bool,
 }
 impl ControlHolder {
-    pub(crate) fn registered(
-        domain: &ControlDomain,
-        discipline: ControlProducerDiscipline,
-    ) -> Self {
+    /// A control a host has not adopted yet.
+    pub(crate) fn unowned(discipline: ControlProducerDiscipline) -> Self {
         Self {
             discipline,
-            storage: HolderStorage::Registered(domain.producer(discipline)),
+            unowned: Some(ControlDomain::new()),
+            queue: None,
+            reported: false,
         }
     }
-    pub(crate) fn new(discipline: ControlProducerDiscipline) -> Self {
+
+    /// A control built directly on its host's domain.
+    pub(crate) fn in_domain(domain: &ControlDomain, discipline: ControlProducerDiscipline) -> Self {
         Self {
             discipline,
-            storage: HolderStorage::Legacy {
-                pending: VecDeque::new(),
-                emitted: false,
-            },
+            unowned: None,
+            queue: Some(domain.producer(discipline)),
+            reported: false,
         }
     }
+
+    /// The queue a report goes to, made on the control's own domain the
+    /// first time it is needed.
+    fn queue(&mut self) -> Option<ControlOutbox> {
+        if let Some(queue) = &self.queue {
+            return Some(queue.clone());
+        }
+        let queue = self.unowned.as_ref()?.producer(self.discipline);
+        self.queue = Some(queue.clone());
+        Some(queue)
+    }
+
     pub(crate) fn install(
         &mut self,
         domain: &ControlDomain,
@@ -498,7 +528,10 @@ impl ControlHolder {
         if domain.closed() {
             return Err(CustodyError::Closed);
         }
-        if let HolderStorage::Registered(outbox) = &self.storage {
+        if self.unowned.is_none() {
+            let Some(outbox) = &self.queue else {
+                return Ok(());
+            };
             if outbox.belongs_to(domain) {
                 return Ok(());
             }
@@ -519,98 +552,75 @@ impl ControlHolder {
             if domain.closed() {
                 return Err(CustodyError::Closed);
             }
-            self.storage = HolderStorage::Registered(domain.producer(self.discipline));
+            self.queue = Some(domain.producer(self.discipline));
             return Ok(());
         }
-        if domain.closed() {
-            return Err(CustodyError::Closed);
+        if self.reported
+            && (attachment != CustodyAttachment::Initial || !domain.0.borrow().initial_installation)
+        {
+            domain.unsafe_attachment();
+            return Err(CustodyError::UnsafeLateAttachment);
         }
-        if let HolderStorage::Legacy { emitted: true, .. } = &self.storage {
-            if attachment != CustodyAttachment::Initial || !domain.0.borrow().initial_installation {
-                domain.unsafe_attachment();
-                return Err(CustodyError::UnsafeLateAttachment);
+        let queue = match &mut self.queue {
+            Some(queue) => {
+                domain.adopt(queue);
+                queue.clone()
             }
-        }
-        let outbox = domain.producer(self.discipline);
-        let old = std::mem::replace(&mut self.storage, HolderStorage::Registered(outbox.clone()));
-        if let HolderStorage::Legacy { pending, .. } = old {
-            for (invocation, physical_text) in pending {
-                let _ =
-                    crate::bound_dispatch::with_input(physical_text, || outbox.emit(invocation));
-            }
-        }
+            None => domain.producer(self.discipline),
+        };
+        self.queue = Some(queue);
+        self.unowned = None;
         Ok(())
     }
-    pub(crate) fn emit(&mut self, invocation: ControlInvocation) {
-        let _ = self.emit_detailed(invocation);
-    }
-    fn emit_detailed(
+
+    pub(crate) fn emit(
         &mut self,
         invocation: ControlInvocation,
-    ) -> Result<RawControlEmission, EmitError> {
-        match &mut self.storage {
-            HolderStorage::Registered(outbox) => {
-                outbox.emit(invocation).map(|emission| match emission {
-                    LocalEmission::Queued(id) => RawControlEmission::Queued(id),
-                    LocalEmission::Suppressed => RawControlEmission::Suppressed,
-                })
-            }
-            HolderStorage::Legacy { pending, emitted } => {
-                *emitted = true;
-                match self.discipline {
-                    ControlProducerDiscipline::ReplaceOne => pending.clear(),
-                    ControlProducerDiscipline::Fifo { limit } => {
-                        if limit == 0 {
-                            return Ok(RawControlEmission::Suppressed);
-                        }
-                        if pending.len() >= limit {
-                            pending.pop_front();
-                        }
-                    }
-                }
-                pending.push_back((invocation, crate::bound_dispatch::input()));
-                Ok(RawControlEmission::LegacyPending)
-            }
+    ) -> Result<LocalEmission, EmitError> {
+        let queue = self.queue().ok_or(EmitError::Closed)?;
+        let emission = queue.emit(invocation)?;
+        if self.unowned.is_some() {
+            self.reported = true;
+        }
+        Ok(emission)
+    }
+
+    /// One report of a control no host has adopted yet, oldest first.
+    pub(crate) fn take(&self) -> Option<ControlInvocation> {
+        self.unowned.as_ref()?;
+        let queue = self.queue.as_ref()?;
+        let mut producer = queue.producer.borrow_mut();
+        producer
+            .pending
+            .pop_front()
+            .map(|(_, invocation, physical_text)| {
+                crate::bound_dispatch::note_drained_input(physical_text);
+                invocation
+            })
+    }
+
+    pub(crate) fn clear(&self) {
+        if let Some(queue) = &self.queue {
+            queue.clear();
         }
     }
-    pub(crate) fn take(&mut self) -> Option<ControlInvocation> {
-        match &mut self.storage {
-            HolderStorage::Legacy { pending, .. } => {
-                pending.pop_front().map(|(invocation, physical_text)| {
-                    crate::bound_dispatch::note_drained_input(physical_text);
-                    invocation
-                })
-            }
-            HolderStorage::Registered(_) => None,
-        }
-    }
-    pub(crate) fn clear(&mut self) {
-        match &mut self.storage {
-            HolderStorage::Legacy { pending, .. } => pending.clear(),
-            HolderStorage::Registered(outbox) => outbox.clear(),
-        }
-    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn controlled_pending_for_test(&self) -> Option<ControlInvocation> {
-        match &self.storage {
-            HolderStorage::Legacy { pending, .. } => {
-                pending.front().map(|(invocation, _)| invocation.clone())
-            }
-            HolderStorage::Registered(outbox) => outbox
-                .producer
-                .borrow()
-                .pending
-                .front()
-                .map(|(_, invocation, _)| invocation.clone()),
-        }
+        self.queue
+            .as_ref()?
+            .producer
+            .borrow()
+            .pending
+            .front()
+            .map(|(_, invocation, _)| invocation.clone())
     }
 }
 
 /// Retained raw descriptor custody for a single last-write-wins producer.
 ///
-/// The legacy buffer exists only until a mounted owner installs custody. Once
-/// registered, this slot delegates directly to the owner's private producer
-/// and never exposes registered descriptors through compatibility taking.
+/// A control built outside a host reports on a domain of its own; a host that
+/// adopts it keeps the same queue and drains it like any other producer.
 pub struct RawControlSlot {
     holder: ControlHolder,
 }
@@ -618,13 +628,13 @@ pub struct RawControlSlot {
 impl RawControlSlot {
     pub fn replace_one() -> Self {
         Self {
-            holder: ControlHolder::new(ControlProducerDiscipline::ReplaceOne),
+            holder: ControlHolder::unowned(ControlProducerDiscipline::ReplaceOne),
         }
     }
 
     pub fn replace_one_in(domain: &ControlDomain) -> Self {
         Self {
-            holder: ControlHolder::registered(domain, ControlProducerDiscipline::ReplaceOne),
+            holder: ControlHolder::in_domain(domain, ControlProducerDiscipline::ReplaceOne),
         }
     }
 
@@ -641,17 +651,12 @@ impl RawControlSlot {
     }
 
     /// Own a complete invocation at emission time.
-    pub fn emit(&mut self, invocation: ControlInvocation) -> Result<RawControlEmission, EmitError> {
-        self.holder.emit_detailed(invocation)
+    pub fn emit(&mut self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
+        self.holder.emit(invocation)
     }
 
     pub fn clear(&mut self) {
         self.holder.clear();
-    }
-
-    /// Transitional direct-fixture compatibility before registration.
-    pub fn take_legacy_compatibility(&mut self) -> Option<ControlInvocation> {
-        self.holder.take()
     }
 
     /// Inspect the retained descriptor in deterministic controlled fixtures.
@@ -713,25 +718,24 @@ mod tests {
         }
     }
     #[test]
-    fn control_custody_raw_holder_legacy_replaces_copies_and_clears() {
+    fn control_custody_raw_holder_keeps_one_queue_replace_one_and_clears() {
         let mut slot = RawControlSlot::replace_one();
         let expected_b = raw_request("resource-b", "apply", "copied-b");
 
-        assert_eq!(
+        assert!(matches!(
             slot.emit(raw_request("resource-a", "apply", "copied-a")),
-            Ok(RawControlEmission::LegacyPending)
-        );
-        assert_eq!(
+            Ok(LocalEmission::Queued(_))
+        ));
+        assert!(matches!(
             slot.emit(expected_b.clone()),
-            Ok(RawControlEmission::LegacyPending)
-        );
-        assert_eq!(slot.take_legacy_compatibility(), Some(expected_b));
-        assert_eq!(slot.take_legacy_compatibility(), None);
+            Ok(LocalEmission::Queued(_))
+        ));
+        assert_eq!(slot.controlled_pending_for_test(), Some(expected_b));
 
         slot.emit(raw_request("resource-c", "clear", "copied-c"))
             .unwrap();
         slot.clear();
-        assert_eq!(slot.take_legacy_compatibility(), None);
+        assert_eq!(slot.controlled_pending_for_test(), None);
     }
     #[test]
     fn control_custody_raw_holder_initial_transfer_is_once_and_registered_never_takes() {
@@ -744,13 +748,12 @@ mod tests {
             .unwrap();
         slot.install_custody(&domain, CustodyAttachment::Dynamic)
             .unwrap();
-        assert_eq!(slot.take_legacy_compatibility(), None);
         let drained = domain.drain_live();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].invocation, expected);
         assert!(
             domain.drain_live().is_empty(),
-            "initial value transfers once"
+            "the adopted queue drains once"
         );
     }
     #[test]
@@ -761,7 +764,7 @@ mod tests {
         assert!(saved.is_empty());
         assert_eq!(
             slot.emit(raw_request("hidden", "apply", "suppressed")),
-            Ok(RawControlEmission::Suppressed)
+            Ok(LocalEmission::Suppressed)
         );
         drop(lease);
         assert!(domain.drain_live().is_empty());
@@ -787,7 +790,6 @@ mod tests {
             slot.emit(raw_request("closed", "apply", "refused")),
             Err(EmitError::Closed)
         );
-        assert_eq!(slot.take_legacy_compatibility(), None);
         assert_eq!(
             slot.install_custody(&domain, CustodyAttachment::Initial),
             Err(CustodyError::Closed)
@@ -805,10 +807,9 @@ mod tests {
         let renewal = replacement.renewal_from(&previous);
         slot.install_custody(&replacement, renewal).unwrap();
         assert!(replacement.drain_live().is_empty());
-        assert_eq!(slot.take_legacy_compatibility(), None);
         assert!(matches!(
             slot.emit(raw_request("fresh", "apply", "fresh-only")),
-            Ok(RawControlEmission::Queued(_))
+            Ok(LocalEmission::Queued(_))
         ));
         let drained = replacement.drain_live();
         assert_eq!(drained.len(), 1);
@@ -849,7 +850,6 @@ mod tests {
             Err(CustodyError::UnsafeLateAttachment)
         );
         assert_eq!(domain.coverage().unsafe_late_attachments, 1);
-        assert!(domain.coverage().legacy_compatibility_unqualified);
         domain.finish_initial_installation();
         let mut falsely_initial = ActionEmitter::new(crate::widget::test_bool_action_binding());
         falsely_initial.emit(true).unwrap();
@@ -918,15 +918,14 @@ mod tests {
         }
     }
     #[test]
-    fn control_custody_core_legacy_clients_preserve_live_behavior_without_acceptance() {
-        let mut legacy = ActionEmitter::new(crate::widget::test_bool_action_binding());
-        legacy.emit(true).unwrap();
-        assert_eq!(legacy.take(), Some(invocation(true)));
-        assert!(legacy.take().is_none());
-        assert!(
-            ControlDomain::outer()
-                .coverage()
-                .legacy_compatibility_unqualified
+    fn control_custody_core_a_control_without_a_host_keeps_its_own_queue() {
+        let mut control = ActionEmitter::new(crate::widget::test_bool_action_binding());
+        control.emit(true).unwrap();
+        assert_eq!(control.take(), Some(invocation(true)));
+        assert!(control.take().is_none());
+        assert_eq!(
+            ControlDomain::outer().coverage(),
+            ControlCoverage::default()
         );
     }
     #[test]
