@@ -319,6 +319,28 @@ impl Person {
 /// login account's. A workspace, a public one above all, learns nothing of this
 /// person's devices.
 pub(crate) fn own_person_name(chosen: Option<String>) -> String {
+    chosen_name(chosen).unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
+}
+
+/// The name this person goes by at their own desk: the one they chose, else
+/// the name the session already knows them by. A computer with no identity
+/// of its own goes by the login account, which is the session's person
+/// there, so the desk and its bar name them alike; a computer whose identity
+/// is in is named by its key, which is never shown as a name.
+pub(crate) fn desk_person_name(chosen: Option<String>, person: &str) -> String {
+    chosen_name(chosen).unwrap_or_else(|| {
+        let known = person.trim();
+        if known.is_empty() || is_identity_key(known) {
+            tilo_identity_host::provisioning::login_account_display_name()
+        } else {
+            known.to_owned()
+        }
+    })
+}
+
+/// The display name `chosen` is, where it is one they gave: not blank, not
+/// the placeholder an unnamed identity carries, and one a room may take.
+fn chosen_name(chosen: Option<String>) -> Option<String> {
     chosen
         .filter(|name| runtime_identity::is_chosen_display_name(name))
         .and_then(|name| {
@@ -326,7 +348,12 @@ pub(crate) fn own_person_name(chosen: Option<String>) -> String {
                 .ok()
                 .map(str::to_owned)
         })
-        .unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
+}
+
+/// Whether `person` is a key rather than a name to read: the root key hex a
+/// computer's identity names them by.
+fn is_identity_key(person: &str) -> bool {
+    person.len() == 64 && person.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// A workspace this person was let into: the workspace its door's invitation
@@ -1220,6 +1247,31 @@ mod tests {
 
     fn directory() -> url::Url {
         url::Url::parse("https://eu1.tilo.coffee/peer/v1/directory").unwrap()
+    }
+
+    #[test]
+    fn the_desk_names_the_person_as_it_knows_them() {
+        let key = "3f".repeat(32);
+        assert_eq!(
+            desk_person_name(Some("Ada Lovelace".into()), &key),
+            "Ada Lovelace"
+        );
+        assert_eq!(
+            desk_person_name(None, "Pat"),
+            "Pat",
+            "a computer with no identity goes by the name its session acts as"
+        );
+        assert_eq!(
+            desk_person_name(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), "Pat"),
+            "Pat",
+            "an unnamed identity leaves the session's name standing"
+        );
+        let account = tilo_identity_host::provisioning::login_account_display_name();
+        assert_eq!(
+            desk_person_name(None, &key),
+            account,
+            "a key is never shown as the person's name"
+        );
     }
 
     #[test]

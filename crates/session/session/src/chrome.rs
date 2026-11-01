@@ -353,8 +353,9 @@ impl DesktopChromeSource for SessionChrome {
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
                 // chose hangs on: the id is never shown as their name.
-                name: crate::directory::own_person_name(
+                name: crate::directory::desk_person_name(
                     ui::local_identity::load().map(|it| it.display_name),
+                    &self.person,
                 ),
                 rgb: ui::presence::user_color(&self.person),
                 identity: self.person.clone(),
