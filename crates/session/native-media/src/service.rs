@@ -299,10 +299,12 @@ impl NativeMediaService {
                     }
                     entry.snapshot.deafened = true;
                     Shared::stop_capture(entry);
+                    Shared::set_deafened(entry, true);
                     return Ok(Shared::snapshot(entry));
                 }
                 let was = entry.snapshot.deafened;
                 entry.snapshot.deafened = false;
+                Shared::set_deafened(entry, false);
                 if !was || entry.muted_before_deafen {
                     return Ok(Shared::snapshot(entry));
                 }
@@ -314,6 +316,7 @@ impl NativeMediaService {
                     .filter(|entry| entry.snapshot.deafened)
             {
                 entry.snapshot.deafened = false;
+                Shared::set_deafened(entry, false);
             }
         }
         (caller.current)()?;
@@ -788,6 +791,14 @@ impl Shared {
         }
         entry.snapshot.muted = true;
         entry.snapshot.capture_active = false;
+    }
+
+    /// What the person hears of the call: the carrier stops playing it while
+    /// deafened, and the frames it receives meanwhile are dropped.
+    fn set_deafened(entry: &mut Entry, deafened: bool) {
+        if let Some(backend) = &entry.backend {
+            backend.lock_recover().set_deafened(deafened);
+        }
     }
 
     fn stop_entry(entry: &mut Entry) {

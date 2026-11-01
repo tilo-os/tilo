@@ -227,7 +227,13 @@ tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire"] }
+# A call's frames, sealed with the channel's keys and carried as datagrams on
+# this session's own endpoint.
+tilo-call-lane = { path = "../../collab/tilo-call-lane" }
+# One-shot `PipeWire` registry custody for a call's microphone and output.
+pipewire = "0.10.1"
+
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
 # Checks a password for the lock screen, through the unlock helper.
@@ -246,6 +252,9 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# A call's tone and played samples with no device stack: a test hears the
+# same encoder, lane and playout a device's call uses.
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "test-support"] }
 # Reporting an ending to a session's apps as its spawner would, with the
 # memory cause a launcher remembers.
 tilo-app-launch = { path = "../app-launch", features = ["test-support"] }

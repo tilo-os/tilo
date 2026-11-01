@@ -149,9 +149,30 @@ pub(crate) fn start_action_plane(
     let calls_service = sync.map(|sync| {
         calls.follow(sync, None);
         let service = tilo_native_media::NativeMediaService::new();
-        service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(
+        // A call's lane runs on the session's own endpoint, sealed with the
+        // room's channel keys and admitted by the room's governance: what
+        // every member of the room needs to be in the channel's call.
+        let roster = sync.engine().map_or_else(
+            || {
+                std::sync::Arc::new(|_: &str| Vec::new())
+                    as std::sync::Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>
+            },
+            |engine| {
+                let engine = std::sync::Arc::clone(engine);
+                std::sync::Arc::new(move |room: &str| {
+                    engine.roster_devices(room).unwrap_or_default()
+                })
+            },
+        );
+        let sources = crate::calls::Sources::carrier(
             std::sync::Arc::clone(&calls),
-        )));
+            sync.endpoint_handle(),
+            sync.lane().clone(),
+            sync.engine().map(|engine| engine.keys()),
+            roster,
+            options.questions.clone(),
+        );
+        service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
         service
     });
     // An app's action on another of the person's own devices leaves through

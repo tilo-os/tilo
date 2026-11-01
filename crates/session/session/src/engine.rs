@@ -298,6 +298,19 @@ impl Engine {
         })
     }
 
+    /// The devices `room` admits, as a call's roster names them: whoever the
+    /// room's governance certified and has not removed may reach a call in
+    /// it.
+    pub(crate) fn roster_devices(&self, room: &str) -> Result<Vec<[u8; 32]>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        channels::roster_of(self, room).map(|roster| {
+            roster
+                .into_iter()
+                .map(|(device, _)| *device.as_bytes())
+                .collect()
+        })
+    }
+
     /// Who the room `room` has in it, as its governance tells it: every
     /// person the workspace was shared with, by the name it knows them by and
     /// the part they take in it. A workspace joined brings its people with

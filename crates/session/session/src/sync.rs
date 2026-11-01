@@ -606,6 +606,12 @@ pub struct Client {
     >,
     /// Where this device's endpoint is reached, as other devices dial it.
     endpoint: EndpointAddr,
+    /// This device's endpoint itself, once it has bound: what a call's media
+    /// lanes run on, beside the plane's own traffic.
+    endpoint_handle: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    /// What answers a call's lanes on that endpoint: the carrier of the call
+    /// this device is in, which a factory installs while it lasts.
+    lane: crate::calls::LaneSlot,
     /// This device's fabric, when it is a certified device of the person's:
     /// `None` on a session that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
@@ -709,6 +715,10 @@ impl Client {
         let enrolling = engine.clone();
         let device_actions = Arc::new(std::sync::OnceLock::new());
         let serving = Arc::clone(&device_actions);
+        let endpoint_handle = Arc::new(std::sync::OnceLock::new());
+        let bound_endpoint = Arc::clone(&endpoint_handle);
+        let lane = crate::calls::LaneSlot::default();
+        let served_lane = lane.clone();
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -723,6 +733,8 @@ impl Client {
                     Serving {
                         link: plane_link,
                         actions: serving,
+                        bound: bound_endpoint,
+                        lane: served_lane,
                     },
                 );
             })?;
@@ -756,6 +768,8 @@ impl Client {
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
             endpoint,
+            endpoint_handle,
+            lane,
             fabric,
             device_actions,
             reachability,
@@ -1182,6 +1196,27 @@ impl Client {
         self.endpoint.clone()
     }
 
+    /// This device's collaboration endpoint, once it has bound: where what a
+    /// call carries runs, beside the rooms' own traffic. `None` on a client
+    /// taking part in no transport.
+    #[must_use]
+    pub fn endpoint(&self) -> Option<iroh::Endpoint> {
+        self.endpoint_handle.get().cloned()
+    }
+
+    /// Where that endpoint lands, for what starts before it has bound: a
+    /// call joins the endpoint the moment the plane has it.
+    #[must_use]
+    pub(crate) fn endpoint_handle(&self) -> Arc<std::sync::OnceLock<iroh::Endpoint>> {
+        Arc::clone(&self.endpoint_handle)
+    }
+
+    /// What answers a call's lanes on that endpoint.
+    #[must_use]
+    pub(crate) fn lane(&self) -> &crate::calls::LaneSlot {
+        &self.lane
+    }
+
     /// Dial one of the person's own devices, whose address this session was
     /// told: the session between the two carries their device fabric.
     pub fn connect(&self, addr: EndpointAddr) {
@@ -1567,6 +1602,8 @@ impl Client {
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
+                endpoint_handle: Arc::new(std::sync::OnceLock::new()),
+                lane: crate::calls::LaneSlot::default(),
                 fabric: None,
                 device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
@@ -1704,6 +1741,10 @@ fn plane_runtime(
 pub(crate) struct Serving {
     pub(crate) link: Option<Arc<ChannelLink>>,
     pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
+    /// This device's endpoint, once it has bound, and what answers a call's
+    /// lanes on it.
+    pub(crate) bound: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    pub(crate) lane: crate::calls::LaneSlot,
 }
 
 /// What this device answers on from the moment its endpoint is bound: the
@@ -1728,7 +1769,12 @@ fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    Serving { link, actions }: Serving,
+    Serving {
+        link,
+        actions,
+        bound,
+        lane,
+    }: Serving,
 ) {
     let Some(runtime) = plane_runtime(&ready) else {
         return;
@@ -1749,6 +1795,8 @@ fn run(
             link.clone(),
             &ready,
             &actions,
+            &bound,
+            &lane,
         )
         .await
         else {
@@ -1824,6 +1872,8 @@ async fn listening(
     link: Option<Arc<ChannelLink>>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     actions: &Arc<std::sync::OnceLock<DeviceActions>>,
+    bound: &Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    lane: &crate::calls::LaneSlot,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
     let (builder, deferred_relays) = match endpoint_for(identity) {
@@ -1860,6 +1910,14 @@ async fn listening(
     // the person's devices reaches what this one publishes here, beside the
     // rooms' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
+    // A call's lane is served here too, from the first pass: it refuses every
+    // connection until a call installs its carrier, and answers those from
+    // then until the call ends.
+    served.push((
+        tilo_call_lane::ALPN.to_vec(),
+        Box::<dyn iroh::protocol::DynProtocolHandler>::from(lane.handler()),
+    ));
+    let _ = bound.set(endpoint.clone());
     if let Some(identity) = identity {
         let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
         served.push((
