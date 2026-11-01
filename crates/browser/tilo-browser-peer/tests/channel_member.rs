@@ -264,7 +264,8 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The workspace's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }
@@ -573,7 +574,8 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The workspace's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }
@@ -714,7 +716,8 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The workspace's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }

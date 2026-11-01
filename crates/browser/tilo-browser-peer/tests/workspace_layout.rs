@@ -61,13 +61,13 @@ async fn a_page_keeps_to_its_workspaces_layout_scope() {
     );
     page.join(workspace.workspace_id).unwrap();
     ready(&[&page]).await;
-    wait_for("the room to let the page in", || async {
+    wait_for("the workspace to let the page in", || async {
         (page.status().rooms.get(&workspace.workspace_id) == Some(&true)).then_some(())
     })
     .await;
     assert!(
         !page.status().personal_rooms.contains(&workspace.room),
-        "a room shares its members' layout until its governance says otherwise"
+        "a workspace shares its members' layout until its governance says otherwise"
     );
 
     host.relay

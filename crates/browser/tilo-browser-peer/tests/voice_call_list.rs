@@ -57,7 +57,9 @@ async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device
 /// The next call list `client` is told.
 fn listed(envelope: Envelope) -> Option<Vec<CallSummary>> {
     match envelope {
-        Envelope::VoiceCallList { result, .. } => Some(result.expect("the room lists its calls")),
+        Envelope::VoiceCallList { result, .. } => {
+            Some(result.expect("the workspace lists its calls"))
+        }
         _ => None,
     }
 }

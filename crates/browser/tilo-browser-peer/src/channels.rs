@@ -627,10 +627,13 @@ mod tests {
         let workspace_id = note.workspace_id().unwrap();
         assert!(
             requests(&channels.ask_now(workspace_id.wrapping_add(1), 1)).is_empty(),
-            "another room's admission asks nothing of this one"
+            "another workspace's admission asks nothing of this one"
         );
         let again = requests(&channels.ask_now(workspace_id, 1));
-        assert_eq!(again, asked, "the room's admission asks the same again");
+        assert_eq!(
+            again, asked,
+            "the workspace's admission asks the same again"
+        );
     }
 
     #[test]

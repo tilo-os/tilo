@@ -39,7 +39,7 @@ async fn workspaces(link: &HttpsLink, request: RoomsRequest) -> Room {
         .unwrap()
     {
         RoomsReply::Room(workspace) => workspace,
-        other => panic!("expected a room, got {other:?}"),
+        other => panic!("expected a workspace, got {other:?}"),
     }
 }
 
@@ -112,7 +112,7 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     // A workspace service's node, which takes part in its workspaces' channels.
     let host = enrol(
         &alice,
-        "rooms",
+        "workspaces",
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
@@ -263,8 +263,9 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     let status = watcher.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
-    // Alice also holds the workspace's shared desktop record, which the workspace was
-    // seeded with; the page's edit would have arrived on the note's route.
+    // Alice also holds the workspace's shared desktop record, which the
+    // workspace was seeded with; the page's edit would have arrived on the note's
+    // route.
     assert!(
         alice_page.drain().iter().all(
             |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
@@ -272,8 +273,8 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
         "the watching page wrote to Alice"
     );
 
-    // In a workspace that is not public a watching page reads the workspace but none
-    // of what its members seal.
+    // In a workspace that is not public a watching page reads the workspace but
+    // none of what its members seal.
     relay
         .admit_spectators(workspace_id, spectators(false))
         .await
@@ -318,7 +319,7 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
         .collect();
     assert!(
         opened.is_empty(),
-        "a page opened a private room's sealed records: {opened:?}"
+        "a page opened a private workspace's sealed records: {opened:?}"
     );
 
     sealed_off.close();

@@ -1,9 +1,9 @@
 //! A call between the owner's native device and an invited person's
-//! browser in a workspace the relay governs. The native side is the shell's own
-//! path: the joined-workspace owner holds the workspace, its relay session carries the
-//! call, and a [`Participation`] starts the call, keeps the governor's grant
-//! and authorizes its voice carrier. Both get their grants from the relay
-//! and hear each other over its `moq-lite` carrier.
+//! browser in a workspace the relay governs. The native side is the shell's
+//! own path: the joined-workspace owner holds the workspace, its relay session
+//! carries the call, and a [`Participation`] starts the call, keeps the
+//! governor's grant and authorizes its voice carrier. Both get their grants
+//! from the relay and hear each other over its `moq-lite` carrier.
 
 #![allow(
     clippy::significant_drop_tightening,

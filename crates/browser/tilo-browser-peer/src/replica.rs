@@ -227,9 +227,9 @@ impl Replicas {
     }
 
     /// The devices that may sign and be added to `route`'s channel: those
-    /// the workspace's governance lets read its record, the host the workspace was
-    /// joined through and this device. `None` while the workspace's governance does not answer for
-    /// the route.
+    /// the workspace's governance lets read its record, the host the workspace
+    /// was joined through and this device. `None` while the workspace's
+    /// governance does not answer for the route.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         let workspace_id = route.workspace_id().ok()?;
         let channel = Channels::channel(route);

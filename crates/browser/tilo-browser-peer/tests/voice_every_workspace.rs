@@ -2,7 +2,7 @@
 //! a host, two of its devices open a voice channel's call and are granted
 //! the carrier, hearing each other:
 //!
-//! - a workspace the host governs (a workspace service's workspace, such as the Lounge);
+//! - a workspace the host governs (one of a workspace service's, like the Lounge);
 //! - a workspace the host governs that a guest was invited into;
 //! - a workspace of the host's owner, which the host only carries for them
 //!   (it syncs across their devices through it, and no workspace governs it

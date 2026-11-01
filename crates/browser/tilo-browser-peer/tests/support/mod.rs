@@ -619,7 +619,7 @@ pub async fn enter(
 
 pub async fn in_workspace(peer: &PeerHandle, workspace_id: u64) {
     ready(&[peer]).await;
-    wait_for("the governed room to let the page in", || async {
+    wait_for("the governed workspace to let the page in", || async {
         (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
     })
     .await;

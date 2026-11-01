@@ -309,7 +309,7 @@ mod tests {
         let bytes = b"a picture someone posted".to_vec();
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let mut wants = ContentWants::default();
-        let workspace = ("so.tilo.chat", "room");
+        let workspace = ("so.tilo.chat", "workspace");
         assert!(wants.ask(&device, "general", workspace, &hash, 0).is_some());
         assert!(
             wants.ask(&device, "general", workspace, &hash, 1).is_none(),
@@ -358,7 +358,7 @@ mod tests {
         let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(PIECE_BYTES * 2 + 5).collect();
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let mut wants = ContentWants::default();
-        let workspace = ("so.tilo.chat", "room");
+        let workspace = ("so.tilo.chat", "workspace");
         let request = wants.ask(&host, (), workspace, &hash, 0).unwrap();
         let kept = |app: &str, cluster: &str, asked: &str| {
             ((app, cluster) == workspace && asked == hash).then(|| bytes.clone())

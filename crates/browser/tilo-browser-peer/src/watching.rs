@@ -1,8 +1,9 @@
 //! Which records' channel keys a watching page asks the host for.
 //!
-//! A page that only watches a public workspace ([`crate::session::PeerConfig::watching`])
-//! is no member of the workspace's channels: it never asks for access over a
-//! channel, which would be a write the workspace refuses it. It takes a record's
+//! A page that only watches a public workspace
+//! ([`crate::session::PeerConfig::watching`]) is no member of the workspace's
+//! channels: it never asks for access over a channel, which would be a write
+//! the workspace refuses it. It takes a record's
 //! content keys from the workspace's node over HTTPS instead, when a sealed
 //! document of the record arrives that its keys cannot open, or when the page
 //! opens the record. One request per record is in flight at a time, and a
@@ -74,7 +75,7 @@ mod tests {
     fn route(record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: "so.tilo.chat".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: record.into(),
         }
     }

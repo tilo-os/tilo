@@ -83,7 +83,7 @@ pub struct Retry {
 pub struct AdmissionHealth {
     /// `waiting` | `syncing` | `ready` | `failed`.
     pub phase: &'static str,
-    /// Rooms still waiting for the host's `Ready`.
+    /// Workspaces still waiting for the host's `Ready`.
     pub pending_prerequisites: usize,
 }
 

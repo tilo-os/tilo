@@ -138,7 +138,9 @@ fn withdrawn_as_refused(
             .all(|(_, note)| note.text != withdrawn_text),
         "only the refused note was withdrawn"
     );
-    let told = app.refused().expect("the app is told the room refused it");
+    let told = app
+        .refused()
+        .expect("the app is told the workspace refused it");
     assert_eq!(told.action, "pin");
     assert_eq!(told.reason, PLAIN_TOO_FAST);
     assert!(told.by_room);

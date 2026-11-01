@@ -38,7 +38,7 @@ async fn workspaces(link: &HttpsLink, request: RoomsRequest) -> RoomsReply {
 fn workspace(reply: RoomsReply) -> Room {
     match reply {
         RoomsReply::Room(workspace) => workspace,
-        other => panic!("expected a room, got {other:?}"),
+        other => panic!("expected a workspace, got {other:?}"),
     }
 }
 
@@ -112,7 +112,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
 
     // Alice's page creates a governed workspace and enters it as its owner.
     let mut owner = connect(page.cert.clone(), page.key.clone()).await.unwrap();
-    assert!(owner.rooms(), "the host administers rooms for pages");
+    assert!(owner.rooms(), "the host administers workspaces for pages");
     let created = workspace(
         workspaces(
             &owner,
@@ -179,7 +179,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     // Not admitted yet: the host opens no session for him.
     assert!(
         connect(bob.cert.clone(), bob.key.clone()).await.is_err(),
-        "a person not in the room has no session"
+        "a person not in the workspace has no session"
     );
 
     // A certificate without proof of this device's secret admits nothing.
@@ -548,7 +548,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
             }),
         )
         .unwrap();
-        tilo_test_env::within("the session answers the room request", recv)
+        tilo_test_env::within("the session answers the workspace request", recv)
             .await
             .unwrap()
             .unwrap()

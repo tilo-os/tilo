@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Prints one JSON line (`origin`, `userPublicKey`, `certificateSha256`,
-//! `workspace`) for the page's `connectPeer`, then serves until interrupted. The
+//! `room`) for the page's `connectPeer`, then serves until interrupted. The
 //! page's browser must accept the self-signed HTTPS certificate (trust it
 //! once, or start a test browser with `--ignore-certificate-errors`);
 //! WebTransport pins it by hash.

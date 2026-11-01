@@ -7,7 +7,7 @@
 //! serves it. With it the root certifies the session beside the node, which
 //! runs the person's apps and agents with a key of its own: the node vouches
 //! for that key, and the session becomes one of her devices, never a host. The node then starts as the founder's host and the governor of
-//! their rooms: the page's own device connects, creates the company
+//! their workspaces: the page's own device connects, creates the company
 //! workspace and writes a document, which leaves the page sealed and is
 //! retained on the node only as ciphertext, under channel keys the node
 //! holds. A second person, invited by name, is admitted and reads the
@@ -115,7 +115,7 @@ async fn workspaces(peer: &PeerHandle, request: RoomsRequest) -> RoomsReply {
         }),
     )
     .unwrap();
-    tilo_test_env::within("the node answers /rooms", answer)
+    tilo_test_env::within("the node answers its administration route", answer)
         .await
         .unwrap()
         .unwrap()
@@ -483,7 +483,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(
         bo_sessions.load(std::sync::atomic::Ordering::Relaxed),
         1,
-        "Bo read the room on the first session after he was let in"
+        "Bo read the workspace on the first session after he was let in"
     );
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
@@ -580,7 +580,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     assert_eq!(
         cy_sessions.load(std::sync::atomic::Ordering::Relaxed),
         1,
-        "Cy read the room on the first session after she redeemed the invitation"
+        "Cy read the workspace on the first session after she redeemed the invitation"
     );
     let removed = workspaces(
         &ada,

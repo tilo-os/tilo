@@ -73,7 +73,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     assert_eq!(
         next_document(&peer, &mut events).await,
         tree,
-        "the host sends the room's checkpoint again"
+        "the host sends the workspace's checkpoint again"
     );
     ready(&[&peer]).await;
     let status = peer.status();
@@ -118,7 +118,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     // ready (connected, no workspace waiting) before the workspace is even asked
     // for, and the session marks the workspace ready before it emits the
     // event. Either way that `Ready` would land after the drain below.
-    wait_for("the room's Ready", || async {
+    wait_for("the workspace's Ready", || async {
         peer.drain()
             .iter()
             .any(|event| {

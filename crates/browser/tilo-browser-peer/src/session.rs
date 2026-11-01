@@ -290,9 +290,9 @@ pub struct PeerStatus {
     /// The joined workspaces whose layout is personal, as their governance says:
     /// the page keeps its strips and windows to itself there.
     pub personal_rooms: BTreeSet<String>,
-    /// The members each joined workspace's governance lists, by workspace, by person
-    /// id: what someone no longer among them made on the workspace's desktop is
-    /// released ([`tilo_desktop_model::ownership::released`]).
+    /// The members each joined workspace's governance lists, by workspace, by
+    /// person id: what someone no longer among them made on the workspace's
+    /// desktop is released ([`tilo_desktop_model::ownership::released`]).
     pub room_members: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -1257,7 +1257,7 @@ struct Task {
     store: Arc<dyn PeerStore>,
     shared: Arc<Mutex<Shared>>,
     workspaces: BTreeSet<u64>,
-    /// Rooms of this device's person joined once the host governs them:
+    /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
@@ -2096,8 +2096,8 @@ impl Task {
         }
         match command {
             // A watching page still asks the workspace for content its records
-            // reference: a public workspace's host answers it. It hands the workspace
-            // none of its own.
+            // reference: a public workspace's host answers it. It hands the
+            // workspace none of its own.
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
@@ -2957,7 +2957,7 @@ impl Task {
                 | neighbour_wire::NeighbourMsg::SyncResp { .. }),
             ) => {
                 let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
-                // Governance the workspace's replica refuses is not the workspace's.
+                // Governance the replica refuses is not the workspace's.
                 let admitted = self.replicas.admit(
                     workspace_id,
                     author,
