@@ -16,39 +16,17 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
 
-const FILES: [&str; 22] = [
-    include_str!("../../../../apps/tl/shell/app.tl"),
-    include_str!("../../../../apps/tl/shell/arrangement.tl"),
-    include_str!("../../../../apps/tl/shell/arranging.tl"),
-    include_str!("../../../../apps/tl/shell/canvas.tl"),
-    include_str!("../../../../apps/tl/shell/chrome.tl"),
-    include_str!("../../../../apps/tl/shell/composer.tl"),
-    include_str!("../../../../apps/tl/shell/desk.tl"),
-    include_str!("../../../../apps/tl/shell/docks.tl"),
-    include_str!("../../../../apps/tl/shell/launcher.tl"),
-    include_str!("../../../../apps/tl/shell/layout.tl"),
-    include_str!("../../../../apps/tl/shell/notices.tl"),
-    include_str!("../../../../apps/tl/shell/overview.tl"),
-    include_str!("../../../../apps/tl/shell/parts.tl"),
-    include_str!("../../../../apps/tl/shell/people.tl"),
-    include_str!("../../../../apps/tl/shell/presets.tl"),
-    include_str!("../../../../apps/tl/shell/rooms.tl"),
-    include_str!("../../../../apps/tl/shell/scenarios.tl"),
-    include_str!("../../../../apps/tl/shell/session.tl"),
-    include_str!("../../../../apps/tl/shell/strips.tl"),
-    include_str!("../../../../apps/tl/shell/switcher.tl"),
-    include_str!("../../../../apps/tl/shell/system.tl"),
-    include_str!("../../../../apps/tl/shell/traditional.tl"),
-];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 const APP: &str = "so.tilo.shell";
 
 /// The shell package, as the session compiles it: every file of the package together, in path
-/// order.
+/// order, read from the package's directory: a list kept here goes stale as files are added
+/// (it once lacked `traditional.tl`), and the test then compiles a package nothing ships.
 fn source() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
     let mut joined = String::new();
-    for text in FILES {
-        joined.push_str(text);
+    for path in tilolang::source::source_paths(&dir).unwrap() {
+        joined.push_str(&std::fs::read_to_string(path).unwrap());
         joined.push('\n');
     }
     joined

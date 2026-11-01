@@ -823,7 +823,7 @@ impl Checker<'_> {
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
         } else if name == "bind" && prim == "rich_input" {
-            let _ = self.bind_typed(&node, value, &[Ty::RichText]);
+            let _ = self.bind_typed(&node, value, &[Ty::RichText], false);
         } else if name == "bind" {
             self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {
@@ -975,16 +975,19 @@ impl Checker<'_> {
         }
     }
 
+    /// `bind:` on a primitive: its text fields draw a document's title.
     pub(super) fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
-        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text]);
+        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text], true);
     }
 
-    /// `bind:` to a field or view state whose type is one of `allowed`.
+    /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the
+    /// control draws a document's title, bound to the field marked `(title)`.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
         value: &ast::Expr,
         allowed: &[Ty],
+        titled: bool,
     ) -> Option<Ty> {
         let names = allowed
             .iter()
@@ -1073,7 +1076,9 @@ impl Checker<'_> {
         )));
         // A control bound to the field marked `(title)` or `(body)` edits the resource's title
         // or its body: a document draws them as its large title and its running text. Only a
-        // text field draws it so; any other control is given the value it binds alone.
+        // text field draws it so; any other control is given the value it binds alone. Whether
+        // it draws a title is the control's own to say (`titled`, its component declaring
+        // `title`): one that does not is never sent a prop it does not declare.
         if let Some(role) = &f.role
             && f.ty == Ty::Text
         {
@@ -1082,7 +1087,7 @@ impl Checker<'_> {
                 vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
                 Ty::Unit,
             )));
-            if role == "title" {
+            if role == "title" && titled {
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropI,
                     vec![node.clone(), Ex::str("title"), Ex::int(1)],
