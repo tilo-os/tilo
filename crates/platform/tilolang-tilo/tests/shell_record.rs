@@ -20,8 +20,8 @@ const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 const APP: &str = "so.tilo.shell";
 
 /// The shell package, as the session compiles it: every file of the package together, in path
-/// order, read from the package's directory: a list kept here went stale as files were added
-/// (`traditional.tl`), and the test compiled a package the session never ships.
+/// order, read from the package's directory: a list kept here goes stale as files are added
+/// (it once lacked `traditional.tl`), and the test then compiles a package nothing ships.
 fn source() -> String {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
     let mut joined = String::new();
@@ -243,21 +243,6 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
 
 // ----- What a person sees: the presets, and when the chrome shows ---------------------------
 
-/// The `Desk` record the shell's root view reads: the package's unnamed root.
-fn desk(r: &Replica) -> Value {
-    let root = r
-        .host
-        .root_of_layer(
-            APP,
-            &tilolang_tilo::host::RootView {
-                root: Some("Desk".to_owned()),
-                view: None,
-            },
-        )
-        .expect("the desk's root is made");
-    Value::resource(&root)
-}
-
 /// The person's shell record: the package's named root, `root shell: Shell`.
 fn shell_ref(r: &Replica) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -368,7 +353,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         says(&desk_view(&r), "Notifications"),
         "the bar is back at rest"
     );
-    assert!(runs.len() >= 1, "the dock and the bar are runs");
+    assert!(!runs.is_empty(), "the dock and the bar are runs");
 }
 
 #[test]
@@ -463,4 +448,105 @@ fn undo(r: &mut Replica) {
     .expect("undo is never refused");
     r.doc.commit();
     r.host.sync_from(&r.doc);
+}
+
+/// Ada runs the scenario `name` of `app`, as a shot starts from it, and gets what it returns.
+fn scenario(r: &Replica, app: &str, name: &str) -> Value {
+    let meta = r.host.package(app).unwrap().meta;
+    let action = meta
+        .scenarios
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("{app} has no scenario {name:?}"))
+        .action
+        .clone();
+    match r
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (action.as_str(), vec![]))
+        .unwrap()
+    {
+        InvokeOutcome::Done(value) => value,
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_keeps_its_well() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
+    // in this host, as the session's reading would, and nothing of it goes to the room.
+    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // Each note's place is the notes app's own editor, drawn inline (its body's input, which
+    // only the editor has, once per note), and no well stands for it.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        6,
+        "the notes' editor is composed in each note's place: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(
+        wells.len(),
+        1,
+        "only the terminal's place keeps a well: {wells:#?}"
+    );
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("c-terminal".to_owned()))
+    );
+}
+
+#[test]
+fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "resources standing as content");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // The scenario's strip stands on the canvas, so its places do: four notes as their editor,
+    // and the terminal in its well.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        4,
+        "each note stands as its editor: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "{wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
+    );
 }

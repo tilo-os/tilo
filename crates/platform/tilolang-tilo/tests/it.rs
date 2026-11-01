@@ -23,6 +23,7 @@ mod foreign;
 mod history_views;
 mod incremental;
 mod index;
+mod inline_views;
 mod items;
 mod lanes;
 mod legacy;
@@ -34,6 +35,7 @@ mod outcomes;
 mod policy;
 mod publication;
 mod records;
+mod records_service;
 mod reflection;
 mod rich_text;
 #[cfg(feature = "room")]

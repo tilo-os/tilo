@@ -16,7 +16,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
 use std::rc::Rc;
@@ -182,7 +183,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
         .invoke(
             "shell:arrangement",
             "place",
-            &serde_json::json!({
+            serde_json::json!({
                 "workspace": workspace,
                 "row": row,
                 "strip": strip,
@@ -250,7 +251,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
         .invoke(
             "shell:arrangement",
             "place",
-            &serde_json::json!({
+            serde_json::json!({
                 "workspace": workspace,
                 "row": row,
                 "strip": strip,
@@ -383,7 +384,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         .invoke(
             "shell:arrangement",
             "place-found",
-            &serde_json::json!({"text": "inbox", "x": 320, "y": 96})
+            serde_json::json!({"text": "inbox", "x": 320, "y": 96})
                 .as_object()
                 .expect("arguments"),
         )
@@ -429,7 +430,7 @@ fn text_that_finds_nothing_places_nothing_and_says_why() {
     let refused = session.invoke(
         "shell:arrangement",
         "place-found",
-        &serde_json::json!({"text": "nothing is called this", "x": 0, "y": 0})
+        serde_json::json!({"text": "nothing is called this", "x": 0, "y": 0})
             .as_object()
             .expect("arguments"),
     );

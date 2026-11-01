@@ -192,7 +192,9 @@ impl crate::Session {
                 next_layout: self.next_lock_layout(),
                 layouts: self.shared.lock_layouts.len(),
                 keyboard: true,
-                power: self.shared.lock_power,
+                // Suspend, restart and shut down reach only a machine
+                // the session owns, not the desktop whose window it is in.
+                power: !self.shared.hosted,
                 ..tilo_sheets::lock::Status::default()
             };
         };
@@ -212,7 +214,7 @@ impl crate::Session {
             // The screen draws its own keyboard: a touch-only device can
             // always ask for it.
             keyboard: true,
-            power: self.shared.lock_power,
+            power: !self.shared.hosted,
         }
     }
 

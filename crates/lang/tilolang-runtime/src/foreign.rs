@@ -73,6 +73,20 @@ impl Foreign {
             .map_or(0, |held| held.generation)
     }
 
+    /// The type of the resource of another app whose id is `id`, as its reading came in:
+    /// `None` until one did.
+    pub(crate) fn type_of(&self, id: &str) -> Option<String> {
+        let suffix = format!("@{id}");
+        self.readings
+            .keys()
+            .find_map(|key| key.strip_suffix(&suffix).map(str::to_owned))
+    }
+
+    /// How many resources of other apps have a reading here.
+    pub(crate) fn known(&self) -> usize {
+        self.readings.len()
+    }
+
     /// Take `json` as `target`'s reading. Whether it is not the one held.
     pub(crate) fn set_reading(&mut self, target: &ResourceRef, json: Json) -> bool {
         let key = Self::key(target);
@@ -148,6 +162,17 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
     }
 }
 
+/// The view state slot that moves when a resource of another app is first known here: a view
+/// that looked one up by id ([`Foreign::type_of`]) and found nothing runs again.
+#[must_use]
+pub fn known_key() -> StateKey {
+    StateKey {
+        window: crate::platform::LENS_WINDOW.to_owned(),
+        principal: None,
+        state: "$readings".to_owned(),
+    }
+}
+
 /// `json` as the value `ty` declares, as a reading of another app publishes it.
 ///
 /// A reading is plain JSON — what its service serialised (a number for an `Int`, a string for
@@ -168,10 +193,14 @@ fn decode(json: &Json, ty: &Ty, author: Option<&ModuleHash>) -> Result<Value, St
         | Ty::Length(_) => plain(json, ty),
         Ty::Option(inner) => match json {
             Json::Null => Ok(Value::none()),
-            value => Ok(Value::some(decode(value, inner, author)?)),
+            value if tagged(value, "none").is_some() => Ok(Value::none()),
+            value => match tagged(value, "some") {
+                Some(held) => Ok(Value::some(decode(held, inner, author)?)),
+                None => Ok(Value::some(decode(value, inner, author)?)),
+            },
         },
         Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
-            let Some(items) = json.as_array() else {
+            let Some(items) = tagged(json, "list").unwrap_or(json).as_array() else {
                 return Err(format!("{json} is not a list"));
             };
             Ok(Value::List(
@@ -214,16 +243,26 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
-        _ => json
+        _ => tagged(json, "principal")
+            .unwrap_or(json)
             .as_str()
             .map(|who| Value::Principal(crate::ids::Principal::new(who))),
     };
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
 }
 
+/// What `json` holds when it is the runtime's own encoding of a value tagged `tag`
+/// ([`crate::value::to_json`]: `{"list": [...]}`, `{"some": ...}`): an object of that one key.
+fn tagged<'a>(json: &'a Json, tag: &str) -> Option<&'a Json> {
+    match json {
+        Json::Object(fields) if fields.len() == 1 => fields.get(tag),
+        _ => None,
+    }
+}
+
 /// The values of the tuple's types, in order.
 fn tuple(json: &Json, items: &[Ty], author: Option<&ModuleHash>) -> Result<Value, String> {
-    let Some(given) = json.as_array() else {
+    let Some(given) = tagged(json, "tuple").unwrap_or(json).as_array() else {
         return Err(format!("{json} is not a tuple"));
     };
     if given.len() != items.len() {

@@ -130,15 +130,12 @@ fn install(dir: &Path, package_id: &str, name: &str, exts: &[&str]) {
 }
 
 fn install_recording_launcher(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let log = dir.join("launched.log");
-    let bin = dir.join("tilo-launcher");
-    std::fs::write(
-        &bin,
-        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+    tilo_test_env::stand_in(
+        dir.join("tilo-launcher"),
+        &format!("printf '%s\\n' \"$*\" >> '{}'\n", log.display()),
     )
     .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     log
 }
 

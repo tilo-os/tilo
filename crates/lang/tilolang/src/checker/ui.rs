@@ -778,6 +778,11 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
             return;
         }
+        if p.name == "show" && name == "view" {
+            let v = self.expr_as(&a.value, &Ty::Text);
+            self.prop(Ex::local(n, Ty::View), "view", v, a.value.span);
+            return;
+        }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
             if !matches!(v.ty, Ty::Record(_) | Ty::Error) {

@@ -477,7 +477,6 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         } else {
             tilo_session::no_session_actions
         },
-        lock_power: owned,
         // The lock screen and the on-screen keyboard are the session's own
         // apps: the screen is started when the session locks, and the
         // keyboard whenever the person may want it, under the hands they

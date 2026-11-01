@@ -38,14 +38,8 @@ use winit::keyboard::{Key, NamedKey};
 pub const MAP_ZOOM_MIN: f64 = 0.2;
 pub const MAP_ZOOM_MAX: f64 = 2.5;
 
-/// How far a press must travel before it is a pan and not a click.
-const PAN_THRESHOLD_PX: f64 = 3.0;
-
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
-
-/// How far one arrow-key press pans, in screen pixels.
-const KEY_PAN_PX: f64 = 64.0;
 
 /// A pin's place, in canvas pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -202,6 +196,11 @@ pub struct Map {
     /// It stands on the desktop's ground.
     ground: bool,
     rect: Rect,
+    /// How far a press may travel and still be a click, not a pan: the theme's click slop.
+    slop: f64,
+    /// How far one arrow-key press pans, in screen pixels: one line, as an arrow key scrolls
+    /// any scrolling region.
+    key_pan: f64,
 }
 
 impl Default for Map {
@@ -224,6 +223,8 @@ impl Map {
             touch: TouchGestureArena::new(),
             ground: false,
             rect: Rect::ZERO,
+            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
+            key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
         }
     }
 
@@ -507,7 +508,7 @@ impl Map {
                     return;
                 };
                 let travelled = self.cursor - pan.start;
-                if !pan.active && travelled.hypot() < PAN_THRESHOLD_PX {
+                if !pan.active && travelled.hypot() < self.slop {
                     return;
                 }
                 pan.active = true;
@@ -532,10 +533,10 @@ impl Map {
                     && !ctx.modifiers.state().super_key() =>
             {
                 let delta = match &event.logical_key {
-                    Key::Named(NamedKey::ArrowLeft) => Some(Vec2::new(KEY_PAN_PX, 0.0)),
-                    Key::Named(NamedKey::ArrowRight) => Some(Vec2::new(-KEY_PAN_PX, 0.0)),
-                    Key::Named(NamedKey::ArrowUp) => Some(Vec2::new(0.0, KEY_PAN_PX)),
-                    Key::Named(NamedKey::ArrowDown) => Some(Vec2::new(0.0, -KEY_PAN_PX)),
+                    Key::Named(NamedKey::ArrowLeft) => Some(Vec2::new(self.key_pan, 0.0)),
+                    Key::Named(NamedKey::ArrowRight) => Some(Vec2::new(-self.key_pan, 0.0)),
+                    Key::Named(NamedKey::ArrowUp) => Some(Vec2::new(0.0, self.key_pan)),
+                    Key::Named(NamedKey::ArrowDown) => Some(Vec2::new(0.0, -self.key_pan)),
                     _ => None,
                 };
                 if let Some(delta) = delta {
@@ -591,6 +592,8 @@ impl Widget for Map {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.slop = f64::from(theme.tokens.metrics.click_slop);
+        self.key_pan = f64::from(theme.tokens.metrics.wheel_line);
         self.rebuild_region(theme);
         let node = self.parts.build(
             Style {

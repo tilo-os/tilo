@@ -768,10 +768,12 @@ readers = [
 
 [[cargo]]
 package = "tilolang-cli"
-# The build tests build and sign copies of the built-in packages, and the native types test
-# describes Chat and Tasks from their sources.
+# The build tests build and sign copies of the built-in packages, the native types test
+# describes Chat and Tasks from their sources, and the layout check's own tests lay out the
+# shell's traditional desktop from its sources.
 inputs = ["apps/chat/", "apps/tl/"]
 readers = [
+  "crates/lang/tilolang-cli/src/layout_check.rs",
   "crates/lang/tilolang-cli/tests/build.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
 ]
