@@ -647,6 +647,7 @@ pub fn run() -> std::process::ExitCode {
     // Who sits here is read now, before the loop runs, and kept current by
     // workers: the loop asks on every frame and must never wait on the disk.
     shell::watched_identity::install();
+    shell::shell::network::watch_configured_community_site();
 
     if firstboot_requested
         && compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop

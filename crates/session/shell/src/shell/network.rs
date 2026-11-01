@@ -7,6 +7,7 @@ mod boot_join;
 mod channel_keys;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
+pub use community::watch_configured_site as watch_configured_community_site;
 pub use directory::{DirectoryListing, Publication};
 pub use hosted_sites::{Arrival, JoinProgress, SiteJoinState};
 pub use relay_rooms::BotAsk;
