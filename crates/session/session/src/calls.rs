@@ -439,12 +439,14 @@ pub(crate) struct Call {
 
 impl MediaSession for Call {
     fn tick(&mut self, _now: Instant) -> Result<State, Issue> {
+        // A call the person left is over: whatever its audio said in the same
+        // moment — a stream that ended with the call, say — is not why it did.
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(Issue::SessionEnded);
+        }
         let issue = *self.shared.issue.lock_recover();
         if let Some(issue) = issue {
             return Err(issue);
-        }
-        if self.shared.closed.load(Ordering::Acquire) {
-            return Err(Issue::SessionEnded);
         }
         Ok(if self.shared.live.load(Ordering::Acquire) {
             State::Live
