@@ -880,6 +880,20 @@ fn find_runtime_bundle(
     raw: &str,
     opts: &RunOptions,
 ) -> Result<(Option<(PathBuf, String)>, Vec<PathBuf>), RunError> {
+    let (version, candidates) = runtime_lookup(raw)?;
+    let system = runtime_bundle::system_bundle_path(version);
+    for cand in &candidates {
+        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            enforce_bundle_policy(cand, opts, cand == &system)?;
+            return Ok((Some((cand.clone(), version.to_string())), candidates));
+        }
+    }
+    Ok((None, candidates))
+}
+
+/// The version `raw` (`<name>/<version>`) names and where a launch looks for its bundle, in
+/// order.
+fn runtime_lookup(raw: &str) -> Result<(&str, Vec<PathBuf>), RunError> {
     let (_, version) = raw
         .split_once('/')
         .filter(|(name, version)| !name.is_empty() && valid_runtime_version(version))
@@ -890,14 +904,18 @@ fn find_runtime_bundle(
     )
     .ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates = runtime_candidates(version, per_user, system.clone());
-    for cand in &candidates {
-        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
-            enforce_bundle_policy(cand, opts, cand == &system)?;
-            return Ok((Some((cand.clone(), version.to_string())), candidates));
-        }
-    }
-    Ok((None, candidates))
+    Ok((version, runtime_candidates(version, per_user, system)))
+}
+
+/// Whether the runtime `raw` (`<name>/<version>`) names is installed where a launch looks for
+/// it: a launch of an app that names one that is not fails before anything runs.
+#[must_use]
+pub fn runtime_installed(raw: &str) -> bool {
+    runtime_lookup(raw).is_ok_and(|(_, candidates)| {
+        candidates
+            .iter()
+            .any(|cand| cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
+    })
 }
 
 /// Where to look for runtime `version`, in order.

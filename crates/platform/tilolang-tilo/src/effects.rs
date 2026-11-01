@@ -100,6 +100,37 @@ pub enum OpenEffect {
         #[param("The resource's id")]
         anchor: String,
     },
+    /// Open in a view.
+    ///
+    /// Show this resource in the window through one of the views that show it (`open(r, with:
+    /// v)`). Each published view other than the type's default opens through its own binding
+    /// of it, so a view and the action that opens it name each other.
+    #[effect(view, row)]
+    OpenWith {
+        #[param("The resource's id")]
+        anchor: String,
+        #[param("The view's id")]
+        view: String,
+    },
+}
+
+impl OpenEffect {
+    /// The resource this opens.
+    #[must_use]
+    pub fn anchor(&self) -> &str {
+        match self {
+            Self::Open { anchor } | Self::OpenWith { anchor, .. } => anchor,
+        }
+    }
+
+    /// The view it opens the resource through, when not its type's default one.
+    #[must_use]
+    pub fn view(&self) -> Option<&str> {
+        match self {
+            Self::Open { .. } => None,
+            Self::OpenWith { view, .. } => Some(view),
+        }
+    }
 }
 
 /// What opening a resource asks of the window: the app to show, and the resource whose window to
@@ -108,6 +139,8 @@ pub enum OpenEffect {
 pub struct OpenPlan {
     pub app: String,
     pub target: Option<tilolang_runtime::ResourceRef>,
+    /// The view to show the target through, when not its type's default one.
+    pub view: Option<String>,
 }
 
 fn tree_json(node: &UiNode) -> Json {
@@ -310,9 +343,12 @@ impl Host {
     /// default view, which is the window `open(r)` shows. A hit on something with no window of its
     /// own (a message of a conversation) opens the window of what holds it.
     ///
+    /// Opened through a view (`view`, an [`OpenEffect::OpenWith`]), the target is the anchor
+    /// itself, which that view shows.
+    ///
     /// # Errors
     /// The anchor names nothing in this workspace.
-    pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
+    pub fn open_plan(&self, anchor: &str, view: Option<&str>) -> Result<OpenPlan, String> {
         use tilolang_runtime::store::Store as _;
         let probe = ResourceRef::parse_id(anchor, String::new())
             .ok_or_else(|| format!("`{anchor}` is not a resource id"))?;
@@ -321,6 +357,17 @@ impl Host {
             .into_iter()
             .find(|(_, _, id)| *id == probe.doc)
             .ok_or_else(|| format!("`{anchor}` is not in this workspace"))?;
+        if let Some(view) = view {
+            let ty = self
+                .store()
+                .type_of(&probe)
+                .map_err(|error| error.to_string())?;
+            return Ok(OpenPlan {
+                app: package.meta.app,
+                target: Some(ResourceRef { ty, ..probe }),
+                view: Some(view.to_owned()),
+            });
+        }
         // The items from the record down to the anchor, as they are held now.
         let mut chain = Vec::new();
         let mut at = Some(probe);
@@ -345,6 +392,7 @@ impl Host {
         Ok(OpenPlan {
             app: package.meta.app,
             target,
+            view: None,
         })
     }
 
