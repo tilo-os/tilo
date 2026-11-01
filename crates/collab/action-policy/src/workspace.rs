@@ -221,7 +221,7 @@ impl WorkspacePolicy {
     pub fn new(workspace: impl Into<String>, owner: impl Into<String>) -> Self {
         let workspace = workspace.into();
         let owner = owner.into();
-        let grants = roles::room_role_grants(&workspace, &Subject::Person(owner.clone()));
+        let grants = roles::workspace_role_grants(&workspace, &Subject::Person(owner.clone()));
         Self {
             workspace,
             owner: Some(owner),
@@ -244,7 +244,7 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn unowned(workspace: impl Into<String>, presets_by: &Subject) -> Self {
         let workspace = workspace.into();
-        let grants = roles::room_role_grants(&workspace, presets_by);
+        let grants = roles::workspace_role_grants(&workspace, presets_by);
         Self {
             workspace,
             owner: None,
@@ -269,7 +269,7 @@ impl WorkspacePolicy {
             self.grants.push(roles::session_app(&self.workspace, by));
         }
         // And the one the device's panel reads the session's own readings
-        // through, which a room written before it was granted gains too.
+        // through, which a workspace written before it was granted gains too.
         if !self.grants.iter().any(roles::is_device_panel) {
             let by = self
                 .owner
@@ -289,14 +289,14 @@ impl WorkspacePolicy {
             return;
         }
         for grant in &mut self.grants {
-            grant.node = grant.node.with_room(&self.workspace, &workspace);
+            grant.node = grant.node.with_workspace(&self.workspace, &workspace);
         }
         self.workspace = workspace;
     }
 
     #[must_use]
     pub fn node(&self) -> TreePath {
-        TreePath::room(&self.workspace)
+        TreePath::workspace(&self.workspace)
     }
 
     #[must_use]
@@ -778,7 +778,7 @@ impl WorkspacePolicy {
                 if roles::is_role_grant(grant) {
                     return Err(Refusal::BuiltInRole(grant.id.clone()));
                 }
-                if grant.node.room_id() != Some(self.workspace.as_str()) {
+                if grant.node.workspace_id() != Some(self.workspace.as_str()) {
                     return Err(Refusal::OutsideWorkspace(grant.node.clone()));
                 }
                 if self.grants.iter().any(|held| held.id == grant.id) {

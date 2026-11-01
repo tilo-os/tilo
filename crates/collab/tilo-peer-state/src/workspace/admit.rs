@@ -367,7 +367,7 @@ fn may_write(
     let cx = Context::at_secs(now_ns / 1_000_000_000);
     let allows = |kind| {
         authority
-            .decide(&TreePath::room(workspace), kind, &cx)
+            .decide(&TreePath::workspace(workspace), kind, &cx)
             .answer
             == Answer::Allow
     };

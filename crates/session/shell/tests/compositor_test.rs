@@ -9,6 +9,7 @@
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// `native::run` ends with `process::exit`, so endpoint guards cannot be left
 /// to ordinary Rust destruction. Run the production binary twice against
@@ -44,7 +45,7 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
             .env_remove("DISPLAY")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("spawn native compositor")
     };
     let wait_for_socket = |child: &mut std::process::Child| {

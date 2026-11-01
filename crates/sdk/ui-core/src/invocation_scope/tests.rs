@@ -11,7 +11,7 @@ struct OriginalCaller {
 type Fixture = crate::history_mode::owner::RecordOwnerFixture;
 
 fn fixture(id: u64) -> Fixture {
-    Fixture::in_room(id, "77777777-7777-4777-8777-777777777777")
+    Fixture::in_workspace(id, "77777777-7777-4777-8777-777777777777")
 }
 
 fn scope(

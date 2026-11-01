@@ -604,11 +604,11 @@ fn a_fullscreen_windows_bar_shown_by_a_key_lands_at_once() {
     assert_eq!(bar_wishes(now), Vec::<String>::new());
 }
 
-/// A window's bar wears what the shell told the window of its room: two
+/// A window's bar wears what the shell told the window of its workspace: two
 /// temperatures paint it differently, and the person's own colour is the
 /// ring on the tab that has the keyboard.
 #[test]
-fn a_window_bar_wears_its_room_s_temperature_and_the_person_s_colour() {
+fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
     use crate::theme::WindowAppearance;
     use crate::tokens::PresenceHue;
 

@@ -135,13 +135,13 @@ fn fixture() -> Fixture {
 
 fn owner(workspace: &str) -> Caller {
     Caller::local_person(owner_id())
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution()
 }
 
 fn agent(id: &str, workspace: &str) -> Caller {
     Caller::local_agent(id)
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution()
 }
 

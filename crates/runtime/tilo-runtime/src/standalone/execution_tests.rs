@@ -2,7 +2,7 @@ use super::*;
 
 fn caller(workspace: RoomId) -> Caller {
     Caller::authenticated([4; 32], [5; 32])
-        .in_room(workspace.to_string())
+        .in_workspace(workspace.to_string())
         .in_new_execution()
 }
 

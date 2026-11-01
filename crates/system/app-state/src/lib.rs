@@ -3,9 +3,9 @@
 //! Every document lives behind a [`durable_store::DurableStore`] key.
 //! [`FsStore`] is the native implementation: one directory per document
 //! (`<data home>/<package-id>/state.automerge` for a package's own document,
-//! below it for rooms and records), atomic replacement, synced appends, an
-//! actor sidecar for restart continuity and advisory-lock gates for single or
-//! shared ownership. Identifiers are validated so an app can't address
+//! below it for workspaces and records), atomic replacement, synced appends,
+//! an actor sidecar for restart continuity and advisory-lock gates for single
+//! or shared ownership. Identifiers are validated so an app can't address
 //! another app's storage or the shared workspace FUSE root.
 //!
 //! [`DocOwner`] leases one key and decodes it; [`DocWriter`] persists the
@@ -40,7 +40,7 @@ pub use doc_writer::{
     DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
     StoredLoad,
 };
-pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, room_index_directory};
+pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, workspace_index_directory};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
@@ -49,13 +49,16 @@ pub const ACTOR_FILE: &str = "actor";
 pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
-/// Subdirectory holding one directory per record. See [`DocStore::open_room_record`].
+/// Subdirectory holding one directory per record. See [`DocStore::open_workspace_record`].
 pub const RECORDS_DIR: &str = "records";
-/// Subdirectory holding one directory per **room** — the index of records
-/// that room holds. See [`DocStore::open_room`].
-pub const ROOMS_DIR: &str = "rooms";
-/// Marker in a room record's directory naming the one record that adopted it
-/// under a new identity.
+/// Subdirectory holding one directory per workspace: that workspace's index
+/// of the records it holds. See [`DocStore::open_workspace`].
+///
+/// The name is what every device already stores, so it stays: a directory
+/// that exists must keep opening.
+pub const WORKSPACES_DIR: &str = "rooms";
+/// Marker in a workspace record's directory naming the one record that
+/// adopted it under a new identity.
 const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
 
 /// Everything that can go wrong opening, reading or writing a store.
@@ -169,25 +172,29 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Validate the identifiers of a room-scoped record without resolving any
-/// path, so a caller can refuse a bad namespace before choosing a store.
+/// Validate the identifiers of a workspace-scoped record without resolving
+/// any path, so a caller can refuse a bad namespace before choosing a store.
 ///
 /// # Errors
 /// Rejects any identifier that is not a single, non-traversing name.
-pub fn validate_record_identity(package: &str, room: &str, record: &str) -> Result<(), StoreError> {
+pub fn validate_record_identity(
+    package: &str,
+    workspace: &str,
+    record: &str,
+) -> Result<(), StoreError> {
     validate_package_id(package)?;
-    validate_record_key(room)?;
+    validate_record_key(workspace)?;
     validate_record_key(record)
 }
 
-/// Validate the identifiers of a room's index document, as
+/// Validate the identifiers of a workspace's index document, as
 /// [`validate_record_identity`] does a record's.
 ///
 /// # Errors
 /// Rejects any identifier that is not a single, non-traversing name.
-pub fn validate_room_identity(package: &str, room: &str) -> Result<(), StoreError> {
+pub fn validate_workspace_identity(package: &str, workspace: &str) -> Result<(), StoreError> {
     validate_package_id(package)?;
-    validate_record_key(room)
+    validate_record_key(workspace)
 }
 
 /// One Automerge document handled by hand: load it, save or append it, and
@@ -196,7 +203,7 @@ pub fn validate_room_identity(package: &str, room: &str) -> Result<(), StoreErro
 /// handling of its own.
 ///
 /// The launch-environment constructors ([`DocStore::open`],
-/// [`DocStore::open_for`], [`DocStore::open_room`], ...) join the document's
+/// [`DocStore::open_for`], [`DocStore::open_workspace`], ...) join the document's
 /// shared writers on an [`FsStore`] rooted at the native data directory, so
 /// two live instances of one app keep appending to one document, as they
 /// always have. [`DocStore::open_canonical_at`] takes the exclusive owner.
@@ -242,41 +249,41 @@ impl DocStore {
         Self::shared(Self::native_store(), StorageKey::package(package_id))
     }
 
-    /// Open one record in one collaboration room.  A record id is only
-    /// unique *within* a room: a hostile or stale peer must not be able to
-    /// make `uuid:...` in room B resolve to room A's change graph.
+    /// Open one record in one workspace.  A record id is only unique
+    /// *within* a workspace: a hostile or stale peer must not be able to make
+    /// `uuid:...` in workspace B resolve to workspace A's change graph.
     ///
     /// # Errors
     ///
-    /// Returns an error when an identifier is invalid or the room-scoped
+    /// Returns an error when an identifier is invalid or the workspace-scoped
     /// store cannot be created, locked, or loaded.
-    pub fn open_room_record(
+    pub fn open_workspace_record(
         package_id: &str,
-        room_key: &str,
+        workspace_key: &str,
         record_key: &str,
     ) -> Result<Self, StoreError> {
-        validate_record_identity(package_id, room_key, record_key)?;
+        validate_record_identity(package_id, workspace_key, record_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::record(package_id, room_key, record_key),
+            StorageKey::record(package_id, workspace_key, record_key),
         )
     }
 
-    /// Open the index of **one room** — the list of which records that room
-    /// holds. A sibling of the room's records, so a room id can never resolve
-    /// to a record's document and merge the two.
+    /// Open the index of **one workspace** — the list of which records that
+    /// workspace holds. A sibling of the workspace's records, so a workspace
+    /// id can never resolve to a record's document and merge the two.
     ///
     /// # Errors
     ///
     /// Returns an error if `package_id` fails `validate_package_id` or
-    /// `room_key` fails `validate_record_key`, or if the room's state
-    /// directory can't be created, inspected or locked.
-    pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
+    /// `workspace_key` fails `validate_record_key`, or if the workspace's
+    /// state directory can't be created, inspected or locked.
+    pub fn open_workspace(package_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
-        validate_record_key(room_key)?;
+        validate_record_key(workspace_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::room_index(package_id, room_key),
+            StorageKey::workspace_index(package_id, workspace_key),
         )
     }
 
@@ -342,38 +349,42 @@ impl DocStore {
         Ok(opened)
     }
 
-    /// The existing room-scoped package-primary directory, with explicit custody.
+    /// The existing workspace-scoped package-primary directory, with explicit
+    /// custody.
     ///
     /// # Errors
-    /// Rejects relative roots and invalid package or room identifiers.
-    pub fn room_primary_dir_at(
+    /// Rejects relative roots and invalid package or workspace identifiers.
+    pub fn workspace_primary_dir_at(
         profile_root: &Path,
         package: &str,
-        room: &str,
+        workspace: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_record_namespace(package, room)?;
+        validate_record_namespace(package, workspace)?;
         validate_absolute_directory(profile_root)?;
-        Ok(profile_root.join(package).join(ROOMS_DIR).join(room))
+        Ok(profile_root
+            .join(package)
+            .join(WORKSPACES_DIR)
+            .join(workspace))
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
     ///
     /// # Errors
-    /// Rejects relative roots and invalid package, room or record identifiers.
-    pub fn room_record_dir_at(
+    /// Rejects relative roots and invalid package, workspace or record identifiers.
+    pub fn workspace_record_dir_at(
         profile_root: &Path,
         package: &str,
-        room: &str,
+        workspace: &str,
         record: &str,
     ) -> Result<PathBuf, StoreError> {
         validate_package_id(package)?;
-        validate_record_key(room)?;
+        validate_record_key(workspace)?;
         validate_record_key(record)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
             .join(package)
-            .join(ROOMS_DIR)
-            .join(room)
+            .join(WORKSPACES_DIR)
+            .join(workspace)
             .join(RECORDS_DIR)
             .join(record))
     }
@@ -719,7 +730,7 @@ fn sync_directory_ancestors(
     // above it, which the app never creates and may not even open: the
     // OS-owned C:\Users or volume root on Windows (queried as the known
     // folder, not an environment variable), the app sandbox on Android
-    // (`ui::android_main!` makes it `$HOME`), and the room directory the
+    // (`ui::android_main!` makes it `$HOME`), and the workspace directory the
     // Linux launcher binds at `/run/tilo/app` beneath a Landlock boundary.
     //
     // A root its host provisioned is the same: the Linux launcher binds the
@@ -844,7 +855,7 @@ fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
 /// Publish a fully durable temp file with a no-replace hard link.  `link(2)`
 /// gives the needed compare-and-create property: even two recovery callers
 /// can never both become owner.
-fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
+fn publish_claim(marker: &Path, workspace_key: &str) -> Result<bool, StoreError> {
     static CLAIM_NONCE: AtomicU64 = AtomicU64::new(0);
     let parent = marker.parent().ok_or_else(|| StoreError::Io {
         context: format!("finding parent of {}", marker.display()),
@@ -855,7 +866,7 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
         ".tilo-claim-{}-{}-{}",
         std::process::id(),
         nonce,
-        room_key
+        workspace_key
     ));
     // Closed at the end of the block, before the marker is linked.
     {
@@ -864,7 +875,7 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
             .create_new(true)
             .open(&temp)
             .map_err(|error| io_err(format!("creating {}", temp.display()), error))?;
-        file.write_all(format!("{room_key}\n").as_bytes())
+        file.write_all(format!("{workspace_key}\n").as_bytes())
             .map_err(|error| io_err(format!("writing {}", temp.display()), error))?;
         file.sync_all()
             .map_err(|error| io_err(format!("syncing {}", temp.display()), error))?;
@@ -880,15 +891,15 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let _ = fs::remove_file(&temp);
             match read_claim(marker)? {
-                ClaimState::Owner(owner) => Ok(owner == room_key),
+                ClaimState::Owner(owner) => Ok(owner == workspace_key),
                 // A new claim is never partial (it is linked only after its
                 // temp file is synced).  Do not guess at an invalid recovery
-                // marker: failing closed keeps two rooms from winning.
+                // marker: failing closed keeps two workspaces from winning.
                 ClaimState::Malformed => Err(StoreError::Io {
                     context: format!("reading complete claim {}", marker.display()),
                     source: io::Error::new(io::ErrorKind::InvalidData, "malformed claim"),
                 }),
-                ClaimState::Absent => publish_claim(marker, room_key),
+                ClaimState::Absent => publish_claim(marker, workspace_key),
             }
         }
         Err(error) => {
@@ -1468,7 +1479,7 @@ mod tests {
     fn a_docstore_save_keeps_a_load_hint_its_next_load_takes() {
         let tmp = TempDir::new().unwrap();
         let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
-        let key = StorageKey::room_index("so.tilo.test", "room");
+        let key = StorageKey::workspace_index("so.tilo.test", "room");
         let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
         assert!(primary.is_exclusive_writer());
         // The desktop document's shape: many small changes, few bytes.

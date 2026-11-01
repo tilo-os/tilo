@@ -648,7 +648,8 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
         .unwrap()
         .to_owned();
     close(&mut frame, 1);
-    let key = durable_store::StorageKey::record(probe::APP, probe::ROOM, checkout.id.storage_key());
+    let key =
+        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, checkout.id.storage_key());
     let mirror = Rc::new(durable_store::MemoryStore::new());
     mirror
         .hydrate(
@@ -656,7 +657,7 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
             backend
                 .read(&durable_store::StorageKey::record(
                     probe::APP,
-                    probe::ROOM,
+                    probe::WORKSPACE,
                     checkout.id.storage_key(),
                 ))
                 .unwrap()
@@ -664,7 +665,7 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
         )
         .unwrap();
     let mut reopened_owners = crate::record::RecordOwners::with_store(mirror);
-    let reopened = reopened_owners.open(probe::APP, probe::ROOM).unwrap();
+    let reopened = reopened_owners.open(probe::APP, probe::WORKSPACE).unwrap();
     reopened.open_existing_record_checked(&checkout).unwrap();
     let persisted = reopened
         .read(&checkout.id, |doc| {
@@ -745,10 +746,14 @@ fn memory_host(backend: Rc<durable_store::MemoryStore>) -> ProbeHost {
     let mut host = ProbeHost::new();
     let mut owners = crate::record::RecordOwners::with_store(backend.clone());
     host.views = Rc::new(
-        crate::application_view::InstanceViewStore::with_store(backend, probe::DEVICE, probe::ROOM)
-            .unwrap(),
+        crate::application_view::InstanceViewStore::with_store(
+            backend,
+            probe::DEVICE,
+            probe::WORKSPACE,
+        )
+        .unwrap(),
     );
-    host.records = owners.open(probe::APP, probe::ROOM).unwrap();
+    host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
     host.owners = owners;
     host
 }
@@ -794,7 +799,7 @@ fn reopened_body(
     checkout: &crate::record::RecordCheckout,
 ) -> String {
     let mut owners = crate::record::RecordOwners::with_store(backend);
-    let records = owners.open(probe::APP, probe::ROOM).unwrap();
+    let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
     records.open_existing_record_checked(checkout).unwrap();
     records
         .read(&checkout.id, |doc| {
@@ -990,11 +995,11 @@ fn background_synchronous_submit_refusal_retains_owner_then_real_retry_offers_ch
         crate::application_view::InstanceViewStore::with_store(
             backend.clone(),
             probe::DEVICE,
-            probe::ROOM,
+            probe::WORKSPACE,
         )
         .unwrap(),
     );
-    host.records = owners.open(probe::APP, probe::ROOM).unwrap();
+    host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
     host.owners = owners;
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5235, false);
@@ -1120,7 +1125,7 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         writes[0].key,
-        durable_store::StorageKey::record(probe::APP, probe::ROOM, aid.storage_key())
+        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, aid.storage_key())
     );
 }
 

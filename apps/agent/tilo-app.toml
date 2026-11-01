@@ -27,6 +27,10 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["app-files", "files.paths", "network.http", "threads"]
 
+# The tracker's issues, which a leased task's work is kept in.
+[resources]
+kinds = ["tasks.tracker"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

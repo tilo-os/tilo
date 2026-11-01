@@ -2870,7 +2870,7 @@ mod tests {
         crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
         assert!(
             paint(&mut scene).is_some(),
-            "once the room synced, its emptiness is the app's to say"
+            "once the workspace synced, its emptiness is the app's to say"
         );
         crate::workspace_sync::set(None);
         assert!(

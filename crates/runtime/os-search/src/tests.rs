@@ -116,7 +116,7 @@ impl ActionHost for Host {
 }
 
 pub(crate) fn owner() -> Caller {
-    Caller::local_person("owner").in_room(ROOM)
+    Caller::local_person("owner").in_workspace(ROOM)
 }
 
 pub(crate) fn search(host: &Host) -> OsSearch {

@@ -388,7 +388,7 @@ fn an_agent_lists_the_records_and_reads_one_through_the_broker() {
             ..Default::default()
         },
     );
-    let agent = Caller::local_agent("scribe").in_room(room);
+    let agent = Caller::local_agent("scribe").in_workspace(room);
 
     let offered = broker
         .state()

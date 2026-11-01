@@ -39,7 +39,8 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, SignedDeviceAction};
+use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
+use neighbour_wire::offer::{Answer, Query, Route, State, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,6 +71,12 @@ pub const CHANGE_WAIT_MS: u32 = 10_000;
 /// How long an invocation is followed on another device before it is given
 /// up as unanswered.
 pub const FOLLOW_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long one offer round waits. Every device of the workspace is asked
+/// at once; one that has not answered by then is taken to be away, and the
+/// request runs where it was asked, or not at all. Nothing is kept for it
+/// (the fail-fast rule).
+pub const OFFER_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How many changing requests one person may send per window, and how many
 /// at once. Reading (a catalogue, an observation) spends none: a caller that
@@ -113,6 +120,22 @@ pub trait Workspaces: Send + Sync {
     fn read(&self, workspace: &str, read: &mut dyn FnMut(&crate::StatePeer)) -> bool;
 }
 
+/// What a device knows of itself when another device of its workspace offers
+/// it work ([`ActionPlane::offers`]).
+///
+/// The plane answers with what it knows without asking: that this device
+/// answered at all, that it holds the workspace the route names. An
+/// implementation says the rest — whether the app is installed here, its
+/// power standing, the work already in hand, its operator's preference, and
+/// the choices its person made for it. A plane with no `Offering` says its
+/// app is not installed, so it never claims work it cannot run.
+pub trait Offering: Send + Sync {
+    /// What this device says of running `route` in `workspace`, for `work`:
+    /// its own state and which of the job's inputs it already holds, never
+    /// another device's.
+    fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer;
+}
+
 /// A device's action plane: it serves the requests other devices of its
 /// workspaces make, and asks them through [`Self::remote`].
 #[derive(Clone)]
@@ -128,6 +151,8 @@ struct Inner {
     workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
     dispatcher: Arc<dyn ActionHost + Send + Sync>,
+    /// What this device says of itself when another device offers it work.
+    offering: Mutex<Option<Arc<dyn Offering>>>,
     replay: Mutex<ActionReplayWindow>,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
@@ -174,6 +199,7 @@ impl ActionPlane {
             replicas: Mutex::default(),
             workspaces: None,
             dispatcher,
+            offering: Mutex::default(),
             replay: Mutex::default(),
             bounds,
             callers: Mutex::default(),
@@ -198,6 +224,7 @@ impl ActionPlane {
             replicas: Mutex::default(),
             workspaces: Some(workspaces),
             dispatcher,
+            offering: Mutex::default(),
             replay: Mutex::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
@@ -224,6 +251,12 @@ impl ActionPlane {
         self.hold(sync.replica());
     }
 
+    /// Say what this device knows of itself when another device of one of
+    /// its workspaces offers it work ([`Offering`]).
+    pub fn offering(&self, offering: impl Offering + 'static) {
+        *self.0.offering.lock_recover() = Some(Arc::new(offering));
+    }
+
     /// Read one workspace's state, from wherever this device holds it: a
     /// replica handed to [`Self::hold`], else what [`Workspaces`] says of
     /// it.
@@ -248,19 +281,148 @@ impl ActionPlane {
     /// device: every callers' [`ActionHost`] methods work through it as
     /// through a local host.
     #[must_use]
-    pub fn remote(&self, endpoint: Endpoint, addr: EndpointAddr, workspace: &str) -> RemoteDevice {
-        let target = *addr.id.as_bytes();
-        RemoteDevice(Arc::new(Device {
-            endpoint,
-            addr,
+    pub fn remote(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+    ) -> RemoteDevice {
+        RemoteDevice(self.device_at(endpoint, addr, workspace))
+    }
+
+    /// The connection to one device, opened on first use and kept while it
+    /// lasts, as both actions and offers go over it.
+    fn device_at(&self, endpoint: &Endpoint, addr: &EndpointAddr, workspace: &str) -> Arc<Device> {
+        Arc::new(Device {
+            endpoint: endpoint.clone(),
+            addr: addr.clone(),
             workspace: workspace.to_owned(),
-            target,
+            target: *addr.id.as_bytes(),
             key: self.0.device.clone(),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
             next_correlation: AtomicU64::new(1),
             follow: Following::default(),
-        }))
+        })
+    }
+
+    /// The devices of `workspace` that may be offered work, other than this
+    /// one: certified, unrevoked and unexpired, its person a member, its
+    /// delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
+    #[must_use]
+    pub fn participants(&self, workspace: &str) -> Vec<[u8; 32]> {
+        let device = self.device();
+        let mut participants = self
+            .read_workspace(workspace, |peer| {
+                let now = SystemTime::now();
+                peer.certificates()
+                    .into_iter()
+                    .map(|certificate| certificate.device_public_key)
+                    .filter(|source| peer.permissions(*source, now).is_ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        participants.retain(|source| *source != device);
+        participants.sort_unstable();
+        participants.dedup();
+        participants
+    }
+
+    /// Ask each of `targets` whether it would run `route` in `workspace` on
+    /// `work`, and rank what they answered
+    /// ([`pick`](crate::placement::pick)): the device to run it on, or —
+    /// nobody willing, or moving the inputs there no faster than the run here
+    /// — that it stays here.
+    ///
+    /// Every device is asked at once and given the whole of `within` to
+    /// answer; one that does not is ranked as absent. Answers are complete
+    /// when the round finishes, so a caller needs no state of its own
+    /// between asking and choosing.
+    #[must_use]
+    pub fn offers(
+        &self,
+        endpoint: &Endpoint,
+        targets: impl IntoIterator<Item = EndpointAddr>,
+        workspace: &str,
+        route: &Route,
+        work: &Work,
+        within: Duration,
+    ) -> tilo_actions::remote::Pending<crate::placement::Choice> {
+        let (complete, answer) = tilo_actions::remote::pending();
+        let workspace = workspace.to_owned();
+        let route = route.clone();
+        let work = work.clone();
+        let device = self.device();
+        let asks = targets
+            .into_iter()
+            .filter(|addr| *addr.id.as_bytes() != device)
+            .map(|addr| {
+                let target = *addr.id.as_bytes();
+                let asker = self.device_at(endpoint, &addr, &workspace);
+                let (route, work) = (route.clone(), work.clone());
+                (
+                    target,
+                    self.0
+                        .runtime
+                        .spawn(async move { asker.consider(&route, &work).await }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let until = started.checked_add(within).unwrap_or(started);
+        self.0.runtime.spawn(async move {
+            let mut answers = Vec::with_capacity(asks.len());
+            for (target, mut ask) in asks {
+                let remaining = until.saturating_duration_since(Instant::now());
+                let answer = tokio::time::timeout(remaining, &mut ask).await;
+                let heard = if let Ok(Ok(heard)) = answer {
+                    (target, heard)
+                } else {
+                    // A device still connecting when the round ends is away;
+                    // nothing keeps its answer for a later round.
+                    ask.abort();
+                    (target, away())
+                };
+                answers.push(heard);
+            }
+            complete.complete(crate::placement::pick(answers, &work));
+        });
+        answer
+    }
+
+    /// Answer one offer: what this device says of itself, or `None` when the
+    /// device that asked may not be told — it is not in this workspace's
+    /// roster, or this device does not hold the workspace.
+    fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
+        let now = SystemTime::now();
+        let admitted = self.read_workspace(&query.workspace, |peer| {
+            peer.permissions(remote, now).is_ok()
+        })?;
+        if !admitted {
+            return None;
+        }
+        let Some(offering) = self.0.offering.lock_recover().clone() else {
+            return Some(Answer {
+                state: State {
+                    online: true,
+                    holds_workspace: true,
+                    ..State::unreachable()
+                },
+                holds: Vec::new(),
+            });
+        };
+        let mut answer = offering.report(&query.workspace, &query.route, &query.work);
+        // What the plane knows better than the device's own report.
+        answer.state.requester = false;
+        answer.state.online = true;
+        answer.state.holds_workspace = true;
+        answer.state.latency_ms = 0;
+        // Only the inputs the job named, so no answer carries more than the
+        // question did.
+        answer
+            .holds
+            .retain(|digest| query.work.inputs.iter().any(|(input, _)| input == digest));
+        Some(answer)
     }
 
     /// Answer one request: what the device's dispatcher made of it.
@@ -334,7 +496,7 @@ impl ActionPlane {
         };
         Ok((
             caller
-                .in_room(action.workspace.clone())
+                .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.foreign),
             action.workspace.clone(),
         ))
@@ -509,13 +671,25 @@ impl ActionPlane {
         let Some(bytes) = read_frame(&mut recv).await? else {
             return send.finish().map_err(|error| error.to_string());
         };
-        let signed: SignedDeviceAction =
-            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        if let Some(reply) = self.answer(remote, signed).await {
-            let bytes = RemoteActionFrame::new(reply)
-                .encode()
-                .map_err(|error| error.to_string())?;
-            write_frame(&mut send, &bytes).await?;
+        let frame: PlaneFrame = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        match frame {
+            PlaneFrame::Action(signed) => {
+                if let Some(reply) = self.answer(remote, *signed).await {
+                    let bytes = RemoteActionFrame::new(reply)
+                        .encode()
+                        .map_err(|error| error.to_string())?;
+                    write_frame(&mut send, &bytes).await?;
+                }
+            }
+            // An offer this device may not be told about is left
+            // unanswered: the asking device takes it as away, and nothing
+            // about this one leaves with it.
+            PlaneFrame::Offer(query) => {
+                if let Some(state) = self.answer_offer(remote, &query) {
+                    let bytes = postcard::to_allocvec(&state).map_err(|error| error.to_string())?;
+                    write_frame(&mut send, &bytes).await?;
+                }
+            }
         }
         send.finish().map_err(|error| error.to_string())
     }
@@ -667,6 +841,15 @@ async fn await_answer<T: Send + 'static>(
     }
 }
 
+/// What a device that never answered is taken to have said: it is not
+/// there, and it holds none of the job's inputs.
+fn away() -> Answer {
+    Answer {
+        state: State::unreachable(),
+        holds: Vec::new(),
+    }
+}
+
 /// One other device, as an [`ActionHost`]: its actions through the same
 /// trait a local host's are used through.
 #[derive(Clone)]
@@ -797,25 +980,57 @@ impl Device {
             &self.key,
         )
         .map_err(|error| unavailable(&error.to_string()))?;
-        let bytes =
-            postcard::to_allocvec(&signed).map_err(|error| unavailable(&error.to_string()))?;
+        let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed)))
+            .map_err(|error| unavailable(&error.to_string()))?;
+        let answer = self.exchange(&bytes).await?;
+        RemoteActionFrame::decode(&answer)
+            .map(|frame| frame.message)
+            .map_err(|error| unavailable(&error.to_string()))
+    }
+
+    /// Whether this device would run `route` on `work`: what it answered,
+    /// with the round trip this device measured, or — asked but silent —
+    /// what a device that is away is taken to have said.
+    async fn consider(&self, route: &Route, work: &Work) -> Answer {
+        let query = Query {
+            workspace: self.workspace.clone(),
+            request_id: uuid::Uuid::new_v4(),
+            route: route.clone(),
+            work: work.clone(),
+        };
+        let started = Instant::now();
+        let heard = async {
+            let bytes = postcard::to_allocvec(&PlaneFrame::Offer(query)).ok()?;
+            let answer = self.exchange(&bytes).await.ok()?;
+            postcard::from_bytes::<Answer>(&answer).ok()
+        };
+        let Some(mut heard) = heard.await else {
+            return away();
+        };
+        heard.state.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        heard
+    }
+
+    /// Write `bytes` on a stream of this device's own, and read the one
+    /// answer back.
+    async fn exchange(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, tilo_actions::remote::ActionHostError> {
         let connection = self.connection().await?;
         let (mut send, mut recv) = connection
             .open_bi()
             .await
             .map_err(|error| unavailable(&error.to_string()))?;
-        write_frame(&mut send, &bytes)
+        write_frame(&mut send, bytes)
             .await
             .map_err(|error| unavailable(&error))?;
         send.finish()
             .map_err(|error| unavailable(&error.to_string()))?;
-        let answer = read_frame(&mut recv)
+        read_frame(&mut recv)
             .await
             .map_err(|error| unavailable(&error))?
-            .ok_or_else(|| unavailable("the device closed without answering"))?;
-        RemoteActionFrame::decode(&answer)
-            .map(|frame| frame.message)
-            .map_err(|error| unavailable(&error.to_string()))
+            .ok_or_else(|| unavailable("the device closed without answering"))
     }
 }
 

@@ -489,7 +489,7 @@ impl ConsumerLaunchBinding {
         Ok(sha(&serde_json::to_vec(self).map_err(io::Error::other)?))
     }
     /// Declaration only. Root must compare its actual QPE peer and independently
-    /// replay signed package, certified person, personal room and current policy.
+    /// replay signed package, certified person, personal cluster and current policy.
     /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn matches_peer(&self, peer: &ExecutingPeer) -> io::Result<()> {
@@ -790,10 +790,10 @@ impl RetainedViewAdmission {
             let challenge: ConsumerChallenge = receive_json(&mut io)?;
             challenge.validate()?;
             challenge.command.matches_current()?;
-            let room = collab_types::person_room(&challenge.person).to_string();
+            let room = collab_types::personal_cluster(&challenge.person).to_string();
             if opts.workspace_id.as_deref() != Some(room.as_str()) {
                 return Err(RunError::InvalidServiceLaunch(
-                    "retained view requires certified personal room".into(),
+                    "retained view requires certified personal cluster".into(),
                 ));
             }
             if normal_publisher(manifest_path, payload_root, opts)? != challenge.publisher_hex {
@@ -1275,7 +1275,7 @@ impl RootConsumerChannel {
         if binding.operation_id != challenge.operation_id
             || binding.shell_context_sha256 != challenge.shell_context_sha256
             || binding.resource_record != challenge.resource_record
-            || binding.room != collab_types::person_room(&challenge.person).to_string()
+            || binding.room != collab_types::personal_cluster(&challenge.person).to_string()
         {
             return Err(refused(
                 "retained consumer declaration differs from protected challenge",
@@ -2189,10 +2189,10 @@ impl SelectedParentAdmission {
             challenge.validate()?;
             selected_edit_request_id(&challenge.resource_record)?;
             challenge.command.matches_current()?;
-            let room = collab_types::person_room(&challenge.person).to_string();
+            let room = collab_types::personal_cluster(&challenge.person).to_string();
             if opts.workspace_id.as_deref() != Some(room.as_str()) {
                 return Err(RunError::InvalidServiceLaunch(
-                    "selected parent requires certified personal room".into(),
+                    "selected parent requires certified personal cluster".into(),
                 ));
             }
             if normal_publisher(manifest_path, payload_root, opts)? != challenge.publisher_hex {

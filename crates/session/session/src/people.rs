@@ -159,6 +159,10 @@ impl SurfaceHost for People {
         self.host.borrow_mut().prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.borrow().next_deadline()
+    }
+
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
         self.host.borrow_mut().set_backdrops(images);
     }
@@ -301,6 +305,10 @@ impl SurfaceHost for Host {
 
     fn prepare_frame(&mut self) -> bool {
         self.0.borrow_mut().prepare_frame()
+    }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.0.borrow().next_deadline()
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
@@ -578,6 +586,14 @@ impl Widget for Panel {
             return;
         };
         self.follow(hit, &mut shown);
+    }
+
+    /// The roster and the pointers of people working on this desk change
+    /// without an event reaching the panel: while either shows, every frame
+    /// reads them again. Closed with nobody's pointer on the desk, it shows
+    /// nothing and asks for no frame.
+    fn needs_redraw(&self) -> bool {
+        self.open.get() || !self.shown.borrow().pointers.is_empty()
     }
 
     fn name(&self) -> &'static str {

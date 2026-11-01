@@ -665,7 +665,7 @@ impl AppBrokerState {
         let access = self.app_action_access(app_id);
         let mut as_app = Caller::local_app(app_id);
         if let Some(workspace) = person.room() {
-            as_app = as_app.in_room(workspace);
+            as_app = as_app.in_workspace(workspace);
         }
         let permitted = match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
@@ -3356,12 +3356,12 @@ mod foreign_caller_tests {
         let bot = Caller::bot("bridge", user, [9; 32]);
         assert!(state.workspace_ids_for(&bot).is_empty());
         assert_eq!(
-            state.workspace_ids_for(&bot.clone().in_room(&workspace_id)),
+            state.workspace_ids_for(&bot.clone().in_workspace(&workspace_id)),
             vec![workspace_id]
         );
         assert!(
             state
-                .workspace_ids_for(&bot.in_room("unknown-workspace"))
+                .workspace_ids_for(&bot.in_workspace("unknown-workspace"))
                 .is_empty()
         );
     }
@@ -3505,7 +3505,7 @@ mod app_close_tests {
                 live: true,
             }]);
         }
-        let caller = Caller::local_person(hex::encode(user)).in_room(workspace_id.clone());
+        let caller = Caller::local_person(hex::encode(user)).in_workspace(workspace_id.clone());
         (state, caller, workspace_id)
     }
 
@@ -3626,7 +3626,7 @@ mod app_close_tests {
             ..Default::default()
         });
         let (state, _, workspace) = broker(Arc::clone(&launcher), true);
-        let caller = Caller::authenticated([31; 32], [32; 32]).in_room(&workspace);
+        let caller = Caller::authenticated([31; 32], [32; 32]).in_workspace(&workspace);
         assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
         assert!(launcher.closed.lock().unwrap().is_empty());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
@@ -3729,7 +3729,7 @@ mod app_close_tests {
 
         // Authority is still decided per row: a caller without a role is
         // offered nothing, scoped or not.
-        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(workspace);
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_workspace(workspace);
         let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&provider));
         assert!(rows.is_empty());
     }
@@ -3741,7 +3741,7 @@ mod app_close_tests {
             ..Default::default()
         });
         let (state, _, workspace) = broker(Arc::clone(&launcher), true);
-        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(workspace);
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_workspace(workspace);
         assert!(app_actions(&state, &stranger).is_empty());
         assert!(launcher.closed.lock().unwrap().is_empty());
     }
@@ -3955,7 +3955,7 @@ mod device_pairing_tests {
         let certificate = admitted.certificate.as_ref().unwrap();
         let remote =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(workspace);
+                .in_workspace(workspace);
         assert!(
             state
                 .eager_catalogue(&remote, RowScope::Provider(device_pairing::PROVIDER))

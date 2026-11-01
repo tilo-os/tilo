@@ -14,7 +14,7 @@
 //! view updates, an idle window wakes when one lands, and
 //! [`Arriving::view`] shows them with the framework's placeholders. Each
 //! read says where its answer comes from: this device's broker, or the
-//! room's host for the room's own governance. A root that owns a client returns it
+//! workspace's host for the workspace's own governance. A root that owns a client returns it
 //! as its [`Collaborative`] capability
 //! (or forwards to it), which is how its requests reach the connection and
 //! the answers come back.
@@ -342,7 +342,7 @@ impl RemoteActions {
 
     /// Where this client's answer to a request for `target` (none: the
     /// catalogue) comes from. An in-process host and the session's broker
-    /// are this device; a room's own governance is answered by the room's
+    /// are this device; a workspace's own governance is answered by the workspace's
     /// host, named as the person knows its workspace.
     fn source(&self, target: Option<&RemoteActionTarget>) -> Source {
         let session = matches!(self.lock().transport, Transport::Session);

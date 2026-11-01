@@ -41,7 +41,7 @@ impl CanonicalRead {
         let source = link.view_document(workspace, caller, route)?;
         let definition = catalogue.get(&route.app_id).ok_or("unknown source app")?;
         let record = record_id(&route.record)?;
-        if definition.keeps_room_record() != record.is_package_primary() {
+        if definition.keeps_workspace_record() != record.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
         let read = ConfinedRead::prepare(

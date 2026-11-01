@@ -54,12 +54,16 @@ fn primary_owner_is_shared_and_keeps_recordless_wire_identity() {
 }
 
 #[test]
-fn native_primary_directory_matches_existing_room_document() {
+fn native_primary_directory_matches_existing_workspace_document() {
     let root = tempfile::tempdir().unwrap();
     let package = "so.tilo.chat";
-    let room_id = "room-a";
-    let path = app_state::DocStore::room_primary_dir_at(root.path(), package, room_id).unwrap();
-    assert_eq!(path, root.path().join(package).join("rooms").join(room_id));
+    let workspace_id = "room-a";
+    let path =
+        app_state::DocStore::workspace_primary_dir_at(root.path(), package, workspace_id).unwrap();
+    assert_eq!(
+        path,
+        root.path().join(package).join("rooms").join(workspace_id)
+    );
     let mut owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
     let mut doc = owner.new_document();
     doc.put(ROOT, "message", "native").unwrap();
@@ -69,7 +73,7 @@ fn native_primary_directory_matches_existing_room_document() {
     let bytes = doc.save();
     drop(owner);
     let store = RecordOwners::new(root.path().into())
-        .open(package, room_id)
+        .open(package, workspace_id)
         .unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     store.try_open_record(&checkout).unwrap();
@@ -123,7 +127,7 @@ fn primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key
 }
 
 #[test]
-fn primary_custody_is_partitioned_by_package_room_and_kind() {
+fn primary_custody_is_partitioned_by_package_workspace_and_kind() {
     let cache = PortableStorage::new("profile", "device").unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     let mut owners = RecordOwners::portable(cache);

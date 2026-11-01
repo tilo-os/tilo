@@ -186,7 +186,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 env.cert.user_public_key,
                 env.cert.device_public_key,
             )
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             let facade = broker.app_action_broker().unwrap();
             let host = facade

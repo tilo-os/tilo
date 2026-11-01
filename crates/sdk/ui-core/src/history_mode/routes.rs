@@ -248,7 +248,7 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
-    /// Why local changes on the primary or room-index route are not reaching
+    /// Why local changes on the primary or workspace-index route are not reaching
     /// peers. Cleared by the next accepted change.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
@@ -556,18 +556,18 @@ mod committed_changes_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// What a window holds, and the room's next committed change as the
+    /// What a window holds, and the workspace's next committed change as the
     /// owner hands it over: changes that build on what the window holds.
     fn held_and_delta() -> (AutoCommit, AutoCommit, Vec<u8>) {
-        let mut room = AutoCommit::new();
-        room.put(automerge::ROOT, "title", "notes").unwrap();
-        room.commit();
-        let held = room.fork();
-        let before = room.get_heads();
-        room.put(automerge::ROOT, "note", "new").unwrap();
-        room.commit();
-        let delta = room.save_after(&before);
-        (room, held, delta)
+        let mut workspace = AutoCommit::new();
+        workspace.put(automerge::ROOT, "title", "notes").unwrap();
+        workspace.commit();
+        let held = workspace.fork();
+        let before = workspace.get_heads();
+        workspace.put(automerge::ROOT, "note", "new").unwrap();
+        workspace.commit();
+        let delta = workspace.save_after(&before);
+        (workspace, held, delta)
     }
 
     /// The ERROR lines logged while `run` runs on this thread.
@@ -596,7 +596,7 @@ mod committed_changes_tests {
 
     #[test]
     fn committed_changes_that_build_on_held_history_apply_and_log_nothing() {
-        let (mut room, mut held, delta) = held_and_delta();
+        let (mut workspace, mut held, delta) = held_and_delta();
         let mutation = DocumentMutation::Incremental(delta);
         let mut changed = None;
         let errors = errors_during(|| {
@@ -607,7 +607,7 @@ mod committed_changes_tests {
         assert!(held.get_missing_deps(&[]).is_empty());
         assert_eq!(
             super::super::sorted_heads(held.get_heads()),
-            super::super::sorted_heads(room.get_heads())
+            super::super::sorted_heads(workspace.get_heads())
         );
     }
 

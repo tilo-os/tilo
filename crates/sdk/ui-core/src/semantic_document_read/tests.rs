@@ -164,7 +164,7 @@ fn oversized_request_is_refused_before_app_decoder() {
 
 #[test]
 fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
         983,
         "77777777-7777-4777-8777-777777777777",
     );
@@ -226,7 +226,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
                 |doc| selected.read(None, doc).unwrap().value.unwrap(),
             );
             assert_eq!(local["content"]["text"], "local record");
-            assert!(local["record"]["roomId"].is_null());
+            assert!(local["record"]["workspaceId"].is_null());
             assert_eq!(local["record"]["appId"], "fixture.app");
             assert_eq!(local["record"]["recordId"], fixture.checkout.id.as_str());
             let mut copy = document.clone();
@@ -257,7 +257,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
             assert_eq!(value["content"]["text"], "committed content");
             assert_eq!(value["basis"]["heads"][0], heads[0].to_string());
             let route = scope.route();
-            assert_eq!(value["record"]["roomId"], route.cluster_id.to_string());
+            assert_eq!(value["record"]["workspaceId"], route.cluster_id.to_string());
             assert_eq!(value["record"]["appId"], route.app_id.as_str());
 
             document.put(ROOT, "text", "pending content").unwrap();
@@ -296,7 +296,7 @@ fn the_mounted_primary_document_reads_on_its_route_only() {
         let value = selected.read(None, doc).unwrap().value.unwrap();
         assert_eq!(value["content"]["text"], "primary");
         assert_eq!(value["record"]["appId"], "fixture.app");
-        assert_eq!(value["record"]["roomId"], route.cluster_id.to_string());
+        assert_eq!(value["record"]["workspaceId"], route.cluster_id.to_string());
         assert_eq!(
             selected.read(None, &other).unwrap_err(),
             SemanticReadError::MissingQualifiedOwner,

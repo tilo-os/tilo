@@ -2057,7 +2057,7 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
             }
         }
     }
-    let below_room = node.within_room();
+    let below_room = node.within_workspace();
     if below_room.is_root() {
         return t("workspace-settings-scope-workspace");
     }
@@ -4925,7 +4925,7 @@ mod members_pane_tests {
             let admin = Grant::new(
                 "peer-administers",
                 tilo_action_policy::Subject::person(PEER),
-                roles::room_resource(&ws.policy.workspace),
+                roles::workspace_resource(&ws.policy.workspace),
                 KindSet::ALL,
                 Answer::Allow,
                 tilo_action_policy::Subject::person(OWNER),

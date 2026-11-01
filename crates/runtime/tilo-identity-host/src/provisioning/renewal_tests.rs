@@ -1,6 +1,6 @@
 //! An expiring device certificate is renewed before it runs out, at start
 //! and while the device runs, so expiry is never how a device loses its
-//! rooms.
+//! workspaces.
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::time::Duration;

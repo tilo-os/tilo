@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use shell::compositor::state::{ClientState, State};
 use shell::shell::state::TileContent;
@@ -96,7 +97,7 @@ impl WireChild {
             .env("XDG_RUNTIME_DIR", runtime)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let stdout = process.stdout.take().unwrap();
         let (sender, messages) = mpsc::channel();

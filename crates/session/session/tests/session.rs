@@ -1075,50 +1075,6 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     assert_eq!(*asked.borrow(), ["play-pause"]);
 }
 
-/// The player, as a system service the session hosts: it publishes what
-/// plays and records what it was asked.
-struct PlayerService {
-    asked: Rc<RefCell<Vec<String>>>,
-}
-
-impl tilo_session::Service for PlayerService {
-    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let spec = |id: &'static str| {
-            tilo_actions::ActionSpec::typed_operation(
-                id,
-                id,
-                String::new(),
-                tilo_actions::OperationKind::Effect,
-                "test.player",
-                Vec::new(),
-                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
-            )
-        };
-        vec![
-            tilo_actions::ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
-                .with_action(spec("play-pause"))
-                .with_action(spec("next"))
-                .with_action(spec("previous")),
-        ]
-    }
-
-    fn read(&self, _resource: &str) -> Option<serde_json::Value> {
-        None
-    }
-
-    fn invoke(
-        &mut self,
-        _resource: &str,
-        action: &str,
-        _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        self.asked.borrow_mut().push(action.to_owned());
-        Ok(tilo_service::Started::Done(
-            tilo_actions::ActionOutput::default(),
-        ))
-    }
-}
-
 #[test]
 fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
@@ -2100,6 +2056,8 @@ mod portal_capture;
 #[path = "session/secret_captures.rs"]
 mod secret_captures;
 
+#[path = "session/idle_frames.rs"]
+mod idle_frames;
 #[path = "session/window_warmth.rs"]
 mod window_warmth;
 

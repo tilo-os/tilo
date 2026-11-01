@@ -19,7 +19,7 @@
 //! list and revoke, so removing it there ends what the client may do.
 //!
 //! **The broker**: an admitted connection is served as
-//! `Caller::local_agent(agent).in_room(room)`, so discovery and invocation
+//! `Caller::local_agent(agent).in_workspace(room)`, so discovery and invocation
 //! pass the same gate as every other caller.
 //!
 //! "Allow for this session" and "Always allow" remember that this client is

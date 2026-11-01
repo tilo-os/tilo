@@ -516,7 +516,7 @@ impl ReadSession {
     ) -> Result<Self, String> {
         let definition = catalogue.get(source.app_id).ok_or("unknown source app")?;
         let checkout = RecordCheckout::new(source.record, definition.record_kind.clone());
-        if definition.keeps_room_record() != checkout.id.is_package_primary() {
+        if definition.keeps_workspace_record() != checkout.id.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
         // Hydrate existing history; a new-record initializer must never

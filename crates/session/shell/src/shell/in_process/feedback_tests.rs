@@ -19,8 +19,8 @@ fn authenticated_startup() -> tilo_desktop::feedback::transport::Startup {
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
-        owner: tilo_actions::remote::Caller::authenticated([11; 32], device).in_room(ROOM),
-        reporter: tilo_actions::remote::Caller::authenticated([12; 32], device).in_room(ROOM),
+        owner: tilo_actions::remote::Caller::authenticated([11; 32], device).in_workspace(ROOM),
+        reporter: tilo_actions::remote::Caller::authenticated([12; 32], device).in_workspace(ROOM),
         permissions: PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Owner)
             .at_unix_time(0),
     };
@@ -64,7 +64,7 @@ fn authenticated_startup_binds_only_its_profile_person_and_mounts_private_review
             .verifying_key()
             .to_bytes(),
     )
-    .in_room(ROOM);
+    .in_workspace(ROOM);
     assert!(matches!(
         apps.install_feedback_startup(&wrong_device, authenticated_startup()),
         Err(LaunchError::BindingMismatch)

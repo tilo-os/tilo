@@ -10,6 +10,7 @@
 
 use super::*;
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -485,15 +486,17 @@ fn the_lock_screens_transport_steers_whatever_plays() {
     let home = private_home();
     let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
     let asked = Rc::new(RefCell::new(Vec::new()));
+    let published = Publishing::default();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             quick_settings: Some(QuickSettings::Lent(
                 Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
             )),
-            services: vec![Box::new(PlayerService {
-                asked: Rc::clone(&asked),
-            })],
+            services: vec![Box::new(PlayerService::new(
+                Rc::clone(&asked),
+                published.clone(),
+            ))],
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
@@ -504,16 +507,10 @@ fn the_lock_screens_transport_steers_whatever_plays() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    // What plays reaches the app the panel is, once the session lends it its
-    // readings: the session reads them from the same place.
-    host.update(|state| {
-        state.now_playing = Some(tilo_quick_settings::NowPlaying::fixture());
-        state.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
-            present: true,
-            percent: 62,
-            state: tilo_power_mgmt::BatteryState::Charging,
-        });
-    });
+    // The services publish what plays and what the pack holds; the session
+    // reads both, and the screen shows what it read.
+    published.set_playing(Some(song("Clair de lune", "Claude Debussy", true, true)));
+    published.set_battery(62, true);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()
@@ -538,7 +535,7 @@ fn the_lock_screens_transport_steers_whatever_plays() {
     );
 
     // With nothing playing there is no transport, and no player is steered.
-    host.update(|state| state.now_playing = None);
+    published.set_playing(None);
     for _ in 0..20 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -553,24 +550,120 @@ fn the_lock_screens_transport_steers_whatever_plays() {
     );
 }
 
-/// A song the player in the quick settings plays, as the session publishes it:
-/// what the lock screen app names on its card, and what it offers to do with
-/// it.
-fn song(
-    title: &str,
-    subtitle: &str,
-    playing: bool,
-    controls: bool,
-) -> tilo_quick_settings::NowPlaying {
-    tilo_quick_settings::NowPlaying {
-        title: title.to_owned(),
-        subtitle: subtitle.to_owned(),
-        playing,
-        can_toggle: controls,
-        can_previous: controls,
-        can_next: controls,
-        ..tilo_quick_settings::NowPlaying::fixture()
+/// What the services publish, as the test changes it: the players' state and
+/// the pack's charge.
+#[derive(Clone, Default)]
+struct Publishing {
+    /// What plays, as the audio service reports it: the players, and nothing
+    /// while nothing plays.
+    playing: Rc<RefCell<Option<serde_json::Value>>>,
+    /// The charge of the pack this machine runs on, as the power service
+    /// reports it; `None` while it has not read one.
+    battery: Rc<RefCell<Option<serde_json::Value>>>,
+    /// Whether what it publishes moved since the session last read it.
+    moved: Rc<Cell<bool>>,
+}
+
+impl Publishing {
+    /// Publish `playing` as what plays.
+    fn set_playing(&self, playing: Option<serde_json::Value>) {
+        *self.playing.borrow_mut() = playing;
+        self.moved.set(true);
     }
+
+    /// Publish the charge the pack reports.
+    fn set_battery(&self, percent: u8, charging: bool) {
+        *self.battery.borrow_mut() = Some(serde_json::json!({
+            "present": true,
+            "percentage": percent,
+            "state": if charging { "charging" } else { "discharging" },
+            "on_battery": !charging,
+        }));
+        self.moved.set(true);
+    }
+}
+
+/// The player, as a system service the session hosts: it publishes what
+/// plays and what the pack holds, and records what it was asked.
+struct PlayerService {
+    asked: Rc<RefCell<Vec<String>>>,
+    published: Publishing,
+}
+
+impl PlayerService {
+    /// A player that publishes nothing until the test hands it what plays.
+    fn new(asked: Rc<RefCell<Vec<String>>>, published: Publishing) -> Self {
+        Self { asked, published }
+    }
+}
+
+impl tilo_session::Service for PlayerService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let spec = |id: &'static str| {
+            tilo_actions::ActionSpec::typed_operation(
+                id,
+                id,
+                String::new(),
+                tilo_actions::OperationKind::Effect,
+                "test.player",
+                Vec::new(),
+                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
+            )
+        };
+        vec![
+            tilo_actions::ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
+                .with_action(spec("play-pause"))
+                .with_action(spec("next"))
+                .with_action(spec("previous")),
+            tilo_actions::ResourceSpec::new(
+                tilo_session_power::BATTERY,
+                "power:battery",
+                "Battery",
+            ),
+        ]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        match resource {
+            tilo_session::MEDIA => self.published.playing.borrow().clone(),
+            tilo_session_power::BATTERY => self.published.battery.borrow().clone(),
+            _ => None,
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        self.published.moved.replace(false)
+    }
+
+    fn invoke(
+        &mut self,
+        _resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        self.asked.borrow_mut().push(action.to_owned());
+        Ok(tilo_service::Started::Done(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+}
+
+/// A song the player plays, as the audio service publishes it: what the lock
+/// screen app names on its card, and what it offers to do with it.
+fn song(title: &str, subtitle: &str, playing: bool, controls: bool) -> serde_json::Value {
+    serde_json::json!({
+        "players": [{
+            "identity": "Music",
+            "title": title,
+            "artist": subtitle,
+            "playing": playing,
+            "paused": !playing,
+            "can-play": controls,
+            "can-pause": controls,
+            "can-previous": controls,
+            "can-next": controls,
+        }]
+    })
 }
 
 /// How far a pixel's colour has to move for the screen to have drawn
@@ -719,15 +812,15 @@ fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool
 const DISPLAY: &str = "HEADLESS-1";
 
 /// A locked session whose lock screen is the app, with a player the session
-/// hosts: the quick settings it follows what plays through, and what the
-/// player was asked.
+/// hosts: what it publishes of what plays, and what the player was asked.
 struct Locked {
     /// The window on the desk the lock came over, which keeps the session's
     /// compositor showing a desk under it.
     _client: TestClient,
     session: Session,
-    host: Rc<FixtureHost>,
     asked: Rc<RefCell<Vec<String>>>,
+    /// What the player publishes, which the session shows on the lock.
+    published: Publishing,
     /// What the app drew of the session with nothing playing.
     quiet: tilo_compositor::Screenshot,
     _home: tempfile::TempDir,
@@ -740,15 +833,17 @@ impl Locked {
         let home = private_home();
         let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
         let asked = Rc::new(RefCell::new(Vec::new()));
+        let published = Publishing::default();
         let mut session = Session::headless(
             Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 quick_settings: Some(QuickSettings::Lent(
                     Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
                 )),
-                services: vec![Box::new(PlayerService {
-                    asked: Rc::clone(&asked),
-                })],
+                services: vec![Box::new(PlayerService::new(
+                    Rc::clone(&asked),
+                    published.clone(),
+                ))],
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
@@ -770,8 +865,8 @@ impl Locked {
         Self {
             _client: client,
             session,
-            host,
             asked,
+            published,
             quiet,
             _home: home,
         }
@@ -782,11 +877,11 @@ impl Locked {
     /// plays in its reading, and the app draws that reading.
     fn plays(
         &mut self,
-        now: Option<tilo_quick_settings::NowPlaying>,
+        now: Option<serde_json::Value>,
         media: impl Fn(&serde_json::Value) -> bool,
         was: &tilo_compositor::Screenshot,
     ) -> tilo_compositor::Screenshot {
-        self.host.update(|state| state.now_playing = now);
+        self.published.set_playing(now);
         until_media(&mut self.session, media);
         until_redrawn(&mut self.session, DISPLAY, was)
     }

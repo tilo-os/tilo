@@ -43,7 +43,7 @@ impl PeerWorkspaceMut<'_> {
         }
         let member = self.peer.membership(caller.device_public_key, now)?;
         if !member.allows(
-            &tilo_action_policy::TreePath::room(&self.peer.core.workspace),
+            &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
             tilo_action_policy::ActionKind::Undoable,
             now,
         ) {

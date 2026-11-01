@@ -2517,7 +2517,7 @@ fn serving_desk(
     driver.set_session_door(
         ui::RemoteActions::with_host(
             session,
-            ui::tilo_actions::remote::Caller::local_person("tester").in_room(room),
+            ui::tilo_actions::remote::Caller::local_person("tester").in_workspace(room),
         ),
         Some(room.into()),
     );
@@ -2772,7 +2772,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     );
     let (session, openings) =
         tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_room("room");
+    let caller = Caller::local_person("tester").in_workspace("room");
     let open = |room: &str| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
@@ -2832,7 +2832,7 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     );
     let (session, openings) =
         tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_room("room");
+    let caller = Caller::local_person("tester").in_workspace("room");
     let ask = |argument: serde_json::Value| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
@@ -2922,7 +2922,7 @@ fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
     );
     let (session, openings) =
         tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_room("room");
+    let caller = Caller::local_person("tester").in_workspace("room");
     let hash = "ab".repeat(32);
     let launch = ApplicationLaunch::with_content("so.tilo.photos", hash.clone());
     let ask = |argument: ui::tilo_actions::remote::InvokeArgument| -> InvokeRequest {

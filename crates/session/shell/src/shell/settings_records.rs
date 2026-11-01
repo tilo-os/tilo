@@ -388,7 +388,7 @@ fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
     ui::app_surface::register_built_in(settings_sections::APP_ID, SETTINGS_SURFACE);
     // Without a root identity there is no person room: the records are
     // this device's alone.
-    let room = collab_types::person_room_of(&person);
+    let room = collab_types::personal_cluster_of(&person);
     let (records, person) = open(&dir, person)?;
     // Held from the start, so what the person's other devices change
     // reaches them.
@@ -822,7 +822,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-        let agent = Caller::local_agent("scribe").in_room(room);
+        let agent = Caller::local_agent("scribe").in_workspace(room);
         let invoke = |request: &InvokeRequest| {
             broker
                 .state()

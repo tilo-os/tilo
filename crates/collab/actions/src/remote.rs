@@ -471,11 +471,11 @@ impl Caller {
         }
     }
 
-    /// Confine the caller to one room: the connection was admitted to that
-    /// room only, so nothing outside it is offered or reachable.
+    /// Confine the caller to one workspace: the connection was admitted to
+    /// that workspace only, so nothing outside it is offered or reachable.
     #[must_use]
-    pub fn in_room(mut self, room: impl Into<String>) -> Self {
-        self.room = Some(room.into());
+    pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.room = Some(workspace.into());
         self
     }
 
@@ -2578,7 +2578,7 @@ mod tests {
             "every device of one person is the same principal"
         );
         assert_eq!(caller.room(), None);
-        let agent = Caller::local_agent("helper").in_room("room-1");
+        let agent = Caller::local_agent("helper").in_workspace("room-1");
         assert_eq!(agent.principal(), &CallerPrincipal::Agent("helper".into()));
         assert_eq!(agent.room(), Some("room-1"));
         assert_eq!(agent.device_public_key(), None);

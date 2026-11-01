@@ -11,7 +11,6 @@ use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
 // `DynAction::apply` is the action protocol's.
 use ui::headless::FrameHarness;
@@ -46,15 +45,6 @@ impl Platform for Packages {
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
-    }
-}
-
-/// A workspace nobody else is in.
-struct Alone;
-
-impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
     }
 }
 
@@ -99,7 +89,9 @@ impl Staged {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
-            Rc::new(Alone),
+            // People are called as a window calls them when nobody told it their names: a
+            // scenario's sample person (`person("Leo")`) by that name, never by their id.
+            Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
         let mut record = ui::automerge::AutoCommit::new();

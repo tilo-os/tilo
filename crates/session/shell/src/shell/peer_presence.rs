@@ -892,7 +892,7 @@ impl PeerPresence {
             .lock_recover()
             .as_ref()
             .and_then(|(_, here)| here.clone());
-        presence.set_room_in_front(here);
+        presence.set_workspace_in_front(here);
         let certified = std::mem::take(&mut *self.certified_people_inbound.lock_recover());
         for (room, people) in certified {
             self.set_certified_people(&room, people);

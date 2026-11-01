@@ -63,7 +63,7 @@ pub struct Suggestion {
     /// Optional leading glyph.
     pub icon: Option<Icon>,
     /// A participant this row names: painted as their avatar (or, for
-    /// software acting in the room, the agent mark) in place of an icon.
+    /// software acting in the workspace, the agent mark) in place of an icon.
     pub person: Option<SuggestionPerson>,
     /// What the row is: a pickable item (the default), a group's header or a
     /// notice ("No matches").
@@ -107,9 +107,9 @@ impl Suggestion {
 pub struct SuggestionPerson {
     /// Their stable id, which also picks the avatar's hue.
     pub identity: String,
-    /// The colour the room gives them.
+    /// The colour the workspace gives them.
     pub color: (u8, u8, u8),
-    /// Software acting in the room rather than a person.
+    /// Software acting in the workspace rather than a person.
     pub agent: bool,
 }
 

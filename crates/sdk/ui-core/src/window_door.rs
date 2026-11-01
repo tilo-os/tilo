@@ -1,6 +1,6 @@
-//! Every window of an app in a room, served by one process.
+//! Every window of an app in a workspace, served by one process.
 //!
-//! The shell starts an app once per room. When the person opens another
+//! The shell starts an app once per workspace. When the person opens another
 //! window of it there (another tab of Chat, the Lounge's copy of a window
 //! someone else opened), the shell opens it in the running process instead
 //! of starting a second one: it writes a [`WindowRequest`] on the window door
@@ -49,7 +49,7 @@ pub(crate) fn open_window(
 ) -> Option<crate::app::App> {
     let mut opening = pending.take()?;
     // A window whose record arrived with its join is built now, from the
-    // room's committed history.
+    // workspace's committed history.
     if let Some(arriving) = opening.arriving.take() {
         return building(opening, || {
             crate::launch::dispatch_window_arrived(spec, args, arriving)

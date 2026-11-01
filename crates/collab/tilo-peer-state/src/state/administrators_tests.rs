@@ -69,7 +69,7 @@ fn an_administrator_grant_on_the_workspaces_resource_is_rewritten_once() {
     let legacy = Grant::new(
         roles::administrator_grant_id(&person).as_str(),
         Subject::Person(person.clone()),
-        roles::room_resource(peer.workspace_id()),
+        roles::workspace_resource(peer.workspace_id()),
         KindSet::ALL,
         Answer::Allow,
         owner.clone(),
@@ -137,7 +137,7 @@ fn reconciling_a_workspace_without_old_grants_writes_nothing_and_needs_no_writer
 fn an_administrator_moderates_and_an_editor_does_not() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let node = TreePath::room(peer.workspace_id())
+    let node = TreePath::workspace(peer.workspace_id())
         .app("so.tilo.chat")
         .kind("chat.message")
         .resource("welcome")

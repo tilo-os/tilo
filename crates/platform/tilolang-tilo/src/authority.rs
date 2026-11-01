@@ -167,7 +167,7 @@ impl Authority for TiloAuthority {
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let standing = (self.standing)();
         let state = self.state.borrow();
-        let workspace = standing.as_ref().map_or(NO_WORKSPACE, Standing::room);
+        let workspace = standing.as_ref().map_or(NO_WORKSPACE, Standing::workspace);
         let workspace_grants: &[Grant] = standing
             .as_ref()
             .map_or(&[], |standing| &standing.policy.grants);
@@ -176,7 +176,7 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::room(workspace).app(&action.app).kind(kind);
+        let node = TreePath::workspace(workspace).app(&action.app).kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
         let own = standing
@@ -438,7 +438,7 @@ mod tests {
         let denied = Grant::new(
             "deny-todo",
             Subject::app(APP),
-            TreePath::room(WORKSPACE),
+            TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -480,7 +480,7 @@ mod tests {
         let app_denied = Grant::new(
             "deny-todo",
             Subject::app(APP),
-            TreePath::room(WORKSPACE),
+            TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -509,7 +509,7 @@ mod tests {
         let node_denied = Grant::new(
             "no-todo-for-bob",
             Subject::person("bob"),
-            TreePath::room(WORKSPACE).app(APP).rest(),
+            TreePath::workspace(WORKSPACE).app(APP).rest(),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -517,7 +517,7 @@ mod tests {
         let editor = Grant::new(
             "bob-edits",
             Subject::person("bob"),
-            TreePath::room(WORKSPACE),
+            TreePath::workspace(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Allow,
             Subject::person(PERSON),

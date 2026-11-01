@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
@@ -75,7 +76,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .env_remove("DISPLAY")
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("spawn compositor");
 
     let stderr = child.stderr.take().expect("stderr piped");

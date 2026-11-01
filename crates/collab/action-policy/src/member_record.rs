@@ -6,7 +6,7 @@
 //! Its id names the member, `member:<root>:<kind>`, with `<root>` the
 //! lowercase hex of their user root key, so every door decides it alike
 //! without a grant: only that person reads or changes it, whatever their
-//! role, and no other member does, the room's owner included
+//! role, and no other member does, the workspace's owner included
 //! ([`crate::Party::decide`]).
 
 use crate::{Level, Segment, TreePath};
@@ -64,11 +64,11 @@ mod tests {
         ] {
             assert_eq!(member_record(&other), None, "{other}");
         }
-        let node = TreePath::room("r").app("a").resource(id).item("x");
+        let node = TreePath::workspace("r").app("a").resource(id).item("x");
         assert_eq!(owner_of(&node), Some(person.as_str()));
         assert_eq!(
             owner_of(
-                &TreePath::room("r")
+                &TreePath::workspace("r")
                     .app("a")
                     .resource("tab:0000000000000000")
             ),

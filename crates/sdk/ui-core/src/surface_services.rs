@@ -26,7 +26,7 @@ pub const SOCKET_ENV: &str = "TILO_SURFACE_COLLAB_SOCKET";
 /// launch by, and what its catalogue rows are published under.
 pub const APP_ID_ENV: &str = "TILO_SURFACE_APP_ID";
 
-/// The workspace the session started this surface in: the room its launch
+/// The workspace the session started this surface in: the workspace its launch
 /// names.
 pub const WORKSPACE_ENV: &str = "TILO_SURFACE_WORKSPACE";
 

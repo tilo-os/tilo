@@ -235,12 +235,22 @@ fn valid_app_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// Whether `path` is a system binary: an absolute path to a file owned by
+/// root that no one but its owner can write.
+#[cfg(unix)]
 fn immutable_system_binary(path: &Path) -> bool {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     path.is_absolute()
         && std::fs::metadata(path).is_ok_and(|metadata| {
             metadata.is_file() && metadata.uid() == 0 && metadata.permissions().mode() & 0o022 == 0
         })
+}
+
+/// The web has no `/proc` and no processes of this machine's: nothing it
+/// reads names a system binary.
+#[cfg(not(unix))]
+fn immutable_system_binary(_path: &Path) -> bool {
+    false
 }
 
 fn humanize_binary(binary: &str) -> String {

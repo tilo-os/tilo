@@ -76,7 +76,7 @@ fn copy(doc: &mut AutoCommit) -> AutoCommit {
 #[test]
 fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
     let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-    // Bea's device holds the replica the room sent her.
+    // Bea's device holds the replica the workspace sent her.
     let bea_copy = copy(&mut written);
     let mut bea = MentionInbox::new([BEA.to_owned()]);
     let told = bea.look(&look(&bea_copy), &name);

@@ -1791,6 +1791,13 @@ impl Widget for TopBarChrome {
     }
 
     fn needs_redraw(&self) -> bool {
+        // Chrome state (who is here, what was asked, the app tray) only
+        // reaches the bar through `update`; ask for the frame that runs it.
+        if let Some(chrome) = self.chrome.clone()
+            && chrome.snapshot().revision != self.synced_revision
+        {
+            return true;
+        }
         // Hiding and showing each repaint; nothing else on a hidden bar can
         // show.
         if self.presence() != self.cache_fp.presence {

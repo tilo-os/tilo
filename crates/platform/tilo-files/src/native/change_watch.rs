@@ -39,6 +39,7 @@ pub const THREAD_NAME: &str = "tilo-dir-watch";
 
 /// The name of the thread that reads the process's one inotify instance and
 /// hands each watch its changes (Linux).
+#[cfg(target_os = "linux")]
 pub const HUB_THREAD_NAME: &str = "tilo-inotify";
 
 /// One change a [`Watcher`] reports.
@@ -796,12 +797,12 @@ mod notify_watch {
         // never mistaken for earlier history.
         #[cfg(target_os = "macos")]
         let started = Started::of(&root);
-        let watched = root.clone();
+        let watched_root = root.clone();
         let skipped = move |path: &Path| {
             path.ancestors()
                 .skip(1)
-                .take_while(|ancestor| *ancestor != watched)
-                .any(|ancestor| skip(ancestor))
+                .take_while(|ancestor| *ancestor != watched_root)
+                .any(&skip)
         };
         let callback_root = root.clone();
         let handler = move |event: notify::Result<notify::Event>| {
@@ -826,9 +827,10 @@ mod notify_watch {
             }
             let created = match event.kind {
                 EventKind::Access(_) => return,
-                EventKind::Modify(ModifyKind::Name(_)) => true,
+                // A move in or out of the tree is a change of the watched
+                // entries even where only entries are reported.
+                EventKind::Modify(ModifyKind::Name(_)) | EventKind::Create(_) => true,
                 EventKind::Modify(_) if reported == Reported::Entries => return,
-                EventKind::Create(_) => true,
                 _ => false,
             };
             let metadata = matches!(event.kind, EventKind::Modify(ModifyKind::Metadata(_)));

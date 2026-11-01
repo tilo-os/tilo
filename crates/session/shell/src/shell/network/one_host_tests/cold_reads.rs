@@ -487,7 +487,7 @@ fn open_in_fresh_profile(
                 )?;
                 // The records every app of the room opens, beside the app's
                 // own in the same owners, as the session's host gives them.
-                context.provide_workspace_records(WorkspaceRecords::in_room(
+                context.provide_workspace_records(WorkspaceRecords::in_workspace(
                     owners.clone(),
                     room.clone(),
                     UserId(author.to_owned()),

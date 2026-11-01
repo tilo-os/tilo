@@ -103,7 +103,7 @@ pub const SOUND: &str = tilo_audio_service::sound::SOUND;
 /// The microphone: the audio service's sound resource.
 pub const MICROPHONE: &str = SOUND;
 /// The radios: the connectivity service's network, which owns airplane mode.
-const NETWORK: &str = tilo_connectivity_service::NETWORK;
+pub const NETWORK: &str = tilo_connectivity_service::NETWORK;
 /// This device's input devices, the session's own.
 const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
 /// The keyboard's backlight, the system service's.

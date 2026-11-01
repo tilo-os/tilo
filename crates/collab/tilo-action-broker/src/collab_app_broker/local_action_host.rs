@@ -93,7 +93,7 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native person required".into());
         };
-        let workspace = caller.room().ok_or("native person room required")?;
+        let workspace = caller.room().ok_or("native personal cluster required")?;
         let certificate = service.certificate(workspace, person)?;
         if super::principal_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
@@ -260,7 +260,8 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native action requires a person".into());
         };
-        let mut projection = Caller::local_person(person).in_room(&checked.admission.workspace);
+        let mut projection =
+            Caller::local_person(person).in_workspace(&checked.admission.workspace);
         if let Some(lease) = caller.execution_lease() {
             projection = projection.in_execution(lease);
         }
@@ -511,8 +512,8 @@ impl AppBrokerState {
             .as_ref()
             .ok_or("personal device certificate unavailable")?;
         let workspace = uuid::Uuid::parse_str(&checked.admission.workspace)
-            .map_err(|_| "personal room unavailable")?;
-        if !collab_types::is_person_room(&certificate.user_public_key, &workspace)
+            .map_err(|_| "personal cluster unavailable")?;
+        if !collab_types::is_personal_cluster(&certificate.user_public_key, &workspace)
             || checked.effective.is_foreign_device()
             || checked.admission.admitted.agent_id.is_some()
             || checked.admission.admitted.host_scope.is_some()

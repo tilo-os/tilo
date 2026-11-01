@@ -500,7 +500,7 @@ pub struct FrameHarness {
     /// press or release that follows a rebuild under a still pointer.
     pointer_replay: crate::pointer_replay::PointerReplay,
     /// Records this driver has open, when the app under test uses them —
-    /// without this a record-aware app would be driven against its room
+    /// without this a record-aware app would be driven against its workspace
     /// index instead of the record it checked out, testing something the
     /// user never runs.
     records: Option<crate::record::RecordSet>,
@@ -1365,7 +1365,7 @@ impl FrameHarness {
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
-    /// Why the host asks, when the room's grants ask rather than the action
+    /// Why the host asks, when the workspace's grants ask rather than the action
     /// itself, as the person reads it in the confirmation.
     #[must_use]
     pub fn asking_why(&self) -> Option<&str> {
@@ -2226,7 +2226,7 @@ impl FrameHarness {
             && !self.has_pending_owner_models()
     }
 
-    /// The update pass, with the room's presence lent as the frame's
+    /// The update pass, with the workspace's presence lent as the frame's
     /// ([`crate::presence::frame`]) under the window's authority, as the
     /// live App lends it.
     fn update_root(&mut self) -> bool {
@@ -2905,7 +2905,7 @@ impl FrameHarness {
         mut records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) {
-        records.discover_room(&room_index);
+        records.discover_workspace(&room_index);
         self.records = Some(records);
         self.room_index = Some(Box::new(room_index));
         self.relayout();
@@ -3340,7 +3340,7 @@ impl FrameHarness {
             crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
         }
         // Select the current record before update, then observe a first
-        // asynchronous open before sync can accidentally edit the room index.
+        // asynchronous open before sync can accidentally edit the workspace index.
         self.tick_records();
         let updated = self.update_root();
         self.tick_records();

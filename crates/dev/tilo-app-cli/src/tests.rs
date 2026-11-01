@@ -3533,7 +3533,8 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         let runtime = served["interfaces"]["runtime"]
             .as_integer()
             .expect("runtime");
-        let manifest: toml::Value = toml::from_str(&app_manifest(&spec)).expect("manifest");
+        let manifest: toml::Value =
+            toml::from_str(&app_manifest(&spec).expect("manifest")).expect("manifest");
         let services = manifest["sandbox"]["services"]
             .as_table()
             .expect("services");

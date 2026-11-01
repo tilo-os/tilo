@@ -106,7 +106,7 @@ fn authorized_store_directory_publishes_inspect_catalogue() {
     let host = crate::shell::remote_actions::BrokerActionHost::new(
         session.broker.app_action_broker().unwrap(),
     );
-    let caller = tilo_actions::remote::Caller::local_person(&session.actor).in_room(&room);
+    let caller = tilo_actions::remote::Caller::local_person(&session.actor).in_workspace(&room);
     let exact = native_directory_query(&mut shown, &host, &caller, &provider, "inspect-catalogue");
     drop(host);
     assert!(

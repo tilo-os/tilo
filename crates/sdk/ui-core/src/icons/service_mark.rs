@@ -1,4 +1,4 @@
-//! The marks of the services a room may be bridged to, drawn where a
+//! The marks of the services a workspace may be bridged to, drawn where a
 //! person a bridge speaks for appears: a small glyph in place of words, so
 //! "this came from Discord" reads at a glance without a label beside every
 //! name.

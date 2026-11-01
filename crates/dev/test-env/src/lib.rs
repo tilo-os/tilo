@@ -358,6 +358,55 @@ impl Drop for EnvLock {
     }
 }
 
+/// Start a process with the environment as it stands outside every other
+/// test's [`ScopedEnv`].
+///
+/// A child copies the process environment when it starts. Started while
+/// another test's scope is open, it would inherit that test's values: a shell
+/// started beside a test that points `TILO_LAUNCHER_BIN` at a recording
+/// stand-in runs its app spawner through that stand-in, and the other test
+/// reads the launch as its own. These take [`lock`] for the moment the child
+/// starts, so it sees only what this thread set.
+pub trait SpawnUnderEnvLock {
+    /// [`std::process::Command::spawn`], under [`lock`].
+    ///
+    /// # Errors
+    ///
+    /// As `spawn`.
+    fn spawn_locked(&mut self) -> io::Result<std::process::Child>;
+    /// [`std::process::Command::output`], under [`lock`] while the child starts:
+    /// its output and errors are captured, and its input is this process's
+    /// unless the command names one.
+    ///
+    /// # Errors
+    ///
+    /// As `output`.
+    fn output_locked(&mut self) -> io::Result<std::process::Output>;
+    /// [`std::process::Command::status`], under [`lock`] while the child starts.
+    ///
+    /// # Errors
+    ///
+    /// As `status`.
+    fn status_locked(&mut self) -> io::Result<std::process::ExitStatus>;
+}
+
+impl SpawnUnderEnvLock for std::process::Command {
+    fn spawn_locked(&mut self) -> io::Result<std::process::Child> {
+        let _env = lock();
+        self.spawn()
+    }
+
+    fn output_locked(&mut self) -> io::Result<std::process::Output> {
+        self.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        self.spawn_locked()?.wait_with_output()
+    }
+
+    fn status_locked(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.spawn_locked()?.wait()
+    }
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "this crate is the one sanctioned writer of the process environment"
@@ -713,6 +762,31 @@ mod tests {
             let socket = dir.path().join(format!("{:0>48}", "s.sock"));
             std::os::unix::net::UnixListener::bind(&socket).unwrap();
         }
+    }
+
+    /// A child started while another thread's scope is open waits for it to close, so it never
+    /// inherits that scope's values.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_started_beside_another_scope_inherits_none_of_it() {
+        const LEAK: &str = "TILO_TEST_ENV_SELFTEST_LEAK";
+        let (opened, on_open) = std::sync::mpsc::channel();
+        let scope = thread::spawn(move || {
+            let mut env = ScopedEnv::new();
+            env.set(LEAK, "the other test's value");
+            opened.send(()).unwrap();
+            // Long enough that a child started without the lock starts inside the scope.
+            thread::sleep(std::time::Duration::from_millis(200));
+            drop(env);
+        });
+        on_open.recv().unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf %s \"${TILO_TEST_ENV_SELFTEST_LEAK-}\""])
+            .output_locked()
+            .unwrap();
+        scope.join().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     }
 
     /// Setting restores an absent variable to absent; set and remove restore the prior value; nested

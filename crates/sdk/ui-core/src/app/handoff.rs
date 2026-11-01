@@ -59,11 +59,11 @@ impl App {
     fn checkpoint_app_document(&mut self) -> Result<(), String> {
         if let Some(set) = self.persistence.records.as_mut() {
             set.try_flush(&mut self.state.doc)?;
-            if let (Some(saver), Some(room)) = (
+            if let (Some(saver), Some(index)) = (
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),
             ) {
-                saver.request(room.document_mut());
+                saver.request(index.document_mut());
                 saver.flush();
             }
         } else if let Some(saver) = self.persistence.autosave.as_mut() {

@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use neighbour_wire::actions::{DeviceAction, SignedDeviceAction};
+use neighbour_wire::actions::{DeviceAction, PlaneFrame, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::remote::{
@@ -217,7 +217,7 @@ async fn send(
 ) -> Option<RemoteActionMessage> {
     let connection = endpoint.connect(addr, ACTIONS_ALPN).await.unwrap();
     let (mut send, mut recv) = connection.open_bi().await.unwrap();
-    let bytes = postcard::to_allocvec(signed).unwrap();
+    let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed.clone()))).unwrap();
     send.write_all(&u32::try_from(bytes.len()).unwrap().to_le_bytes())
         .await
         .unwrap();
@@ -293,7 +293,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
+    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     // The request reaches the addressed device, which answers it from its
@@ -364,7 +364,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
     let c = device(&stranger_root, 10);
     let (c_endpoint, c_plane) = asking(&c.0).await;
-    let stranger = c_plane.remote(c_endpoint.clone(), engine.addr(), WORKSPACE);
+    let stranger = c_plane.remote(&c_endpoint, &engine.addr(), WORKSPACE);
     let refused = queried(
         &stranger,
         &Caller::authenticated(
@@ -451,7 +451,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
+    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
 
@@ -514,7 +514,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
     );
 
     let (g_endpoint, g_plane) = asking(&g.0).await;
-    let remote = g_plane.remote(g_endpoint.clone(), engine.addr(), WORKSPACE);
+    let remote = g_plane.remote(&g_endpoint, &engine.addr(), WORKSPACE);
     let caller =
         Caller::authenticated(guest_root.verifying_key().to_bytes(), g.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
@@ -641,7 +641,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     );
 
     let (helper_endpoint, helper_plane) = asking(&helper.0).await;
-    let remote = helper_plane.remote(helper_endpoint.clone(), engine.addr(), WORKSPACE);
+    let remote = helper_plane.remote(&helper_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::delegated_agent(
         "scribe",
         root.verifying_key().to_bytes(),
@@ -693,7 +693,7 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
+    let remote = b_plane.remote(&b_endpoint, &engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     for _ in 0..2 {
@@ -736,7 +736,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let (b_endpoint, b_plane) = asking(&b.0).await;
 
     // A workspace this device does not hold.
-    let elsewhere = b_plane.remote(b_endpoint.clone(), engine.addr(), ELSEWHERE);
+    let elsewhere = b_plane.remote(&b_endpoint, &engine.addr(), ELSEWHERE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     let refused = queried(&elsewhere, &caller).await.unwrap_err();
     assert_eq!(

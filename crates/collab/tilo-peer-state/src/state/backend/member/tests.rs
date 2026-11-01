@@ -190,16 +190,16 @@ fn current_member_copies_all_grant_fields() {
         Subject::ForeignDevice,
     ];
     let nodes = [
-        TreePath::room(&workspace),
-        TreePath::room(&workspace).app(long.clone()),
-        TreePath::room(&workspace)
+        TreePath::workspace(&workspace),
+        TreePath::workspace(&workspace).app(long.clone()),
+        TreePath::workspace(&workspace)
             .app(long.clone())
             .kind(long.clone())
             .resource(long.clone())
             .action(long.clone()),
-        TreePath::room(&workspace).rest().field(&long),
-        TreePath::room(&workspace).any(tilo_action_policy::Level::App),
-        roles::room_resource(&workspace),
+        TreePath::workspace(&workspace).rest().field(&long),
+        TreePath::workspace(&workspace).any(tilo_action_policy::Level::App),
+        roles::workspace_resource(&workspace),
     ];
     let lifetimes = [Lifetime::UntilRevoked, Lifetime::Until(u64::MAX)];
     for (i, node) in nodes.into_iter().enumerate() {
@@ -326,7 +326,7 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
     let deny = Grant::new(
         "denial",
         Subject::person(person.as_str()),
-        TreePath::room(restricted.workspace_id()).app("so.tilo.notes"),
+        TreePath::workspace(restricted.workspace_id()).app("so.tilo.notes"),
         KindSet::ALL,
         Answer::Deny,
         Subject::person("a different person"),
@@ -386,7 +386,7 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
 
     make_foreign(&mut peer, &source);
     assert_foreign(&peer, source, now, Role::Owner);
-    let content = TreePath::room(peer.workspace_id())
+    let content = TreePath::workspace(peer.workspace_id())
         .app("app")
         .resource("record");
     assert!(
@@ -402,7 +402,7 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
         &Grant::new(
             "foreign-device-read",
             Subject::ForeignDevice,
-            TreePath::room(&workspace_id),
+            TreePath::workspace(&workspace_id),
             KindSet::UNDOABLE.union(KindSet::OUTSIDE),
             Answer::Deny,
             Subject::person(person.as_str()),
@@ -462,7 +462,7 @@ fn a_read_deny_below_the_workspace_refuses_only_what_it_names() {
         ),
         read_grant(
             "finance-hidden",
-            TreePath::room(&workspace_id).app("finance"),
+            TreePath::workspace(&workspace_id).app("finance"),
             Answer::Deny,
         ),
         read_grant(
@@ -532,7 +532,7 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
         ),
         read_grant(
             "finance-hidden",
-            TreePath::room(&workspace_id).app("finance"),
+            TreePath::workspace(&workspace_id).app("finance"),
             Answer::Deny,
         ),
         read_grant(

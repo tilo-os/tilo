@@ -583,7 +583,7 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
         // continuation presents only the person's keyless projection.
         fixture.caller =
             tilo_actions::remote::Caller::local_person(BrokerActor::for_caller(&fixture.caller).id)
-                .in_room(&fixture.workspace);
+                .in_workspace(&fixture.workspace);
         assert!(fixture.caller.device_public_key().is_none());
         let descriptor = if close {
             app_close_descriptor(&app().package_id, "Notes")

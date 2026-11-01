@@ -75,18 +75,14 @@ view dock_run(s: Shell, d: Desk) {
     }
 }
 
-/// One dock item: its glyph, with its badge over the glyph's top trailing corner — the count of
-/// what is new, or the mark that it wants the person — as a dock has always badged an app.
+/// One dock item: its glyph, with its badge on the glyph's top trailing corner — the count of
+/// what is new, or the mark that it wants the person — as a dock has always badged an app. The
+/// count is the button's own (`count:`), so it stands on the glyph and never on the tile beside
+/// it, and the name read out says it.
 view dock_tile(s: Shell, d: Desk, item: DockItem) {
-    layers {
-        ui.Button(item.title, icon: item.icon, icon_only: true, role: .plain) {
-            on press: dock_open(s, item)
-        }
-        if item.badge > 0 {
-            ui.Badge(count: item.badge, tone: if item.attention { .warning } else { .neutral }, at: .top_trailing)
-        } else if item.attention {
-            ui.Badge(dot: true, tone: .warning, at: .top_trailing)
-        }
+    let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
+    ui.Button(name, icon: item.icon, icon_only: true, role: .plain, count: item.badge, dot: item.attention, alert: item.attention) {
+        on press: dock_open(s, item)
     }
 }
 

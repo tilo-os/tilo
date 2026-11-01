@@ -13,7 +13,7 @@ pub struct MediaRequest {
     pub retired: bool,
     pub app: String,
     pub instance: String,
-    pub room: String,
+    pub workspace: String,
     pub record: String,
     pub command: Request,
 }
@@ -73,7 +73,7 @@ impl MediaLane {
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
-            // Every app may ask the room's host to run an action; only
+            // Every app may ask the workspace's host to run an action; only
             // Chat holds a call, so only it reaches the media lane.
             let media = binding.app_id == "so.tilo.chat";
             let route = binding.broker_route()?;
@@ -119,7 +119,7 @@ impl MediaLane {
                         retired: false,
                         app: route.app_id.clone(),
                         instance: binding.instance_id.to_string(),
-                        room: route.cluster_id.to_string(),
+                        workspace: route.cluster_id.to_string(),
                         record: route.record.clone().unwrap_or_default(),
                         command,
                     };
@@ -174,9 +174,9 @@ impl MediaLane {
     }
 }
 
-/// Whether the room's host runs `provider`'s actions: a room record's
-/// (`record:<app>:<record>`), the room's own (`workspace:<room>`) and its
-/// governance resource's (`workspace.permissions:<room>`).
+/// Whether the workspace's host runs `provider`'s actions: a workspace record's
+/// (`record:<app>:<record>`), the workspace's own (`workspace:<workspace>`) and its
+/// governance resource's (`workspace.permissions:<workspace>`).
 fn host_runs(provider: &str) -> bool {
     provider.starts_with("record:")
         || tilo_actions::remote::workspace_provider_room(provider).is_some()
@@ -187,9 +187,9 @@ fn host_runs(provider: &str) -> bool {
 /// waiting for the host, if it does.
 fn refusal(provider: &str, queued: usize) -> Option<&'static str> {
     if !host_runs(provider) {
-        Some("Only the room's host runs another app's actions here")
+        Some("Only the workspace's host runs another app's actions here")
     } else if queued >= 16 {
-        Some("The room's host is busy; try again")
+        Some("The workspace's host is busy; try again")
     } else {
         None
     }
@@ -204,10 +204,10 @@ fn queue_catalogue(
     use tilo_actions::remote::{
         ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
     };
-    // An action the room's host runs travels this lane to it, and the host
-    // admits it by the person's own standing in the room: a page cannot
-    // grant itself anything. The room's membership actions become the
-    // host's governed room requests, decided by the room's policy there.
+    // An action the workspace's host runs travels this lane to it, and the host
+    // admits it by the person's own standing in the workspace: a page cannot
+    // grant itself anything. The workspace's membership actions become the
+    // host's governed workspace requests, decided by the workspace's policy there.
     if let RemoteActionMessage::Invoke(request) = &message {
         if let Some(reason) = refusal(&request.target.provider, catalogues.len()) {
             crate::widget::handle_collab_event(
@@ -253,7 +253,7 @@ mod tests {
     use super::refusal;
 
     #[test]
-    fn only_actions_the_rooms_host_runs_travel_to_it() {
+    fn only_actions_the_workspaces_host_runs_travel_to_it() {
         for provider in [
             "record:so.tilo.notes:n1",
             "record:so.tilo.notes:",
@@ -264,12 +264,12 @@ mod tests {
         }
         assert_eq!(
             refusal("record:so.tilo.notes:n1", 16),
-            Some("The room's host is busy; try again")
+            Some("The workspace's host is busy; try again")
         );
         for provider in ["so.tilo.chat", "tilo.own-device", "workspaces", ""] {
             assert_eq!(
                 refusal(provider, 0),
-                Some("Only the room's host runs another app's actions here"),
+                Some("Only the workspace's host runs another app's actions here"),
                 "{provider}"
             );
         }

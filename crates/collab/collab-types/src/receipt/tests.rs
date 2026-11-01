@@ -88,7 +88,7 @@ fn grants() -> Vec<Grant> {
         Grant::new(
             "ada-edits",
             Subject::person("ada"),
-            TreePath::room(ROOM),
+            TreePath::workspace(ROOM),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             room.clone(),

@@ -399,12 +399,14 @@ impl Drop for Daemon {
     }
 }
 
-fn remove_room(live: &Path) {
-    let Some(room) = live.file_name() else { return };
+fn remove_workspace(live: &Path) {
+    let Some(workspace) = live.file_name() else {
+        return;
+    };
     let Some(store) = live.parent().and_then(Path::parent) else {
         return;
     };
-    let epochs = store.join(".epochs").join(room);
+    let epochs = store.join(".epochs").join(workspace);
     if let Ok(entries) = std::fs::read_dir(&epochs) {
         for e in entries.flatten() {
             let _ = fs_native::btrfs::delete_subvolume(&e.path());
@@ -414,22 +416,22 @@ fn remove_room(live: &Path) {
     let _ = fs_native::btrfs::delete_subvolume(live);
 }
 
-struct Rooms(Vec<PathBuf>);
+struct LiveWorkspaces(Vec<PathBuf>);
 
-impl Drop for Rooms {
+impl Drop for LiveWorkspaces {
     fn drop(&mut self) {
         for live in &self.0 {
-            remove_room(live);
+            remove_workspace(live);
         }
     }
 }
 
 /// Two devices of one person. Dropped in field order: daemons first, then
-/// their rooms, then the link and the directory.
+/// their workspaces, then the link and the directory.
 struct Pair {
     host: Daemon,
     peer: Daemon,
-    _rooms: Rooms,
+    _workspaces: LiveWorkspaces,
     link: Option<Link>,
     _dir: tempfile::TempDir,
 }
@@ -448,8 +450,8 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
         std::env::var_os("TILO_FS_BENCH_DIR").map_or_else(|| "/var/tmp".into(), PathBuf::from);
     let temp = tempfile::tempdir_in(base).unwrap();
     let dir = temp.path().to_path_buf();
-    // Identities (and so room ids) differ per run: a run never reuses a
-    // room another run left or still uses.
+    // Identities (and so workspace ids) differ per run: a run never reuses a
+    // workspace another run left or still uses.
     let salt = u8::try_from(std::process::id() % 83).unwrap_or(0);
     let seed = seed.wrapping_add(salt.wrapping_mul(3));
     let person = [seed; 32];
@@ -489,11 +491,11 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
     );
     peer.wait_line("Joined workspace");
     peer.wait_serving();
-    let rooms = Rooms(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
+    let workspaces = LiveWorkspaces(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
     Pair {
         host,
         peer,
-        _rooms: rooms,
+        _workspaces: workspaces,
         link,
         _dir: temp,
     }

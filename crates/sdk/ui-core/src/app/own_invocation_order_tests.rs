@@ -43,20 +43,20 @@ fn probe() -> Probe {
     probe_keeping_beside(false)
 }
 
-/// [`probe`]; with `beside`, the window also keeps the room's workspace
+/// [`probe`]; with `beside`, the window also keeps the workspace's
 /// emoji record beside its own, on a route whose reads the host refuses,
 /// so it never opens.
 fn probe_keeping_beside(beside: bool) -> Probe {
     let definition = crate::application_test_support::runner_probe_definition();
     let temp = tempfile::tempdir().unwrap();
-    let room = uuid::Uuid::new_v4().to_string();
+    let workspace = uuid::Uuid::new_v4().to_string();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners.open(&definition.app_id, &room).unwrap();
+    let records = owners.open(&definition.app_id, &workspace).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
             temp.path().into(),
             "fixture-device",
-            &room,
+            &workspace,
         )
         .unwrap(),
     );
@@ -81,9 +81,9 @@ fn probe_keeping_beside(beside: bool) -> Probe {
         App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
     let owner = app.root_widget.callback_binding().unwrap();
     let beside = beside.then(|| {
-        crate::record::workspace::WorkspaceRecords::in_room(
+        crate::record::workspace::WorkspaceRecords::in_workspace(
             owners.clone(),
-            room.clone(),
+            workspace.clone(),
             crate::application_test_support::author(),
         )
         .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))

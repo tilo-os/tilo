@@ -887,7 +887,7 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     let legacy = Grant::new(
         roles::administrator_grant_id(&who).as_str(),
         Subject::Person(who),
-        roles::room_resource(&room),
+        roles::workspace_resource(&room),
         KindSet::ALL,
         Answer::Allow,
         Subject::Person(hex::encode(owner.user_public_key)),

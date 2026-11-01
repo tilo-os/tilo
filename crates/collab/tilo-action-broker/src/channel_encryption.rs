@@ -192,7 +192,7 @@ pub trait ChannelDirectory: Send {
     /// name: it may be a member's own record, so who reads it is unknown, and
     /// this device admits and removes no one.
     ///
-    /// A person room ([`collab_types::person_room`]) has no record grants:
+    /// A personal cluster ([`collab_types::personal_cluster`]) has no record grants:
     /// its channels are read by the devices of the identity it derives from
     /// (certified, not revoked), and a directory holding that identity
     /// answers them for every channel. A channel is then taken up once the
@@ -1060,7 +1060,7 @@ impl ChannelEncryption {
     /// Start taking part in `channel`: wait for access, and for the group to
     /// be created ([`Self::found`]). `Ok(false)` while the directory cannot
     /// name the channel's readers here: a workspace whose governance is unknown
-    /// and which is no person room of this device's. A workspace governed by a
+    /// and which is no personal cluster of this device's. A workspace governed by a
     /// person's node needs that node, and the person's own room has no
     /// governor at all: its readers are the identity's devices, and any of
     /// them founds its channels.
@@ -3373,5 +3373,5 @@ mod tests {
         assert!(governed.peers.is_empty());
     }
 
-    include!("channel_encryption_person_room_tests.rs");
+    include!("channel_encryption_personal_cluster_tests.rs");
 }

@@ -11,7 +11,7 @@ use crate::permissions::{PermissionContext, SharedPermissions, UserId};
 
 /// Prepare `definition` as one of the desktop's own surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its
-/// record and view kept in memory under `room`, its window private, so
+/// record and view kept in memory under `workspace`, its window private, so
 /// nothing of it is written to disk or offered beyond this device. `lend`
 /// hands it what its host lends it.
 ///
@@ -21,16 +21,16 @@ pub fn prepare_private_surface(
     definition: &'static ApplicationDefinition,
     device: &str,
     person: &str,
-    room: &str,
+    workspace: &str,
     instance: u64,
     lend: impl FnOnce(&mut HostContext),
 ) -> Result<AppComponent, LaunchError> {
     let store = Rc::new(durable_store::MemoryStore::new());
     let records = crate::record::RecordOwners::with_store(store.clone())
-        .open(definition.app_id(), room)
+        .open(definition.app_id(), workspace)
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let views = Rc::new(
-        InstanceViewStore::with_store(store, device, room)
+        InstanceViewStore::with_store(store, device, workspace)
             .map_err(|error| LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;

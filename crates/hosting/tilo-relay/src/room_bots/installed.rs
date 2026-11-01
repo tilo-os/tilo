@@ -593,7 +593,7 @@ impl BotRunner {
             self.host.user_public_key,
             self.bot_key.verifying_key().to_bytes(),
         )
-        .in_room(self.room.clone());
+        .in_workspace(self.room.clone());
         let (door, shortcut, handle) = (
             Arc::clone(&self.door),
             Arc::clone(&self.shortcut),
@@ -823,7 +823,7 @@ fn bot_standing(
     // It takes the entry out of the outbox, which the room judges as
     // reaching outside, as it did: the connector reached it.
     rules.extend(connectors.iter().flat_map(|app| {
-        let app = TreePath::root().any(Level::Room).app(app.clone());
+        let app = TreePath::root().any(Level::Workspace).app(app.clone());
         let settle = app
             .clone()
             .any(Level::Kind)

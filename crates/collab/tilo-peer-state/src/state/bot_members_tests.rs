@@ -143,7 +143,7 @@ fn a_bot_row_acts_only_with_its_own_live_installation() {
 
 fn chat_post() -> TreePath {
     TreePath::root()
-        .any(Level::Room)
+        .any(Level::Workspace)
         .app("so.tilo.chat")
         .kind("chat.workspace")
         .any(Level::Resource)
@@ -226,7 +226,7 @@ fn update_command(text: &str) -> Command {
 }
 
 fn post_in(peer: &StatePeer) -> TreePath {
-    TreePath::room(peer.workspace_id())
+    TreePath::workspace(peer.workspace_id())
         .app("so.tilo.chat")
         .kind("chat.workspace")
         .resource("chat:1")
@@ -279,7 +279,7 @@ fn the_owner_installs_a_bot_in_one_governed_change() {
     );
     let member = governor.permissions(cert.device_public_key, now).unwrap();
     assert!(member.allows(&post_in(&governor), ActionKind::Undoable, now));
-    let notes = TreePath::room(governor.workspace_id())
+    let notes = TreePath::workspace(governor.workspace_id())
         .app("so.tilo.notes")
         .action("append");
     assert!(!member.allows(&notes, ActionKind::Undoable, now));
@@ -331,7 +331,7 @@ fn install_refuses_a_program_with_unused_rules() {
     let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
     let delete = Rule::new(
         TreePath::root()
-            .any(Level::Room)
+            .any(Level::Workspace)
             .app("so.tilo.chat")
             .kind("chat.workspace")
             .any(Level::Resource)
@@ -503,7 +503,7 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
     let deny = tilo_action_policy::Grant::new(
         "no-post",
         tilo_action_policy::Subject::person(person_hex()),
-        TreePath::room(governor.workspace_id()).app("so.tilo.chat"),
+        TreePath::workspace(governor.workspace_id()).app("so.tilo.chat"),
         KindSet::UNDOABLE,
         Answer::Deny,
         tilo_action_policy::Subject::person(person_hex()),
