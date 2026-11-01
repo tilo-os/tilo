@@ -129,6 +129,24 @@ impl WidgetHost {
         self.revision
     }
 
+    /// Whether the tree has a frame to draw by what a live host draws for: input, a new
+    /// placement or layout ([`Self::relayout`]), queued work (a wake, an invocation), a motion
+    /// or a deadline that came due. A widget reporting itself dirty is not a reason on its own:
+    /// leaves report so by default (a text field always does), so a host that drew for it would
+    /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
+    /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
+    pub fn wants_frame(&mut self) -> bool {
+        if self.owed {
+            return true;
+        }
+        let frame = self.host.frame_schedule();
+        frame.queued_work
+            || frame.needs_animation_frame
+            || frame
+                .next_wake_deadline
+                .is_some_and(|deadline| deadline <= ui::time::now())
+    }
+
     /// Where the tree is shown.
     pub const fn placement(&self) -> Placement {
         self.placement
@@ -318,8 +336,11 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) {
+        // What was owed is consumed by this frame whether or not the tree drew anything of
+        // its own.
+        let owed = std::mem::take(&mut self.owed);
         let drew = self.with_wells(|host| host.poll_frame().unwrap_or(false));
-        if !(drew || std::mem::take(&mut self.owed)) {
+        if !(drew || owed) {
             return;
         }
         self.revision = self.revision.wrapping_add(1);

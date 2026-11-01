@@ -1224,6 +1224,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
+        compositor.set_idle_config(options.config.idle);
         compositor.add_host(Box::new(desktop.clone()));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
 

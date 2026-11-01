@@ -697,6 +697,10 @@ impl SessionLink {
 
 /// The ask an outside effect of `capability` with `payload` is, or why it is none.
 fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
+    // `session.run` and `session.notify` carry a tuple; every other effect a text.
+    if matches!(capability, CAP_RUN | CAP_NOTIFY) {
+        return run_ask(payload, capability);
+    }
     let Json::String(word) = payload else {
         return Err(format!("{capability} takes a text, not {payload}"));
     };
@@ -711,7 +715,6 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             action: word.clone(),
             arguments: BTreeMap::new(),
         }),
-        CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
         CAP_ARRANGE => {
             // `<action id> {json arguments}`, or just the id for an action that takes none.
             let (action, rest) = word
@@ -2300,9 +2303,15 @@ impl ShellPart {
         });
     }
 
-    /// Draw a frame of the part's widget tree when it owes one.
+    /// Draw a frame of the part's widget tree when it owes one: what the views said (a turn
+    /// that was shown lays the tree out), input, a motion or a deadline. A field on screen
+    /// reports itself dirty every frame, so that alone draws nothing: with the centre or the
+    /// launcher up and nothing changing, the part draws no frame.
     #[allow(dead_code, reason = "a test draws a frame between presses")]
     fn draw(&mut self) {
+        if !self.widgets.wants_frame() {
+            return;
+        }
         let before = crate::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
         self.widgets.prepare_frame();
@@ -2465,6 +2474,88 @@ mod tests {
         for _ in 0..6 {
             part.prepare_frame();
         }
+    }
+
+    /// The centre up, with its search field, and nothing changing: the part draws no frame.
+    /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
+    #[test]
+    fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
+        let _settled = ui::motion::testing::settled();
+        let (mut part, _link) = part_with(DeskReading {
+            here: "centre".to_owned(),
+            notices: vec![NoticeReading {
+                key: "1".to_owned(),
+                title: "Backup finished".to_owned(),
+                body: "12 GB safe".to_owned(),
+                origin_app: "Settings".to_owned(),
+                kind: "info".to_owned(),
+                read: true,
+                group: "Settings".to_owned(),
+                ..NoticeReading::default()
+            }],
+            ..reading()
+        });
+        for _ in 0..8 {
+            part.prepare_frame();
+        }
+        assert!(
+            part.control_bounds("Backup finished").is_some(),
+            "the centre shows the notice"
+        );
+        let before = part.work();
+        for _ in 0..20 {
+            part.prepare_frame();
+        }
+        let after = part.work();
+        assert_eq!(
+            (after.turns - before.turns, after.drawn - before.drawn),
+            (0, 0),
+            "idle, the centre runs and draws nothing"
+        );
+    }
+
+    /// The centre's presses are `session.notify` effects, which carry a tuple: Clear all and a
+    /// notice's Dismiss each reach the session as the desk's own action.
+    #[test]
+    fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
+        let _settled = ui::motion::testing::settled();
+        let (mut part, link) = part_with(DeskReading {
+            here: "centre".to_owned(),
+            notices: vec![NoticeReading {
+                key: "1".to_owned(),
+                title: "Backup finished".to_owned(),
+                body: "12 GB safe".to_owned(),
+                origin_app: "Settings".to_owned(),
+                kind: "info".to_owned(),
+                read: true,
+                group: "Settings".to_owned(),
+                ..NoticeReading::default()
+            }],
+            ..reading()
+        });
+        for _ in 0..8 {
+            part.prepare_frame();
+        }
+        click(&mut part, "Dismiss");
+        click(&mut part, "Clear all");
+        let asked: Vec<Ask> = link.asked.borrow().iter().cloned().collect();
+        assert_eq!(
+            asked,
+            vec![
+                Ask {
+                    resource: DESK_RESOURCE.to_owned(),
+                    action: "dismiss-notice".to_owned(),
+                    arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+                },
+                Ask {
+                    resource: DESK_RESOURCE.to_owned(),
+                    action: "clear-notices".to_owned(),
+                    arguments: BTreeMap::new(),
+                },
+            ],
+            "refusals {:?}",
+            part.refusals()
+        );
     }
 
     #[test]

@@ -1,11 +1,14 @@
 //! What the session reads of the person's settings when it starts: their
 //! shortcut table, their input devices' preferences (pointer, touchpad,
-//! key repeat), and how touchpad gestures read.
+//! key repeat), how touchpad gestures read, and when the idle screen
+//! blanks and locks.
 
 use settings_store::hardware::{AccelProfile, RichInputConfig, ShortcutConfig};
-use tilo_compositor::InputConfig;
+use std::time::Duration;
+
 use tilo_compositor::backend::drm::input_config::{TouchpadClickMethod, TouchpadScrollMethod};
 use tilo_compositor::gestures::GestureConfig;
+use tilo_compositor::{IdleConfig, InputConfig};
 
 /// The person's settings as the session applies them.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +25,11 @@ pub struct SessionConfig {
     /// Whether what the person changes in the session (the night light) is
     /// kept in their settings: for settings loaded from them.
     pub kept: bool,
+    /// When the screen blanks and the session locks with no input: the
+    /// person's power settings. Settings not loaded from a person (a test,
+    /// a screenshot) have no one to walk away, so nothing blanks or locks
+    /// on a wall clock; locking on request still works.
+    pub idle: IdleConfig,
 }
 
 impl Default for SessionConfig {
@@ -37,6 +45,7 @@ impl SessionConfig {
         Self {
             night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             kept: true,
+            idle: stored_idle(),
             ..Self::from_settings(&RichInputConfig::load(), ShortcutConfig::load())
         }
     }
@@ -55,7 +64,25 @@ impl SessionConfig {
             gestures,
             night_light: false,
             kept: false,
+            idle: IdleConfig {
+                blank_timeout: None,
+                lock_timeout: None,
+                suspend_timeout: None,
+            },
         }
+    }
+}
+
+/// The person's blank and lock timeouts, `0` minutes being never. Idle
+/// suspend is the power service's, which asks the system itself.
+fn stored_idle() -> IdleConfig {
+    let minutes = |minutes: u32| {
+        (minutes > 0).then(|| Duration::from_secs(u64::from(minutes).saturating_mul(60)))
+    };
+    IdleConfig {
+        blank_timeout: minutes(settings_store::power::BLANK_MINUTES.get()),
+        lock_timeout: minutes(settings_store::power::LOCK_MINUTES.get()),
+        suspend_timeout: None,
     }
 }
 
