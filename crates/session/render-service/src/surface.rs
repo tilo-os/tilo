@@ -586,6 +586,10 @@ fn backdrop_frame(
                         dispersion,
                     }
                 },
+                legible: {
+                    let [dark, light] = backdrop.legible.map(f64::from);
+                    ui::backdrop::Legible { dark, light }
+                },
                 below: Scene::from(backdrop.below),
                 ground: Color::new(backdrop.ground),
             })

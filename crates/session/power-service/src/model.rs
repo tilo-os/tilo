@@ -39,6 +39,42 @@ pub struct Battery {
     pub notice: Option<Notice>,
 }
 
+/// The battery's reading as a view of another language reads it: the pack's charge, its
+/// state and the time left. The charge limit and the notice are the settings page's and the
+/// banner's, which read them through the service's own types.
+impl tilo_resource::JsonSchema for Battery {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "present": { "type": "boolean" },
+                "percentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "state": { "type": "string" },
+                "on_battery": { "type": "boolean" },
+                "minutes_left": { "type": ["integer", "null"], "minimum": 0 },
+            },
+            "required": ["present", "percentage", "state", "on_battery"],
+        })
+    }
+
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        use tilo_resource::JsonSchema;
+        tilo_resource::surface::record_of(
+            types,
+            "tilo_power_service::Battery",
+            "Battery",
+            "The machine's battery as it reads now.",
+            &[
+                ("present", <bool as JsonSchema>::field_type),
+                ("percentage", <u8 as JsonSchema>::field_type),
+                ("state", <String as JsonSchema>::field_type),
+                ("on_battery", <bool as JsonSchema>::field_type),
+                ("minutes_left", <Option<u32> as JsonSchema>::field_type),
+            ],
+        )
+    }
+}
+
 /// The policy in force, and what keeps the machine awake.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sleep {

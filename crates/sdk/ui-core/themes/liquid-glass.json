@@ -22,10 +22,10 @@
   "type": { "face": "Default", "reading": "New Computer Modern", "base_size": 14.0 },
   "motion": { "character": 1.3, "curve": "spring", "duration_scale": 1.0 },
   "material": {
-    "window": { "painter": "liquid", "tint": 0.85, "edge_highlight": 0.3 },
+    "window": { "painter": "liquid", "tint": 0.3, "refraction": 10.0, "band": 16.0, "edge_highlight": 0.35 },
     "control": { "painter": "liquid", "tint": 0.55, "edge_highlight": 0.35 },
-    "floating": { "painter": "liquid", "tint": 0.16, "refraction": 14.0, "band": 22.0, "blur": 1.0, "edge_highlight": 0.45 },
-    "bar": { "painter": "liquid", "tint": 0.2, "refraction": 9.0, "band": 14.0, "edge_highlight": 0.4 },
+    "floating": { "painter": "liquid", "tint": 0.1, "refraction": 16.0, "band": 24.0, "edge_highlight": 0.5 },
+    "bar": { "painter": "liquid", "tint": 0.12, "refraction": 9.0, "band": 14.0, "edge_highlight": 0.4 },
     "selector": { "strip": "floating", "rim_span": 0.6, "rim_alpha": 0.3, "hover_alpha": 0.75 }
   },
   "depth": { "kind": "shadow", "strength": 1.1 }

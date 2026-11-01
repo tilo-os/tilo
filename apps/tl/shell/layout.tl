@@ -228,30 +228,3 @@ view dock_settings(s: Shell) {
         toggle("Magnify the item under the pointer", bind: s.dock_zoom)
     }
 }
-
-/// The quick settings panel: network, sound, brightness, Bluetooth, the power, the theme and
-/// do-not-disturb, each read from the device's controls (`session.control`) and changed by one
-/// action. It is a panel of the shell, drawn over what is under it with the theme's floating
-/// material.
-view quick_settings(s: Shell, c: Collection<Control>) {
-    ui.Card(title: "Quick settings") {
-        body: {
-            grid(min: 10rem, gap: .related) {
-                for control in c {
-                    control_tile(s, control)
-                }
-            }
-        }
-    }
-}
-
-/// One control: its glyph and name, on while it is on, its level under it when the person
-/// sets one.
-view control_tile(s: Shell, control: Control) {
-    ui.Button(control.label, icon: control.icon, toggled: control.on, enabled: control.available) {
-        on press: toggle_control(s, control)
-    }
-    if control.has_level {
-        ui.BarGauge(value: control.value, label: control.detail, compact: true)
-    }
-}

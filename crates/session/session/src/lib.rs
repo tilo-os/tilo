@@ -1174,7 +1174,7 @@ impl Session {
         // What each open window is told of the desk it stands on, from the
         // settings as they are now; the desk wears the same theme.
         let warmth = window_warmth::Windows::new(presentation.theme.clone(), &options.person);
-        desktop.set_theme(presentation.theme);
+        desktop.set_theme(presentation.theme.clone());
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces, the windows they
         // held, and the apps those windows open again.
@@ -1444,6 +1444,7 @@ impl Session {
                 options.scale,
                 layer,
                 wells.clone(),
+                presentation.theme.clone(),
             )
             .map_err(|why| tracing::error!(why, ?layer, "the shell did not start"))
             .ok()
@@ -2372,6 +2373,14 @@ impl Session {
     /// another workspace, when that workspace's picture or temperature
     /// changes, and when the person chooses another colour.
     fn follow_window_warmth(&mut self) {
+        // A theme the person's settings changed to is what the desk and the shell draw in
+        // from this frame, as every window is told it below.
+        if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
+            self.shared.desktop.set_theme(theme.clone());
+            if let Some(shell) = self.shell.as_mut() {
+                shell.set_theme(&theme);
+            }
+        }
         let Some(tabs) = &mut self.tabs else {
             return;
         };

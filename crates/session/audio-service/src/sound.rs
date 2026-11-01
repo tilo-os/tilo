@@ -57,7 +57,7 @@ pub fn destinations(sound: &Sound) -> Vec<super::media::Output> {
 }
 
 /// What the `sound` resource reads.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Sound {
     /// The output sound plays through, by node id.
@@ -86,7 +86,7 @@ pub struct Sound {
 }
 
 /// One output or input.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Device {
     /// Its `PipeWire` node id.
@@ -106,7 +106,9 @@ pub struct Device {
 }
 
 /// What an application is using the camera or the microphone for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum UseKind {
     #[default]
@@ -117,7 +119,9 @@ pub enum UseKind {
 /// One application using the camera or the microphone right now: the stream
 /// `PipeWire` names, the process and executable behind it, what the bar
 /// calls the application, and what it uses.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Use {
     /// The `PipeWire` client id.
@@ -134,7 +138,7 @@ pub struct Use {
 }
 
 /// One application's stream: what it plays or records, how loud, and where.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Stream {
     /// Its `PipeWire` node id.
@@ -167,7 +171,7 @@ impl Stream {
 }
 
 /// One sound card (a codec or a Bluetooth transport) and its profiles.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Card {
     /// Its `PipeWire` device id, the handle a profile is chosen by.
@@ -179,7 +183,7 @@ pub struct Card {
 }
 
 /// One profile a sound card offers.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Profile {
     pub index: u32,
@@ -347,6 +351,13 @@ pub enum SoundAction {
         #[param("The profile's index")]
         profile: u32,
     },
+}
+
+/// The sound resource as a view of another language reads and changes it: its reading
+/// ([`Sound`]) as its fields and its actions ([`SoundAction`]) as its verbs.
+#[must_use]
+pub fn surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Sound, SoundAction>("sound", "Sound")
 }
 
 /// The sound resource reading `sound`.

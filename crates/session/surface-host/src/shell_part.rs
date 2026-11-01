@@ -29,6 +29,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
+use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
@@ -138,6 +139,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/presets.tl"),
     ),
     (
+        "quick.tl",
+        include_str!("../../../../apps/tl/shell/quick.tl"),
+    ),
+    (
         "rooms.tl",
         include_str!("../../../../apps/tl/shell/rooms.tl"),
     ),
@@ -156,10 +161,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
-    ),
-    (
-        "system.tl",
-        include_str!("../../../../apps/tl/shell/system.tl"),
     ),
     (
         "traditional.tl",
@@ -274,8 +275,9 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     );
-    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
         out.iter().map(|c| c.meta.clone()).collect();
+    imports.extend(platform_packages()?);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -1927,6 +1929,20 @@ struct ShellPlatform {
 
 impl Platform for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
+        // The device's and Settings' packages first: the shell's views read their resources
+        // (`device.sound`) from the readings the session publishes, and pressing their actions
+        // asks the session, as a place's composed view does.
+        match platform_packages() {
+            Ok(packages) => {
+                for meta in packages {
+                    let app = meta.app.clone();
+                    if let Err(error) = host.runtime().load_foreign(meta) {
+                        tracing::error!(app, %error, "a platform package did not load");
+                    }
+                }
+            }
+            Err(why) => tracing::error!(why, "the platform's packages do not read"),
+        }
         // The packages the shell uses are other apps' here: their records are the ones their
         // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
         // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
@@ -2356,6 +2372,14 @@ impl ShellPart {
             })
     }
 
+    /// Draw the shell with `theme`, the person's as their appearance settings make it: a
+    /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
+    /// the bar and every surface over the desk in it.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.widgets.set_theme(theme);
+        self.again = true;
+    }
+
     /// The edges the shell's chrome stands on, as the session read them from the shell's
     /// record: where the part covers the outputs. A change moves the part to the edges it
     /// now names.
@@ -2600,7 +2624,11 @@ impl ShellPart {
         let Some(window) = self.window() else {
             return;
         };
-        for (kind, text) in window.take_notices() {
+        let notices = window.take_notices();
+        // A window that refused what the view sent shows the platform's error state: that
+        // is the shell refusing to show itself, heard once.
+        let failed = window.failed().map(str::to_owned);
+        for (kind, text) in notices {
             match kind {
                 tilo_render_protocol::patch::NoticeKind::Error => {
                     tracing::warn!(text, "the shell refused what was asked of it");
@@ -2610,6 +2638,11 @@ impl ShellPart {
                     tracing::info!(text, "the shell says");
                 }
             }
+        }
+        if let Some(why) = failed
+            && !self.refusals.contains(&why)
+        {
+            self.refusals.push(why);
         }
     }
 
