@@ -107,6 +107,9 @@ pub enum DesktopAction {
     ToggleCollaborators,
     /// Show the person `person` in the people panel.
     ShowPerson { person: String },
+    /// Show the bar over the window covering the display in use for its idle
+    /// time, as the Super key and a finger swiped down from the top edge do.
+    RevealTopBar,
 }
 
 impl DesktopAction {
@@ -202,6 +205,12 @@ pub fn chrome_resource() -> ResourceSpec {
             t("desktop-action-toggle-overview"),
             Vec::new(),
             |_| DesktopAction::ToggleOverview,
+        ))
+        .with_action(action(
+            "reveal-top-bar",
+            t("desktop-action-reveal-top-bar"),
+            Vec::new(),
+            |_| DesktopAction::RevealTopBar,
         ))
         .with_action(action(
             "show-overview",

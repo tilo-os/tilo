@@ -6025,7 +6025,7 @@ fn observe_toplevel_startup(surface: &ToplevelSurface) {
                     adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
                     surface_id: surface_id(surface.wl_surface()),
                     package_id: package.clone(),
-                    room: room.clone(),
+                    workspace: room.clone(),
                 })
             });
         crate::shell::launcher::record_startup_window(&state.ancestry, adoption);

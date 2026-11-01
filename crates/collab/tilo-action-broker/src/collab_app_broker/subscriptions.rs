@@ -20,7 +20,7 @@ pub(super) fn live_admission(
 }
 
 /// Replay to a new op subscriber of `channel_id` the ops this broker
-/// admitted for its record before. The room delivers a record's history
+/// admitted for its record before. The workspace delivers a record's history
 /// once, when this device connects; an app that opens the record later
 /// would otherwise build on changes it never received. Its CRDT drops what
 /// it already holds. Every op in the log passed the channel's gate when it
@@ -56,8 +56,8 @@ pub(super) fn admitted_ops(
 }
 
 /// Tell a new context subscriber of `channel_id` the records of its app's
-/// trees this device holds in its room ([`BrokerChannels::tree_records_held`]).
-/// The room replays its records to a device once, when it joins, before any
+/// trees this device holds in its workspace ([`BrokerChannels::tree_records_held`]).
+/// The workspace replays its records to a device once, when it joins, before any
 /// window of an app may run; a window opened later, or after a restart,
 /// would otherwise never hold them (a chat's messages from before this
 /// device joined). Opening a record still asks its channel's participants
@@ -198,12 +198,12 @@ mod tests {
             None,
             None,
         );
-        let note = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
-        let other = CrdtRoute::record("so.tilo.sheets", "room-1", "budget");
+        let note = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-1");
+        let other = CrdtRoute::record("so.tilo.sheets", "workspace-1", "budget");
         state.ensure_channel(&note.channel_key());
         state.ensure_channel(&other.channel_key());
         state.window_instances.lock().unwrap().insert(2, 77);
-        let second = CrdtRoute::record("so.tilo.notes", "room-1", "note-2");
+        let second = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-2");
         state.ensure_channel(&second.channel_key());
         state.window_instances.lock().unwrap().insert(4, 78);
         let _note = state.subscribe_ops(&note.channel_key(), 2);
@@ -223,19 +223,25 @@ mod tests {
         assert!(state.window_records().is_empty(), "gone with its app");
     }
 
-    /// An op of `record` of `app` in `room`, admitted the way the broker
+    /// An op of `record` of `app` in `workspace`, admitted the way the broker
     /// admits every op it validated ([`BrokerChannels::record_history`] and
     /// the channel's op log); sealed under a content key when `sealed`.
-    fn admit(channels: &Mutex<BrokerChannels>, app: &str, room: &str, record: &str, sealed: bool) {
-        let route = CrdtRoute::record(app, room, record);
-        let artifact = document_artifact_id(app, room, record);
+    fn admit(
+        channels: &Mutex<BrokerChannels>,
+        app: &str,
+        workspace: &str,
+        record: &str,
+        sealed: bool,
+    ) {
+        let route = CrdtRoute::record(app, workspace, record);
+        let artifact = document_artifact_id(app, workspace, record);
         let mut op = SignedOp::new_unsigned(
             DocumentMutation::Incremental(record.as_bytes().to_vec())
                 .encode()
                 .unwrap(),
             artifact,
             Ed25519PublicKey::from_bytes([5; 32]),
-            document_attestation_id(app, room, record),
+            document_attestation_id(app, workspace, record),
             collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
@@ -243,7 +249,7 @@ mod tests {
         if sealed {
             op.encryption = Some(collab_types::EncryptionMetadata::content_key(
                 1,
-                collab_types::document_channel_id(app, room, record),
+                collab_types::document_channel_id(app, workspace, record),
                 collab_types::ContentRetention::Delta,
             ));
         }
@@ -287,7 +293,7 @@ mod tests {
 
     const CHAT: &str = "so.tilo.chat";
 
-    /// Chat's messages: a chain of parts of the room's default record.
+    /// Chat's messages: a chain of parts of the workspace's default record.
     fn messages() -> ui::record::RecordId {
         ui::record::RecordId::derived("messages", &ui::record::RecordId::room_default())
     }
@@ -305,30 +311,30 @@ mod tests {
             .to_string()
     }
 
-    /// A device joined a room whose chat already had messages: the room
+    /// A device joined a workspace whose chat already had messages: the workspace
     /// replayed it the chat's head part before any Chat window ran here.
     /// The Chat window that opens later is told the part exists as it
     /// subscribes, so it holds the part and reads what was posted before
-    /// the device joined; a window of another app or room is not told, nor
+    /// the device joined; a window of another app or workspace is not told, nor
     /// is a record of no tree.
     #[test]
-    fn a_window_that_subscribes_later_learns_the_records_its_room_replayed() {
+    fn a_window_that_subscribes_later_learns_the_records_its_workspace_replayed() {
         let channels = std::sync::Arc::new(Mutex::new(BrokerChannels::default()));
         let (state, _bridge_rx) = broker(&channels);
-        let room = uuid::Uuid::from_u128(7).to_string();
+        let workspace = uuid::Uuid::from_u128(7).to_string();
         let elsewhere = uuid::Uuid::from_u128(8).to_string();
-        let chat = CrdtRoute::app(CHAT, &room);
+        let chat = CrdtRoute::app(CHAT, &workspace);
 
         // Replayed at the join, while no window of Chat runs here.
-        admit(&channels, CHAT, &room, &part(0), false);
-        admit(&channels, CHAT, &room, &messages().to_string(), false);
-        admit(&channels, "so.tilo.notes", &room, &note_child(), false);
+        admit(&channels, CHAT, &workspace, &part(0), false);
+        admit(&channels, CHAT, &workspace, &messages().to_string(), false);
+        admit(&channels, "so.tilo.notes", &workspace, &note_child(), false);
         admit(&channels, CHAT, &elsewhere, &part(3), false);
 
         let mut window = state.subscribe_context(&chat.channel_key(), 1, None);
         assert_eq!(told(&mut window), [vec![part(0)]]);
         let mut notes = state.subscribe_context(
-            &CrdtRoute::app("so.tilo.notes", &room).channel_key(),
+            &CrdtRoute::app("so.tilo.notes", &workspace).channel_key(),
             2,
             None,
         );
@@ -337,15 +343,15 @@ mod tests {
             [vec![note_child()]],
             "another app's tree is its own"
         );
-        let mut other_room =
+        let mut other_workspace =
             state.subscribe_context(&CrdtRoute::app(CHAT, &elsewhere).channel_key(), 3, None);
         assert_eq!(
-            told(&mut other_room),
+            told(&mut other_workspace),
             [vec![part(3)]],
-            "another room's chat is its own"
+            "another workspace's chat is its own"
         );
         let mut record = state.subscribe_context(
-            &CrdtRoute::record(CHAT, &room, part(0)).channel_key(),
+            &CrdtRoute::record(CHAT, &workspace, part(0)).channel_key(),
             4,
             None,
         );
@@ -356,7 +362,7 @@ mod tests {
 
         // A part written while the window runs reaches it live, once it is
         // admitted, and every later window learns both.
-        admit(&channels, CHAT, &room, &part(1), false);
+        admit(&channels, CHAT, &workspace, &part(1), false);
         state.fanout_to_route(
             &super::super::CollabEvent::RecordsArrived {
                 records: vec![part(1)],
@@ -370,7 +376,7 @@ mod tests {
     }
 
     /// The device holds a chat's sealed parts and its shell restarts: the
-    /// room does not replay them again, and the broker starts with nothing
+    /// workspace does not replay them again, and the broker starts with nothing
     /// in memory. A Chat window opened then is still told the parts, from
     /// the history this device keeps on disk.
     #[test]
@@ -378,16 +384,16 @@ mod tests {
         use crate::collab_history::CollabHistoryStore;
         let dir = tempfile::tempdir().unwrap();
         let history = || Some(CollabHistoryStore::open(dir.path().join("history")).unwrap());
-        let room = uuid::Uuid::from_u128(7).to_string();
-        let chat = CrdtRoute::app(CHAT, &room);
+        let workspace = uuid::Uuid::from_u128(7).to_string();
+        let chat = CrdtRoute::app(CHAT, &workspace);
         {
             let channels = std::sync::Arc::new(Mutex::new(BrokerChannels {
                 history: history(),
                 ..Default::default()
             }));
-            admit(&channels, CHAT, &room, &part(0), true);
-            admit(&channels, CHAT, &room, &part(1), true);
-            admit(&channels, "so.tilo.notes", &room, &note_child(), true);
+            admit(&channels, CHAT, &workspace, &part(0), true);
+            admit(&channels, CHAT, &workspace, &part(1), true);
+            admit(&channels, "so.tilo.notes", &workspace, &note_child(), true);
         }
 
         let channels = std::sync::Arc::new(Mutex::new(BrokerChannels {
@@ -398,17 +404,20 @@ mod tests {
         let mut window = state.subscribe_context(&chat.channel_key(), 1, None);
         assert_eq!(told(&mut window), [vec![part(0), part(1)]]);
         let elsewhere = uuid::Uuid::from_u128(8).to_string();
-        let mut other_room =
+        let mut other_workspace =
             state.subscribe_context(&CrdtRoute::app(CHAT, &elsewhere).channel_key(), 2, None);
-        assert!(told(&mut other_room).is_empty(), "another room's chat");
+        assert!(
+            told(&mut other_workspace).is_empty(),
+            "another workspace's chat"
+        );
     }
 
     /// A message another person posted reached this device before its app
     /// opened the record it went into: the app still receives it when it
-    /// subscribes, though the room sent it only once.
+    /// subscribes, though the workspace sent it only once.
     #[test]
     fn a_late_subscriber_receives_what_was_admitted_before() {
-        let route = CrdtRoute::record("so.tilo.chat", "room-1", "derived:part.0@chain");
+        let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "derived:part.0@chain");
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let op = SignedOp::new_unsigned(
             DocumentMutation::Snapshot(b"part".to_vec())
@@ -437,7 +446,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "once");
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let other = CrdtRoute::record("so.tilo.chat", "room-1", "another");
+        let other = CrdtRoute::record("so.tilo.chat", "workspace-1", "another");
         admitted_ops(&channels, &other.channel_key(), &tx);
         assert!(
             rx.try_recv().is_err(),
@@ -447,7 +456,7 @@ mod tests {
 
     #[test]
     fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
-        let route = CrdtRoute::record("so.tilo.chat", "room-1", "");
+        let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "");
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let op = SignedOp::new_unsigned(
             DocumentMutation::Incremental(b"general".to_vec())

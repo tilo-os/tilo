@@ -1,4 +1,4 @@
-//! Paths reach every publisher of the room, not only apps' windows: the
+//! Paths reach every publisher of the workspace, not only apps' windows: the
 //! host's own services by the app id they answer for (`desktop#list-windows`
 //! is the desktop's layout), and one window of an app by the provider an
 //! `open` answered (`browser@42/page#read-page` reaches that window, never
@@ -18,10 +18,10 @@ const BROWSER: &str = "so.tilo.browser";
 const OLDER: &str = "41";
 const NEWER: &str = "42";
 
-/// A room with the desktop's layout service and two Browser windows, each
+/// A workspace with the desktop's layout service and two Browser windows, each
 /// answering who it is.
 #[derive(Clone, Default)]
-struct Room {
+struct Workspace {
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
 }
 
@@ -58,7 +58,7 @@ fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow 
     }
 }
 
-impl Room {
+impl Workspace {
     fn rows(provider: &str) -> Vec<CatalogueRow> {
         match provider {
             DESKTOP => vec![
@@ -76,7 +76,7 @@ impl Room {
     }
 }
 
-impl ActionHost for Room {
+impl ActionHost for Workspace {
     fn query(
         &self,
         _caller: &Caller,
@@ -86,7 +86,7 @@ impl ActionHost for Room {
             let listed = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
                 app_id: app_id.into(),
-                room: "room".into(),
+                room: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             };
@@ -170,7 +170,7 @@ impl ActionHost for Room {
     }
 }
 
-async fn tool(server: &McpServer<Room>, name: &str, arguments: Value) -> (String, bool) {
+async fn tool(server: &McpServer<Workspace>, name: &str, arguments: Value) -> (String, bool) {
     let reply = server
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
         .await
@@ -185,12 +185,13 @@ async fn tool(server: &McpServer<Room>, name: &str, arguments: Value) -> (String
     )
 }
 
-fn agent(room: &Room) -> McpServer<Room> {
-    McpServer::for_agent(room.clone(), "room".into(), "planner", "ada")
+fn agent(workspace: &Workspace) -> McpServer<Workspace> {
+    McpServer::for_agent(workspace.clone(), "workspace".into(), "planner", "ada")
 }
 
-fn answered_by(room: &Room) -> Vec<String> {
-    room.invoked
+fn answered_by(workspace: &Workspace) -> Vec<String> {
+    workspace
+        .invoked
         .lock()
         .unwrap()
         .iter()
@@ -200,11 +201,11 @@ fn answered_by(room: &Room) -> Vec<String> {
 
 #[tokio::test]
 async fn the_desktops_layout_service_answers_to_its_name() {
-    let room = Room::default();
-    let server = agent(&room);
+    let workspace = Workspace::default();
+    let server = agent(&workspace);
     let (text, failed) = tool(&server, "tilo_do", json!({"path": "desktop#list-windows"})).await;
     assert!(!failed, "{text}");
-    assert_eq!(answered_by(&room), vec![DESKTOP.to_owned()]);
+    assert_eq!(answered_by(&workspace), vec![DESKTOP.to_owned()]);
 
     let (listed, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "{listed}");
@@ -218,8 +219,8 @@ async fn the_desktops_layout_service_answers_to_its_name() {
 
 #[tokio::test]
 async fn a_window_named_by_its_provider_is_the_one_that_answers() {
-    let room = Room::default();
-    let server = agent(&room);
+    let workspace = Workspace::default();
+    let server = agent(&workspace);
     let (text, failed) = tool(
         &server,
         "tilo_do",
@@ -235,7 +236,7 @@ async fn a_window_named_by_its_provider_is_the_one_that_answers() {
     .await;
     assert!(!failed, "{text}");
     assert_eq!(
-        answered_by(&room),
+        answered_by(&workspace),
         vec![OLDER.to_owned(), NEWER.to_owned()],
         "the named window, then the newest when none is named"
     );
@@ -254,5 +255,5 @@ async fn a_window_named_by_its_provider_is_the_one_that_answers() {
     )
     .await;
     assert!(failed && text.contains("not notes"), "{text}");
-    assert_eq!(answered_by(&room).len(), 2, "nothing else ran");
+    assert_eq!(answered_by(&workspace).len(), 2, "nothing else ran");
 }

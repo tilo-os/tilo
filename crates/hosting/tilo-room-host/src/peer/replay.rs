@@ -3,10 +3,10 @@
 //! authorizing each state frame before it is written.
 
 use super::{
-    Arc, AsyncWriteExt, AuthenticatedPeer, Envelope, EnvelopeV2, Invariant, PeerError,
-    PrivateOutbound, ReplayAdvance, ReplayHandle, ReplayTicket, RoomOperation, SessionCtx,
-    SharedWorkspace, StateSource, Step, StoreError, WrittenBatch, current_session, encode_charged,
-    mpsc, room_access, test_point, trace_native_publication, unix_now_ns, write_private_delivery,
+    Arc, AsyncWriteExt, AuthenticatedPeer, Envelope, Invariant, PeerError, ReplayAdvance,
+    ReplayHandle, ReplayTicket, RoomOperation, SessionCtx, SharedWorkspace, StateSource, Step,
+    StoreError, WrittenBatch, current_session, encode_charged, room_access, test_point,
+    trace_native_publication, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -66,37 +66,6 @@ pub(super) struct ReplayWrite {
     pub(super) ticket: Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     pub(super) reply: Option<Envelope>,
     pub(super) replaying: bool,
-}
-/// Queue a reply to the peer's own private request. A full queue means the
-/// peer is not reading its replies yet: wait for the writer, which stops this
-/// reader and so backpressures the peer, rather than dropping the connection.
-pub(super) async fn send_private_reply(
-    private_tx: &mpsc::Sender<PrivateOutbound>,
-    reply: EnvelopeV2,
-) -> Result<(), PeerError> {
-    private_tx
-        .send(PrivateOutbound::Reply(reply))
-        .await
-        .map_err(|_| PeerError::Protocol("private reply writer closed".into()))
-}
-
-pub(super) async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
-    private: PrivateOutbound,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    write: &mut W,
-) -> Result<(), PeerError> {
-    match private {
-        PrivateOutbound::Reply(reply) => {
-            write
-                .write_all(&tilo_delivery_protocol::transport_v2::encode(&reply)?)
-                .await?;
-        }
-        PrivateOutbound::Delivery(delivery) => {
-            write_private_delivery(&delivery, peer, session, write).await?;
-        }
-    }
-    Ok(())
 }
 pub(super) async fn authorize_state_frame(
     frame: &Envelope,
@@ -222,7 +191,6 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     pending: &std::sync::atomic::AtomicUsize,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
     write: &mut W,
 ) -> Result<(), PeerError> {
     let mut reply = batch.reply;
@@ -245,7 +213,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         };
         write_bootstrap(workspace_id, &ws, peer, session, write).await?;
         let replaying = crate::timing::start();
-        let replayed_frames = drive_replay(run, handle, peer, session, private_rx, write).await?;
+        let replayed_frames = drive_replay(run, handle, peer, session, write).await?;
         crate::timing::event("join.replay_total", replaying, replayed_frames);
         authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
         reply = Some(Envelope::Ready {
@@ -302,7 +270,6 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     mut handle: ReplayHandle,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
     write: &mut W,
 ) -> Result<u64, PeerError> {
     let mut written = None;
@@ -318,12 +285,11 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
             authorize_replay(run.workspace, &source, &authority).await?;
             handle.advance(&authority, written.take()).await
         };
-        match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
+        match preparing.await? {
             ReplayAdvance::Preparing => {}
             ReplayAdvance::Batch(frames) => {
                 let batch_at = crate::timing::start();
-                written =
-                    Some(write_replay_batch(run, frames, peer, session, private_rx, write).await?);
+                written = Some(write_replay_batch(run, frames, peer, session, write).await?);
                 if let Some(batch_at) = batch_at {
                     writing = writing.saturating_add(batch_at.elapsed());
                 }
@@ -344,8 +310,7 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                         crate::timing::window("join.cleanup_skipped", crate::timing::start());
                     } else {
                         let cleaning = crate::timing::start();
-                        finish_replay_cleanup(run, &handle, peer, session, private_rx, write)
-                            .await?;
+                        finish_replay_cleanup(run, &handle, peer, session).await?;
                         crate::timing::event("join.cleanup", cleaning, summary.cleanup_entries);
                     }
                     return Ok(replayed_frames);
@@ -357,8 +322,7 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                     summary.total_frames,
                 );
                 let cutting = crate::timing::start();
-                let Some(catchup_handle) =
-                    cut_replay_boundary(run, &handle, peer, session, private_rx, write).await?
+                let Some(catchup_handle) = cut_replay_boundary(run, &handle, peer, session).await?
                 else {
                     crate::timing::event("join.boundary", cutting, 0);
                     return Ok(replayed_frames);
@@ -375,14 +339,13 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
-/// Write one replay batch to the wire, letting queued private replies
-/// overtake it, and record each frame in the subscriber's resume log.
+/// Write one replay batch to the wire and record each frame in the
+/// subscriber's resume log.
 async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
     run: ReplayRun<'_>,
     mut frames: crate::store::replay::ReplayBatch,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
     write: &mut W,
 ) -> Result<WrittenBatch, PeerError> {
     // A batch is authorised once, as presence authorises each
@@ -404,12 +367,6 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
     )
     .await?;
     while let Some(frame) = frames.front() {
-        for _ in 0..8 {
-            let Ok(private) = private_rx.try_recv() else {
-                break;
-            };
-            write_private(private, peer, session, write).await?;
-        }
         write
             .write_all(&encode_charged(frame, session, false)?)
             .await?;
@@ -426,13 +383,11 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Clean up a catch-up replay once it is written, in one turn of the owner.
-async fn finish_replay_cleanup<W: tokio::io::AsyncWrite + Unpin>(
+async fn finish_replay_cleanup(
     run: ReplayRun<'_>,
     handle: &ReplayHandle,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
-    write: &mut W,
 ) -> Result<(), PeerError> {
     let authority = run.authority.clone();
     let source = StateSource::new(peer, session);
@@ -457,19 +412,17 @@ async fn finish_replay_cleanup<W: tokio::io::AsyncWrite + Unpin>(
         },
         |result| async { result },
     );
-    let _ = Box::pin(replay_wait(cleanup, peer, session, private_rx, write)).await?;
+    let _ = Box::pin(replay_wait(cleanup)).await?;
     Ok(())
 }
 
 /// Clean up the first replay and cut what committed while it ran. Returns
 /// the handle of that catch-up replay, or `None` when nothing committed.
-async fn cut_replay_boundary<W: tokio::io::AsyncWrite + Unpin>(
+async fn cut_replay_boundary(
     run: ReplayRun<'_>,
     handle: &ReplayHandle,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
-    write: &mut W,
 ) -> Result<Option<ReplayHandle>, PeerError> {
     let authority = run.authority.clone();
     let source = StateSource::new(peer, session);
@@ -535,7 +488,7 @@ async fn cut_replay_boundary<W: tokio::io::AsyncWrite + Unpin>(
             Ok(result)
         },
     );
-    Box::pin(replay_wait(boundary, peer, session, private_rx, write)).await
+    Box::pin(replay_wait(boundary)).await
 }
 
 pub(super) async fn authorize_replay(
@@ -707,66 +660,14 @@ fn authorize_replay_now(
     }
     Ok(())
 }
-async fn replay_wait<T, W: tokio::io::AsyncWrite + Unpin>(
+/// Wait for a durable replay step to complete.
+async fn replay_wait<T>(
     admission: impl std::future::Future<
         Output = Result<tokio::sync::oneshot::Receiver<Result<T, StoreError>>, StoreError>,
     >,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
-    write: &mut W,
 ) -> Result<T, PeerError> {
-    // Both bounded admission and durable completion must leave the private
-    // writer live; awaiting admission before this select would stall replies.
-    let completed = async {
-        let receipt = admission.await?;
-        crate::persistence::receipt(receipt).await
-    };
-    replay_direct_wait(completed, peer, session, private_rx, write).await
-}
-
-pub(super) async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
-    operation: impl std::future::Future<Output = Result<T, StoreError>>,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
-    write: &mut W,
-) -> Result<T, PeerError> {
-    tokio::pin!(operation);
-    let mut private_open = true;
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut operation => return Ok(result?),
-            private = private_rx.recv(), if private_open => {
-                match private {
-                    Some(private) => {
-                        let writing = write_private(private, peer, session, write);
-                        tokio::pin!(writing);
-                        let mut completed = None;
-                        loop {
-                            tokio::select! {
-                                biased;
-                                result = &mut writing => {
-                                    result?;
-                                    if let Some(result) = completed {
-                                        return Ok(result?);
-                                    }
-                                    break;
-                                }
-                                result = &mut operation, if completed.is_none() => {
-                                    // Finish the active private wire frame before
-                                    // propagating either replay success or failure.
-                                    completed = Some(result);
-                                }
-                            }
-                        }
-                    }
-                    None => private_open = false,
-                }
-            }
-        }
-    }
+    let receipt = admission.await?;
+    Ok(crate::persistence::receipt(receipt).await?)
 }
 
 pub(super) struct ReplayCatchup {

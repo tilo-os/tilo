@@ -84,7 +84,7 @@ async fn pressed_opens_rig(env: &Environment) -> (Rig, Arc<PressedOpens>) {
 }
 
 fn open_app_request(
-    room: &str,
+    workspace: &str,
     app: &str,
     on_behalf_of: Option<tilo_actions::InvocationId>,
 ) -> tilo_actions::remote::InvokeRequest {
@@ -92,7 +92,7 @@ fn open_app_request(
         invocation: tilo_actions::InvocationId::new(),
         on_behalf_of,
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(room),
+            provider: tilo_actions::remote::workspace_provider(workspace),
             address: tilo_actions::ActionAddress::new(
                 format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
                 tilo_actions::remote::APPLICATION_OPEN_ACTION,
@@ -140,26 +140,27 @@ async fn an_app_opens_an_app_only_for_the_persons_press_in_it() {
         .run_until(async {
             let env = Environment::new();
             let (rig, launcher) = pressed_opens_rig(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
 
-            let unasked = app_asks(&app, open_app_request(&room, "so.tilo.chat", None)).await;
+            let unasked = app_asks(&app, open_app_request(&workspace, "so.tilo.chat", None)).await;
             assert!(refused(&unasked), "{unasked:?}");
             assert!(launcher.opened().is_empty());
 
             launcher.press("so.tilo.chat");
-            let elsewhere = app_asks(&app, open_app_request(&room, "so.tilo.chat", None)).await;
+            let elsewhere =
+                app_asks(&app, open_app_request(&workspace, "so.tilo.chat", None)).await;
             assert!(
                 refused(&elsewhere),
                 "a press in another app proves nothing here"
             );
 
             launcher.press(&env.route.app_id);
-            let pressed = app_asks(&app, open_app_request(&room, "so.tilo.chat", None)).await;
+            let pressed = app_asks(&app, open_app_request(&workspace, "so.tilo.chat", None)).await;
             assert!(!refused(&pressed), "{pressed:?}");
             assert_eq!(launcher.opened(), ["so.tilo.chat"]);
 
-            let again = app_asks(&app, open_app_request(&room, "so.tilo.chat", None)).await;
+            let again = app_asks(&app, open_app_request(&workspace, "so.tilo.chat", None)).await;
             assert!(refused(&again), "one press proves one open");
             assert_eq!(launcher.opened(), ["so.tilo.chat"]);
             rig.stop().await;
@@ -173,14 +174,17 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
         .run_until(async {
             let env = Environment::new();
             let (rig, launcher) = pressed_opens_rig(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             let own = id(0xa0d1);
             invoke(&app, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
-            let laundered =
-                app_asks(&app, open_app_request(&room, "so.tilo.chat", Some(own))).await;
+            let laundered = app_asks(
+                &app,
+                open_app_request(&workspace, "so.tilo.chat", Some(own)),
+            )
+            .await;
             assert!(refused(&laundered), "{laundered:?}");
             let launch = app
                 .launch_installed_application_for("so.tilo.chat", None, Some(*own.0.as_bytes()))
@@ -189,7 +193,11 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
             assert!(launcher.opened().is_empty());
 
             launcher.press(&env.route.app_id);
-            let pressed = app_asks(&app, open_app_request(&room, "so.tilo.chat", Some(own))).await;
+            let pressed = app_asks(
+                &app,
+                open_app_request(&workspace, "so.tilo.chat", Some(own)),
+            )
+            .await;
             assert!(!refused(&pressed), "{pressed:?}");
             assert_eq!(launcher.opened(), ["so.tilo.chat"]);
             rig.stop().await;
@@ -210,7 +218,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), "so.tilo.chat", KindSet::ALL);
             }
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xa0d2);
@@ -218,17 +226,23 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
 
-            let beyond =
-                app_asks(&app, open_app_request(&room, "so.tilo.notes", Some(asked))).await;
+            let beyond = app_asks(
+                &app,
+                open_app_request(&workspace, "so.tilo.notes", Some(asked)),
+            )
+            .await;
             assert!(refused(&beyond), "the agent may not open Notes: {beyond:?}");
-            let allowed =
-                app_asks(&app, open_app_request(&room, "so.tilo.chat", Some(asked))).await;
+            let allowed = app_asks(
+                &app,
+                open_app_request(&workspace, "so.tilo.chat", Some(asked)),
+            )
+            .await;
             assert!(!refused(&allowed), "{allowed:?}");
             assert_eq!(launcher.opened(), ["so.tilo.chat"]);
 
             let foreign = app_asks(
                 &app,
-                open_app_request(&room, "so.tilo.chat", Some(id(0xa0d3))),
+                open_app_request(&workspace, "so.tilo.chat", Some(id(0xa0d3))),
             )
             .await;
             assert!(
@@ -301,12 +315,12 @@ async fn a_reference_under_an_earlier_app_id_opens_the_renamed_app() {
         .run_until(async {
             let env = Environment::new();
             let (rig, launcher) = pressed_opens_rig(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             // What `ResourceRef::open_target` asks of the reference.
-            let mut request = open_app_request(&room, "so.tilo.chat", None);
+            let mut request = open_app_request(&workspace, "so.tilo.chat", None);
             request.target = tilo_actions::remote::application_action_target(
-                &room,
+                &workspace,
                 "so.tilo.lang.todo",
                 "tl:so.tilo.lang.todo:item-1",
                 tilo_actions::remote::APPLICATION_OPEN_ACTION,

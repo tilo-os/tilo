@@ -1,11 +1,11 @@
 //! An explicit acceptance run, requiring a compiled web bundle and Chromium.
-//! All identities, storage and governed rooms belong to this temporary fixture.
+//! All identities, storage and governed workspaces belong to this temporary fixture.
 #[cfg(not(test))]
 #[expect(
     dead_code,
-    reason = "the acceptance example reuses the room-actions test fixtures, including helpers for other scenarios"
+    reason = "the acceptance example reuses the workspace-actions test fixtures, including helpers for other scenarios"
 )]
-#[path = "../tests/room_actions.rs"]
+#[path = "../tests/workspace_actions.rs"]
 mod fixture;
 
 #[cfg(not(test))]

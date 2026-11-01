@@ -6,8 +6,8 @@ use crate::owner::{
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
 
-fn room() -> RoomId {
-    RoomId::parse(testing::ROOM).unwrap()
+fn workspace() -> RoomId {
+    RoomId::parse(testing::WORKSPACE).unwrap()
 }
 
 fn routes() -> Vec<CheckpointRoute> {
@@ -36,7 +36,7 @@ fn prepare(fixture: &Fixture) {
             fixture
                 .owner
                 .prepare_application_record(
-                    room(),
+                    workspace(),
                     &fixture.certificate,
                     &fixture.key,
                     &declared,
@@ -51,7 +51,7 @@ fn prepare(fixture: &Fixture) {
 fn mutate(fixture: &Fixture, route: &CheckpointRoute, value: &str) {
     let message = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             let mut document = automerge::AutoCommit::load(
                 &view.peer().document(&route.app, &route.record).unwrap(),
             )
@@ -84,7 +84,7 @@ fn capture(
     routes: &[CheckpointRoute],
 ) -> Result<super::CheckpointAcknowledgement, String> {
     owner.capture_checkpoint(
-        room(),
+        workspace(),
         &fixture.certificate,
         &fixture.key,
         CheckpointCapture {
@@ -103,7 +103,7 @@ fn publish_peer_change(
 ) {
     let messages = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             let mut peer = view.peer().clone();
             change(&mut peer)?;
             peer.publication_mut().durable_mutation_messages(
@@ -118,7 +118,7 @@ fn publish_peer_change(
         fixture
             .owner
             .receive(
-                room(),
+                workspace(),
                 crate::TransportOrigin::RetainedNativePublication {
                     publisher: fixture.certificate.device_public_key,
                 },
@@ -178,7 +178,7 @@ fn checkpoint_member(fixture: &mut Fixture) -> tilo_user_identity::DeviceCert {
         fixture
             .owner
             .receive(
-                room(),
+                workspace(),
                 crate::TransportOrigin::RetainedNativePublication {
                     publisher: fixture.certificate.device_public_key,
                 },
@@ -192,7 +192,7 @@ fn checkpoint_member(fixture: &mut Fixture) -> tilo_user_identity::DeviceCert {
 
 fn generation(owner: &NativeWorkspaceOwner) -> u64 {
     owner
-        .with_current(room(), |view| Ok(view.generation()))
+        .with_current(workspace(), |view| Ok(view.generation()))
         .unwrap()
 }
 
@@ -203,7 +203,7 @@ fn checkpoint_two_routes_share_generation_and_reopen_retry_pins_original_bytes()
     let routes = routes();
     let (generation_before, aggregate, expected) = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             let mut expected = Vec::new();
             for route in &routes {
                 let DocumentRead::Captured(document) = view.read_document(
@@ -241,7 +241,7 @@ fn checkpoint_two_routes_share_generation_and_reopen_retry_pins_original_bytes()
     );
     assert_eq!(std::fs::read(&path).unwrap(), durable);
     let materialized = reopened
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     assert_eq!(materialized.manifest.captured_generation, generation_before);
     assert_eq!(materialized.manifest.captured_aggregate, aggregate);
@@ -284,13 +284,13 @@ fn checkpoint_failed_publication_and_missing_route_leave_no_acknowledgement() {
     assert!(
         fixture
             .owner
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .is_err()
     );
     let reopened = open_file(&path).unwrap();
     assert!(
         reopened
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .is_err()
     );
     let mut missing = routes();
@@ -310,7 +310,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
     let id = uuid::Uuid::new_v4();
     let ack = capture(&fixture.owner, &fixture, id, "retained", &routes()).unwrap();
     let find = CheckpointRequest {
-        room: testing::ROOM.into(),
+        workspace: testing::WORKSPACE.into(),
         invocation: uuid::Uuid::new_v4(),
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Find {
@@ -318,9 +318,12 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
         },
     };
     let resolve = || {
-        fixture
-            .owner
-            .resolve_checkpoint_name(room(), &fixture.certificate, "retained", fixture.now)
+        fixture.owner.resolve_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            "retained",
+            fixture.now,
+        )
     };
     let execute_find = || {
         fixture
@@ -331,7 +334,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
     assert_eq!(execute_find().unwrap(), serde_json::to_value(&ack).unwrap());
     let read = fixture
         .owner
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let address = blake3::Hash::from_bytes(read.manifest.entries[1].content)
         .to_hex()
@@ -351,7 +354,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
     assert!(
         fixture
             .owner
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .is_err()
     );
     assert!(capture(&fixture.owner, &fixture, id, "retained", &routes()).is_err());
@@ -365,7 +368,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
     assert!(
         fixture
             .owner
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .is_err()
     );
     assert!(capture(&fixture.owner, &fixture, id, "retained", &routes()).is_err());
@@ -381,7 +384,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
     assert_eq!(
         fixture
             .owner
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .unwrap()
             .documents,
         read.documents
@@ -403,18 +406,30 @@ fn checkpoint_name_collision_is_refused_but_binding_moves_name_without_moving_co
     let second_ack = capture(&fixture.owner, &fixture, second, "second", &routes()).unwrap();
     fixture
         .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", second)
+        .bind_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            &fixture.key,
+            "latest",
+            second,
+        )
         .unwrap();
     let before = generation(&fixture.owner);
     fixture
         .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", second)
+        .bind_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            &fixture.key,
+            "latest",
+            second,
+        )
         .unwrap();
     assert_eq!(generation(&fixture.owner), before);
     let reopened = open_file(&path).unwrap();
     assert_eq!(
         reopened
-            .resolve_checkpoint_name(room(), &fixture.certificate, "latest", fixture.now)
+            .resolve_checkpoint_name(workspace(), &fixture.certificate, "latest", fixture.now)
             .unwrap(),
         second_ack
     );
@@ -424,18 +439,24 @@ fn checkpoint_name_collision_is_refused_but_binding_moves_name_without_moving_co
     );
     assert!(capture(&reopened, &fixture, first, "changed", &routes()).is_err());
     reopened
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "first", first)
+        .bind_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            &fixture.key,
+            "first",
+            first,
+        )
         .unwrap();
     assert_eq!(
         reopened
-            .resolve_checkpoint_name(room(), &fixture.certificate, "first", fixture.now)
+            .resolve_checkpoint_name(workspace(), &fixture.certificate, "first", fixture.now)
             .unwrap(),
         first_ack
     );
     assert!(
         reopened
             .bind_checkpoint_name(
-                room(),
+                workspace(),
                 &fixture.certificate,
                 &fixture.key,
                 "absent",
@@ -476,7 +497,7 @@ fn checkpoint_reader_fixture() -> (
         fixture
             .owner
             .prepare_application_record(
-                room(),
+                workspace(),
                 &fixture.certificate,
                 &fixture.key,
                 &declared,
@@ -498,9 +519,9 @@ fn checkpoint_reader_fixture() -> (
     // The app-wide denial makes the two explicit route grants necessary,
     // rather than silently relying on the member role's inherited Read.
     let mut grants = vec![Grant::new(
-        "checkpoint-room-deny",
+        "checkpoint-workspace-deny",
         subject.clone(),
-        TreePath::room(testing::ROOM).app("so.tilo.chat"),
+        TreePath::room(testing::WORKSPACE).app("so.tilo.chat"),
         KindSet::READ,
         Answer::Deny,
         issuer.clone(),
@@ -509,7 +530,7 @@ fn checkpoint_reader_fixture() -> (
         grants.push(Grant::new(
             format!("checkpoint-route-{index}"),
             subject.clone(),
-            collab_types::document_node(testing::ROOM, &route.app, &route.record),
+            collab_types::document_node(testing::WORKSPACE, &route.app, &route.record),
             KindSet::READ,
             Answer::Allow,
             issuer.clone(),
@@ -520,7 +541,7 @@ fn checkpoint_reader_fixture() -> (
             .owner
             .commit_workspace_membership_command(
                 crate::owner_commit::OwnerCommitRequest {
-                    room: testing::ROOM.into(),
+                    workspace: testing::WORKSPACE.into(),
                     operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                         invocation: uuid::Uuid::new_v4(),
                         caller: fixture.certificate.clone(),
@@ -544,7 +565,7 @@ fn capture_member(
     id: uuid::Uuid,
 ) -> Result<super::CheckpointAcknowledgement, String> {
     owner.capture_checkpoint(
-        room(),
+        workspace(),
         caller,
         &fixture.key,
         CheckpointCapture {
@@ -563,7 +584,7 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
     let fixture = fixture();
     prepare(&fixture);
     let request = CheckpointRequest {
-        room: testing::ROOM.into(),
+        workspace: testing::WORKSPACE.into(),
         invocation: uuid::Uuid::new_v4(),
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
@@ -647,12 +668,12 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
 }
 
 fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::DeviceCert) {
-    // This member's fixture role includes writing; explicitly revoke room naming.
+    // This member's fixture role includes writing; explicitly revoke workspace naming.
     fixture
         .owner
         .commit_workspace_membership_command(
             crate::owner_commit::OwnerCommitRequest {
-                room: testing::ROOM.into(),
+                workspace: testing::WORKSPACE.into(),
                 operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     invocation: uuid::Uuid::new_v4(),
                     caller: fixture.certificate.clone(),
@@ -664,7 +685,7 @@ fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::Device
                                     .to_hex()
                                     .as_str(),
                             ),
-                            tilo_action_policy::TreePath::room(testing::ROOM),
+                            tilo_action_policy::TreePath::room(testing::WORKSPACE),
                             tilo_action_policy::KindSet::UNDOABLE,
                             tilo_action_policy::Answer::Deny,
                             tilo_action_policy::Subject::person(
@@ -687,7 +708,7 @@ fn checkpoint_public_read_and_mutation_require_current_source_rights() {
     use crate::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
     let (fixture, member, grants) = checkpoint_reader_fixture();
     let capture = CheckpointRequest {
-        room: testing::ROOM.into(),
+        workspace: testing::WORKSPACE.into(),
         invocation: uuid::Uuid::new_v4(),
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
@@ -725,7 +746,7 @@ fn checkpoint_public_read_and_mutation_require_current_source_rights() {
         fixture
             .owner
             .bind_checkpoint_name(
-                room(),
+                workspace(),
                 &member,
                 &fixture.key,
                 "host-no-bypass",
@@ -777,7 +798,7 @@ fn revoke_membership_grant(fixture: &Fixture, grant: tilo_action_policy::GrantId
         .owner
         .commit_workspace_membership_command(
             crate::owner_commit::OwnerCommitRequest {
-                room: testing::ROOM.into(),
+                workspace: testing::WORKSPACE.into(),
                 operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     invocation: uuid::Uuid::new_v4(),
                     caller: fixture.certificate.clone(),
@@ -799,7 +820,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
     let ack = capture_member(&fixture, &fixture.owner, &member, id).unwrap();
     let original = fixture
         .owner
-        .read_checkpoint(room(), &member, id, fixture.now)
+        .read_checkpoint(workspace(), &member, id, fixture.now)
         .unwrap();
     assert_eq!(
         capture_member(&fixture, &fixture.owner, &member, id).unwrap(),
@@ -811,7 +832,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
     let durable = std::fs::read(&path).unwrap();
     for owner in [&fixture.owner, &reopened] {
         owner
-            .with_current(room(), |view| {
+            .with_current(workspace(), |view| {
                 view.peer().workspace().check_checkpoint_reader(
                     &member,
                     &member_routes()[0].app,
@@ -834,7 +855,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
             .unwrap();
         assert!(
             owner
-                .read_checkpoint(room(), &member, id, fixture.now)
+                .read_checkpoint(workspace(), &member, id, fixture.now)
                 .is_err()
         );
         assert!(
@@ -843,7 +864,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
         );
         assert_eq!(
             owner
-                .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+                .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
                 .unwrap()
                 .documents,
             original.documents
@@ -860,7 +881,7 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
     assert!(
         fixture
             .owner
-            .read_checkpoint(room(), &member, id, fixture.now)
+            .read_checkpoint(workspace(), &member, id, fixture.now)
             .is_ok()
     );
     assert_eq!(
@@ -874,7 +895,7 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
     assert!(
         fixture
             .owner
-            .read_checkpoint(room(), &substituted, id, fixture.now)
+            .read_checkpoint(workspace(), &substituted, id, fixture.now)
             .is_err()
     );
     assert!(capture_member(&fixture, &fixture.owner, &substituted, id).is_err());
@@ -890,7 +911,7 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
     let reopened = open_file(&path).unwrap();
     assert!(
         reopened
-            .read_checkpoint(room(), &member, id, fixture.now)
+            .read_checkpoint(workspace(), &member, id, fixture.now)
             .is_err()
     );
     assert!(
@@ -907,22 +928,22 @@ fn checkpoint_signed_root_outgoing_reaches_governor_and_names_and_snapshots_reop
     let ack = capture(&fixture.owner, &fixture, id, "original", &routes()).unwrap();
     fixture
         .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "alias", id)
+        .bind_checkpoint_name(workspace(), &fixture.certificate, &fixture.key, "alias", id)
         .unwrap();
     let before = fixture
         .owner
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let root = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             view.peer().workspace().workspace_checkpoint_root()
         })
         .unwrap();
     assert!(root.is_some());
     let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
     let frames = reopened
-        .with_outgoing(room(), fixture.now, |_, outgoing| {
+        .with_outgoing(workspace(), fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -951,13 +972,13 @@ fn checkpoint_signed_root_outgoing_reaches_governor_and_names_and_snapshots_reop
     for name in ["original", "alias"] {
         assert_eq!(
             reopened
-                .resolve_checkpoint_name(room(), &fixture.certificate, name, fixture.now)
+                .resolve_checkpoint_name(workspace(), &fixture.certificate, name, fixture.now)
                 .unwrap(),
             ack
         );
     }
     let after = reopened
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     assert_eq!(
         serde_json::to_vec(&after.manifest).unwrap(),
@@ -974,7 +995,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
     capture(&fixture.owner, &fixture, first, "moving", &routes()).unwrap();
     let stale = fixture
         .owner
-        .with_outgoing(room(), fixture.now, |_, outgoing| {
+        .with_outgoing(workspace(), fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -986,11 +1007,17 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
     let ack = capture(&fixture.owner, &fixture, second, "second", &routes()).unwrap();
     fixture
         .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "moving", second)
+        .bind_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            &fixture.key,
+            "moving",
+            second,
+        )
         .unwrap();
     let root = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             view.peer().workspace().workspace_checkpoint_root()
         })
         .unwrap();
@@ -998,7 +1025,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
         // The receiver may classify an old signed frame as duplicate or refuse
         // it; neither classification may reinstall its older checkpoint root.
         let _ = fixture.owner.receive(
-            room(),
+            workspace(),
             crate::TransportOrigin::RetainedNativePublication {
                 publisher: fixture.certificate.device_public_key,
             },
@@ -1008,7 +1035,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
         assert_eq!(
             fixture
                 .owner
-                .with_current(room(), |view| view
+                .with_current(workspace(), |view| view
                     .peer()
                     .workspace()
                     .workspace_checkpoint_root())
@@ -1019,7 +1046,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
     let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
     assert_eq!(
         reopened
-            .resolve_checkpoint_name(room(), &fixture.certificate, "moving", fixture.now)
+            .resolve_checkpoint_name(workspace(), &fixture.certificate, "moving", fixture.now)
             .unwrap(),
         ack
     );
@@ -1035,7 +1062,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
         fixture
             .owner
             .bind_checkpoint_name(
-                room(),
+                workspace(),
                 &fixture.certificate,
                 &fixture.key,
                 &format!("alias-{index}"),
@@ -1045,7 +1072,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
     }
     let original = fixture
         .owner
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let path = fixture.directory.path().join("owner.json");
     let durable = std::fs::read(&path).unwrap();
@@ -1062,7 +1089,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
     for owner in [&fixture.owner, &reopened] {
         assert_eq!(
             owner
-                .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+                .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
                 .unwrap()
                 .documents,
             original.documents
@@ -1074,14 +1101,14 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
         for name in ["original", "alias-0", "alias-126"] {
             assert_eq!(
                 owner
-                    .resolve_checkpoint_name(room(), &fixture.certificate, name, fixture.now)
+                    .resolve_checkpoint_name(workspace(), &fixture.certificate, name, fixture.now)
                     .unwrap(),
                 ack
             );
         }
         assert!(
             owner
-                .read_checkpoint(room(), &fixture.certificate, rejected, fixture.now)
+                .read_checkpoint(workspace(), &fixture.certificate, rejected, fixture.now)
                 .is_err()
         );
     }
@@ -1096,7 +1123,7 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
     capture(&fixture.owner, &fixture, id, "original", &routes()).unwrap();
     let original = fixture
         .owner
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let address = blake3::Hash::from_bytes(original.manifest.entries[1].content)
         .to_hex()
@@ -1116,7 +1143,7 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
         assert!(
             fixture
                 .owner
-                .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, name, id)
+                .bind_checkpoint_name(workspace(), &fixture.certificate, &fixture.key, name, id)
                 .is_err(),
             "binding {name} must verify every snapshot, including an unchanged binding"
         );
@@ -1126,14 +1153,20 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
     std::fs::write(&block, bytes).unwrap();
     fixture
         .owner
-        .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "original", id)
+        .bind_checkpoint_name(
+            workspace(),
+            &fixture.certificate,
+            &fixture.key,
+            "original",
+            id,
+        )
         .unwrap();
     assert_eq!(generation(&fixture.owner), before);
     assert_eq!(std::fs::read(&path).unwrap(), durable);
     assert_eq!(
         open_file(&path)
             .unwrap()
-            .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+            .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
             .unwrap()
             .documents,
         original.documents
@@ -1147,7 +1180,7 @@ fn checkpoint_captures_full_stored_schema_identity() {
     let route = &routes()[0];
     let message = fixture
         .owner
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             let mut document = automerge::AutoCommit::load(
                 &view.peer().document(&route.app, &route.record).unwrap(),
             )
@@ -1182,7 +1215,7 @@ fn checkpoint_captures_full_stored_schema_identity() {
     mutate(&fixture, route, "later edit");
     let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
     let checkpoint = reopened
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let schema = &checkpoint.manifest.entries[0].schema;
     assert_eq!(schema.encoding, "automerge-save-v1");
@@ -1198,7 +1231,7 @@ fn describe(
     description: &str,
 ) -> Result<super::CheckpointAcknowledgement, String> {
     fixture.owner.capture_checkpoint(
-        room(),
+        workspace(),
         &fixture.certificate,
         &fixture.key,
         CheckpointCapture {
@@ -1227,7 +1260,7 @@ fn checkpoint_manifest_carries_the_person_s_words_and_states_its_reach() {
     let durable = std::fs::read(&path).unwrap();
     let shown = open_file(&path)
         .unwrap()
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap()
         .manifest;
     assert_eq!(
@@ -1270,7 +1303,7 @@ fn every_checkpoint_name_move_is_auditable() {
     assert_eq!(
         fixture
             .owner
-            .checkpoint_name_history(room(), "before the rewrite")
+            .checkpoint_name_history(workspace(), "before the rewrite")
             .unwrap(),
         vec![super::NameBinding {
             name: "before the rewrite".into(),
@@ -1290,12 +1323,20 @@ fn every_checkpoint_name_move_is_auditable() {
     for id in [first, second] {
         fixture
             .owner
-            .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, "latest", id)
+            .bind_checkpoint_name(
+                workspace(),
+                &fixture.certificate,
+                &fixture.key,
+                "latest",
+                id,
+            )
             .unwrap();
     }
     let path = fixture.directory.path().join("owner.json");
     let reopened = open_file(&path).unwrap();
-    let history = reopened.checkpoint_name_history(room(), "latest").unwrap();
+    let history = reopened
+        .checkpoint_name_history(workspace(), "latest")
+        .unwrap();
     assert_eq!(history.len(), 2, "a move appends, it never rewrites");
     assert_eq!(history[0].id, first);
     assert_eq!(history[1].id, second);
@@ -1308,7 +1349,11 @@ fn every_checkpoint_name_move_is_auditable() {
             .iter()
             .all(|entry| entry.author == fixture.certificate.user_public_key)
     );
-    assert!(reopened.checkpoint_name_history(room(), "absent").is_err());
+    assert!(
+        reopened
+            .checkpoint_name_history(workspace(), "absent")
+            .is_err()
+    );
 }
 
 fn enroll_checkpoint_reader(
@@ -1388,11 +1433,11 @@ fn checkpoint_receiving_member_reads_hydrated_signed_index_with_different_genera
     let ack = capture(&fixture.owner, &fixture, id, "original", &routes()).unwrap();
     let original = fixture
         .owner
-        .read_checkpoint(room(), &fixture.certificate, id, fixture.now)
+        .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let frames = fixture
         .owner
-        .with_outgoing(room(), fixture.now, |_, outgoing| {
+        .with_outgoing(workspace(), fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| entry.bytes().to_vec())
@@ -1428,9 +1473,9 @@ fn checkpoint_receiving_member_reads_hydrated_signed_index_with_different_genera
     let receiver = open_file(&path).unwrap();
     assert!(ack.publication_generation > generation(&receiver));
     receiver
-        .with_current(room(), |view| {
+        .with_current(workspace(), |view| {
             assert_eq!(view.device(), &member);
-            assert_ne!(view.device(), view.room_host());
+            assert_ne!(view.device(), view.workspace_host());
             assert_eq!(
                 view.peer().workspace().workspace_checkpoint_root()?,
                 fixture
@@ -1444,12 +1489,12 @@ fn checkpoint_receiving_member_reads_hydrated_signed_index_with_different_genera
         .unwrap();
     assert_eq!(
         receiver
-            .resolve_checkpoint_name(room(), &member, "original", fixture.now)
+            .resolve_checkpoint_name(workspace(), &member, "original", fixture.now)
             .unwrap(),
         ack
     );
     let materialized = receiver
-        .read_checkpoint(room(), &member, id, fixture.now)
+        .read_checkpoint(workspace(), &member, id, fixture.now)
         .unwrap();
     assert_eq!(materialized.documents, original.documents);
     assert_eq!(
@@ -1470,7 +1515,7 @@ fn checkpoint_invalid_bounds_duplicate_routes_and_wrong_custody_do_not_publish()
         assert!(
             fixture
                 .owner
-                .bind_checkpoint_name(room(), &fixture.certificate, &fixture.key, &name, id)
+                .bind_checkpoint_name(workspace(), &fixture.certificate, &fixture.key, &name, id)
                 .is_err()
         );
     }
@@ -1515,7 +1560,7 @@ fn checkpoint_invalid_bounds_duplicate_routes_and_wrong_custody_do_not_publish()
         fixture
             .owner
             .capture_checkpoint(
-                room(),
+                workspace(),
                 &fixture.certificate,
                 &ed25519_dalek::SigningKey::from_bytes(&[8; 32]),
                 CheckpointCapture {

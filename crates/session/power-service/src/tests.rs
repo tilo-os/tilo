@@ -42,8 +42,8 @@ fn the_reading_is_the_policy_and_what_holds_the_machine_awake() {
             lock_minutes: Some(5),
             suspend_minutes: None,
             lock_on_sleep: true,
-            lid_close: "lock",
-            power_key: "lock",
+            lid_close: PowerAction::Lock,
+            power_key: PowerAction::Lock,
             held_awake: false,
             holds: Vec::new(),
         }
@@ -99,7 +99,7 @@ fn a_new_policy_reaches_the_service_and_the_reading() {
             .contains(&PowerCommand::UpdatePolicy(link.policy()))
     );
     assert_eq!(link.sleep().suspend_minutes, Some(15));
-    assert_eq!(link.sleep().power_key, "ignore");
+    assert_eq!(link.sleep().power_key, PowerAction::Ignore);
     assert_eq!(link.power_key(), None);
 }
 

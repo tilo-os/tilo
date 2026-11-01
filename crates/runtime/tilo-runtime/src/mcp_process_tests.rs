@@ -163,7 +163,7 @@ fn parallel_requests_complete_out_of_order() {
     let host = GatedHost::default();
     let server = std::sync::Arc::new(crate::mcp::McpServer::new(
         host.clone(),
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
     ));
     let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();

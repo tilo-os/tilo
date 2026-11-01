@@ -43,7 +43,7 @@ impl Serialize for VirtualBytes {
     }
 }
 struct VirtualEntry<'a> {
-    room: &'a str,
+    workspace: &'a str,
     app: &'a str,
     record: &'a str,
     bytes: usize,
@@ -51,7 +51,7 @@ struct VirtualEntry<'a> {
 impl Serialize for VirtualEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let binding = CommitBinding {
-            room: self.room.into(),
+            workspace: self.workspace.into(),
             target: crate::owner_commit::CommitTarget::Document {
                 app: self.app.into(),
                 record: self.record.into(),
@@ -71,7 +71,7 @@ impl Serialize for VirtualEntry<'_> {
     }
 }
 struct VirtualProjection<'a> {
-    room: &'a str,
+    workspace: &'a str,
     /// Each entry's app, record and reserved bytes.
     routes: &'a [(&'a str, &'a str, usize)],
     /// Each entry's bytes cut to at most this many; see [`count_projection`].
@@ -82,7 +82,7 @@ impl Serialize for VirtualProjection<'_> {
         let mut seq = serializer.serialize_seq(Some(self.routes.len()))?;
         for &(app, record, bytes) in self.routes {
             seq.serialize_element(&VirtualEntry {
-                room: self.room,
+                workspace: self.workspace,
                 app,
                 record,
                 bytes: bytes.min(self.cut),
@@ -98,14 +98,14 @@ impl Serialize for VirtualProjection<'_> {
 /// three levels of indentation and `255`, plus the `2 * depth` spaces the
 /// embedding adds to that newline.
 fn count_projection(
-    room: &str,
+    workspace: &str,
     routes: &[(&str, &str, usize)],
     depth: usize,
     limit: usize,
 ) -> Result<usize, String> {
     let short = count(
         &VirtualProjection {
-            room,
+            workspace,
             routes,
             cut: 1,
         },
@@ -182,9 +182,9 @@ fn proof(
     if proof.entries() > MAX_ENTRIES || proof.max_encoded_bytes() > MAX_BYTES {
         return Err("native outgoing cannot reserve complete causal recovery".into());
     }
-    let room = view.record.room.to_string();
+    let workspace = view.record.workspace.to_string();
     let routes = proof.routes().collect::<Vec<_>>();
-    // NativeAuthorityStorage.rooms[room].publication.projection has depth four;
+    // NativeAuthorityStorage.workspaces[workspace].publication.projection has depth four;
     // state.json adds the surrounding WorkspaceTree object (depth five).
     // The peer's serialized reserved channel floor is separately charged below.
     // In a nonempty pretty JSON byte array, adding k binary bytes changes
@@ -198,10 +198,10 @@ fn proof(
             .and_then(|size| size.checked_add(proof.max_peer_decimal_growth()))
             .ok_or_else(|| "native peer floor reserve overflow".into())
     };
-    let authority_bytes = count_projection(&room, &routes, 4, store::MAX_AUTHORITY_BYTES)?
+    let authority_bytes = count_projection(&workspace, &routes, 4, store::MAX_AUTHORITY_BYTES)?
         .checked_add(peer_extra(3)?)
         .ok_or("native authority reserve overflow")?;
-    let state_bytes = count_projection(&room, &routes, 5, store::MAX_STATE_BYTES)?
+    let state_bytes = count_projection(&workspace, &routes, 5, store::MAX_STATE_BYTES)?
         .checked_add(peer_extra(4)?)
         .ok_or("native state reserve overflow")?;
     let result = StoredReservation {
@@ -246,8 +246,8 @@ fn digits(value: u64) -> usize {
 fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, String> {
     let mut total = 0usize;
     let mut active = false;
-    for room in storage.rooms.values() {
-        let Some(publication) = &room.publication else {
+    for workspace in storage.workspaces.values() {
+        let Some(publication) = &workspace.publication else {
             continue;
         };
         publication.reservation.bounds()?;
@@ -270,7 +270,7 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
         let numeric = [
             20_usize.saturating_sub(digits(publication.next_ordinal)),
             20_usize.saturating_sub(digits(publication.revision)),
-            20_usize.saturating_sub(digits(room.generation)),
+            20_usize.saturating_sub(digits(workspace.generation)),
             8_usize.saturating_sub(digits(publication.reservation.authority_bytes as u64)),
             8_usize.saturating_sub(digits(publication.reservation.state_bytes as u64)),
         ]
@@ -289,7 +289,7 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
     Ok(total)
 }
 
-/// Refuse a record that leaves no room for the recovery its rooms reserved.
+/// Refuse a record that leaves no workspace for the recovery its workspaces reserved.
 ///
 /// # Errors
 /// `storage` does not fit its cap together with its reserve.
@@ -298,7 +298,7 @@ pub fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(),
     store::preflight(storage, limit).map_err(|e| e.to_string())
 }
 /// The most bytes `storage` may pretty-print to: the cap, less the recovery
-/// its rooms reserved. [`preflight_storage`] refuses a record past it; a host
+/// its workspaces reserved. [`preflight_storage`] refuses a record past it; a host
 /// that pretty-prints the record anyway counts against it in that one pass.
 pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
     store::MAX_AUTHORITY_BYTES
@@ -327,7 +327,7 @@ mod tests {
     /// both embeddings, and refuses exactly the limits that one refuses.
     #[test]
     fn projection_count_without_writing_each_byte_is_the_written_count() {
-        let room = "00000000-0000-4000-8000-0000000000aa";
+        let workspace = "00000000-0000-4000-8000-0000000000aa";
         let cases: [&[(&str, &str, usize)]; 5] = [
             &[],
             &[("so.tilo.code", "a", 0)],
@@ -343,7 +343,7 @@ mod tests {
             let written_at = |depth, limit| {
                 count(
                     &VirtualProjection {
-                        room,
+                        workspace,
                         routes,
                         cut: usize::MAX,
                     },
@@ -354,15 +354,15 @@ mod tests {
             for depth in [0, 4, 5] {
                 let written = written_at(depth, usize::MAX).unwrap();
                 assert_eq!(
-                    count_projection(room, routes, depth, usize::MAX).unwrap(),
+                    count_projection(workspace, routes, depth, usize::MAX).unwrap(),
                     written,
                     "{routes:?} at depth {depth}"
                 );
                 assert_eq!(
-                    count_projection(room, routes, depth, written).unwrap(),
+                    count_projection(workspace, routes, depth, written).unwrap(),
                     written
                 );
-                assert!(count_projection(room, routes, depth, written - 1).is_err());
+                assert!(count_projection(workspace, routes, depth, written - 1).is_err());
                 assert!(written_at(depth, written - 1).is_err());
             }
         }

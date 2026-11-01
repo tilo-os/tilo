@@ -47,7 +47,7 @@ impl Device {
     fn retained_plaintext(&self, room: RoomId, app: &str) -> usize {
         let net = self.net();
         let records = net
-            .room_host()
+            .workspace_host()
             .expect("the device runs its host")
             .room_records();
         let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();

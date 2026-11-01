@@ -12,7 +12,7 @@ pub type CommitFuture = Pin<Box<dyn Future<Output = Result<OwnerCommitReceipt, S
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OwnerCommitRequest {
-    pub room: String,
+    pub workspace: String,
     pub operation: CommitOperation,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub enum CommitOperation {
     /// Retired agent runtime fact. It keeps the variants after it at their
     /// encoded positions, and every binding of it is refused.
     RetiredAgentRuntime,
-    /// A proposal to bring a whole document into the room, or the owner's
+    /// A proposal to bring a whole document into the workspace, or the owner's
     /// answer to one. The broker supplies the caller from its authenticated
     /// durable admission, never from arguments.
     DocumentImport {
@@ -46,7 +46,7 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         action: ImportAction,
     },
-    /// Retired room task command: tasks are the Tasks app's issues. It keeps
+    /// Retired workspace task command: tasks are the Tasks app's issues. It keeps
     /// the variants after it at their encoded positions, and every binding of
     /// it is refused.
     RetiredWorkspaceTask,
@@ -57,9 +57,9 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: WorkspaceMembershipCommand,
     },
-    /// Save or remove one shortcut of the room for the authenticated caller,
+    /// Save or remove one shortcut of the workspace for the authenticated caller,
     /// whose device's proof names them as its saver
-    /// ([`crate::room::proven_saver`]); governor signing custody is
+    /// ([`crate::workspace::proven_saver`]); governor signing custody is
     /// supplied out of band, as for membership. The change is its JSON
     /// ([`tilo_automation::ShortcutChange`]): a shortcut carries
     /// self-describing values a binary encoding does not read back.
@@ -100,15 +100,19 @@ pub enum CommitTarget {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
-    /// A device this device admitted into the room, answered through the
-    /// room's join ledger; not a caller-facing operation.
+    /// A device this device admitted into the workspace, answered through the
+    /// workspace's join ledger; not a caller-facing operation.
     JoinAdmission {
         device: [u8; 32],
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
-    pub room: String,
+    /// The workspace this binding commits in. Queued publications written
+    /// before the engine's vocabulary named the workspace carry `room`; the
+    /// key stays so they still read back.
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub target: CommitTarget,
     pub request_digest: [u8; 32],
     /// Exact signed envelope or redacted receipt bytes that the owner admitted.
@@ -127,19 +131,19 @@ impl OwnerCommitRequest {
     ///
     /// Returns an error if the request's state cannot be encoded.
     pub fn binding(&self) -> Result<CommitBinding, String> {
-        if uuid::Uuid::parse_str(&self.room)
+        if uuid::Uuid::parse_str(&self.workspace)
             .map_err(|e| e.to_string())?
             .to_string()
-            != self.room
+            != self.workspace
         {
-            return Err("owner commit requires the exact canonical room UUID".into());
+            return Err("owner commit requires the exact canonical workspace UUID".into());
         }
         let (target, bytes) = match &self.operation {
             CommitOperation::RetiredAgentRuntime => {
                 return Err("agent runtime owner commits are retired".into());
             }
             CommitOperation::RetiredWorkspaceTask => {
-                return Err("room task owner commits are retired".into());
+                return Err("workspace task owner commits are retired".into());
             }
             CommitOperation::DesktopCommand {
                 invocation,
@@ -148,7 +152,7 @@ impl OwnerCommitRequest {
             } => {
                 let placement_independent = command.command.is_placement_independent();
                 if invocation.is_nil()
-                    || command.source.room != self.room
+                    || command.source.room != self.workspace
                     || (command.source.heads.is_empty() && !placement_independent)
                     || command.source.heads.len() > 128
                     || caller.capabilities.can_act_as_host
@@ -184,7 +188,10 @@ impl OwnerCommitRequest {
                 envelope,
             } => {
                 collab_types::validate_whole_document_payload_route(
-                    app, &self.room, record, envelope,
+                    app,
+                    &self.workspace,
+                    record,
+                    envelope,
                 )
                 .map_err(|e| e.to_string())?;
                 (
@@ -212,7 +219,7 @@ impl OwnerCommitRequest {
         };
         let encoded = postcard::to_allocvec(self).map_err(|e| e.to_string())?;
         Ok(CommitBinding {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             target,
             request_digest: *blake3::Hasher::new_derive_key("Tilo owner commit request v1")
                 .update(&encoded)
@@ -283,7 +290,8 @@ impl OwnerCommitReceipt {
             || self.aggregate_hash == [0; 32]
         {
             return Err(
-                "owner receipt does not bind the requested room, route, basis and aggregate".into(),
+                "owner receipt does not bind the requested workspace, route, basis and aggregate"
+                    .into(),
             );
         }
         Ok(())
@@ -292,16 +300,16 @@ impl OwnerCommitReceipt {
 /// Implemented by the single durable session owner, not by a remote caller.
 /// Failure may follow an application effect and therefore means uncertainty.
 pub trait OwnerCommitService: Send + Sync {
-    /// Whether this room must cross this installed owner's durable boundary.
+    /// Whether this workspace must cross this installed owner's durable boundary.
     /// Scoped native owners retain this requirement while incomplete or fenced.
-    fn requires_room(&self, _room: &str) -> bool {
+    fn requires_workspace(&self, _workspace: &str) -> bool {
         true
     }
-    /// Whether `room`'s effect receipts cross this owner's durable boundary.
-    /// Each device records its own in the room, whichever model the room's
+    /// Whether `workspace`'s effect receipts cross this owner's durable boundary.
+    /// Each device records its own in the workspace, whichever model the workspace's
     /// records follow.
-    fn records_effects(&self, room: &str) -> bool {
-        self.requires_room(room)
+    fn records_effects(&self, workspace: &str) -> bool {
+        self.requires_workspace(workspace)
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     /// [`Self::commit`] for a document write, with the resource kind of its
@@ -352,7 +360,7 @@ mod tests {
             [vec![6], vec![9; 32], vec![16], vec![7; 16]].concat()
         );
         let request = OwnerCommitRequest {
-            room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
             operation: CommitOperation::EffectReceipt {
                 invocation,
                 redacted: vec![5, 6],

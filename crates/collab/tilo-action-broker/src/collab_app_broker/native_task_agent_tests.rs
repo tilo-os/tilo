@@ -35,7 +35,7 @@ fn mint(
         device.user_public_key,
         agent_key.verifying_key().to_bytes(),
         TASK_ISSUE,
-        room().to_string(),
+        workspace_id().to_string(),
         issued,
         expires,
     )
@@ -49,14 +49,16 @@ fn mint(
 
 impl Minted {
     fn presentation(&self) -> Vec<u8> {
-        let room = room().to_string();
+        let workspace = workspace_id().to_string();
         runtime_collab::TaskAgentJoinIdentity {
-            workspace_id: room.clone(),
+            workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&self.device).unwrap(),
             delegation: self.delegation.encode(),
             proof: self
                 .agent_key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }
@@ -101,7 +103,7 @@ impl Fixture {
     /// The task agent joins as the agent the launcher started does: its
     /// presentation verified, its task asked about, as `join_channel` does.
     fn task_join(&self, minted: &Minted) -> Result<AdmittedJoinIdentity, String> {
-        let route = CrdtRoute::record("so.tilo.agent", room().to_string(), "main");
+        let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
         let admitted = verify_join_identity(
             &route,
             &minted.presentation(),
@@ -116,7 +118,7 @@ impl Fixture {
 
     fn task_channel(&self, peer: u64, minted: &Minted) -> runtime_collab::ChannelHandle {
         let admitted = self.task_join(minted).unwrap();
-        let route = CrdtRoute::record("so.tilo.agent", room().to_string(), "main");
+        let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
         wire_channel(super::JoinedChannel {
             as_app: None,
             person_chat_views: std::cell::RefCell::default(),
@@ -134,7 +136,7 @@ impl Fixture {
         })
     }
 
-    /// Apply a change to the room's governance as its governor writes it.
+    /// Apply a change to the workspace's governance as its governor writes it.
     fn govern(
         &self,
         change: impl FnOnce(
@@ -147,7 +149,7 @@ impl Fixture {
         let messages = self
             .native
             .owner
-            .with_current(room(), |view| {
+            .with_current(workspace_id(), |view| {
                 let before = view.peer().clone();
                 let mut next = before.clone();
                 change(&mut next, &self.native.key, now)?;
@@ -163,7 +165,7 @@ impl Fixture {
             self.native
                 .owner
                 .receive(
-                    room(),
+                    workspace_id(),
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(
                         self.native.key.verifying_key().to_bytes(),
                     ),
@@ -176,7 +178,7 @@ impl Fixture {
     }
 
     /// The person's second device, certified by their root and admitted to
-    /// the room's device list.
+    /// the workspace's device list.
     pub(super) fn second_device(&self) -> (SigningKey, tilo_user_identity::DeviceCert) {
         let key = SigningKey::from_bytes(&[93; 32]);
         let cert = tilo_peer_state::owner::testing::certificate(
@@ -234,7 +236,7 @@ async fn a_task_asked_with_no_agent_member_runs() {
             let current = f
                 .state
                 .revalidate_admission(
-                    &CrdtRoute::record("so.tilo.agent", room().to_string(), "main"),
+                    &CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main"),
                     &f.task_join(&minted).unwrap(),
                 )
                 .unwrap();
@@ -275,7 +277,7 @@ async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
         .run_until(async {
             let f = Fixture::new();
             let now = now_ns();
-            // Certified by the person's root, but never in the room's device
+            // Certified by the person's root, but never in the workspace's device
             // list.
             let stranger_key = SigningKey::from_bytes(&[94; 32]);
             let stranger = tilo_peer_state::owner::testing::certificate(
@@ -298,7 +300,11 @@ async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
             let mut run = f.native.runs.lock().unwrap()[0].clone();
             run.delegation = Some(Ok(forged.delegation.encode()));
             run.agent.clone_from(&forged.delegation.agent_id);
-            assert!(f.native.check_agent(&room().to_string(), &run).is_err());
+            assert!(
+                f.native
+                    .check_agent(&workspace_id().to_string(), &run)
+                    .is_err()
+            );
             drop(f);
         })
         .await;
@@ -395,7 +401,7 @@ async fn revoking_the_device_cuts_its_task_agents() {
             let current = f.native.runs.lock().unwrap()[0].clone();
             let refused = f
                 .native
-                .check_agent(&room().to_string(), &current)
+                .check_agent(&workspace_id().to_string(), &current)
                 .unwrap_err();
             assert!(refused.contains("revoked"), "{refused}");
             drop(f);

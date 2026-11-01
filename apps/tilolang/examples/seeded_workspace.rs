@@ -72,7 +72,7 @@ fn keep_index(
     let host = tilolang_tilo::host::Host::open(
         tilolang_tilo::host::Opening {
             record: Some(doc),
-            index_dir: Some(tilolang_tilo::index::room_dir(&base, "personal")),
+            index_dir: Some(tilolang_tilo::index::workspace_dir(&base, "personal")),
             device: None,
         },
         tilolang_tilo::runtime::Principal::new("seed"),

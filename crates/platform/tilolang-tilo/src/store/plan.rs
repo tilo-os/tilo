@@ -431,7 +431,7 @@ pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord
         }
         Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => {
             return Err(invalid(
-                "outside effects are not stored in the room record yet",
+                "outside effects are not stored in the workspace record yet",
             ));
         }
     };

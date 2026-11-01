@@ -2,12 +2,12 @@
 //! configured follow them to every device they sign in on, never to a
 //! collaborator.
 //!
-//! [`PersonAccounts`] is a resource kept in the person's own room, a
+//! [`PersonAccounts`] is a resource kept in the person's own scope, a
 //! [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
 //! whose provider sign-in adds mail accounts, edit it through its actions;
 //! every other app reads it. Each app process keeps a copy of the one
-//! record, in step with the others over its route; the apps the session
-//! shows in its own process share the session's copy. It holds what an
+//! record, in step with the others where their personal store carries it;
+//! the apps the session shows in its own process share the session's copy. It holds what an
 //! account *is* — its type, its name, its connection settings — and never
 //! a credential: secrets stay in this device's
 //! [`SecretVault`](crate::SecretVault) under the account's id, so a device

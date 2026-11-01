@@ -15,7 +15,7 @@ fn retired_host_rejects_late_completion_without_rewriting_observation() {
             &Caller::local_person("owner"),
             None,
             HostActionAdmission {
-                room: "room",
+                workspace: "workspace",
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,
@@ -63,7 +63,7 @@ fn host_terminal_is_single_assignment_and_never_cancellable() {
             &Caller::local_person("owner"),
             None,
             HostActionAdmission {
-                room: "room",
+                workspace: "workspace",
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,
@@ -108,7 +108,7 @@ fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
             &fixture.caller,
             Some(&fixture.origin),
             HostActionAdmission {
-                room: &fixture.room,
+                workspace: &fixture.workspace,
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,
@@ -182,7 +182,7 @@ fn app_local_origin_replays_host_terminal_before_live_target_resolution() {
             &fixture.caller,
             Some(&fixture.origin),
             HostActionAdmission {
-                room: &fixture.room,
+                workspace: &fixture.workspace,
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,

@@ -11,7 +11,7 @@ use super::*;
 use crate::profile::Catalog;
 use tilo_model_gateway::host_backend::protocol::{ModelRequest, Role};
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CHAT: &str = "so.tilo.chat";
 const MAIL: &str = "so.tilo.mail";
 const NOTES: &str = "so.tilo.notes";
@@ -34,7 +34,7 @@ fn operations(resource: &str, actions: &[&str]) -> Vec<ActionDescriptor> {
 }
 
 /// An agent granted Chat, Mail, Notes, the PDF viewer and Sheets, told
-/// only the relevant ones: a Chat record open, the room's notes page
+/// only the relevant ones: a Chat record open, the workspace's notes page
 /// "Claims rules" and an untitled mailbox known.
 fn casework() -> PlanContext {
     let chat = operations("chat.channel", &["post", "rename"]);
@@ -62,7 +62,7 @@ fn casework() -> PlanContext {
         ],
         apps: reference.iter().map(|(app, _)| app.clone()).collect(),
         reference,
-        room: ROOM.into(),
+        workspace: WORKSPACE.into(),
         catalog: Catalog::Relevant,
         app_names: [
             (CHAT, "Chat"),
@@ -112,7 +112,7 @@ fn first_request(task: &str, context: &PlanContext) -> (ModelRequest, CatalogUse
     (request, planner.take_catalog().unwrap())
 }
 
-/// A plan that opens the room's mailbox and leaves the rest for then.
+/// A plan that opens the workspace's mailbox and leaves the rest for then.
 fn open_mailbox() -> serde_json::Value {
     serde_json::json!({"steps": [{"operation": "record.so.tilo.mail.m1#open", "arguments": {}}],
         "then": "draft her the email", "reply": "Opening the mailbox."})
@@ -216,7 +216,7 @@ fn an_app_is_relevant_by_its_name_a_tag_or_a_new_record() {
 
 /// `list_operations` for an app left out answers with its operations in
 /// full, says how to use them while none of its documents is open, and is
-/// counted as looked up; the plan after it opens the room's mailbox, and
+/// counted as looked up; the plan after it opens the workspace's mailbox, and
 /// the turn after the lookup sends the same prefix.
 #[test]
 fn a_lookup_brings_in_an_apps_operations() {
@@ -409,7 +409,7 @@ fn survey(app: &str) -> Vec<ActionDescriptor> {
     crate::worker::ConfinedReplica::open(
         &crate::AppCatalogue::native(),
         app,
-        ROOM,
+        WORKSPACE,
         "measure",
         &crate::ReplicaActor::Agent,
         crate::Seed::New,
@@ -445,7 +445,7 @@ fn agent_context(apps: &[&str], open: &[&str], task: &str, catalog: Catalog) -> 
             })
             .cloned()
             .collect(),
-        room: ROOM.into(),
+        workspace: WORKSPACE.into(),
         catalog,
         app_names: if catalog == Catalog::Relevant {
             apps.iter()

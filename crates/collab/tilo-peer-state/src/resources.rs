@@ -55,24 +55,26 @@ mod tests {
             room: "room".into(),
         };
         let bytes = postcard::to_allocvec(&message).unwrap();
-        let roomy = OuterLimits {
+        let limits = OuterLimits {
             allocation_bytes: 48 * 1024,
             collection_entries: 4096,
         };
         assert_eq!(
-            BoundedPeerMessage::decode(&bytes, roomy).unwrap().message(),
+            BoundedPeerMessage::decode(&bytes, limits)
+                .unwrap()
+                .message(),
             &message
         );
         let tight = OuterLimits {
             allocation_bytes: 64,
-            ..roomy
+            ..limits
         };
         assert!(matches!(
             BoundedPeerMessage::decode(&bytes, tight),
             Err(PeerResourceError::Capacity)
         ));
         assert!(matches!(
-            BoundedPeerMessage::decode(&[255], roomy),
+            BoundedPeerMessage::decode(&[255], limits),
             Err(PeerResourceError::Malformed)
         ));
     }

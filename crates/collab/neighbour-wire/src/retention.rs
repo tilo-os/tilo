@@ -331,7 +331,7 @@ mod tests {
         let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let channel = ChannelId::new();
         let genesis = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsGovernance {
-            room: "room".into(),
+            workspace: "room".into(),
             frame: Box::new(
                 MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, key)
                     .unwrap(),
@@ -343,7 +343,7 @@ mod tests {
         assert_ne!(first.0, retention(&genesis(&other), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
         let change = |epoch: u8| NeighbourMsg::MlsGovernance {
-            room: "room".into(),
+            workspace: "room".into(),
             frame: Box::new(
                 MlsGovernanceFrame::signed(
                     channel,
@@ -370,7 +370,7 @@ mod tests {
         assert!(audience(&change(2)).is_none());
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
-            room: "room".into(),
+            workspace: "room".into(),
             request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
             delivery: 0,
         };

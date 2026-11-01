@@ -75,7 +75,7 @@ const COMPILE_TRANSLATION: &str = "TILOLANG_BENCH_COMPILE_TRANSLATION";
 const COMPILE_LINE: &str = "tilolang-bench-compile-peak-kib=";
 
 /// The most memory compiling `modules` adds to a process: a process of its own (the bench's
-/// own has held rooms far larger than any compile) reads them, then compiles them, and reports
+/// own has held workspaces far larger than any compile) reads them, then compiles them, and reports
 /// how far its peak resident memory rose. `None` without a way to start one.
 fn compile_peak(config: &BenchConfig, modules: &[&[u8]]) -> Result<Option<f64>, String> {
     let Some(isolation) = &config.memory else {
@@ -257,7 +257,7 @@ pub(super) fn settle(modules: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Res
     Ok(())
 }
 
-/// `start`: each sample opens the room in a process that has forgotten the modules it compiled
+/// `start`: each sample opens the workspace in a process that has forgotten the modules it compiled
 /// (and, on the tiered engine, with nothing kept on disk). On the tiered engine also
 /// `start_cached`: the same in a process that finds them kept on disk, as every start after
 /// the first does.
@@ -268,9 +268,9 @@ pub(super) fn start(sized: &Sized<'_>, kept: &CompiledDir) -> Result<Vec<Record>
         tilolang_runtime::engine::forget_compiled();
         kept.empty()?;
         let started = Instant::now();
-        let room = sized.open()?;
+        let workspace = sized.open()?;
         samples.push(ms(started.elapsed()));
-        drop(room);
+        drop(workspace);
     }
     let mut records = vec![sized.record("start", "ms", samples, Json::Null)];
     if kept.0.is_some() {
@@ -279,9 +279,9 @@ pub(super) fn start(sized: &Sized<'_>, kept: &CompiledDir) -> Result<Vec<Record>
             settle(sized.packages.iter().map(|p| &p.wasm))?;
             tilolang_runtime::engine::forget_compiled();
             let started = Instant::now();
-            let room = sized.open()?;
+            let workspace = sized.open()?;
             samples.push(ms(started.elapsed()));
-            drop(room);
+            drop(workspace);
         }
         records.push(sized.record("start_cached", "ms", samples, Json::Null));
     }

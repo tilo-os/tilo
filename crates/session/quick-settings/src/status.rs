@@ -18,10 +18,9 @@ pub struct SystemStatus {
     pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
-    /// Active capture streams, attributed from `PipeWire`'s server security
-    /// PID to the kernel executable. Read again only when the number of
-    /// running capture streams changes, and without a process while none
-    /// runs.
+    /// Active capture streams, attributed by the audio service from
+    /// `PipeWire`'s server security PID to the kernel executable, and read
+    /// again whenever the set of running streams changes.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 

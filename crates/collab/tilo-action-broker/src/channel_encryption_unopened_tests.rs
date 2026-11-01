@@ -1,5 +1,5 @@
-/// A room whose governance this device learns of later, as the workspace
-/// tree does when a room's authority arrives: it announces the change.
+/// A workspace whose governance this device learns of later, as the workspace
+/// tree does when a workspace's authority arrives: it announces the change.
 #[derive(Clone, Default)]
 struct LateGovernor {
     governor: Arc<Mutex<Option<Ed25519PublicKey>>>,
@@ -37,19 +37,19 @@ fn late_governor_service(dir: &Path, directory: &LateGovernor) -> ChannelEncrypt
     .unwrap()
 }
 
-/// A route asked about before its room's governance is known is told
+/// A route asked about before its workspace's governance is known is told
 /// when it is learned, with no timer running meanwhile: the endpoint need
 /// not ask on one to find out.
 #[test]
-fn a_route_hears_when_its_rooms_governance_is_learned() {
+fn a_route_hears_when_its_workspaces_governance_is_learned() {
     let dir = tempfile::tempdir().unwrap();
     let directory = LateGovernor::default();
     let mut service = late_governor_service(dir.path(), &directory);
-    let (room, channel) = (RoomId::new(), ChannelId::new());
-    let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
+    let (workspace, channel) = (RoomId::new(), ChannelId::new());
+    let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
     let mut now = Instant::now();
     assert!(matches!(
-        service.access(room, channel, now),
+        service.access(workspace, channel, now),
         ChannelAccess::Unavailable
     ));
     assert!(
@@ -61,14 +61,14 @@ fn a_route_hears_when_its_rooms_governance_is_learned() {
     assert_eq!(
         service.next_pump_deadline(now),
         None,
-        "nothing is due while the room's governance is unknown"
+        "nothing is due while the workspace's governance is unknown"
     );
     assert!(
         service.waits_for_policy_change(),
         "the pump waits for an announcement instead"
     );
 
-    // Announcements that leave the room's governance unknown tell no
+    // Announcements that leave the workspace's governance unknown tell no
     // route.
     directory.epoch.fetch_add(1, Ordering::SeqCst);
     now = now.checked_add(Duration::from_secs(5)).unwrap();
@@ -82,10 +82,10 @@ fn a_route_hears_when_its_rooms_governance_is_learned() {
     let told = service.channel_change(channel);
     assert_ne!(
         told, 0,
-        "the route is told its room's governance is known now"
+        "the route is told its workspace's governance is known now"
     );
     assert!(matches!(
-        service.access(room, channel, now),
+        service.access(workspace, channel, now),
         ChannelAccess::Waiting
     ));
     assert!(service.unopened.is_empty());
@@ -108,14 +108,14 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
     let directory = LateGovernor::default();
     *directory.governor.lock().unwrap() = Some(public(22));
     let mut service = late_governor_service(dir.path(), &directory);
-    let (room, channel) = (RoomId::new(), ChannelId::new());
-    let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
-    // The room's state directory cannot be created: a file is in its way.
-    let blocker = dir.path().join("channels").join(room.to_string());
+    let (workspace, channel) = (RoomId::new(), ChannelId::new());
+    let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
+    // The workspace's state directory cannot be created: a file is in its way.
+    let blocker = dir.path().join("channels").join(workspace.to_string());
     std::fs::write(&blocker, b"").unwrap();
     let now = Instant::now();
     assert!(matches!(
-        service.access(room, channel, now),
+        service.access(workspace, channel, now),
         ChannelAccess::Unavailable
     ));
     service.pump(&transport, now, 1_000);
@@ -135,7 +135,7 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
 
     std::fs::remove_file(&blocker).unwrap();
     assert!(matches!(
-        service.access(room, channel, due),
+        service.access(workspace, channel, due),
         ChannelAccess::Waiting
     ));
     assert!(service.unopened.is_empty(), "an open that succeeds settles");

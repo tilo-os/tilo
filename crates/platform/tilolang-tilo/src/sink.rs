@@ -1,6 +1,6 @@
 //! Where settled outside effects go while there is no real capability behind them.
 //!
-//! An outside effect (an app's `outside("post", ..)`) waits in the room record until the device
+//! An outside effect (an app's `outside("post", ..)`) waits in the workspace record until the device
 //! that owns it settles it: delivers it to a sink and records that it was delivered. Today the sink
 //! of the host is a log: one JSON line per effect, in a file under the state directory of
 //! `tilolang-dev`, so what an approved letter would have sent can be read.

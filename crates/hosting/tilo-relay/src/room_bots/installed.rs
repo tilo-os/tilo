@@ -808,7 +808,7 @@ fn bot_standing(
     connectors: &BTreeSet<String>,
 ) -> tilo_action_policy::Standing {
     use tilo_action_policy::{
-        Answer, Grant, KindSet, Level, RoomPolicy, Rule, Standing, Subject, TreePath,
+        Answer, Grant, KindSet, Level, Rule, Standing, Subject, TreePath, WorkspacePolicy,
     };
     let bot = Subject::bot(installation);
     let mut rules = if shortcut.grant.is_empty() {
@@ -850,7 +850,7 @@ fn bot_standing(
             )
         })
         .collect();
-    Standing::person(RoomPolicy::new(room, installer), installer).bounded_by(bot, grants)
+    Standing::person(WorkspacePolicy::new(room, installer), installer).bounded_by(bot, grants)
 }
 
 /// What changed in the room's membership from `before` to `after`, as

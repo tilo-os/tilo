@@ -11,12 +11,12 @@
 //! 1. the record is read from the copy the host holds of it (the confined
 //!    replica's mirror), never from the worker, and checked: at most
 //!    [`AGENT_MAX_SECONDS`](video_editor::agent_render::AGENT_MAX_SECONDS),
-//!    and only sources that are content the room holds;
+//!    and only sources that are content the workspace holds;
 //! 2. the document and those sources are laid out in a private job
 //!    directory, within [`SOURCE_BUDGET`];
 //! 3. `tilo-video-render` ([`tilo_video_render`]) runs on it,
 //!    confined, and writes into a file it is handed open;
-//! 4. what it wrote, at most [`MAX_OUTPUT`], becomes room content, and the
+//! 4. what it wrote, at most [`MAX_OUTPUT`], becomes workspace content, and the
 //!    agent is answered with its address.
 //!
 //! One render runs at a time on a host, each for at most [`WALL_LIMIT`];
@@ -123,7 +123,7 @@ pub(crate) fn route(
     }
     let Some(content) = content else {
         return Some(Err(refused(
-            "this record keeps no room content to render into".into(),
+            "this record keeps no workspace content to render into".into(),
         )));
     };
     Some(RenderService::shared().invoke(record, content, address, arguments))
@@ -146,7 +146,7 @@ struct Job {
     settled: Condvar,
 }
 
-/// A finished render: where the room keeps it, and what it holds.
+/// A finished render: where the workspace keeps it, and what it holds.
 #[derive(Clone)]
 struct Made {
     address: String,
@@ -180,7 +180,7 @@ impl RenderService {
     /// # Errors
     ///
     /// The render is unavailable on this host, or refused (bad arguments, a
-    /// timeline an agent may not render, a source the room lacks), or it
+    /// timeline an agent may not render, a source the workspace lacks), or it
     /// failed.
     pub fn invoke(
         &self,
@@ -482,14 +482,14 @@ impl Snapshot {
         format!("render-{}", hex.get(..16).unwrap_or_default())
     }
 
-    /// Refuse a source the room does not hold.
+    /// Refuse a source the workspace does not hold.
     fn check_sources(&self, content: &ContentStore) -> Result<(), String> {
         match agent_render::placed_content(&self.project)
             .into_iter()
             .find(|hash| !content.has(hash))
         {
             Some(hash) => Err(format!(
-                "the room does not hold tilo.content:{hash}, which the timeline places: \
+                "the workspace does not hold tilo.content:{hash}, which the timeline places: \
                  import it again"
             )),
             None => Ok(()),
@@ -503,14 +503,14 @@ impl Snapshot {
         for hash in agent_render::placed_content(&self.project) {
             let mut reader = content
                 .open(&hash)
-                .ok_or_else(|| format!("the room no longer holds tilo.content:{hash}"))?;
+                .ok_or_else(|| format!("the workspace no longer holds tilo.content:{hash}"))?;
             dir.put_source(&hash, &mut reader)?;
         }
         Ok(dir)
     }
 }
 
-/// Keep what the helper wrote, at most `limit` bytes, as room content:
+/// Keep what the helper wrote, at most `limit` bytes, as workspace content:
 /// its address and size.
 fn keep(
     output: std::fs::File,

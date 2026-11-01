@@ -97,7 +97,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             let guard = rig.state.journal.lock().unwrap();
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
             let record = journal.lookup(&crate::collab_app_broker::invocation_journal::InvocationKey {
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
                 host: journal.host(),
                 owner: crate::collab_app_broker::invocation_journal::InvocationOwner::Certified {
                     root: certificate.user_public_key,
@@ -208,7 +208,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
             for scenario in [
                 "ready",
                 "adopted",
-                "foreign_room",
+                "foreign_workspace",
                 "foreign_package",
                 "zero_surface",
                 "spawn_failed",
@@ -228,7 +228,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 });
                 if matches!(
                     scenario,
-                    "adopted" | "foreign_room" | "foreign_package" | "zero_surface"
+                    "adopted" | "foreign_workspace" | "foreign_package" | "zero_surface"
                 ) {
                     *launcher.adoption.lock().unwrap() = Some(crate::services::LaunchAdoption {
                         adoption_id: uuid::Uuid::new_v4(),
@@ -239,8 +239,8 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                             "so.tilo.word-processor"
                         }
                         .into(),
-                        room: if scenario == "foreign_room" {
-                            "foreign-room".into()
+                        workspace: if scenario == "foreign_workspace" {
+                            "foreign-workspace".into()
                         } else {
                             env.route.cluster_id.clone()
                         },
@@ -556,7 +556,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
 
 // An app asks the shell to open another app for the agent invocation the
 // broker delivered to it: the broker admits that open only for the running
-// invocation of that app's own connection, in its room, for a caller still
+// invocation of that app's own connection, in its workspace, for a caller still
 // allowed to open the target, and journals it as the invocation's child,
 // attributed to the agent.
 #[tokio::test(flavor = "current_thread")]
@@ -575,30 +575,35 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), target, KindSet::ALL);
             }
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let app = env.route.app_id.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let original = id(0xc5a1);
 
-            let before_delivery = rig.state.admit_app_open(&app, &room, original, target);
+            let before_delivery = rig.state.admit_app_open(&app, &workspace, original, target);
             invoke(&agent.handle, original).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
-            let another_app = rig
+            let another_app =
+                rig.state
+                    .admit_app_open("so.tilo.chat", &workspace, original, target);
+            let another_workspace =
+                rig.state
+                    .admit_app_open(&app, "another-workspace", original, target);
+            let not_allowed = rig
                 .state
-                .admit_app_open("so.tilo.chat", &room, original, target);
-            let another_room = rig
-                .state
-                .admit_app_open(&app, "another-room", original, target);
-            let not_allowed = rig.state.admit_app_open(&app, &room, original, elsewhere);
-            let opened = rig.state.admit_app_open(&app, &room, original, target);
+                .admit_app_open(&app, &workspace, original, elsewhere);
+            let opened = rig.state.admit_app_open(&app, &workspace, original, target);
 
             assert!(before_delivery.is_err(), "no running invocation, no open");
             assert!(
                 another_app.is_err(),
                 "another app's connection cannot use it"
             );
-            assert!(another_room.is_err(), "nor can a request from another room");
+            assert!(
+                another_workspace.is_err(),
+                "nor can a request from another workspace"
+            );
             assert!(
                 not_allowed.is_err(),
                 "the agent may not open what it is not allowed to"
@@ -627,7 +632,7 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
             let record = journal
                 .lookup(&InvocationKey {
-                    room: room.clone(),
+                    workspace: workspace.clone(),
                     host: journal.host(),
                     owner,
                     invocation: child.invocation(),
@@ -652,14 +657,14 @@ async fn an_apps_open_for_its_own_invocation_is_not_admitted() {
         .run_until(async {
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             let own = id(0xc5a2);
             invoke(&rig.worker.handle, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
             let opened =
                 rig.state
-                    .admit_app_open(&env.route.app_id, &room, own, "so.tilo.contacts");
+                    .admit_app_open(&env.route.app_id, &workspace, own, "so.tilo.contacts");
 
             assert_eq!(opened, Ok(crate::collab_app_broker::AppOpen::NeedsPress));
             rig.stop().await;

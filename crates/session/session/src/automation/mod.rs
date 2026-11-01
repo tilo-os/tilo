@@ -504,7 +504,12 @@ impl Automation {
                 for trigger in &shortcut.triggers {
                     triggers::validate_trigger(trigger)?;
                 }
-                tilo_peer_state::room::sign_saved_shortcut(room, &mut shortcut, &device, &key)?;
+                tilo_peer_state::workspace::sign_saved_shortcut(
+                    room,
+                    &mut shortcut,
+                    &device,
+                    &key,
+                )?;
                 tilo_automation::ShortcutChange::Save(Box::new(shortcut))
             }
             delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),

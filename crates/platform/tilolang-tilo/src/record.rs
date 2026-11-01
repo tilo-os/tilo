@@ -7,7 +7,7 @@
 //! counter merges exactly as a Rust [`Counter`] does.
 //!
 //! Layout of one resource: a map holding `$type`, `$app` and every field by field id, under
-//! `tl/<app>/<resource id>` in the room record; its items under `$items`, each such a map by
+//! `tl/<app>/<resource id>` in the workspace record; its items under `$items`, each such a map by
 //! its id with its placement `$at` ([`crate::items`]). A `DynRecord` read whole
 //! ([`DynRecord::read_whole`]) holds each collection's items as a [`Collection`] again.
 

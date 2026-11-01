@@ -55,7 +55,7 @@ struct Heard {
 struct Rig {
     daemon: Notifications,
     desktop: DesktopNotifications,
-    bridge: SessionNotifications,
+    bridge: Rc<RefCell<SessionNotifications>>,
     policy: Arc<Mutex<NotificationPolicy>>,
     signals: Rc<NoticeSignals>,
     power: PowerLink,
@@ -90,14 +90,14 @@ fn rig() -> Rig {
     let policy = Arc::new(Mutex::new(NotificationPolicy::default()));
     let signals = Rc::new(NoticeSignals::default());
     let power = PowerLink::default();
-    let bridge = SessionNotifications::new(
+    let bridge = Rc::new(RefCell::new(SessionNotifications::new(
         Some(daemon.clone()),
         desktop.clone(),
         Link::new(),
         Arc::clone(&policy),
         Rc::clone(&signals),
         Some(power.clone()),
-    );
+    )));
     Rig {
         daemon,
         desktop,
@@ -111,25 +111,25 @@ fn rig() -> Rig {
 
 impl Rig {
     /// A pass of the notifications, with no compositor to mint tokens.
-    fn step(&mut self) {
-        self.bridge.step(&mut || None);
+    fn step(&self) {
+        self.bridge.borrow_mut().step(&mut || None);
     }
 
     /// A pass of the notifications, minting tokens as the compositor would.
-    fn step_minting(&mut self, mut mint: impl FnMut() -> Option<String>) {
-        self.bridge.step(&mut mint);
+    fn step_minting(&self, mut mint: impl FnMut() -> Option<String>) {
+        self.bridge.borrow_mut().step(&mut mint);
     }
 
     /// What the person did on the banners app, as it asks it.
     fn ask(&self, ask: Ask) {
-        self.bridge.ask(ask);
+        self.bridge.borrow().ask(ask);
     }
 
     /// What the banners were last handed: the desktop's live banners, once
     /// the bridge published them.
     fn feed(&self) -> tilo_desktop_surface::notifications::BannerFeed {
         assert_eq!(
-            self.bridge.published,
+            self.bridge.borrow().published,
             Some(self.desktop.revision()),
             "the banners have the latest"
         );
@@ -268,7 +268,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
 
 #[test]
 fn an_arrival_with_pixels_reaches_the_banners_and_the_centre() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut notification = sent(id);
     notification.image_data = Some(pixels());
@@ -292,7 +292,7 @@ fn an_arrival_with_pixels_reaches_the_banners_and_the_centre() {
 
 #[test]
 fn a_banners_action_and_reply_reach_the_app() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut notification = sent(id);
     notification.actions = vec![
@@ -326,7 +326,7 @@ fn a_banners_action_and_reply_reach_the_app() {
 
 #[test]
 fn a_call_is_answered_by_the_callers_own_choice() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut call = sent(id);
     call.actions = vec![
@@ -342,7 +342,7 @@ fn a_call_is_answered_by_the_callers_own_choice() {
 
 #[test]
 fn a_replacement_takes_the_banners_place_and_a_withdrawal_takes_it_away() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     rig.daemon.push(sent(id));
     rig.step();
@@ -363,7 +363,7 @@ fn a_replacement_takes_the_banners_place_and_a_withdrawal_takes_it_away() {
 
 #[test]
 fn a_transient_notification_leaves_no_trace_in_the_centre() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut transient = sent(id);
     transient.transient = true;
@@ -377,7 +377,7 @@ fn a_transient_notification_leaves_no_trace_in_the_centre() {
 
 #[test]
 fn read_in_full_moves_it_to_the_centre() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     rig.daemon.push(sent(id));
     rig.step();
@@ -389,7 +389,7 @@ fn read_in_full_moves_it_to_the_centre() {
 
 #[test]
 fn the_centre_lists_what_arrived_named_after_its_app() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut message = sent(id);
     message.caller = Some(Caller {
@@ -401,7 +401,7 @@ fn the_centre_lists_what_arrived_named_after_its_app() {
     // The person reads it in full: it leaves the banner for the centre.
     rig.ask(Ask::Read(rig.banner().id));
     rig.step();
-    let view = rig.bridge.view();
+    let view = rig.bridge.borrow().centre();
     assert_eq!(view.rows.len(), 1, "the centre lists it");
     assert_eq!(view.rows[0].title, "New mail");
     assert_eq!(
@@ -412,9 +412,106 @@ fn the_centre_lists_what_arrived_named_after_its_app() {
     assert_eq!(view.quiet, None, "it is not held by quiet");
 }
 
+/// The centre's own resource is what the panel reads and invokes: the rows
+/// it keeps, and the verbs that dismiss, run, clear and bring back. What
+/// people said to this person is personal, so only a caller the room grants
+/// reads it.
+#[test]
+fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
+    let rig = rig();
+    let second = rig.daemon.alloc_id();
+    rig.daemon.push(sent(second));
+    let first = rig.daemon.alloc_id();
+    let mut acting = from_app(sent(first), "so.tilo.mail");
+    acting.actions = vec![("open".into(), "Open".into())];
+    rig.daemon.push(acting);
+    rig.step();
+    let up: Vec<u64> = rig
+        .feed()
+        .banners
+        .iter()
+        .map(|banner| banner.notification.id)
+        .collect();
+    for id in up {
+        rig.ask(Ask::Read(id));
+        rig.step();
+    }
+    assert_eq!(rig.history().len(), 2, "both are kept");
+
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    let resource = served.resources().remove(0);
+    assert_eq!(
+        resource.readers,
+        tilo_actions::Readers::Granted,
+        "what people said to this person is personal"
+    );
+    assert!(served.poll(), "what the centre keeps is a reading");
+    let centre = centre_of(&served);
+    assert_eq!(centre.count, 2, "the root page counts them");
+    let newest = centre.rows[0].clone();
+    assert_eq!(
+        newest.app, "so.tilo.mail",
+        "named after the app it came from"
+    );
+    assert_eq!(
+        newest.actions,
+        [("open".to_owned(), "Open".to_owned())],
+        "the panel offers the sender's actions"
+    );
+
+    // The person runs the notification's own action from its row.
+    invoke(
+        &mut served,
+        "act",
+        serde_json::json!({ "notification": newest.id, "action": "open" }),
+    );
+    rig.step();
+    assert_eq!(
+        rig.heard.taken.lock().unwrap().as_slice(),
+        [(first, "action open".to_owned())],
+        "the action reached the app that sent it"
+    );
+
+    // Dismissing it takes it out of the centre the panel lists.
+    invoke(
+        &mut served,
+        "dismiss",
+        serde_json::json!({ "notification": newest.id }),
+    );
+    assert!(served.poll(), "the centre moved");
+    let centre = centre_of(&served);
+    assert_eq!(centre.count, 1, "it is no longer listed");
+    assert!(!centre.rows.iter().any(|row| row.id == newest.id));
+
+    // Clearing the rest can be brought back.
+    invoke(&mut served, "clear", serde_json::json!({}));
+    assert!(served.poll());
+    let cleared = centre_of(&served);
+    assert_eq!(cleared.count, 0, "the centre is empty");
+    assert!(cleared.can_undo, "and the person can bring it back");
+    invoke(&mut served, "undo-clear", serde_json::json!({}));
+    assert!(served.poll());
+    assert_eq!(centre_of(&served).count, 1, "what was cleared is back");
+}
+
+/// The centre as the service publishes it now.
+fn centre_of(served: &Served) -> NotificationCentre {
+    serde_json::from_value(served.read(RESOURCE).expect("the centre is published"))
+        .expect("a reading")
+}
+
+/// Invoke one of the centre's verbs with `arguments`, as the panel does.
+fn invoke(served: &mut Served, action: &str, arguments: serde_json::Value) {
+    let arguments: Map<String, Value> =
+        serde_json::from_value(arguments).expect("the verb's arguments");
+    served
+        .invoke(RESOURCE, action, &arguments)
+        .expect("the centre answers its own verbs");
+}
+
 #[test]
 fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
-    let mut rig = rig();
+    let rig = rig();
     rig.policy.lock().unwrap().do_not_disturb = true;
     let id = rig.daemon.alloc_id();
     rig.daemon.push(sent(id));
@@ -439,7 +536,7 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
 /// centre say why without the person's own Do Not Disturb switch moving.
 #[test]
 fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb() {
-    let mut rig = rig();
+    let rig = rig();
     let presenting = rig.power.registry().acquire_for("Presenting", INHIBIT_IDLE);
     assert!(rig.power.idle_held());
     let id = rig.daemon.alloc_id();
@@ -455,7 +552,7 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
     );
     let label = notifications::quiet_label(&QuietReason::Presenting);
     assert_eq!(
-        rig.bridge.view().quiet.as_deref(),
+        rig.bridge.borrow().centre().quiet.as_deref(),
         Some(label.as_str()),
         "the bar and the centre say the person is presenting"
     );
@@ -463,7 +560,7 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
         !should_play(
             SystemSoundEvent::Notification,
             &SystemSoundPrefs::default(),
-            rig.bridge.quiet_state(),
+            rig.bridge.borrow().quiet_state(),
             true,
         ),
         "an arrival while presenting makes no sound"
@@ -480,12 +577,12 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
         "it shows again once the hold is gone"
     );
     assert!(!rig.signals.quiet());
-    assert_eq!(rig.bridge.view().quiet, None);
+    assert_eq!(rig.bridge.borrow().centre().quiet, None);
     assert!(
         should_play(
             SystemSoundEvent::Notification,
             &SystemSoundPrefs::default(),
-            rig.bridge.quiet_state(),
+            rig.bridge.borrow().quiet_state(),
             true,
         ),
         "and sounds again"
@@ -496,7 +593,7 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
 /// banner is held, the centre keeps it and the bar counts it unread.
 #[test]
 fn an_app_with_its_banners_off_still_reaches_the_centre() {
-    let mut rig = rig();
+    let rig = rig();
     rig.policy.lock().unwrap().per_app.insert(
         "so.tilo.mail".into(),
         AppNotificationRule {
@@ -527,7 +624,7 @@ fn an_app_with_its_banners_off_still_reaches_the_centre() {
 /// the centre still has what was said.
 #[test]
 fn an_app_with_previews_off_shows_no_body_on_its_banner() {
-    let mut rig = rig();
+    let rig = rig();
     rig.policy.lock().unwrap().per_app.insert(
         "so.tilo.mail".into(),
         AppNotificationRule {
@@ -556,7 +653,7 @@ fn an_app_with_previews_off_shows_no_body_on_its_banner() {
 /// following the global preference is shown there.
 #[test]
 fn an_app_kept_off_the_lock_screen_says_so_on_its_notification() {
-    let mut rig = rig();
+    let rig = rig();
     rig.policy.lock().unwrap().show_on_lock_screen = true;
     rig.policy.lock().unwrap().per_app.insert(
         "so.tilo.mail".into(),
@@ -588,7 +685,7 @@ fn an_app_kept_off_the_lock_screen_says_so_on_its_notification() {
 
 #[test]
 fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut message = sent(id);
     message.caller = Some(Caller {
@@ -662,7 +759,7 @@ fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
 
 #[test]
 fn choosing_a_scheduled_notification_names_the_target_it_rings_for() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut ringing = sent(id);
     ringing.scheduled = Some(Occurrence {
@@ -677,16 +774,16 @@ fn choosing_a_scheduled_notification_names_the_target_it_rings_for() {
     rig.ask(Ask::Banner(BannerAsk::Activate(rig.banner().id)));
     rig.step();
     assert_eq!(
-        rig.bridge.take_opened(),
+        rig.bridge.borrow().take_opened(),
         [("local".to_owned(), "tilo://clock/timer-1".to_owned())],
         "the session opens it in the app that takes its scheme"
     );
-    assert!(rig.bridge.take_opened().is_empty(), "taken once");
+    assert!(rig.bridge.borrow().take_opened().is_empty(), "taken once");
 }
 
 #[test]
 fn a_chosen_banner_hands_its_app_a_token_to_raise_its_window() {
-    let mut rig = rig();
+    let rig = rig();
     let id = rig.daemon.alloc_id();
     let mut notification = sent(id);
     notification.actions = vec![("default".into(), "Go".into())];

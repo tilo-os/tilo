@@ -946,6 +946,7 @@ impl State {
             return;
         }
         if pressed {
+            self.policy.pointer_pressed(self.pointer.x, self.pointer.y);
             let target = self.pointer_target;
             for (index, host) in self.hosts.iter_mut().enumerate() {
                 if target != PointerTarget::Host(index) {

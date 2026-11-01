@@ -47,6 +47,10 @@ pub(crate) fn land(shared: &Shared) -> bool {
 /// now-playing card offers to continue it here; `None` clears it. Logs and
 /// does nothing when this session has no device to show it on.
 pub(crate) fn handoff(shared: &Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
+    // The session handed this offer over, so continuing it is the session's
+    // to name: the audio service's `resume` action is asked with what this
+    // holds.
+    shared.handoff.borrow_mut().clone_from(&offer);
     let Some(device) = &shared.device else {
         tracing::debug!("a handoff arrived for a session that shows no device");
         return;

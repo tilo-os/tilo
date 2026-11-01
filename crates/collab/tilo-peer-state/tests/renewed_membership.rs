@@ -18,29 +18,29 @@ use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitatio
 use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
 };
-use tilo_peer_state::join_answer::{JoinAnswer, JoinRooms, RoomTxn};
+use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
-use tilo_peer_state::owner::testing::{self, ROOM};
+use tilo_peer_state::owner::testing::{self, WORKSPACE};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
-use tilo_peer_state::{SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 tilo_automerge_isolate::test_worker!();
 
-/// The room's admitted state, which also gives the governance a joining
+/// The workspace's admitted state, which also gives the governance a joining
 /// member admits.
 struct Admitted(StatePeer);
 
 impl GovernanceMessages for Admitted {
     fn governance_messages(&self) -> Vec<Vec<u8>> {
-        postcard::to_stdvec(&self.0.room_message())
+        postcard::to_stdvec(&self.0.workspace_message())
             .map(|bytes| vec![bytes])
             .unwrap_or_default()
     }
 }
 
-/// One room as its governor holds it in memory.
-struct HeldRoom {
+/// One workspace as its governor holds it in memory.
+struct HeldWorkspace {
     peer: Admitted,
     /// The device answering the join: the governor's own.
     host: DeviceCert,
@@ -48,25 +48,25 @@ struct HeldRoom {
     generation: u64,
 }
 
-impl HeldRoom {
+impl HeldWorkspace {
     fn governed(&self) -> Governed<'_> {
         Governed {
             peer: &self.peer.0,
             host: &self.host,
-            workspace_id: join::room_workspace_id(ROOM).unwrap(),
+            workspace_id: join::room_workspace_id(WORKSPACE).unwrap(),
             generation: self.generation,
             governance_messages: &self.peer,
         }
     }
 }
 
-impl RoomTxn for HeldRoom {
-    fn room(&self) -> &str {
-        ROOM
+impl WorkspaceTxn for HeldWorkspace {
+    fn workspace(&self) -> &str {
+        WORKSPACE
     }
 
     fn governed(&self) -> Governed<'_> {
-        HeldRoom::governed(self)
+        HeldWorkspace::governed(self)
     }
 
     fn ledger(&self) -> &JoinLedger {
@@ -83,14 +83,14 @@ impl RoomTxn for HeldRoom {
         _now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
     ) -> Result<(), JoinError> {
-        let next = HeldRoom {
+        let next = HeldWorkspace {
             peer: Admitted(peer),
             host: self.host.clone(),
             ledger: JoinLedger::default(),
             generation: self.generation.saturating_add(1),
         };
         let answered = ledger(&next.governed())?;
-        *self = HeldRoom {
+        *self = HeldWorkspace {
             ledger: answered,
             ..next
         };
@@ -98,15 +98,15 @@ impl RoomTxn for HeldRoom {
     }
 }
 
-/// A governor of one room, kept in memory: the exchange every host
+/// A governor of one workspace, kept in memory: the exchange every host
 /// answers ([`JoinAnswer`]) over the simplest store.
-struct MemoryRooms {
+struct MemoryWorkspaces {
     key: SigningKey,
     nonce: Mutex<u8>,
-    room: Mutex<HeldRoom>,
+    workspace: Mutex<HeldWorkspace>,
 }
 
-impl JoinRooms for MemoryRooms {
+impl JoinWorkspaces for MemoryWorkspaces {
     fn key(&self) -> &SigningKey {
         &self.key
     }
@@ -117,24 +117,24 @@ impl JoinRooms for MemoryRooms {
         Ok([*nonce; 32])
     }
 
-    fn with_room<T: Send>(
+    fn with_workspace<T: Send>(
         &self,
-        room: &str,
-        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, JoinError> + Send,
+        workspace: &str,
+        decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, JoinError> + Send,
     ) -> impl std::future::Future<Output = Result<T, JoinError>> + Send {
-        std::future::ready(if room == ROOM {
-            decide(&mut *self.room.lock().unwrap())
+        std::future::ready(if workspace == WORKSPACE {
+            decide(&mut *self.workspace.lock().unwrap())
         } else {
-            Err(JoinError::new("this governor holds no such room"))
+            Err(JoinError::new("this governor holds no such workspace"))
         })
     }
 }
 
-impl MemoryRooms {
-    /// A governor of `ROOM` signing as `device`, whose key `key` is.
+impl MemoryWorkspaces {
+    /// A governor of `WORKSPACE` signing as `device`, whose key `key` is.
     fn new(device: &DeviceCert, key: &SigningKey, now: SystemTime) -> Self {
         let mut peer = StatePeer::new(
-            ROOM,
+            WORKSPACE,
             device.clone(),
             vec![device.clone()],
             RevocationList::new(),
@@ -144,7 +144,8 @@ impl MemoryRooms {
         peer.select_admission_v5().unwrap();
         peer.install_seed(
             SeedState {
-                room_changes: seed_room(ROOM, device, std::slice::from_ref(device)).unwrap(),
+                workspace_changes: seed_workspace(WORKSPACE, device, std::slice::from_ref(device))
+                    .unwrap(),
                 documents: Vec::new(),
             },
             key,
@@ -154,7 +155,7 @@ impl MemoryRooms {
         Self {
             key: key.clone(),
             nonce: Mutex::new(0),
-            room: Mutex::new(HeldRoom {
+            workspace: Mutex::new(HeldWorkspace {
                 peer: Admitted(peer),
                 host: device.clone(),
                 ledger: JoinLedger::default(),
@@ -169,12 +170,18 @@ impl MemoryRooms {
         transport: TransportHint,
         now: SystemTime,
     ) -> IssuedInvitation {
-        let mut room = self.room.lock().unwrap();
-        let mut ledger = room.ledger.clone();
-        let administrator = room.peer.0.owner_certificates().into_iter().next().unwrap();
+        let mut workspace = self.workspace.lock().unwrap();
+        let mut ledger = workspace.ledger.clone();
+        let administrator = workspace
+            .peer
+            .0
+            .owner_certificates()
+            .into_iter()
+            .next()
+            .unwrap();
         let issued = ledger
             .issue(
-                &room.governed(),
+                &workspace.governed(),
                 &administrator,
                 request,
                 vec![transport],
@@ -185,19 +192,19 @@ impl MemoryRooms {
                 testing::ns(now).unwrap(),
             )
             .unwrap();
-        room.ledger = ledger;
+        workspace.ledger = ledger;
         issued
     }
 
     fn with_peer<T>(&self, read: impl FnOnce(&StatePeer) -> T) -> T {
-        read(&self.room.lock().unwrap().peer.0)
+        read(&self.workspace.lock().unwrap().peer.0)
     }
 }
 
 /// `governor`'s answer to `request` from `remote` at `now`. Every step of
 /// a memory governor is decided before its future is first polled.
 fn answer(
-    governor: &JoinAnswer<MemoryRooms>,
+    governor: &JoinAnswer<MemoryWorkspaces>,
     remote: [u8; 32],
     request: JoinTransportRequest,
     now: SystemTime,
@@ -244,15 +251,15 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let person = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
     let device = testing::certificate(&person, &key, "Desktop");
-    let room = RoomId::parse(ROOM).unwrap();
+    let workspace = RoomId::parse(WORKSPACE).unwrap();
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
-    let governor = JoinAnswer(MemoryRooms::new(&device, &key, joined_at));
-    let workspace_id = join::room_workspace_id(ROOM).unwrap();
+    let governor = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
+    let workspace_id = join::room_workspace_id(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: ROOM.into(),
+        room: WORKSPACE.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap(),
@@ -351,7 +358,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
             &governor,
             slot_key.verifying_key().to_bytes(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: ROOM.into(),
+                room: WORKSPACE.into(),
                 workspace_id,
                 device_cert: device_cert.clone(),
                 request_id: [seed; 32],
@@ -383,7 +390,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         "the same member, with its role"
     );
     member
-        .renew_membership(room, &renewed, &renewal, later)
+        .renew_membership(workspace, &renewed, &renewal, later)
         .unwrap();
 
     governor
@@ -396,7 +403,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         })
         .unwrap();
     member
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             assert_eq!(view.device(), &renewed);
             assert!(view.peer().certificates().contains(&renewed));
             Ok(())
@@ -412,7 +419,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     drop(member);
     let member = open_file(&member_path).unwrap();
     member
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             assert_eq!(view.device(), &renewed);
             Ok(())
         })

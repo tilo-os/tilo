@@ -26,22 +26,25 @@ pub mod document_frame;
 pub mod installation;
 pub mod placement;
 mod postcard_sink;
-pub mod room;
 mod shared;
 mod state;
+pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+/// The person's own documents between their devices, with no host in between.
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
     GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation,
     MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority, MembershipError, NativePublicationCut,
     OpenedRecord, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
-    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
-    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ROOM_HOSTS_KEY,
-    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
-    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
-    room_host_actor, room_hosts_of, seed_room, workspace_seed,
+    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
+    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
+    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint,
+    SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces, default_surfaces,
+    peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

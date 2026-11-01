@@ -4,14 +4,14 @@
 /// heard it being fetched.
 #[tokio::test(flavor = "current_thread")]
 async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
-    use signed_worker::OriginalRoom;
+    use signed_worker::OriginalWorkspace;
     use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
             let (content_a, content_b, _) = crate::record_content::tests::pair(true);
-            let host_a = OriginalRoom::with_record_content(content_a, None);
-            let room = tilo_desktop_model::RoomId::parse(&host_a.route.cluster_id);
-            let host_b = OriginalRoom::with_record_content(content_b, room);
+            let host_a = OriginalWorkspace::with_record_content(content_a, None);
+            let workspace = tilo_desktop_model::RoomId::parse(&host_a.route.cluster_id);
+            let host_b = OriginalWorkspace::with_record_content(content_b, workspace);
             assert_eq!(host_a.route, host_b.route, "both hosts hold the one record");
             let (app_a, _) = host_a.join_worker(901).await;
             let (app_b, _) = host_b.join_worker(902).await;
@@ -55,11 +55,11 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
 /// waiting for an answer that never comes.
 #[tokio::test(flavor = "current_thread")]
 async fn a_host_without_record_content_says_so() {
-    use signed_worker::OriginalRoom;
+    use signed_worker::OriginalWorkspace;
     tokio::task::LocalSet::new()
         .run_until(async {
             let host =
-                OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
             let (app, _) = host.join_worker(901).await;
             assert!(app.handle.want_blob(&"0".repeat(64)).await.is_err());
         })
@@ -72,14 +72,14 @@ async fn a_host_without_record_content_says_so() {
 #[tokio::test(flavor = "current_thread")]
 async fn an_app_hears_its_want_wait_for_an_offline_holder_and_the_picture_arrive_when_it_connects()
 {
-    use signed_worker::OriginalRoom;
+    use signed_worker::OriginalWorkspace;
     use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
             let pair = crate::record_content::tests::hosts(false, true);
-            let host_a = OriginalRoom::with_record_content(pair.a.clone(), None);
-            let room = tilo_desktop_model::RoomId::parse(&host_a.route.cluster_id);
-            let host_b = OriginalRoom::with_record_content(pair.b.clone(), room);
+            let host_a = OriginalWorkspace::with_record_content(pair.a.clone(), None);
+            let workspace = tilo_desktop_model::RoomId::parse(&host_a.route.cluster_id);
+            let host_b = OriginalWorkspace::with_record_content(pair.b.clone(), workspace);
             let (app_a, _) = host_a.join_worker(903).await;
             let (app_b, _) = host_b.join_worker(904).await;
 

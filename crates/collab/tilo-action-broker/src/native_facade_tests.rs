@@ -33,7 +33,7 @@ impl crate::services::HostStepServices for NativeFacadeHostSteps {
         self.started
             .lock()
             .unwrap()
-            .push((request.room.into(), request.actor.id().into()));
+            .push((request.workspace.into(), request.actor.id().into()));
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -185,7 +185,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
             ));
             for caller in [
                 Caller::local_person("other-person").in_room(&env.route.cluster_id),
-                Caller::local_person(&person).in_room("other-room"),
+                Caller::local_person(&person).in_room("other-workspace"),
                 projected.clone().from_foreign_device(true),
                 projected.clone().delegated_to("agent"),
             ] {

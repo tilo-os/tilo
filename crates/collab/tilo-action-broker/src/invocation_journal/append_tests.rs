@@ -12,7 +12,7 @@ fn fresh() -> (tempfile::TempDir, PathBuf, InvocationJournal) {
 
 fn key(journal: &InvocationJournal, n: u128) -> InvocationKey {
     InvocationKey {
-        room: "5ca720b0-7649-4bdc-9c30-77380f7c2be5".into(),
+        workspace: "5ca720b0-7649-4bdc-9c30-77380f7c2be5".into(),
         host: journal.host(),
         owner: InvocationOwner::Local {
             actor: "person".into(),

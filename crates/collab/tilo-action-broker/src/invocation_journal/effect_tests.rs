@@ -11,7 +11,7 @@ fn fixture(
 ) {
     let mut journal = InvocationJournal::open(root).unwrap();
     let key = InvocationKey {
-        room: uuid::Uuid::new_v4().to_string(),
+        workspace: uuid::Uuid::new_v4().to_string(),
         host: journal.host(),
         owner: InvocationOwner::Local {
             actor: "person".into(),
@@ -35,7 +35,7 @@ fn fixture(
     );
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {
-        room: key.room.clone(),
+        workspace: key.workspace.clone(),
         operation: CommitOperation::EffectReceipt {
             invocation: key.invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),
@@ -212,9 +212,9 @@ fn prepared_effect_entry_refuses_malformed_or_downgraded_bindings() {
 }
 
 /// Admits a native task invocation, which raises the writer floor to 6.
-fn admit_native_task(journal: &mut InvocationJournal, room: &str) -> InvocationKey {
+fn admit_native_task(journal: &mut InvocationJournal, workspace: &str) -> InvocationKey {
     let key = InvocationKey {
-        room: room.into(),
+        workspace: workspace.into(),
         host: journal.host(),
         owner: InvocationOwner::NativeTask {
             agent: "scribe".into(),
@@ -243,7 +243,7 @@ fn prepared_effect_after_a_native_task_keeps_the_writer_floor() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("journal");
     let (mut journal, key, request, update) = fixture(&root);
-    let native = admit_native_task(&mut journal, &key.room);
+    let native = admit_native_task(&mut journal, &key.workspace);
     journal.prepare_effect(&key, update, &request).unwrap();
     drop(journal);
     assert_eq!(
@@ -269,7 +269,7 @@ fn store_with_an_entry_stamped_below_the_floor_reopens_under_the_raised_floor() 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("journal");
     let (mut journal, key, request, update) = fixture(&root);
-    let native = admit_native_task(&mut journal, &key.room);
+    let native = admit_native_task(&mut journal, &key.workspace);
     let prepared = journal
         .prepare_effect(&key, update.clone(), &request)
         .unwrap();
@@ -303,7 +303,7 @@ fn native_task_entry_stamped_below_its_floor_is_still_refused() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("journal");
     let (mut journal, key, _, _) = fixture(&root);
-    admit_native_task(&mut journal, &key.room);
+    admit_native_task(&mut journal, &key.workspace);
     drop(journal);
     let path = root.join("records.json");
     let stored = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();

@@ -32,7 +32,7 @@ use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
-/// native window's once its room or document custody ended, checked on
+/// native window's once its workspace or document custody ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
     host_guard: Option<HostWorkerReadGuard>,
@@ -266,7 +266,7 @@ impl JoinedChannel {
 impl JoinedChannel {
     /// Answer a committed-document request. An `Await` is held until the
     /// read may have changed, and an Open whose record is still being
-    /// decided (the room's host's replay) or created on another device is
+    /// decided (the workspace's host's replay) or created on another device is
     /// awaited, all on this `LocalSet`, so every channel's calls keep
     /// flowing meanwhile.
     pub(super) async fn committed_document_answer(
@@ -398,7 +398,7 @@ impl std::ops::Deref for ChannelSession {
 }
 
 impl JoinedChannel {
-    /// Admit, commit where the room's owner must hold it first, and fan out
+    /// Admit, commit where the workspace's owner must hold it first, and fan out
     /// one signed document change.
     pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
         self.writable()?;
@@ -420,7 +420,7 @@ impl JoinedChannel {
             state
                 .commit_owner_request(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: route.cluster_id.clone(),
+                        workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
@@ -434,6 +434,7 @@ impl JoinedChannel {
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
+        state.keep_personally(&route, &envelope);
         handle_authorized_signed_op_send(
             state,
             self.connection_id,
@@ -572,9 +573,8 @@ impl JoinedChannel {
             Report::SearchIndex(_) => None,
             _ => Some(self.continuation_instance().map_err(BrokerError::failed)?),
         };
-        let room = tilo_desktop_model::RoomId::parse(&route.cluster_id).ok_or_else(|| {
-            BrokerError::failed(format!("{verb} route has no durable workspace room"))
-        })?;
+        let workspace = tilo_desktop_model::RoomId::parse(&route.cluster_id)
+            .ok_or_else(|| BrokerError::failed(format!("{verb} route has no durable workspace")))?;
         let services = &self.state.services;
         let continuations = |unsupported: &str| {
             services
@@ -589,12 +589,12 @@ impl JoinedChannel {
                 schema_version,
                 metadata,
             } => continuations("continuation reporting unsupported").and_then(|service| {
-                service.report(room, app_id, instance, schema_version, metadata)
+                service.report(workspace, app_id, instance, schema_version, metadata)
             }),
             Report::ClearContinuation => continuations("continuation clearing unsupported")
-                .and_then(|service| service.clear(room, &app_id, instance)),
+                .and_then(|service| service.clear(workspace, &app_id, instance)),
             Report::Handoff(message) => continuations("handoff unsupported")
-                .and_then(|service| service.handoff(room, app_id, instance, message)),
+                .and_then(|service| service.handoff(workspace, app_id, instance, message)),
             Report::SearchIndex(delta) => {
                 if delta.len() > crate::services::MAX_SEARCH_INDEX_DELTA_BYTES {
                     return Err(BrokerError::failed(
@@ -605,14 +605,16 @@ impl JoinedChannel {
                     .search_index
                     .as_ref()
                     .ok_or_else(|| "search index publication unsupported".to_owned())
-                    .and_then(|service| service.publish(room, &app_id, &route.record_id, &delta))
+                    .and_then(|service| {
+                        service.publish(workspace, &app_id, &route.record_id, &delta)
+                    })
             }
         }
         .map_err(BrokerError::failed)
     }
 
     /// Record a terminal effect this app ran itself on one of the actions
-    /// it publishes, as workspace activity: committed by the room's owner
+    /// it publishes, as workspace activity: committed by the workspace's owner
     /// where one keeps effect receipts, else projected here.
     pub(super) fn record_local_effect_dispatch(
         &self,
@@ -689,7 +691,7 @@ impl JoinedChannel {
                 state
                     .commit_owner_request(
                         tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            room: surface.route.cluster_id,
+                            workspace: surface.route.cluster_id,
                             operation:
                                 tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                                     invocation: update.invocation().0,
@@ -955,7 +957,7 @@ impl JoinedChannel {
     /// A replacement subscription is handed the approved run again.
     pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, BrokerError> {
         if self.state.services.legacy_workspace.is_none()
-            && !self.state.task_admitted_room(&self.route().cluster_id)
+            && !self.state.task_admitted_workspace(&self.route().cluster_id)
         {
             return Err(BrokerError::failed(
                 "task execution service unsupported".into(),
@@ -1340,7 +1342,7 @@ impl JoinedChannel {
         drop(admission);
         self.state.invocation_streams_changed();
         // The app the launcher attested, else the one this channel names.
-        let (app, room) = self
+        let (app, workspace) = self
             .lease
             .as_ref()
             .and_then(|lease| lease.local_media.as_ref())
@@ -1351,7 +1353,7 @@ impl JoinedChannel {
                 },
                 |app| (app.app_id.clone(), app.workspace_id.clone()),
             );
-        let delivered = invocation_delivery_notice(&self.state.services, app, room);
+        let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
         Ok(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -1610,7 +1612,7 @@ impl JoinedChannel {
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
+        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor);
         let initial = match snapshot {
             Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Err(BrokerError::failed(error)),
@@ -1932,6 +1934,15 @@ fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
     });
 }
 
+/// What a connection reaches of the session's published resources: the
+/// provider, the caller it reads them for, and the broker state a granted
+/// reading is decided from.
+struct Publishing {
+    published: Arc<dyn crate::services::PublishedResources>,
+    caller: crate::services::Caller,
+    state: Arc<AppBrokerState>,
+}
+
 impl WireConnection {
     /// A connection and the queue of the frames it sends.
     pub(super) fn new(
@@ -1983,16 +1994,9 @@ impl WireConnection {
 
     /// What this connection reaches of the session's published resources,
     /// and for whom: the app and workspace its launcher named, when this
-    /// host publishes anything at all.
-    fn publishing(
-        &self,
-    ) -> Result<
-        (
-            std::sync::Arc<dyn crate::services::PublishedResources>,
-            crate::services::Caller,
-        ),
-        String,
-    > {
+    /// host publishes anything at all, and the broker state a granted
+    /// reading is decided from.
+    fn publishing(&self) -> Result<Publishing, String> {
         let unlaunched = || "this connection speaks for no launched app".to_owned();
         let service = self.service.as_ref().ok_or_else(unlaunched)?;
         let published = service
@@ -2002,13 +2006,14 @@ impl WireConnection {
             .clone()
             .ok_or_else(|| "this host publishes no resources".to_owned())?;
         let launch = service.lease.local_media.as_ref().ok_or_else(unlaunched)?;
-        Ok((
+        Ok(Publishing {
             published,
-            crate::services::Caller {
+            caller: crate::services::Caller {
                 app_id: launch.app_id.clone(),
                 workspace: launch.workspace_id.clone(),
             },
-        ))
+            state: Arc::clone(&service.state),
+        })
     }
 
     /// This connection's hold on the session's published resources: one
@@ -2048,7 +2053,7 @@ impl WireConnection {
 
     /// Answer one call. A reply, and the events a subscription it starts
     /// delivers, take the outgoing queue in that order; a call that waits (a
-    /// join, a room's change, a document change the room's owner commits
+    /// join, a workspace's change, a document change the workspace's owner commits
     /// first) answers when done.
     #[expect(
         clippy::too_many_lines,
@@ -2080,19 +2085,19 @@ impl WireConnection {
                     ))
                 })
             }
-            Operation::Room { channel, seen } => {
+            Operation::Workspace { channel, seen } => {
                 let memberships = self
                     .service
                     .as_ref()
                     .and_then(|service| service.state.services.workspace_memberships.clone());
-                let room = CrdtRoute::from_channel_key(&channel).cluster_id;
+                let workspace = CrdtRoute::from_channel_key(&channel).cluster_id;
                 Box::pin(async move {
-                    Ok(Reply::Room(match (memberships, seen) {
+                    Ok(Reply::Workspace(match (memberships, seen) {
                         (Some(memberships), Some(seen)) => {
-                            memberships.room_status_change(&room, seen).await
+                            memberships.workspace_status_change(&workspace, seen).await
                         }
-                        (Some(memberships), None) => memberships.room_status(&room),
-                        (None, _) => runtime_collab::RoomStatus::default(),
+                        (Some(memberships), None) => memberships.workspace_status(&workspace),
+                        (None, _) => runtime_collab::WorkspaceStatus::default(),
                     }))
                 })
             }
@@ -2200,11 +2205,26 @@ impl WireConnection {
                     async move { answer?.await.map(Reply::Admitted).map_err(Refusal::refusal) },
                 )
             }
-            Operation::Snapshot { services, resource } => Box::pin(super::published::read(
-                self.holds_published(services)
-                    .and_then(|()| self.publishing())
-                    .map(|(published, caller)| published.snapshot(&caller, &resource)),
-            )),
+            Operation::Snapshot { services, resource } => {
+                let asking = self
+                    .holds_published(services)
+                    .and_then(|()| self.publishing());
+                Box::pin(async move {
+                    let publishing = asking?;
+                    // A reading the person's own is decided before it is read,
+                    // as an action is before it runs.
+                    super::published::gate(
+                        &publishing.state,
+                        publishing.published.as_ref(),
+                        &publishing.caller,
+                        &resource,
+                    )?;
+                    super::published::read(Ok(publishing
+                        .published
+                        .snapshot(&publishing.caller, &resource)))
+                    .await
+                })
+            }
             Operation::Invoke {
                 services,
                 resource,
@@ -2213,8 +2233,13 @@ impl WireConnection {
             } => Box::pin(super::published::invoke(
                 self.holds_published(services)
                     .and_then(|()| self.publishing())
-                    .map(|(published, caller)| {
-                        published.invoke(&caller, &resource, &action, arguments)
+                    .map(|publishing| {
+                        publishing.published.invoke(
+                            &publishing.caller,
+                            &resource,
+                            &action,
+                            arguments,
+                        )
                     }),
             )),
             request => {
@@ -2254,7 +2279,7 @@ impl WireConnection {
                 ..
             }
             | Operation::Join(_)
-            | Operation::Room { .. }
+            | Operation::Workspace { .. }
             | Operation::Command { .. }
             | Operation::Changed { .. }
             | Operation::Task { .. }
@@ -2520,18 +2545,35 @@ impl WireConnection {
             }
             Operation::Watch { services, resource } => {
                 self.holds_published(services)?;
-                let (published, caller) = self.publishing()?;
+                let publishing = self.publishing()?;
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
+                // A watch begins only where the workspace's grants let the caller
+                // read, and each reading is decided again as it is served.
+                super::published::gate(
+                    &publishing.state,
+                    publishing.published.as_ref(),
+                    &publishing.caller,
+                    &resource,
+                )?;
+                let gate = super::published::ReadingGate {
+                    state: Arc::clone(&publishing.state),
+                    published: Arc::clone(&publishing.published),
+                    caller: publishing.caller.clone(),
+                    resource: resource.clone(),
+                };
                 let (readings, deliveries) = mpsc::unbounded_channel();
-                let watch = published.watch(&caller, &resource, readings);
+                let watch = publishing
+                    .published
+                    .watch(&publishing.caller, &resource, readings);
                 let task = super::published::serving(
-                    published,
+                    publishing.published,
                     watch,
                     deliveries,
                     self.frames.clone(),
                     id,
+                    gate,
                 );
                 self.subscriptions.borrow_mut().insert(id, (services, task));
                 Ok(Reply::Subscribed)

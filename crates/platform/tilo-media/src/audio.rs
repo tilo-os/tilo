@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+pub mod capture;
 pub mod default_node;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod group_tap;
@@ -807,6 +808,18 @@ pub fn enumerate() -> AudioGraph {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn try_enumerate() -> Result<AudioGraph, String> {
     dump().map(|json| parse_pw_dump(&json))
+}
+
+/// The live graph and the streams using the camera or the microphone, from
+/// one `pw-dump`: a reader that shows both pays one process for them.
+///
+/// # Errors
+///
+/// As [`try_enumerate`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn try_read() -> Result<(AudioGraph, Vec<capture::MediaUse>), String> {
+    let json = dump()?;
+    Ok((parse_pw_dump(&json), capture::of_dump(&json)?))
 }
 
 /// The live graph once, as the JSON `pw-dump` prints, for readers of objects

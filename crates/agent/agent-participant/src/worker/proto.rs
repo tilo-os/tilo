@@ -15,17 +15,17 @@
 //! one item at a time each way: the supervisor puts what an operation names
 //! and what the record refers to, and takes what the app stored and the
 //! hashes it asked for and lacked. What comes back is hashed again before
-//! the room keeps it.
+//! the workspace keeps it.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::door::DoorError;
 use wire_frame::Framing;
 
-/// Frames in either direction: a record's whole document, with room.
+/// Frames in either direction: a record's whole document, with workspace.
 pub(crate) const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
 /// Most bytes of one content item that cross in a frame, leaving the
-/// frame's encoding room.
+/// frame's encoding workspace.
 pub(crate) const MAX_CONTENT_ITEM_BYTES: usize = FRAMING.max_len().saturating_sub(64 * 1024);
 
 /// Most bytes of content one [`Reply::Content`] carries; the rest waits for
@@ -80,7 +80,7 @@ pub(crate) enum Request {
     /// the record named with its durable changes in order.
     Open {
         app_id: String,
-        room: String,
+        workspace: String,
         participant: String,
         /// JSON `ReplicaActor`: a bot's standing nests maps postcard
         /// cannot describe.
@@ -137,7 +137,7 @@ pub(crate) enum Request {
     /// Mount a record's component over its retained source ([`Mode::Read`]).
     ReadPrepare {
         app_id: String,
-        room: String,
+        workspace: String,
         record: String,
         source: Vec<u8>,
         /// JSON `ViewReadPolicy`.

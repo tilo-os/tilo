@@ -44,6 +44,7 @@ mod avatar_ask;
 mod clock;
 mod controls;
 mod people;
+pub mod reveal;
 mod sharing;
 mod space;
 mod strips;
@@ -53,6 +54,7 @@ mod workspace;
 
 use clock::{clock_overlay_drag_region, time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates, paint_bar_selector};
+pub use reveal::{Finger, Reveals};
 use sharing::{FaceLook, roster_colors};
 pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
@@ -98,16 +100,13 @@ pub fn topbar_height(theme: &Theme) -> f32 {
     TOPBAR_HEIGHT_PX.max((line + 2.0 * ui::tokens::Spacing::BASE.s1).ceil())
 }
 
-/// How the bar stands in the desktop's column: out of it under a
-/// fullscreen window, over it while the person hides it, else across its
-/// top at [`topbar_height`].
-fn bar_style(fullscreen: bool, overlays: bool, theme: &Theme) -> Style {
+/// How the bar stands in the desktop's column: across its top at
+/// [`topbar_height`] while docked, out of it and over the window covering
+/// the display while shown or hidden there.
+fn bar_style(presence: TopBarPresence, theme: &Theme) -> Style {
+    let overlays = presence.overlays();
     Style {
-        display: if fullscreen {
-            Display::None
-        } else {
-            Display::Flex
-        },
+        display: Display::Flex,
         position: if overlays {
             taffy::style::Position::Absolute
         } else {
@@ -125,11 +124,7 @@ fn bar_style(fullscreen: bool, overlays: bool, theme: &Theme) -> Style {
         },
         size: Size {
             width: Dimension::percent(1.0),
-            height: if fullscreen {
-                Dimension::length(0.0)
-            } else {
-                Dimension::length(topbar_height(theme))
-            },
+            height: Dimension::length(topbar_height(theme)),
         },
         flex_shrink: 0.0,
         ..Default::default()
@@ -310,8 +305,6 @@ struct CacheFingerprint {
     wave_notice: Option<String>,
     /// The arrival status as it stands, while it is up.
     arrival: Option<(String, bool, u16, u16)>,
-    /// Whether the bar had stepped aside: coming back is a repaint.
-    aside: bool,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -473,15 +466,19 @@ pub struct BarPlace {
 pub struct Placement {
     /// One per display. Empty: one full bar along the bar's own area.
     pub bars: Vec<BarPlace>,
-    /// The displays a fullscreen window owns: their bar steps aside.
-    pub fullscreen: Vec<u32>,
+    /// The bars a window covers, by the same key as [`Self::bars`]: `None`
+    /// for the one bar of a desk that needs no placing, a display's id for
+    /// a display's own. Each takes no room there until it is reached for.
+    pub fullscreen: Vec<Option<u32>>,
 }
 
 impl Placement {
     /// The bars a desk of `tree` carries: one per display, the display in
     /// use full and the others compact, each on its own display's
     /// rectangle. `fullscreen` names the monitors of the displays a
-    /// fullscreen window owns.
+    /// fullscreen window owns; a window the desk itself took full screen
+    /// covers its display too, as the compositor never saw that one asked
+    /// for.
     ///
     /// A desk showing a single display carries no bars here: one bar
     /// across the desk needs no placing, and the bar's own layout already
@@ -489,17 +486,25 @@ impl Placement {
     #[must_use]
     pub fn of(tree: &DesktopTree, fullscreen: &[String]) -> Self {
         let displays = &tree.outputs.displays;
+        let group = tree
+            .fullscreen_group()
+            .and_then(|group| tree.outputs.display_of(group));
         let owned = || {
             displays
                 .iter()
-                .filter(|display| fullscreen.contains(&display.monitor))
-                .map(|display| display.id)
+                .filter(|display| {
+                    Some(display.id) == group || fullscreen.contains(&display.monitor)
+                })
+                .map(|display| Some(display.id))
                 .collect()
         };
         if !tree.is_partitioned() {
+            // The desk has one display, and any monitor the compositor
+            // names is that one.
+            let covered = tree.fullscreen_group().is_some() || !fullscreen.is_empty();
             return Self {
                 bars: Vec::new(),
-                fullscreen: owned(),
+                fullscreen: covered.then_some(None).into_iter().collect(),
             };
         }
         let in_use = tree.outputs.focused_display();
@@ -541,10 +546,9 @@ pub struct TopBarChrome {
     /// The display a compact bar stands on, as [`Placement`] names it; the
     /// full bar carries none, standing on the display in use.
     display: Option<u32>,
-    /// A fullscreen window owns this bar's display, so it steps aside:
-    /// it paints nothing and takes nothing until the window gives the
-    /// display back.
-    aside: bool,
+    /// Docked in the column, hidden, or shown over the window covering the
+    /// display, as the host says.
+    presence: TopBarPresence,
     /// Where the bar sits when that is not where layout put it: the
     /// primary display's top edge for the full bar, or its own display's
     /// top edge for a compact one. Height still comes from layout.
@@ -724,7 +728,7 @@ impl TopBarChrome {
             laid_out: BarStanding::InColumn,
             variant: BarVariant::Full,
             display: None,
-            aside: false,
+            presence: TopBarPresence::Docked,
             placement: None,
             workspace_name: String::new(),
             workspace_index: 0,
@@ -872,7 +876,6 @@ impl TopBarChrome {
             can_invite: self.can_invite(),
             wave_notice: self.wave_notice_text(ui::time::now()),
             arrival: self.arrival_shown(ui::time::now()).map(|shown| shown.key()),
-            aside: self.aside,
         }
     }
 
@@ -1048,24 +1051,17 @@ impl TopBarChrome {
         self.display
     }
 
-    /// Step this bar aside (`true`) for a fullscreen window on its
-    /// display: it paints nothing and takes no pointer until the window
-    /// gives the display back.
-    pub fn set_aside(&mut self, aside: bool) {
-        if self.aside != aside {
-            self.aside = aside;
-            if aside {
+    /// Whether the bar is docked in the column, hidden, or shown over the
+    /// window covering its display: hidden, it paints nothing and takes no
+    /// pointer.
+    pub fn set_presence(&mut self, presence: TopBarPresence) {
+        if self.presence != presence {
+            self.presence = presence;
+            if presence == TopBarPresence::Hidden {
                 // A bar that is not there cannot hold the keyboard.
                 self.set_focus(false);
             }
-            self.cache_fp = CacheFingerprint::default();
         }
-    }
-
-    /// Whether a fullscreen window owns this bar's display.
-    #[must_use]
-    pub const fn steps_aside(&self) -> bool {
-        self.aside
     }
 
     /// Sit the bar at `rect`'s top edge, `rect`'s width across, instead of
@@ -1203,11 +1199,16 @@ impl TopBarChrome {
     /// Whether the last layout stood the bar in or over the column other
     /// than it stands now.
     fn overlay_layout_stale(&self) -> bool {
-        let fullscreen = self
-            .chrome
+        self.laid_out != BarStanding::of(self.presence().overlays())
+    }
+
+    /// Whether the bar's clock card is up over the desk, which holds the
+    /// bar shown while it is.
+    pub fn card_open(&self) -> bool {
+        self.chrome
             .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().fullscreen);
-        self.laid_out != BarStanding::of(!fullscreen && self.presence().overlays())
+            .and_then(|chrome| chrome.snapshot().clock_activity)
+            .is_some_and(|activity| activity.overlay)
     }
 
     /// Whether the bar, hidden by the person, must stay shown for its own
@@ -1216,15 +1217,9 @@ impl TopBarChrome {
         self.focused && self.focus_origin == FocusOrigin::Keyboard
     }
 
-    /// Docked, hidden or shown over the windows, as the host says. A
-    /// compact bar on another display always stays docked.
+    /// Docked, hidden or shown over the windows, as the host says.
     pub fn presence(&self) -> TopBarPresence {
-        if self.is_compact() {
-            return TopBarPresence::Docked;
-        }
-        self.chrome
-            .as_ref()
-            .map_or(TopBarPresence::Docked, |chrome| chrome.snapshot().top_bar)
+        self.presence
     }
 
     /// The bar shown over the windows stands on a surface of its own, the
@@ -1338,8 +1333,8 @@ impl Widget for TopBarChrome {
     /// deadline let the loop sleep through the minute until unrelated input
     /// woke it, and the clock read the minute before.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        // A stepped-aside bar shows no clock to turn over.
-        if self.aside {
+        // A hidden bar shows no clock to turn over.
+        if self.presence() == TopBarPresence::Hidden {
             return None;
         }
         let now = ui::time::now();
@@ -1370,18 +1365,12 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // A client-requested fullscreen owns the whole output. User maximize
-        // still fills the workspace, but keeps the OS-owned top bar available
-        // for navigation and session controls.
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().fullscreen);
-        // A bar the person hides stands over the column rather than in it:
-        // the windows take its strip, and showing it later moves nothing.
-        let overlays = !fullscreen && self.presence().overlays();
+        // A bar hidden, or shown over the window covering its display, stands
+        // over the column rather than in it: the window keeps its whole size,
+        // and showing the bar later moves nothing.
+        let overlays = self.presence().overlays();
         self.laid_out = BarStanding::of(overlays);
-        let style = bar_style(fullscreen, overlays, theme);
+        let style = bar_style(self.presence(), theme);
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,
             Err(err) => {
@@ -1417,12 +1406,6 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A fullscreen window owns this bar's display: the bar is not
-        // there, and the window has the room by itself.
-        if self.aside {
-            self.cache_fp.aside = true;
-            return;
-        }
         // Leaving with a maximizing window, or coming back with its
         // restore: the whole bar slides up off its display as it fades.
         if self.with_window_moving() {
@@ -1465,9 +1448,8 @@ impl Widget for TopBarChrome {
             self.focus_origin = FocusOrigin::Keyboard;
         }
         // A hidden bar is not there: whatever is under its strip gets the
-        // input. The host shows it first when it is reached for. One
-        // stepped aside for a fullscreen window is not there either.
-        if self.presence() == TopBarPresence::Hidden || self.aside {
+        // input. The host shows it first when it is reached for.
+        if self.presence() == TopBarPresence::Hidden {
             return;
         }
         match event {
@@ -1800,9 +1782,8 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        // A bar stepped aside for a fullscreen window paints nothing, so
-        // nothing on it moves either.
-        !self.aside
+        // A hidden bar paints nothing, so nothing on it moves either.
+        self.presence() != TopBarPresence::Hidden
             && (self.center_is_moving()
                 || self.center_frame_stale()
                 || self.with_window_moving()
@@ -1810,12 +1791,12 @@ impl Widget for TopBarChrome {
     }
 
     fn needs_redraw(&self) -> bool {
-        // Stepping aside and coming back each repaint; nothing else on a
-        // stepped-aside bar can show.
-        if self.aside != self.cache_fp.aside {
+        // Hiding and showing each repaint; nothing else on a hidden bar can
+        // show.
+        if self.presence() != self.cache_fp.presence {
             return true;
         }
-        if self.aside {
+        if self.presence() == TopBarPresence::Hidden {
             return false;
         }
         if self.center_is_moving()
@@ -1823,9 +1804,6 @@ impl Widget for TopBarChrome {
             || self.with_window_moving()
             || self.arrival_notice_moving(ui::motion::frame_now())
         {
-            return true;
-        }
-        if self.presence() != self.cache_fp.presence {
             return true;
         }
         if self.hovered_control() != self.cache_fp.hovered_control {

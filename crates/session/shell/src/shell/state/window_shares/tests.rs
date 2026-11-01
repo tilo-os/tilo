@@ -30,7 +30,7 @@ fn governed_room(
     // The room's authority as its owner governs it: every role's grants,
     // and the person admitted as an editor.
     let owner = hex::encode([0x11; 32]);
-    let mut policy = tilo_action_policy::RoomPolicy::new(id, owner.clone());
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(id, owner.clone());
     let governing = policy.clone();
     policy
         .apply(

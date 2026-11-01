@@ -1,5 +1,5 @@
 //! Content puts on an MCP session: `tilo_put_begin`, `tilo_put_append`,
-//! `tilo_put_finish` upload bytes into the session's room's content store
+//! `tilo_put_finish` upload bytes into the session's workspace's content store
 //! and answer `tilo.content:<hash>`, which the agent then passes to an
 //! action. Actions carry intent and references; bytes travel by session
 //! transport into the content store.

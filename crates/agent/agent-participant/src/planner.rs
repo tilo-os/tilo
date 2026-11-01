@@ -24,7 +24,7 @@ pub enum StepAction {
         /// Its typed arguments.
         arguments: serde_json::Map<String, serde_json::Value>,
     },
-    /// Open the step's app: on the step's record, one the room already
+    /// Open the step's app: on the step's record, one the workspace already
     /// has, when it names one; otherwise on a new record.
     Open,
     /// Plan the rest of the task again from here, once the steps before
@@ -460,7 +460,7 @@ impl TurnRetries {
 pub struct PlanContext {
     /// Records the agent has open, with every operation each publishes.
     pub open: Vec<(DocumentRoute, Vec<ActionDescriptor>)>,
-    /// Records of the room the agent has seen but not opened, those people
+    /// Records of the workspace the agent has seen but not opened, those people
     /// have open first, then the latest changed; each with what its app
     /// calls it (a document's first heading), when it names it and the
     /// record is among those offered to open.
@@ -474,7 +474,7 @@ pub struct PlanContext {
     /// [`observation`]: what a view or read found (an artwork's size, a
     /// document's text), for the rest of the task to be planned with.
     pub observed: Vec<String>,
-    /// Apps the task is about of which neither the agent nor the room has
+    /// Apps the task is about of which neither the agent nor the workspace has
     /// a record yet, each with the operations a new record of it
     /// publishes: a step naming one opens a new record of the app first
     /// ([`Step::record`] `None`), so a task that starts a document is
@@ -489,14 +489,14 @@ pub struct PlanContext {
     pub request: Option<String>,
     /// The apps the agent may use, sorted by app id, each with the
     /// operations a new record of it publishes: what those apps can do,
-    /// whatever the room holds, the same for every agent and task granted
+    /// whatever the workspace holds, the same for every agent and task granted
     /// them — the stable reference a model's prompt starts with.
     pub reference: Vec<(String, Vec<ActionDescriptor>)>,
-    /// The room the task is planned in.
-    pub room: String,
-    /// Every record of the room the agent may open, with its plain text,
+    /// The workspace the task is planned in.
+    pub workspace: String,
+    /// Every record of the workspace the agent may open, with its plain text,
     /// for the planner to find one by what it holds
-    /// ([`crate::search::SEARCH_ROOM`]): those people have open first, then
+    /// ([`crate::search::SEARCH_WORKSPACE`]): those people have open first, then
     /// the latest changed.
     pub searchable: Vec<crate::search::SearchDoc>,
     /// Whether this plan may rightly find nothing left to do: the check of
@@ -511,17 +511,17 @@ pub struct PlanContext {
     /// The content addresses of the pictures the task's steps read as
     /// content since its last plan ([`crate::vision::read_picture`]),
     /// oldest first: a re-plan's model that sees is shown them with its
-    /// first turn, the room's own only where [`Self::room_pictures`] allows.
+    /// first turn, the workspace's own only where [`Self::workspace_pictures`] allows.
     pub read_pictures: Vec<String>,
     /// The content addresses apps rendered or made for this task (its
     /// steps' looks and exports): pictures shown to a model that sees,
-    /// whatever [`Self::room_pictures`] says.
+    /// whatever [`Self::workspace_pictures`] says.
     pub rendered: Vec<String>,
-    /// Whether the agent may show the room's own pictures (a scan, a photo
-    /// someone put in the room) to its model's provider. Off unless the
+    /// Whether the agent may show the workspace's own pictures (a scan, a photo
+    /// someone put in the workspace) to its model's provider. Off unless the
     /// person running it turned it on
-    /// ([`crate::vision::ROOM_PICTURES_ENV`]).
-    pub room_pictures: bool,
+    /// ([`crate::vision::WORKSPACE_PICTURES_ENV`]).
+    pub workspace_pictures: bool,
     /// Apps of which the plan is offered a new, empty document although
     /// one is open (`app.<app>#open`): an import into the open one was
     /// refused for the content it holds, and only a new document takes it.
@@ -615,14 +615,14 @@ pub trait Reads {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String>;
 
-    /// The bytes of the content at `hash` the room keeps: a picture a read
+    /// The bytes of the content at `hash` the workspace keeps: a picture a read
     /// rendered, or one the planning model asks to look at. Content larger
     /// than [`crate::vision::MOST_SOURCE_BYTES`] may be answered with its
     /// first bytes alone, one more than that: enough to refuse it.
     ///
     /// # Errors
     ///
-    /// Why it cannot be had: the room does not keep it.
+    /// Why it cannot be had: the workspace does not keep it.
     fn look(&mut self, hash: &str) -> Result<Vec<u8>, String> {
         let _ = hash;
         Err("no content can be looked at while this task is planned".into())
@@ -1088,7 +1088,7 @@ mod tests {
     fn place_image(app: &str) -> (DocumentRoute, ActionDescriptor) {
         let route = DocumentRoute {
             app_id: app.into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: "w1".into(),
         };
         let descriptor = ActionDescriptor {

@@ -1,0 +1,189 @@
+//! The session puts up what draws the shell's window menu slot: the view the
+//! person bound to it, a tilolang package run here or a program of its own,
+//! and serves what that view asks through the session's door.
+
+use tilo_actions::ActionAddress;
+
+use crate::{Error, Session, mount, surfaces};
+
+impl Session {
+    /// Put the view of the shell's window menu up while the reading says one
+    /// is up, and stop it when the reading says none is: the view the person
+    /// bound to the slot, or the one the session ships with. Many a machine
+    /// has no such view installed, or another one bound in its place: the
+    /// menu is a reading either way, and this only puts it on the screen.
+    ///
+    /// A binding whose app is a tilolang package runs here, over the reading
+    /// the session publishes for the slot; any other is a program of its own.
+    ///
+    /// Rebinding the slot while the menu is up starts the view bound to it
+    /// now, on the next pass, over the reading it already drew.
+    pub(crate) fn follow_window_menu(&mut self) {
+        use mount::slots::{Mount, View};
+
+        /// The view's surface name, whatever view draws it.
+        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
+        /// The app whose view the session shows the menu through until the
+        /// person binds another.
+        const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
+        let reading = self.read(mount::shell::WINDOW_MENU);
+        let up = reading
+            .as_ref()
+            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
+        // A slot the person is not looking at is nobody's to draw: the
+        // binding is read while the part is up, and once more when it goes,
+        // rather than on every pass of a menu that is down.
+        if !up && self.slots.running(VIEW).is_none() {
+            return;
+        }
+        let settings = self.read(mount::slots::BINDINGS);
+        match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
+            Mount::Nothing => {}
+            Mount::Stop => self.stop_slot_view(VIEW),
+            Mount::Start { view, restart } => {
+                if restart {
+                    // The person bound another view: the one that drew the
+                    // slot goes before the new one takes it.
+                    self.stop_slot_view(VIEW);
+                }
+                match view {
+                    View::Program(program) => self.start_program_slot(VIEW, program, restart),
+                    View::Package { dir, app, view } => {
+                        self.start_package_slot(VIEW, dir, app, view, reading.as_ref());
+                    }
+                }
+            }
+        }
+        // What the view reads is what the session publishes for the slot now.
+        if let (Some(reading), true) = (reading.as_ref(), self.slot_views.running(VIEW)) {
+            self.slot_views.publish(VIEW, reading);
+        }
+    }
+
+    /// Start the program `program` that draws `slot`, over what lies under it.
+    fn start_program_slot(&mut self, slot: &str, program: std::path::PathBuf, restart: bool) {
+        if restart {
+            self.surfaces.stop(slot);
+        }
+        let surface = surfaces::Surface::new(slot, program)
+            .layer(surfaces::Layer::Overlay)
+            .anchor(
+                surfaces::Anchor::TOP
+                    | surfaces::Anchor::BOTTOM
+                    | surfaces::Anchor::LEFT
+                    | surfaces::Anchor::RIGHT,
+            )
+            .keyboard(surfaces::Keyboard::OnDemand);
+        if let Err(error) = self.start_surface(&surface) {
+            tracing::warn!(%error, "the window menu view did not start");
+            if let Some(tried) = self.slots.running(slot).cloned() {
+                self.slots.failed(slot, tried);
+            }
+        }
+    }
+
+    /// Run the view `view` of the tilolang package in `dir` for `slot`, over
+    /// the reading the session publishes for it now. A package that is no view
+    /// for the slot leaves it to the view the session ships with.
+    fn start_package_slot(
+        &mut self,
+        slot: &'static str,
+        dir: std::path::PathBuf,
+        app: String,
+        view: String,
+        reading: Option<&serde_json::Value>,
+    ) {
+        let (Some(state), Some(reading)) = (mount::slots::surface(slot), reading) else {
+            tracing::warn!(slot, "the slot has no state for a view of it to read");
+            return;
+        };
+        let spec = tilo_surface_host::slot_view::Spec {
+            app,
+            view,
+            dir,
+            surface: state,
+        };
+        let waker = std::sync::Arc::new({
+            let wake = self.compositor.waker();
+            move || wake.wake_by_ref()
+        });
+        let person = self.shared.person.clone();
+        let result = self.slot_views.start(
+            slot,
+            &spec,
+            &person,
+            &reading.to_string(),
+            waker,
+            &mut self.compositor,
+        );
+        match result {
+            Ok(()) => {
+                tracing::info!(slot, app = %spec.app, "a tilolang view draws the slot");
+            }
+            Err(why) => {
+                tracing::warn!(slot, app = %spec.app, %why, "the view bound to the slot did not start");
+                if let Some(tried) = self.slots.running(slot).cloned() {
+                    self.slots.failed(slot, tried);
+                }
+            }
+        }
+    }
+
+    /// Stop what draws `slot`, whichever kind of view it is.
+    fn stop_slot_view(&mut self, slot: &str) {
+        self.slot_views.stop(slot);
+        self.surfaces.stop(slot);
+    }
+
+    /// A press away from what a slot's tilolang view drew closes the slot, as
+    /// a press outside a menu does, and what else the view asked runs through
+    /// the session's door.
+    pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
+        /// The one slot a person can bind a view to today.
+        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
+        let Some(state) = mount::slots::surface(VIEW) else {
+            return Ok(());
+        };
+        if self.slot_views.take_pressed_outside(VIEW) {
+            // The slot's own verb, through the same door the view's presses
+            // go through.
+            if let Err(error) = self.invoke(&state.id, "close", &serde_json::Map::new()) {
+                tracing::warn!(%error, "a press outside the slot's view did not close it");
+            }
+            return Ok(());
+        }
+        if !self.slot_views.has_asks(VIEW) {
+            return Ok(());
+        }
+        let doors = &self.shared.doors;
+        self.slot_views.serve(VIEW, |ask| {
+            let arguments: serde_json::Map<String, serde_json::Value> = ask
+                .arguments
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            doors
+                .invoke(&ActionAddress::new(&ask.resource, &ask.action), &arguments)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        });
+        // What the view asked may have asked the session in turn.
+        self.settle()?;
+        Ok(())
+    }
+
+    /// Where the control the slot's view shows as `name` stands, logical
+    /// `(x, y, w, h)`: what a test presses it by, and where the person's press
+    /// on it lands.
+    #[must_use]
+    pub fn slot_control(&self, slot: &str, name: &str) -> Option<(f64, f64, f64, f64)> {
+        self.slot_views.control(slot, name)
+    }
+
+    /// What the slot's view says, as assistive technology hears it: the
+    /// labels of what it draws.
+    #[must_use]
+    pub fn slot_labels(&self, slot: &str) -> Vec<String> {
+        self.slot_views.labels(slot)
+    }
+}

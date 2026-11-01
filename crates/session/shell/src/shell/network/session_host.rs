@@ -40,7 +40,7 @@ impl ShellNetwork {
             Ok(owner) => owner,
             Err(error) => return Placement::NotInstalled(error),
         };
-        if owner.rooms().contains(&room) {
+        if owner.workspaces().contains(&room) {
             Placement::Held
         } else if self.enrolling_into(room).is_some() {
             Placement::Enrolling
@@ -62,7 +62,7 @@ impl ShellNetwork {
     /// Whether this device's own host is open and serves `room`.
     #[cfg(test)]
     pub(crate) fn serves_here(&self, room: RoomId) -> bool {
-        self.room_host().is_some() && self.hosted_here(room)
+        self.workspace_host().is_some() && self.hosted_here(room)
     }
 }
 

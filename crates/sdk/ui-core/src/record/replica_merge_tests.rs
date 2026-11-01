@@ -1,4 +1,4 @@
-//! What a replica of an open record keeps when the room delivers it
+//! What a replica of an open record keeps when the workspace delivers it
 //! changes out of order or the host's empty document for a new record.
 
 use super::*;
@@ -18,7 +18,7 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 #[test]
 fn the_hosts_empty_document_for_a_new_record_merges_as_nothing() {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     store
         .reserve_record(&want)
@@ -46,7 +46,7 @@ fn the_hosts_empty_document_for_a_new_record_merges_as_nothing() {
 #[test]
 fn a_change_that_arrives_before_the_one_it_builds_on_survives_a_snapshot() {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     store
         .reserve_record(&want)
@@ -98,7 +98,7 @@ fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     store
         .reserve_record(&want)
@@ -168,14 +168,14 @@ fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
     );
 }
 
-/// The room's hosts saying they sent all they hold of a record wakes the
+/// The workspace's hosts saying they sent all they hold of a record wakes the
 /// windows reading the store, and holds until something of it arrives.
 #[test]
-fn the_room_answering_for_a_record_wakes_its_readers_until_it_arrives() {
+fn the_workspace_answering_for_a_record_wakes_its_readers_until_it_arrives() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     store
         .reserve_record(&want)
@@ -223,7 +223,7 @@ fn the_room_answering_for_a_record_wakes_its_readers_until_it_arrives() {
 
 fn large_text_record() -> (RecordOwners, RecordStore, RecordCheckout, ObjId, String) {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
-    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let source = "fn source() { /* café */ }\n".repeat(900);
     store

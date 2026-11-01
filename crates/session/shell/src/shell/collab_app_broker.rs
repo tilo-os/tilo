@@ -141,6 +141,10 @@ pub mod tests {
     ) -> LocalDirectoryFixture {
         fixture(membership, None)
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived locks by design"
+    )]
     fn fixture(membership: WorkspaceTreeHandle, peer: Option<u64>) -> LocalDirectoryFixture {
         use ed25519_dalek::{Signer as _, SigningKey};
 

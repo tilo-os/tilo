@@ -9,7 +9,7 @@ use tilo_automerge::ApplyIncoming as _;
 fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
     let request = joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             edit(&mut chat);
@@ -25,7 +25,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                 return Err("test edit was not a signed document write".into());
             };
             Ok(OwnerCommitRequest {
-                room: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
                     record: String::new(),
@@ -38,9 +38,11 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
 }
 
 fn full(joined: &Enrolled, reader: [u8; 32]) -> CommittedDocument {
-    let Ok(DocumentRead::Captured(document)) = joined.owner.with_current(joined.room, |view| {
-        view.read_document(reader, APP, "", None, usize::MAX, joined.now)
-    }) else {
+    let Ok(DocumentRead::Captured(document)) =
+        joined.owner.with_current(joined.workspace, |view| {
+            view.read_document(reader, APP, "", None, usize::MAX, joined.now)
+        })
+    else {
         panic!("a member reads the admitted document whole");
     };
     document
@@ -52,7 +54,7 @@ fn changes(
     heads: &[[u8; 32]],
     maximum: usize,
 ) -> Result<ChangesRead, String> {
-    joined.owner.with_current(joined.room, |view| {
+    joined.owner.with_current(joined.workspace, |view| {
         view.read_changes(reader, APP, "", heads, maximum, joined.now)
     })
 }
@@ -122,7 +124,7 @@ fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
     commit(&joined, |chat| chat.put(ROOT, "topic", "two").unwrap());
     assert!(
         changes(&joined, stranger, &held.heads, usize::MAX).is_err(),
-        "a device outside the room is refused, as by a whole read"
+        "a device outside the workspace is refused, as by a whole read"
     );
     assert!(full_refused(&joined, stranger));
     assert!(matches!(
@@ -155,7 +157,7 @@ fn a_changes_read_refuses_a_stranger_and_leaves_the_rest_to_a_whole_read() {
 fn full_refused(joined: &Enrolled, reader: [u8; 32]) -> bool {
     joined
         .owner
-        .with_current(joined.room, |view| {
+        .with_current(joined.workspace, |view| {
             view.read_document(reader, APP, "", None, usize::MAX, joined.now)
         })
         .is_err()
@@ -169,11 +171,11 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
     let member = member().verifying_key().to_bytes();
     let held = full(&joined, member);
     let governor_key = SigningKey::from_bytes(&[61; 32]);
-    let covered = edit_with(&joined.owner, joined.room, joined.now, "covered next");
+    let covered = edit_with(&joined.owner, joined.workspace, joined.now, "covered next");
     joined.owner.commit_document(covered, joined.now).unwrap();
     let mut remote = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .with_current(joined.workspace, |view| Ok(view.peer().clone()))
         .unwrap();
     let frames = remote
         .publication_mut()
@@ -184,13 +186,13 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
         joined
             .owner
             .receive(
-                joined.room,
+                joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
                 joined.now,
             )
             .unwrap();
-        let whole = joined.owner.with_current(joined.room, |view| {
+        let whole = joined.owner.with_current(joined.workspace, |view| {
             view.read_document(member, APP, "", None, usize::MAX, joined.now)
         });
         if matches!(whole, Ok(DocumentRead::CheckpointPending)) {
@@ -206,7 +208,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_left_to_the_whole_read
     }
     assert!(
         pending > 0,
-        "the checkpoint's frames leave the room between cuts"
+        "the checkpoint's frames leave the workspace between cuts"
     );
 }
 
@@ -276,7 +278,7 @@ fn a_remote_edit_of_a_large_document_costs_its_reader_the_edit() {
     let (whole_owner, whole) = fastest(3, || {
         joined
             .owner
-            .with_current(joined.room, |view| {
+            .with_current(joined.workspace, |view| {
                 view.read_document(member, APP, "", Some(held.revision), usize::MAX, joined.now)
             })
             .unwrap()

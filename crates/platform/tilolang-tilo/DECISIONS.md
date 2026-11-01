@@ -7,7 +7,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **`DynEdit`, not a bare `Edit<DynRecord>`.** A `DynAction` carries `DynEdit`s: `Create` (a
   resource's JSON form), `Edit { id, edit: Edit<DynRecord> }` and `Remove`. The edit's path starts
   at a *field* of the record; the resource id is the edit's address. `tilo_resource`'s
-  `Edit::apply` addresses the document root, and a room record holds many resources under
+  `Edit::apply` addresses the document root, and a workspace record holds many resources under
   `tl/<app>/<id>`, so the resource must be named next to the edit.
 - **Schemas come from metadata, not from the document.** Every field edit is dispatched by merge
   kind, which only the schema knows. The registry (`schema.rs`) is filled from a package's metadata
@@ -18,7 +18,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
   store reads it back as `Scalar::Json` because the schema marks the field `composite`. Scalars
   are native automerge scalars. An unset register (`null`) reads as absent.
 - **The runtime plans on a mirror.** The runtime expects its commits to be visible at once, but
-  the room record belongs to the framework. `TiloStore` applies a transaction's mutations to a
+  the workspace record belongs to the framework. `TiloStore` applies a transaction's mutations to a
   copy of the record, queues the recorded `DynAction`, and the host commits it through the door.
   When the record's heads move, the mirror is replaced by a copy and subscribers are told. One
   transaction may be open at a time (a rollback discards the mirror's open change).
@@ -31,7 +31,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Closures reach the host through a thread-local.** The door's closures are `Send + Sync`; the
   runtime is not. They hold a `HostHandle` (an id), which finds the host in a thread-local on the
   thread that built it, and answer an error from any other thread.
-- **Per-room roots have a fixed id** (`root-<type id>`), so two replicas that open an app for the
+- **Per-workspace roots have a fixed id** (`root-<type id>`), so two replicas that open an app for the
   first time concurrently create the same resource.
 - **Ids.** Items inserted by a planner take explicit ids, so replays never mint any.
 - **Authorship.** The chain and module go into the `DynAction`'s arguments and into history through
@@ -41,7 +41,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## Authority
 
-- The invoker's own verdict is `Allow` in the window: permission to change the room is decided
+- The invoker's own verdict is `Allow` in the window: permission to change the workspace is decided
   where the change is committed (the door refuses a viewer's `commit`). The seam is
   `TiloAuthority::new(invoker_verdict)` for a host that wants the verdict earlier.
 - A foreign author in the chain asks (the runtime's rule); the Ask bar offers Allow, Decline and
@@ -50,7 +50,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## Outside effects
 
-- **The outbox is in the room record.** `outside("post", ..)` queues an entry in `$outbox` of the
+- **The outbox is in the workspace record.** `outside("post", ..)` queues an entry in `$outbox` of the
   resource it acts on (`DynEdit::OutboxPush`): capability, payload, and the `owner`, the device
   whose store queued it. The owning device alone settles it (`Host::settle_outbox`): it delivers to
   the runtime's sink and records the outcome (`DynEdit::OutboxSettle`). The sink of the app is a
@@ -69,8 +69,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
 - **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every door
-  decides: the person's standing in the room (the window's, from its host), bounded by an agent's
-  delegation and the answers the person gave that agent in the room, and by each author of the
+  decides: the person's standing in the workspace (the window's, from its host), bounded by an agent's
+  delegation and the answers the person gave that agent in the workspace, and by each author of the
   code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
   `Subject::App`; a block's is its writer). Installed and built-in packages are trusted, an
   admitted agent's code as far as its standing goes. Without a standing the person's own part is
@@ -150,13 +150,13 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Packages from disk.** A page made with `TilolangPage::developing` loads the packages under
   development instead of the embedded ones, through `Host::load_compiled`, which replaces a
   loaded package of the same app (`Runtime::reload_package`). Each new build is loaded the same
-  way and the open app is opened again; the room keeps its state.
+  way and the open app is opened again; the workspace keeps its state.
 - **A plain toolkit window.** `run` opens `ui::App::from_factory` with a `Workbench` root, not
   the launcher: no runtime attachment, workspace, record store or identity, so a development run
   cannot reach the person's session. Each replica holds its own `AutoCommit` and commits through
   a door in `dev.rs` that builds and applies the published action as the action door does.
 - **Peers in one window.** The toolkit runs one window per event loop, so `--peers N` shows N
-  replicas side by side in one window. Replicas are forks of one room and exchange changes with
+  replicas side by side in one window. Replicas are forks of one workspace and exchange changes with
   automerge's merge after every frame in which a replica changed something.
 - **Watching.** A thread compares the `.tl` files' modification times and lengths every 250 ms
   and wakes the window through `ui::wake::waking_channel` when they change; the window compiles

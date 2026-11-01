@@ -1,13 +1,13 @@
 //! `tilo-agent-participant` — agents as first-class session participants.
 //!
-//! An agent works in a room the way a person's device does, not through a
+//! An agent works in a workspace the way a person's device does, not through a
 //! side channel:
 //!
 //! - **Identity.** Its own device key, a capability-less `DeviceCert`
 //!   issued under the user's root by ordinary device certification (the
 //!   approving device is where consent is given), and a root-signed
 //!   `tilo_relay_protocol::delegation::Delegation` naming its label, cursor
-//!   colour, rooms and apps. The host confines the device to those rooms and
+//!   colour, workspaces and apps. The host confines the device to those workspaces and
 //!   treats it as its own principal ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's
 //!   resource, looked up by the kind the record names and used only through
@@ -29,16 +29,16 @@
 //!   its delegation in one consent step.
 //! - **Pictures.** A planning model that sees is shown what a read rendered
 //!   (a canvas look, a PDF page) and the pictures it asks to look at, within
-//!   limits; the room's own pictures only where the person running the agent
+//!   limits; the workspace's own pictures only where the person running the agent
 //!   allows, and decoded only in a confined worker ([`vision`]).
 //! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
 //!   grants and agents under a state directory, resumes them when the host
 //!   restarts and settles expired grants ([`host`]).
 //! - **Memory.** There is none of its own. What an agent learns it reads
-//!   from the room's records, and what it keeps it writes there through an
+//!   from the workspace's records, and what it keeps it writes there through an
 //!   app's operations; the only state this crate holds is the task's own
 //!   working record and, in the host's state directory, the agents'
-//!   credentials and each room's content bytes ([`host`]).
+//!   credentials and each workspace's content bytes ([`host`]).
 
 #![deny(rust_2018_idioms)]
 
@@ -54,12 +54,12 @@ pub mod participant;
 pub mod planner;
 pub mod profile;
 pub mod render;
-pub mod room_actions;
 pub mod search;
 mod values;
 pub mod vision;
 mod web_apps;
 pub mod worker;
+pub mod workspace_actions;
 
 pub use apps::{
     AppCatalogue, AppError, Replica, ReplicaActor, Seed, agent_only_apps, component_apps,
@@ -79,8 +79,10 @@ pub use planner::{
     DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
     StepAction, TurnRetries,
 };
-pub use room_actions::{FeedbackReviewer, HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
+pub use workspace_actions::{
+    FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceRecordsLink,
+};
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers
 // are this test binary started again.

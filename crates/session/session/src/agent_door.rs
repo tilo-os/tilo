@@ -382,7 +382,7 @@ impl Loop {
             // What the person said to remember: this client is this agent,
             // let in wherever that agent is already a member.
             let _ = decide.send(Consent::Admit {
-                room,
+                workspace: room,
                 agent: agent.clone(),
                 person: person.to_owned(),
             });
@@ -481,7 +481,7 @@ impl Loop {
             }
         }
         Consent::Admit {
-            room: waiting.room.clone(),
+            workspace: waiting.room.clone(),
             agent: waiting.proposed.clone(),
             person: person.to_owned(),
         }

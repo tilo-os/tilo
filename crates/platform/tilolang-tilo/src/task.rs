@@ -800,14 +800,14 @@ fn read_of(answer: &Json) -> Result<Read, String> {
 
 impl Host {
     /// The resource `item` (its id in its record), as a task's host reads it: its type and
-    /// every field as stored, by field id, or `{"missing": true}` when the room holds no such
+    /// every field as stored, by field id, or `{"missing": true}` when the workspace holds no such
     /// resource. The app's half of a task's read; what the task may read the door decided
     /// before it asked.
     ///
     /// # Errors
-    /// The item names nothing in this room.
+    /// The item names nothing in this workspace.
     pub fn read_values(&self, item: &str) -> Result<Json, String> {
-        let unknown = || format!("no resource `{item}` in this room");
+        let unknown = || format!("no resource `{item}` in this workspace");
         let probe = ResourceRef::parse_id(item, String::new()).ok_or_else(unknown)?;
         let Ok(ty) = self.store().type_of(&probe) else {
             // Not there (a root nobody made yet reads as empty): said, not failed.

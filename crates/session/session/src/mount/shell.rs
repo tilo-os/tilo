@@ -39,6 +39,67 @@ pub const WINDOW_MENU: &str = "desktop:window-menu";
 /// What kind of resource [`WINDOW_MENU`] is.
 pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
 
+/// The slot the window menu is drawn in, as the settings reading names it.
+pub const WINDOW_MENU_SLOT: &str = "window-menu";
+
+/// The app a tilolang view of the menu reads it as: the first part of its
+/// kind, which is what a package names in `use desktop as desktop`.
+pub const WINDOW_MENU_APP: &str = "desktop";
+
+/// The window menu's surface, as a tilolang package drawing it is compiled
+/// against: the fields [`WINDOW_MENU`] reads and the verbs that change it, in
+/// the vocabulary a surface file declares
+/// (`tilo_actions::surface`, see `docs/developers/slot-views.md`). A view
+/// reads the menu through this and invokes it through this; the session
+/// publishes the same fields and verbs on its door.
+pub const WINDOW_MENU_SURFACE: &str = r#"
+[[resources]]
+kind = "desktop.window-menu"
+label = "Window menu"
+version = 1
+fields = [
+  { path = "tab", type = { option = "text" } },
+  { path = "anchor", type = { option = { named = "Anchor" } } },
+  { path = "rows", type = { collection = { named = "Row" } } },
+]
+
+[[resources.types]]
+name = "Anchor"
+fields = [
+  { name = "x", type = "float" },
+  { name = "y", type = "float" },
+]
+
+[[resources.types]]
+name = "Row"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "enabled", type = "bool" },
+  { name = "reason", type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "open"
+label = "Open the window menu"
+kind = "outside"
+params = [
+  { name = "tab", required = false, type = { option = "text" } },
+  { name = "anchor", required = false, type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "close"
+label = "Close the window menu"
+kind = "outside"
+
+[[resources.verbs]]
+id = "choose"
+label = "Choose a row"
+kind = "outside"
+params = [{ name = "row", required = true, type = "text" }]
+"#;
+
 /// What stands over the windows, and in what order, in the session's
 /// catalogue: the surface stack.
 pub const OVERLAYS: &str = "desktop:overlays";
@@ -281,10 +342,8 @@ impl Shell {
     fn anchor(&self, tab: TabId, named: Option<(f64, f64)>) -> Option<Anchor> {
         let corner = named.or_else(|| {
             self.handle
-                .shown_tabs()
-                .into_iter()
-                .find(|(shown, _)| *shown == tab)
-                .map(|(_, at)| (at.x0, at.y0))
+                .window_rect(tab)
+                .map(|window| (window.x0, window.y0))
         })?;
         Some(Anchor {
             x: corner.0,

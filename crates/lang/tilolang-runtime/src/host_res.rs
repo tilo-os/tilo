@@ -339,7 +339,11 @@ impl Core {
         // A resource of an app this runtime does not run has no record here: what it shows is
         // its reading, as the session published it.
         if crate::foreign::is_foreign(target) {
-            return self.foreign.borrow().field(target, field, author);
+            let registry = self.registry.borrow();
+            return self
+                .foreign
+                .borrow_mut()
+                .field(target, field, author, &registry);
         }
         let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,

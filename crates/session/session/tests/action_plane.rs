@@ -21,7 +21,7 @@ use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::crash_records::{self as wire, CrashKind, CrashRecord, CrashRecordText};
-use tilo_audio_service::sound::{Graph, SoundService};
+use tilo_audio_service::sound::{Graph, Read, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
@@ -33,8 +33,11 @@ struct Card {
 }
 
 impl Graph for Card {
-    fn read(&self) -> AudioGraph {
-        self.graph.lock().unwrap().clone()
+    fn read(&self) -> Read {
+        Read {
+            graph: self.graph.lock().unwrap().clone(),
+            uses: Vec::new(),
+        }
     }
 
     fn control(&self) -> &dyn GraphControl {

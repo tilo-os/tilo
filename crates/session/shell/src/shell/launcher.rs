@@ -4211,7 +4211,7 @@ pub(crate) fn queue_native_authoring_launch(
     // installs, once launches run.
     let asked_as = native_owner
         .as_ref()
-        .filter(|owner| owner.rooms().contains(&room))
+        .filter(|owner| owner.workspaces().contains(&room))
         .map(|owner| owner.with_current(room, |view| Ok(view.device().clone())))
         .transpose()
         .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;

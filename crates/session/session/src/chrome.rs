@@ -183,6 +183,10 @@ pub(crate) struct BarFeeds {
     /// The windows this session shares with its rooms, which the bar says
     /// are being shared while anyone views one.
     pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
+    /// Whether each display's bar shows over the window covering it, which
+    /// the bar reads for itself and the chrome follows as the pointer, a key
+    /// or a finger reaches for it.
+    pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
 /// What the chrome hands the session while it runs: the intents and asks its
@@ -263,6 +267,7 @@ impl SessionChrome {
             tray,
             fullscreen,
             shares,
+            ..
         } = feeds;
         Self {
             handle,
@@ -577,6 +582,7 @@ pub(crate) fn host(
         asks,
         feeds,
     } = wiring;
+    let reveals = Rc::clone(&feeds.reveals);
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
@@ -607,7 +613,8 @@ pub(crate) fn host(
     .with_asks(asks)
     .with_overview(overview.flight(), overview.open_flag())
     .with_emoji(emoji.clone())
-    .with_overlays(overlays.clone());
+    .with_overlays(overlays.clone())
+    .with_reveals(reveals);
     chrome.set_shortcuts(options.config.shortcuts.clone());
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon

@@ -2,7 +2,7 @@
 //! to the view's tree now.
 //!
 //! The runtime's tree holds values the window cannot read (handles, the module that wrote a
-//! binding) and lacks what the window needs and cannot look up (what the room calls a person,
+//! binding) and lacks what the window needs and cannot look up (what the workspace calls a person,
 //! what a bound field is called, an enum's cases). [`Convert`] makes the window's node of each
 //! of the runtime's; [`diff`] the patches from the tree the window holds to the one it should.
 

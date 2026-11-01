@@ -1,6 +1,6 @@
-//! How a view names the room's participants.
+//! How a view names the workspace's participants.
 //!
-//! The record holds ids, the same on every replica; the window knows the names: what the room's
+//! The record holds ids, the same on every replica; the window knows the names: what the workspace's
 //! roster calls each participant, and what this device calls its own person. An instance that
 //! runs in the window's process asks the window directly. One that runs elsewhere, in a
 //! tilolang host, names people by what its window told it last ([`Told`]).

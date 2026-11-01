@@ -229,7 +229,7 @@ impl HostStepServices for BrokerDoor {
         {
             return Err(refusal);
         }
-        let room = request.room.to_owned();
+        let room = request.workspace.to_owned();
         Ok(ask(move |host| {
             host.act_on_activity(&room, &action, &arguments)
         }))
@@ -246,7 +246,7 @@ impl HostStepServices for BrokerDoor {
         {
             return Err(refusal);
         }
-        let room = request.room.to_owned();
+        let room = request.workspace.to_owned();
         // Only the person reading what is new makes it seen; an agent that
         // reads the summary changes nothing for them.
         let shown = (action == wire::SUMMARY && !request.actor.is_agent()).then(|| {

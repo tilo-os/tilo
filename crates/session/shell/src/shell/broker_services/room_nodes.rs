@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use tilo_action_broker::services::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
+use tilo_action_broker::services::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
 /// A room's nodes over this device's network.
 pub(super) struct NativeRoomNodes(pub(super) Arc<super::super::network::ShellNetwork>);
@@ -17,18 +17,18 @@ impl NativeRoomNodes {
     /// The service over `network`; none without a network.
     pub(super) fn service(
         network: Option<&Arc<super::super::network::ShellNetwork>>,
-    ) -> Option<Arc<dyn RoomNodeActions>> {
-        network.map(|network| Arc::new(Self(Arc::clone(network))) as Arc<dyn RoomNodeActions>)
+    ) -> Option<Arc<dyn WorkspaceNodeActions>> {
+        network.map(|network| Arc::new(Self(Arc::clone(network))) as Arc<dyn WorkspaceNodeActions>)
     }
 }
 
-impl RoomNodeActions for NativeRoomNodes {
+impl WorkspaceNodeActions for NativeRoomNodes {
     fn ask(
         &self,
         room: &str,
         node: &str,
-        ask: RoomNodeAsk,
-    ) -> Result<tilo_actions::remote::Pending<RoomNodeOutcome>, String> {
+        ask: WorkspaceNodeAsk,
+    ) -> Result<tilo_actions::remote::Pending<WorkspaceNodeOutcome>, String> {
         let room = crate::shell::state::RoomId::parse(room).ok_or("that workspace isn't a room")?;
         self.0.ask_room_node(room, node, ask)
     }

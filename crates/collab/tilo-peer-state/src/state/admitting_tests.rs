@@ -40,7 +40,7 @@ fn redemption(
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: issuer.clone(),
             role,
             nonce: [nonce; 16],
@@ -68,13 +68,13 @@ fn redemption(
     verify_join_proof(&proof, &challenge, joiner, &RevocationList::new(), now_ns).unwrap()
 }
 
-/// The room's governance, as a fresh replica of the owner's receives it
+/// The workspace's governance, as a fresh replica of the owner's receives it
 /// from `peer`'s document.
-fn received(peer: &StatePeer) -> crate::room::RoomGovernance {
-    let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
-        panic!("room message is a SyncResp")
+fn received(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
+    let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
+        panic!("workspace message is a SyncResp")
     };
-    crate::room::governance_of(Some(&crate::room::candidate(None, &changes).unwrap()))
+    crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         80,
         now,
     );
-    let mut doc = (**peer.core.room_doc.as_ref().unwrap()).clone();
+    let mut doc = (**peer.core.workspace_doc.as_ref().unwrap()).clone();
     doc.set_actor(automerge::ActorId::from(
         editor_key.verifying_key().to_bytes().to_vec(),
     ));
@@ -200,7 +200,8 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
     let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
     let key = hex::encode(invited.join().invite_id());
     let mut receipt: RedemptionReceipt =
-        serde_json::from_slice(&crate::room::invitation_receipts(&doc).unwrap()[&key][0]).unwrap();
+        serde_json::from_slice(&crate::workspace::invitation_receipts(&doc).unwrap()[&key][0])
+            .unwrap();
     let other = redemption(
         &peer,
         &owner,
@@ -213,7 +214,9 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
     receipt.invitation = Some(crate::join::encode_invitation_text(
         other.join().signed_invitation(),
     ));
-    let before = (**peer.core.room_doc.as_ref().unwrap()).clone().get_heads();
+    let before = (**peer.core.workspace_doc.as_ref().unwrap())
+        .clone()
+        .get_heads();
     doc.set_actor(automerge::ActorId::from(
         editor_key.verifying_key().to_bytes().to_vec(),
     ));
@@ -229,11 +232,14 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
-    let room = peer.room().to_owned();
+    let workspace = peer.workspace_id().to_owned();
     let refused = peer
         .receive_from(
             TransportOrigin::RelayDelta(editor_key.verifying_key().to_bytes()),
-            NeighbourMsg::SyncResp { changes, room },
+            NeighbourMsg::SyncResp {
+                changes,
+                room: workspace,
+            },
             now,
         )
         .unwrap_err();

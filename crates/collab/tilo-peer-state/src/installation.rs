@@ -1,11 +1,11 @@
-//! A bot installed in a room: the governed row that says which program
-//! runs, who installed it and how it may appear. It lives in the room's
+//! A bot installed in a workspace: the governed row that says which program
+//! runs, who installed it and how it may appear. It lives in the workspace's
 //! governed state beside members and delegated agents, inside the bot
 //! device's governed identity, because installing a bot changes who may act
-//! in the room.
+//! in the workspace.
 //!
 //! Its grants are not in this row. They are ordinary grants with
-//! `Subject::Bot(id)` in the room's policy, so every receiver enforces them
+//! `Subject::Bot(id)` in the workspace's policy, so every receiver enforces them
 //! with the code it already runs.
 
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ pub enum AppearancePolicy {
 pub use registry_types::DirectoryRef;
 
 /// A record's heads when the bot was installed: changes at or before them
-/// never fire it, so installing a bot does not replay a room's history.
+/// never fire it, so installing a bot does not replay a workspace's history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArmedRecord {
     pub app_id: String,
@@ -98,11 +98,11 @@ pub struct ArmedRecord {
 pub struct Installation {
     /// The `Subject::Bot` id.
     pub id: InstallationId,
-    /// BLAKE3 (lowercase hex) of the program bytes the room keeps.
+    /// BLAKE3 (lowercase hex) of the program bytes the workspace keeps.
     pub program: String,
     /// The name it shows when it posts as itself.
     pub name: String,
-    /// BLAKE3 of an image the room keeps.
+    /// BLAKE3 of an image the workspace keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// The installer's user root, hex: the person the bot acts for.

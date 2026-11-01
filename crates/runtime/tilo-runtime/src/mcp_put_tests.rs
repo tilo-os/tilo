@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 
 #[derive(Default)]
 struct Log {
-    /// The room of each upload begun.
+    /// The workspace of each upload begun.
     begun: Vec<Option<String>>,
     stored: Vec<Vec<u8>>,
     aborted: usize,
@@ -153,10 +153,10 @@ fn encoded(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn an_agent_uploads_in_chunks_into_its_room_and_gets_a_reference() {
+fn an_agent_uploads_in_chunks_into_its_workspace_and_gets_a_reference() {
     let host = Shelf::default();
     run(async {
-        let server = McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada");
+        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
         let listed = server
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
@@ -205,7 +205,7 @@ fn an_agent_uploads_in_chunks_into_its_room_and_gets_a_reference() {
         );
         {
             let log = host.0.lock_recover();
-            assert_eq!(log.begun, [Some("room".to_owned())]);
+            assert_eq!(log.begun, [Some("workspace".to_owned())]);
             assert_eq!(log.stored, [bytes]);
         }
         // Finished, it is no longer open.
@@ -222,7 +222,7 @@ fn an_agent_uploads_in_chunks_into_its_room_and_gets_a_reference() {
 fn a_session_holds_few_uploads_takes_bounded_chunks_and_drops_what_it_left_open() {
     let host = Shelf::default();
     run(async {
-        let server = McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada");
+        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
         let mut uploads = Vec::new();
         for _ in 0..MAX_OPEN_CONTENT_PUTS {
             uploads.push(put(&server, BEGIN, json!({"size": 4})).await.unwrap()["upload"].clone());
@@ -283,7 +283,7 @@ fn a_host_without_a_content_store_offers_no_put_tools() {
     let host = Shelf::default();
     host.0.lock_recover().no_store = true;
     run(async {
-        let server = McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada");
+        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
         let listed = server
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await

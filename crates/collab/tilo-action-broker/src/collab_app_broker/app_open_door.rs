@@ -18,7 +18,7 @@
 //! as if it named no invocation.
 //!
 //! Opening an application (another app by its workspace `open`
-//! (`ApplicationLaunch`), a resource in its app (`application:<room>:<app>`
+//! (`ApplicationLaunch`), a resource in its app (`application:<workspace>:<app>`
 //! `open`), or an installed app through the published-application launch the
 //! Store uses) is no one's just because the app sent it. It is decided as
 //! the caller of the invocation it continues, as above, or as the person

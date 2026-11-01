@@ -30,7 +30,7 @@ fn ask_first_for_notes(f: &Fixture) {
 fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     agent_answers::grant(
-        &room().to_string(),
+        &workspace_id().to_string(),
         "scribe",
         (
             &AnswerScope::app("so.tilo.notes"),
@@ -254,8 +254,8 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
                 appearance: None,
             };
             let step = |app: &str, who: &str| {
-                let caller =
-                    tilo_actions::remote::Caller::local_person(who).in_room(room().to_string());
+                let caller = tilo_actions::remote::Caller::local_person(who)
+                    .in_room(workspace_id().to_string());
                 f.state.run_question(app, &caller, &answer)
             };
 
@@ -593,17 +593,17 @@ async fn a_runs_question_reaches_its_person_as_a_notice_once() {
             let (_target, _stream) = append_target(&f).await;
             let notices = Arc::new(Notices::default());
             f.state.set_app_action_consent(notices.clone());
-            let rooms = std::collections::BTreeSet::from([room().to_string()]);
+            let workspaces = std::collections::BTreeSet::from([workspace_id().to_string()]);
 
             let asked = ask_append(&f, "Draft line");
-            f.state.refresh_tracker_runs(&rooms);
-            f.state.refresh_tracker_runs(&rooms);
+            f.state.refresh_tracker_runs(&workspaces);
+            f.state.refresh_tracker_runs(&workspaces);
             let handle = format!("run-question:{}", asked.id);
             assert_eq!(*notices.told.lock().unwrap(), [handle.as_str()]);
             assert!(notices.withdrawn.lock().unwrap().is_empty());
 
             confirm_as(&f, "Draft line");
-            f.state.refresh_tracker_runs(&rooms);
+            f.state.refresh_tracker_runs(&workspaces);
             assert_eq!(*notices.withdrawn.lock().unwrap(), [handle]);
             assert_eq!(notices.told.lock().unwrap().len(), 1);
             drop(f);

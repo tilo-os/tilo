@@ -119,9 +119,9 @@ pub enum NativeDocumentRead {
     /// answered as [`Reply::Unavailable`], the reader withholds readiness
     /// and asks again.
     Pending,
-    /// A record the room's hosts send a device only once it asks
+    /// A record the workspace's hosts send a device only once it asks
     /// (`neighbour_wire::record_sync`), which they said they have none of,
-    /// or no host of the room is connected to ask: answered as
+    /// or no host of the workspace is connected to ask: answered as
     /// [`Reply::Absent`], no failure either, and a held `Await` wakes when
     /// that changes.
     Absent,
@@ -144,44 +144,44 @@ pub enum NativeDocumentRead {
 /// Who answers an app's read of one record ([`NativeDocumentReads::record_read`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordRead {
-    /// The app's own channel: a room this owner keeps no records of, or a
-    /// record a sealed room does not hold yet, which is new and which the
+    /// The app's own channel: a workspace this owner keeps no records of, or a
+    /// record a sealed workspace does not hold yet, which is new and which the
     /// app creates on its own sealed channel. Answered [`Reply::Legacy`].
     Own,
-    /// Every record of a room this owner commits
-    /// ([`NativeDocumentReads::requires_room`]): read under the launcher's or
+    /// Every record of a workspace this owner commits
+    /// ([`NativeDocumentReads::requires_workspace`]): read under the launcher's or
     /// a host worker's custody.
     Committed,
-    /// A record a sealed room this device holds already holds, read through
+    /// A record a sealed workspace this device holds already holds, read through
     /// the channel's keys. Its authority is the one the app's own sealed
-    /// channel reads under: the channel's live admission and the room's read
+    /// channel reads under: the channel's live admission and the workspace's read
     /// policy, plus the launcher's custody whenever the app has one.
     Sealed,
 }
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
-    fn requires_room(&self, room: &str) -> bool;
-    /// Whether `room` seals every record write under the record channel's
+    fn requires_workspace(&self, workspace: &str) -> bool;
+    /// Whether `workspace` seals every record write under the record channel's
     /// keys: no write in it is taken unencrypted, from any app.
-    fn seals_records(&self, room: &str) -> bool {
-        let _ = room;
+    fn seals_records(&self, workspace: &str) -> bool {
+        let _ = workspace;
         false
     }
-    /// Who answers an app's read of `app`'s `record` in `room`.
-    fn record_read(&self, room: &str, app: &str, record: &str) -> RecordRead {
+    /// Who answers an app's read of `app`'s `record` in `workspace`.
+    fn record_read(&self, workspace: &str, app: &str, record: &str) -> RecordRead {
         let _ = (app, record);
-        if self.requires_room(room) {
+        if self.requires_workspace(workspace) {
             RecordRead::Committed
         } else {
             RecordRead::Own
         }
     }
-    /// Whether this device holds anything of `app`'s `record` in `room`: what its owner commits
-    /// or holds, or sealed writes of it. A sealed room's record it holds nothing of is new to
-    /// this device: the room has none yet, once its host's replay landed
+    /// Whether this device holds anything of `app`'s `record` in `workspace`: what its owner commits
+    /// or holds, or sealed writes of it. A sealed workspace's record it holds nothing of is new to
+    /// this device: the workspace has none yet, once its host's replay landed
     /// ([`Self::await_sealed_history`]).
-    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
-        self.record_read(room, app, record) != RecordRead::Own
+    fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        self.record_read(workspace, app, record) != RecordRead::Own
     }
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.
@@ -193,8 +193,8 @@ pub trait NativeDocumentReads: Send + Sync {
         Ok(None)
     }
     /// Where another device must create a missing record (the host that
-    /// governs the room): the future that asks it on the Open's behalf and
-    /// resolves once the record is in this owner's room. It answers the
+    /// governs the workspace): the future that asks it on the Open's behalf and
+    /// resolves once the record is in this owner's workspace. It answers the
     /// creation workspace when it created the record for this caller, which
     /// then initializes it, and `None` when the record was already there.
     /// The broker awaits it without blocking the channel, then answers the
@@ -209,10 +209,10 @@ pub trait NativeDocumentReads: Send + Sync {
     }
     /// Before an Open this owner would answer [`RecordRead::Own`], as a
     /// record that is new: the wait for what decides it, when the record may
-    /// exist where this device has not seen it yet. In a room whose records
+    /// exist where this device has not seen it yet. In a workspace whose records
     /// are sealed channels, a record this device holds nothing of may have
     /// been made on another device or before this session, and reaches this
-    /// device only in the room's host's replay; deciding before it landed
+    /// device only in the workspace's host's replay; deciding before it landed
     /// would have the app make a second one. The broker awaits it without
     /// blocking the channel, then decides. `None` when nothing is awaited.
     fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
@@ -444,7 +444,7 @@ impl Slot {
         reservation
     }
     /// The reader reads no more on this channel: give up its place in the
-    /// byte budget's queue, or the room its turn was granted.
+    /// byte budget's queue, or the workspace its turn was granted.
     fn leave(&mut self) {
         self.queued = None;
     }
@@ -574,7 +574,7 @@ impl JoinedChannel {
     pub(super) fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
         self.read_context(false)
     }
-    /// Whether this channel's room seals every write
+    /// Whether this channel's workspace seals every write
     /// ([`NativeDocumentReads::seals_records`]).
     pub(super) fn seals_records(&self) -> bool {
         let route = self.route();
@@ -629,7 +629,7 @@ impl JoinedChannel {
                 // A workspace record's kind is declared by the platform's
                 // list of them, not by the package of the window that
                 // opens it; the launch's signed original still stands for
-                // who creates it, and the room's grants decide whether they
+                // who creates it, and the workspace's grants decide whether they
                 // may.
                 Some(record) => crate::services::ApplicationCreationEvidence {
                     declared_kinds: vec![record.kind.to_owned()],
@@ -650,7 +650,7 @@ impl JoinedChannel {
                 }
             } else if let Some(local) = local.as_ref() {
                 // The launch's own routes, or a record every app of its
-                // room opens: the owner's grants decide the rest, below and
+                // workspace opens: the owner's grants decide the rest, below and
                 // in the owner's own authorization.
                 if !local.current()
                     || (!local.keeps_records_of(&checked_route.app_id)
@@ -685,7 +685,7 @@ impl JoinedChannel {
             .services
             .committed_documents
             .as_ref()
-            .is_some_and(|service| service.requires_room(&route.cluster_id))
+            .is_some_and(|service| service.requires_workspace(&route.cluster_id))
         {
             return Ok(None);
         }
@@ -731,7 +731,7 @@ impl JoinedChannel {
             .services
             .committed_documents
             .as_ref()
-            .is_some_and(|service| service.requires_room(&self.route().cluster_id))
+            .is_some_and(|service| service.requires_workspace(&self.route().cluster_id))
         {
             return self
                 .native_private_window_instance()?
@@ -746,7 +746,7 @@ impl JoinedChannel {
     }
 
     /// For an Open of a record another device creates (the host governing
-    /// the room), the creation to await before the Open answers: see
+    /// the workspace), the creation to await before the Open answers: see
     /// [`NativeDocumentReads::prepare_application_elsewhere`]. `None` for
     /// every other request, and whenever the Open decides creation itself.
     pub(super) fn committed_creation_elsewhere(
@@ -757,7 +757,7 @@ impl JoinedChannel {
             return None;
         }
         let service = self.state.services.committed_documents.clone()?;
-        if !service.requires_room(&self.route().cluster_id) {
+        if !service.requires_workspace(&self.route().cluster_id) {
             return None;
         }
         let context = self.document_read_context().ok()?;
@@ -896,9 +896,9 @@ impl JoinedChannel {
     }
 }
 
-/// The record every app of `local`'s launch room opens that `route` names
+/// The record every app of `local`'s launch workspace opens that `route` names
 /// ([`collab_types::workspace_record`]), when it does: the one route of
-/// another app a launch reads and commits to, and only in its own room.
+/// another app a launch reads and commits to, and only in its own workspace.
 fn launch_workspace_record(
     local: &super::native_media::LocalAppConnection,
     route: &CrdtRoute,

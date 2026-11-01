@@ -79,6 +79,11 @@ pub trait MediaSession: Send {
     }
     /// Stop sending the microphone at once.
     fn stop_capture(&mut self) {}
+    /// Play nothing of the call here while `deafened`, and play it again
+    /// after: what the person hears, which the service's own mute and the
+    /// microphone's stop do not reach. The frames the call receives while
+    /// deafened are dropped, not held.
+    fn set_deafened(&mut self, _deafened: bool) {}
     /// Leave the call: stop everything this session started.
     fn close(&mut self) {}
 }

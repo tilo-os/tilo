@@ -1,7 +1,7 @@
 // Native launcher-authenticated dispatch for informational progress tests.
 struct ProgressFixtureLaunch {
     app: String,
-    room: String,
+    workspace: String,
 }
 impl crate::services::LauncherServices for ProgressFixtureLaunch {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
@@ -16,8 +16,8 @@ impl crate::services::LauncherServices for ProgressFixtureLaunch {
     ) -> Result<(), String> {
         Err("fixture never launches apps".into())
     }
-    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        pid == std::process::id() && app == self.app && room == self.room
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        pid == std::process::id() && app == self.app && workspace == self.workspace
     }
 }
 fn progress_descriptors() -> Vec<runtime_collab::ExportedAction> {
@@ -38,7 +38,7 @@ fn progress_descriptors() -> Vec<runtime_collab::ExportedAction> {
     vec![check]
 }
 async fn progress_native_connection(
-    room: &signed_worker::OriginalRoom,
+    workspace: &signed_worker::OriginalWorkspace,
     probe: Arc<dyn ApprovedCheckServices>,
 ) -> Result<
     (
@@ -48,19 +48,28 @@ async fn progress_native_connection(
     ),
     String,
 > {
-    // The replacement broker reuses the room's journal, which has one writer.
-    drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
+    // The replacement broker reuses the workspace's journal, which has one writer.
+    drop(
+        workspace
+            .state
+            .journal
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .take(),
+    );
     let (state, bridge) = AppBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        Some(room.membership.authority()),
+        Some(workspace.membership.authority()),
         None,
         None,
         HostServices {
             launcher: Some(Arc::new(ProgressFixtureLaunch {
-                app: room.route.app_id.clone(),
-                room: room.route.cluster_id.clone(),
+                app: workspace.route.app_id.clone(),
+                workspace: workspace.route.cluster_id.clone(),
             })),
             approved_checks: Some(probe),
             ..Default::default()
@@ -69,7 +78,7 @@ async fn progress_native_connection(
     assert!(
         state
             .certificate_authority
-            .set(room.authority.clone())
+            .set(workspace.authority.clone())
             .is_ok()
     );
     let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
@@ -77,7 +86,7 @@ async fn progress_native_connection(
     std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC).unwrap();
     let handoff = serde_json::to_vec(&serde_json::json!({
         "protocol":launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
-        "app_id":room.route.app_id,"workspace_id":room.route.cluster_id,
+        "app_id":workspace.route.app_id,"workspace_id":workspace.route.cluster_id,
     }))
     .unwrap();
     std::io::Write::write_all(
@@ -97,8 +106,12 @@ async fn progress_native_connection(
     );
     let handle = rpc
         .join_channel(
-            &room.route.channel_key(),
-            &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key),
+            &workspace.route.channel_key(),
+            &signed_worker::presentation(
+                &workspace.route.cluster_id,
+                &workspace.cert,
+                &workspace.key,
+            ),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -114,15 +127,15 @@ async fn progress_native_connection(
 }
 /// The host's own person on their own device, as the shell's certified
 /// session presents them.
-fn person(room: &signed_worker::OriginalRoom) -> (tilo_actions::remote::Caller, Vec<u8>) {
+fn person(workspace: &signed_worker::OriginalWorkspace) -> (tilo_actions::remote::Caller, Vec<u8>) {
     (
         tilo_actions::remote::Caller::authenticated(
-            room.cert.user_public_key,
-            room.cert.device_public_key,
+            workspace.cert.user_public_key,
+            workspace.cert.device_public_key,
         )
-        .in_room(&room.route.cluster_id)
+        .in_room(&workspace.route.cluster_id)
         .in_new_execution(),
-        signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key),
+        signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key),
     )
 }
 
@@ -157,8 +170,8 @@ struct PersonSession {
 }
 
 impl PersonSession {
-    fn open(state: &Arc<AppBrokerState>, room: &signed_worker::OriginalRoom) -> Self {
-        let (caller, evidence) = person(room);
+    fn open(state: &Arc<AppBrokerState>, workspace: &signed_worker::OriginalWorkspace) -> Self {
+        let (caller, evidence) = person(workspace);
         let host = state
             .certified_local_action_host(&caller, &evidence)
             .unwrap();
@@ -205,7 +218,7 @@ impl PersonSession {
 
 async fn progress_parent(
     (state, directories): (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
-    room: &signed_worker::OriginalRoom,
+    workspace: &signed_worker::OriginalWorkspace,
     connection: &signed_worker::Connection,
     descriptors: &[runtime_collab::ExportedAction],
     peer: u64,
@@ -225,7 +238,7 @@ async fn progress_parent(
         .subscribe_stable_invocations()
         .await
         .unwrap();
-    let session = PersonSession::open(state, room);
+    let session = PersonSession::open(state, workspace);
     let accepted = session
         .runs_check((state, directories), peer, "workspace:atlas")
         .await;
@@ -295,7 +308,7 @@ impl ApprovedCheckServices for GatedProgressProbe {
 async fn approved_check_reported_progress_preserves_original_custody_replay_and_gated_delivery() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = signed_worker::OriginalRoom::new(
+            let workspace = signed_worker::OriginalWorkspace::new(
                 tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
@@ -306,12 +319,13 @@ async fn approved_check_reported_progress_preserves_original_custody_replay_and_
                 calls: std::sync::atomic::AtomicUsize::new(0),
             });
             let descriptors = progress_descriptors();
-            let (state, connection, directories) = progress_native_connection(&room, probe.clone())
-                .await
-                .unwrap();
+            let (state, connection, directories) =
+                progress_native_connection(&workspace, probe.clone())
+                    .await
+                    .unwrap();
             let (_invocations, request, _parent, _session) = progress_parent(
                 (&state, &directories),
-                &room,
+                &workspace,
                 &connection,
                 &descriptors,
                 997,
@@ -401,7 +415,7 @@ async fn approved_check_reported_progress_preserves_original_custody_replay_and_
 async fn approved_check_reported_progress_refuses_cancelled_original_before_late_delivery() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = signed_worker::OriginalRoom::new(
+            let workspace = signed_worker::OriginalWorkspace::new(
                 tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
@@ -412,12 +426,13 @@ async fn approved_check_reported_progress_refuses_cancelled_original_before_late
                 calls: std::sync::atomic::AtomicUsize::new(0),
             });
             let descriptors = progress_descriptors();
-            let (state, connection, directories) = progress_native_connection(&room, probe.clone())
-                .await
-                .unwrap();
+            let (state, connection, directories) =
+                progress_native_connection(&workspace, probe.clone())
+                    .await
+                    .unwrap();
             let (_invocations, request, parent, session) = progress_parent(
                 (&state, &directories),
-                &room,
+                &workspace,
                 &connection,
                 &descriptors,
                 997,
@@ -532,7 +547,7 @@ async fn approved_check_reported_progress_preserves_terminal_receipt_after_disab
     tokio::task::LocalSet::new()
         .run_until(async {
             for panic in [false, true] {
-                let room = signed_worker::OriginalRoom::new(
+                let workspace = signed_worker::OriginalWorkspace::new(
                     tilo_user_identity::DeviceCapabilities::primary(),
                     None,
                     None,
@@ -544,12 +559,12 @@ async fn approved_check_reported_progress_preserves_terminal_receipt_after_disab
                 });
                 let descriptors = progress_descriptors();
                 let (state, connection, directories) =
-                    progress_native_connection(&room, probe.clone())
+                    progress_native_connection(&workspace, probe.clone())
                         .await
                         .unwrap();
                 let (_invocations, request, _parent, _session) = progress_parent(
                     (&state, &directories),
-                    &room,
+                    &workspace,
                     &connection,
                     &descriptors,
                     997,
@@ -628,13 +643,13 @@ async fn approved_check_reported_progress_preserves_terminal_receipt_after_disab
 async fn approved_check_requires_exact_retained_target_and_accepted_id() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = signed_worker::OriginalRoom::new(
+            let workspace = signed_worker::OriginalWorkspace::new(
                 tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
             );
-            let (target, _) = room.join_worker(981).await;
-            let (other, _) = room.join_worker(982).await;
+            let (target, _) = workspace.join_worker(981).await;
+            let (other, _) = workspace.join_worker(982).await;
             let state = signed_worker::directory_state("approved-check-r1");
             let mut descriptor = state.borrow().row().descriptor.unwrap();
             descriptor.action = runtime_collab::approved_checks::ACTION_ID.into();
@@ -655,9 +670,13 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
                 .await
                 .unwrap();
             let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-            let session = PersonSession::open(&room.state, &room);
+            let session = PersonSession::open(&workspace.state, &workspace);
             let accepted = session
-                .runs_check((&room.state, &room.directories), 981, "workspace:atlas")
+                .runs_check(
+                    (&workspace.state, &workspace.directories),
+                    981,
+                    "workspace:atlas",
+                )
                 .await;
             let delivered = stream.read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *accepted.invocation.0.as_bytes());
@@ -728,7 +747,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
                 "only the person who asked may cancel their check"
             );
             session
-                .cancels((&room.state, &room.directories), invocation)
+                .cancels((&workspace.state, &workspace.directories), invocation)
                 .await;
             assert!(
                 target
@@ -739,7 +758,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
                     .to_string()
                     .contains("retired or cancelled")
             );
-            room.state.remove_connection(981);
+            workspace.state.remove_connection(981);
             assert!(
                 target.handle.approved_check(&request).await.is_err(),
                 "retired connection cannot recover accepted target custody"
@@ -749,13 +768,13 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
 }
 
 // Actual kernel process plus launcher handoff exercises the native target branch.
-// The fixture admits only its own process/app/room, and executes no guest command.
+// The fixture admits only its own process/app/workspace, and executes no guest command.
 #[tokio::test(flavor = "current_thread")]
 async fn approved_check_native_target_requires_live_launcher_connection() {
     struct ExactFixtureLaunch {
         pid: u32,
         app: String,
-        room: String,
+        workspace: String,
     }
     impl crate::services::LauncherServices for ExactFixtureLaunch {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
@@ -770,33 +789,33 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         ) -> Result<(), String> {
             Err("fixture never launches applications".into())
         }
-        fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-            pid == self.pid && app == self.app && room == self.room
+        fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+            pid == self.pid && app == self.app && workspace == self.workspace
         }
     }
     tokio::task::LocalSet::new().run_until(async {
-        let room = signed_worker::OriginalRoom::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
-        drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
+        let workspace = signed_worker::OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
+        drop(workspace.state.journal.lock().unwrap().as_mut().unwrap().take());
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
-            Some(room.membership.authority()),
+            Some(workspace.membership.authority()),
             None, None,
             HostServices {
-                    launcher: Some(Arc::new(ExactFixtureLaunch { pid: std::process::id(), app: room.route.app_id.clone(), room: room.route.cluster_id.clone() })),
+                    launcher: Some(Arc::new(ExactFixtureLaunch { pid: std::process::id(), app: workspace.route.app_id.clone(), workspace: workspace.route.cluster_id.clone() })),
                 ..Default::default()
             },
         );
-        assert!(state.certificate_authority.set(room.authority.clone()).is_ok());
+        assert!(state.certificate_authority.set(workspace.authority.clone()).is_ok());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
         let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
         std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC).unwrap();
-        let handoff = serde_json::to_vec(&serde_json::json!({"protocol":launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,"app_id":room.route.app_id,"workspace_id":room.route.cluster_id})).unwrap();
+        let handoff = serde_json::to_vec(&serde_json::json!({"protocol":launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,"app_id":workspace.route.app_id,"workspace_id":workspace.route.cluster_id})).unwrap();
         std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_FRAMING.encode(&handoff).unwrap()).unwrap();
         let (rpc, server, client) = signed_worker::rpc_pair(state.clone(), 991, server, client, None, directories.clone());
-        let handle = rpc.join_channel(&room.route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();
+        let handle = rpc.join_channel(&workspace.route.channel_key(), &signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key)).await.unwrap();
         let connection = signed_worker::Connection { handle, server, client };
         let directory = signed_worker::directory_state("native-check-r1");
         let mut descriptor = directory.borrow().row().descriptor.unwrap();
@@ -811,7 +830,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         };
         connection.handle.publish_actions(std::slice::from_ref(&descriptor)).await.unwrap();
         let stream = connection.handle.subscribe_stable_invocations().await.unwrap();
-        let session = PersonSession::open(&state, &room);
+        let session = PersonSession::open(&state, &workspace);
         let accepted = session.runs_check((&state, &directories), 991, "workspace:atlas").await;
         let delivered = stream.read().await.unwrap();
         assert_eq!(delivered.invocation_uuid, *accepted.invocation.0.as_bytes());
@@ -829,8 +848,8 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         let new_request = runtime_collab::approved_checks::Request { invocation: uuid::Uuid::from_bytes(next.invocation_uuid).to_string(), ..request.clone() };
         assert!(connection.handle.approved_check(&new_request).await.unwrap_err().to_string().contains("unsupported by this host"),
             "fresh opaque address retains authenticated stable identity and reaches the real host service gate");
-        let foreign_route = CrdtRoute::record(&room.route.app_id, &room.route.cluster_id, "foreign-record");
-        let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();
+        let foreign_route = CrdtRoute::record(&workspace.route.app_id, &workspace.route.cluster_id, "foreign-record");
+        let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key)).await.unwrap();
         assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("no retained target invocation"), "same process and app cannot send an accepted invocation over a foreign record channel: that record's own hold was never handed it");
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(delivered.invocation_uuid));
             assert!(

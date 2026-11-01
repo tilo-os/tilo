@@ -22,14 +22,14 @@ const ROOT: &str = "device-grants";
 const REVOKE: &str = "revoke";
 const OPERATION: &str = "tilo.runtime.device-grant";
 
-/// A grant's resource id: `device-grant:<device>:<room>:<app>`. Neither a
-/// room nor a package id holds `:`, and none holds `@`, which the console
+/// A grant's resource id: `device-grant:<device>:<workspace>:<app>`. Neither a
+/// workspace nor a package id holds `:`, and none holds `@`, which the console
 /// address reserves.
 fn resource_id(grant: &Grant) -> String {
     format!(
         "device-grant:{}:{}:{}",
         grant.device.name(),
-        grant.room,
+        grant.workspace,
         grant.app
     )
 }
@@ -59,8 +59,8 @@ pub fn resources(grants: &DeviceGrants) -> Vec<ResourceSpec> {
         ResourceSpec::new(resource_id(&grant), "tilo.device-grant", label)
             .with_presentation(ResourcePresentation {
                 detail: Some(t_args(
-                    "device-grant-room",
-                    &[("room", grant.room.as_str().into())],
+                    "device-grant-workspace",
+                    &[("workspace", grant.workspace.as_str().into())],
                 )),
                 badge: Some(grant.device.name().to_owned()),
                 preview: None,
@@ -89,7 +89,7 @@ pub fn answer(grants: &DeviceGrants, line: &str) -> String {
         Ok(Request::StateDump) => wire::state(&json!({
             "app": PROVIDER,
             "device_grants": grants.list().iter().map(|grant| json!({
-                "room": grant.room,
+                "workspace": grant.workspace,
                 "app": grant.app,
                 "device": grant.device.name(),
                 "decision": match grant.decision {
@@ -107,11 +107,12 @@ pub fn answer(grants: &DeviceGrants, line: &str) -> String {
                     Ok(admitted) => admitted,
                     Err(refusal) => return wire::error(refusal.code, &refusal.message),
                 };
-            let Some((device, room, app)) = parse_resource_id(admitted.address.resource.as_str())
+            let Some((device, workspace, app)) =
+                parse_resource_id(admitted.address.resource.as_str())
             else {
                 return wire::error("unknown_action", &format!("no grant is addressed by {id}"));
             };
-            match grants.revoke(room, app, device) {
+            match grants.revoke(workspace, app, device) {
                 Ok(revoked) => wire::answer(&json!({
                     "provider": PROVIDER,
                     "id": id,
@@ -163,13 +164,18 @@ mod tests {
     fn grants_are_listed_and_revoked_through_the_action_door() {
         let dir = tempfile::tempdir().unwrap();
         let grants = DeviceGrants::open(&dir.path().join("device-grants")).unwrap();
-        let room = "6f7a3c2e-0000-4000-8000-000000000001";
+        let workspace = "6f7a3c2e-0000-4000-8000-000000000001";
         grants
-            .record(room, "so.tilo.video", DeviceKind::Camera, Decision::Allow)
+            .record(
+                workspace,
+                "so.tilo.video",
+                DeviceKind::Camera,
+                Decision::Allow,
+            )
             .unwrap();
         grants
             .record(
-                room,
+                workspace,
                 "so.tilo.video",
                 DeviceKind::Microphone,
                 Decision::Deny,
@@ -179,7 +185,7 @@ mod tests {
         let listed = ask(&grants, r#"{"op":"actions_enumerate","query":""}"#);
         let actions = listed["answer"]["actions"].as_array().unwrap();
         assert_eq!(actions.len(), 2, "{listed}");
-        let camera = format!("revoke@device-grant:camera:{room}:so.tilo.video");
+        let camera = format!("revoke@device-grant:camera:{workspace}:so.tilo.video");
         assert!(
             actions.iter().any(|a| a["id"] == camera.as_str()),
             "{listed}"
@@ -197,7 +203,7 @@ mod tests {
         );
         assert_eq!(revoked["answer"]["revoked"], true, "{revoked}");
         assert_eq!(
-            grants.decision(room, "so.tilo.video", DeviceKind::Camera),
+            grants.decision(workspace, "so.tilo.video", DeviceKind::Camera),
             None
         );
         let again = ask(

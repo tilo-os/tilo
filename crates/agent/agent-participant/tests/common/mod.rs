@@ -36,8 +36,8 @@ pub const LOCAL_STATE: &[(&str, &str)] = &[
     ),
 ];
 
-/// The room the tests' records belong to.
-pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+/// The workspace the tests' records belong to.
+pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 /// The text every edit writes.
 pub const WRITTEN: &str = "Written by an agent";
@@ -277,7 +277,7 @@ pub fn retained_documents(bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>)
 }
 
 /// [`retained_documents`] over what members wrote, leaving out the host's
-/// own documents: a governed room's host writes the first state of each
+/// own documents: a governed workspace's host writes the first state of each
 /// record itself, which is the host's, not something reaching it.
 pub fn member_documents(
     bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>,

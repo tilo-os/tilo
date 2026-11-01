@@ -51,11 +51,11 @@ fn agent(person: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// `person`'s delegation of `device` to `room` until `expires`.
+/// `person`'s delegation of `device` to `workspace` until `expires`.
 fn delegation(
     person: &SigningKey,
     device: [u8; 32],
-    room: &str,
+    workspace: &str,
     issued: SystemTime,
     expires: SystemTime,
 ) -> Delegation {
@@ -68,7 +68,7 @@ fn delegation(
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![room.into()],
+            rooms: vec![workspace.into()],
             apps: Vec::new(),
         },
         ns(issued),
@@ -99,14 +99,20 @@ fn edit(writer: &mut StatePeer, key: &SigningKey, now: SystemTime) -> crate::Nei
 )]
 fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let (mut governor, authority, own_device, _, now) = crate::admission_tests::seeded();
-    // A device the room has no certificate for: not one of the owner's.
+    // A device the workspace has no certificate for: not one of the owner's.
     let other_device = SigningKey::from_bytes(&[0x5a; 32]);
-    let room = governor.room().to_owned();
+    let workspace = governor.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (key, cert) = agent(&person, 8);
     let device = cert.device_public_key;
     let until = now + Duration::from_secs(10);
-    let granted = delegation(&person, device, &room, now - Duration::from_secs(1), until);
+    let granted = delegation(
+        &person,
+        device,
+        &workspace,
+        now - Duration::from_secs(1),
+        until,
+    );
     let mut member = governor.clone();
 
     // Only the owner's devices admit, and only within the delegation.
@@ -128,9 +134,15 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
             .governance_mut()
             .admit_agent(cert.clone(), elsewhere, &authority, now)
             .unwrap_err()
-            .contains("not delegated this room")
+            .contains("not delegated this workspace")
     );
-    let lapsed = delegation(&person, device, &room, now - Duration::from_secs(10), now);
+    let lapsed = delegation(
+        &person,
+        device,
+        &workspace,
+        now - Duration::from_secs(10),
+        now,
+    );
     assert!(
         governor
             .governance_mut()
@@ -160,7 +172,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let foreign_grant = delegation(
         &stranger,
         foreign.device_public_key,
-        &room,
+        &workspace,
         now - Duration::from_secs(1),
         until,
     );
@@ -199,7 +211,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
         member
             .receive_from(
                 TransportOrigin::RelayDelta(authority.verifying_key().to_bytes()),
-                governor.room_message(),
+                governor.workspace_message(),
                 now,
             )
             .unwrap()
@@ -211,14 +223,18 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
         authority_of_agent.person,
         hex::encode(person.verifying_key().to_bytes())
     );
-    // Its person owns the room; the delegation bounds it to an Editor's
-    // grants: it changes the room's records, and governs nothing.
-    let room_node = tilo_action_policy::TreePath::room(&room);
+    // Its person owns the workspace; the delegation bounds it to an Editor's
+    // grants: it changes the workspace's records, and governs nothing.
+    let workspace_node = tilo_action_policy::TreePath::room(&workspace);
     let governance = tilo_action_policy::roles::governance_action(
-        &room,
+        &workspace,
         tilo_action_policy::roles::governance::SET_ROLE,
     );
-    assert!(authority_of_agent.allows(&room_node, tilo_action_policy::ActionKind::Undoable, now));
+    assert!(authority_of_agent.allows(
+        &workspace_node,
+        tilo_action_policy::ActionKind::Undoable,
+        now
+    ));
     assert!(!authority_of_agent.allows(
         &governance,
         tilo_action_policy::roles::GOVERNANCE_KIND,
@@ -283,7 +299,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     // The roster survives a restore.
     let restored = StatePeer::restore(
         &member.durable().unwrap(),
-        member.room(),
+        member.workspace_id(),
         member.owner_certificates()[0].clone(),
         vec![],
         tilo_user_identity::RevocationList::new(),
@@ -300,7 +316,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 #[test]
 fn admit_agent_refuses_a_bot_delegation() {
     let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-    let room = governor.room().to_owned();
+    let workspace = governor.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (_, cert) = agent(&person, 8);
     let bot = Delegation::sign(
@@ -312,7 +328,7 @@ fn admit_agent_refuses_a_bot_delegation() {
         "Bridge",
         [0; 3],
         DelegateScope {
-            rooms: vec![room],
+            rooms: vec![workspace],
             apps: vec![],
         },
         ns(now - Duration::from_secs(1)),
@@ -330,16 +346,16 @@ fn admit_agent_refuses_a_bot_delegation() {
 #[test]
 fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
     let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
-    // A device the room has no certificate for: not one of the owner's.
+    // A device the workspace has no certificate for: not one of the owner's.
     let other_device = SigningKey::from_bytes(&[0x5a; 32]);
-    let room = governor.room().to_owned();
+    let workspace = governor.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (key, cert) = agent(&person, 8);
     let device = cert.device_public_key;
     let granted = delegation(
         &person,
         device,
-        &room,
+        &workspace,
         now - Duration::from_secs(1),
         now + Duration::from_secs(3600),
     );
@@ -409,7 +425,7 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
     let renewed = delegation(
         &person,
         device,
-        &room,
+        &workspace,
         withdrawn,
         withdrawn + Duration::from_secs(3600),
     );
@@ -432,13 +448,13 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
 #[test]
 fn members_and_agents_never_trade_places() {
     let (mut governor, authority, _, member_cert, now) = crate::admission_tests::seeded();
-    let room = governor.room().to_owned();
+    let workspace = governor.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let window = |device| {
         delegation(
             &person,
             device,
-            &room,
+            &workspace,
             now - Duration::from_secs(1),
             now + Duration::from_secs(60),
         )

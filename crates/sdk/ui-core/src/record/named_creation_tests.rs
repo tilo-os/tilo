@@ -10,16 +10,16 @@ use crate::record::{
 };
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 
-/// Check `original` of `checkout` in `room` against the construction's
+/// Check `original` of `checkout` in `workspace` against the construction's
 /// original capture, as the record store does before initializing it.
 fn validate(
     initialization: &RecordInitialization,
     original: &AutoCommit,
     checkout: &RecordCheckout,
-    room: &str,
+    workspace: &str,
 ) -> Result<(), RecordOpenError> {
     initialization.validate_original(checkout, |read| {
-        validate_creation_capture(original, checkout, room, read)
+        validate_creation_capture(original, checkout, workspace, read)
     })
 }
 
@@ -121,7 +121,15 @@ fn assert_original_scope(
     for checkout in [&wrong_kind, &wrong_record] {
         assert!(validate(initialization, &original, checkout, &fixture.room).is_err());
     }
-    assert!(validate(initialization, &original, &fixture.checkout, "wrong-room").is_err());
+    assert!(
+        validate(
+            initialization,
+            &original,
+            &fixture.checkout,
+            "wrong-workspace"
+        )
+        .is_err()
+    );
     let mut changed = original;
     changed.put(ROOT, "changed_heads", true).unwrap();
     changed.commit();
@@ -186,9 +194,9 @@ async fn named_original_creation_admits_exact_graph_but_not_ready_identity() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn named_identityless_restore_and_wrong_room_refuse_without_cache_install() {
-    for (receipt, wrong_room) in [(false, false), (true, true)] {
-        let fixture = fixture(receipt, wrong_room).await;
+async fn named_identityless_restore_and_wrong_workspace_refuse_without_cache_install() {
+    for (receipt, wrong_workspace) in [(false, false), (true, true)] {
+        let fixture = fixture(receipt, wrong_workspace).await;
         let directory = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(directory.path().to_owned());
         let store = owners.open("so.tilo.store", &fixture.room).unwrap();

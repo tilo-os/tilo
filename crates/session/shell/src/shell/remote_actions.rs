@@ -180,6 +180,7 @@ impl BrokerActionHost {
             });
         }
         sessions.insert(caller.clone(), session.clone());
+        drop(sessions);
         Ok(Some(session))
     }
 

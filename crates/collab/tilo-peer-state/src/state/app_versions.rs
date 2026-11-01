@@ -1,12 +1,12 @@
-//! The version of each app a room runs.
+//! The version of each app a workspace runs.
 //!
-//! A member the room lets install apps (`install-app`) names a release of
+//! A member the workspace lets install apps (`install-app`) names a release of
 //! an app: its version, the surface its changes name, the package every
-//! member fetches and verifies, and who signed it. The room keeps it in its
+//! member fetches and verifies, and who signed it. The workspace keeps it in its
 //! governance, so every member reads which version runs and who installed
 //! it, and every member is to run it. A change made with
 //! another version (its op names another surface) is held, not merged and
-//! not refused: once its author runs the room's version, the same changes
+//! not refused: once its author runs the workspace's version, the same changes
 //! name that version's surface and are decided against it.
 
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
@@ -17,10 +17,10 @@ use super::facades::PeerGovernance;
 use super::{SigningKey, StatePeer, SystemTime, err, now_ns};
 use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
-/// The governed map that keeps the room's app versions, by app id.
+/// The governed map that keeps the workspace's app versions, by app id.
 const APP_VERSIONS: &str = "app_versions_v1";
 
-/// An app version the room runs, as its governance keeps it.
+/// An app version the workspace runs, as its governance keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstalledApp {
     pub release: AppRelease,
@@ -87,7 +87,7 @@ impl StatePeer {
         self.put_app_version(app, None, key, now)
     }
 
-    /// The person behind `caller`, when the room lets them install apps.
+    /// The person behind `caller`, when the workspace lets them install apps.
     fn check_app_governance(&self, caller: &DeviceCert, now: SystemTime) -> Result<String, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
@@ -114,11 +114,11 @@ impl StatePeer {
         self.require_governance_writer(key, now)?;
         let mut doc = self
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(self.room_actor_of(key));
+        doc.set_actor(self.workspace_actor_of(key));
         let versions = match doc.get(ROOT, APP_VERSIONS).map_err(err)? {
             Some((_, map)) => map,
             None => doc
@@ -139,17 +139,17 @@ impl StatePeer {
         self.apply_governance_doc(doc, &before, key, now)
     }
 
-    /// The surface the room runs `app` with, when it chose a version.
-    pub(super) fn room_surface(&self, app: &str) -> Option<[u8; 32]> {
+    /// The surface the workspace runs `app` with, when it chose a version.
+    pub(super) fn workspace_surface(&self, app: &str) -> Option<[u8; 32]> {
         self.governance().app_version(app)?.release.surface_hash()
     }
 }
 
 impl PeerGovernance<'_> {
-    /// Every app version the room runs, by app id.
+    /// Every app version the workspace runs, by app id.
     #[must_use]
     pub fn app_versions(self) -> Vec<InstalledApp> {
-        let Some(doc) = self.peer.core.room_doc.as_ref() else {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return Vec::new();
         };
         let Ok(Some((_, versions))) = doc.get(ROOT, APP_VERSIONS) else {
@@ -163,10 +163,10 @@ impl PeerGovernance<'_> {
         out
     }
 
-    /// The version of `app` the room runs, if it chose one.
+    /// The version of `app` the workspace runs, if it chose one.
     #[must_use]
     pub fn app_version(self, app: &str) -> Option<InstalledApp> {
-        let doc = self.peer.core.room_doc.as_ref()?;
+        let doc = self.peer.core.workspace_doc.as_ref()?;
         let (_, versions) = doc.get(ROOT, APP_VERSIONS).ok()??;
         read_version(&**doc, &versions, app)
     }

@@ -1,8 +1,8 @@
-//! The store volume: a dedicated Btrfs filesystem holding the room trees,
+//! The store volume: a dedicated Btrfs filesystem holding the workspace trees,
 //! capture snapshots and retained versions.
 //!
 //! ```text
-//! <root>/live/<room>/   one subvolume per room: the real POSIX tree
+//! <root>/live/<workspace>/   one subvolume per workspace: the real POSIX tree
 //! <root>/.epochs/       read-only capture snapshots (short-lived)
 //! ```
 //!
@@ -119,19 +119,20 @@ impl StoreLayout {
         self.root.join("live")
     }
 
-    pub fn room(&self, room: &str) -> PathBuf {
-        self.live().join(room)
+    pub fn workspace(&self, workspace: &str) -> PathBuf {
+        self.live().join(workspace)
     }
 
     pub fn epochs(&self) -> PathBuf {
         self.root.join(".epochs")
     }
 
-    /// Creates `live/` and `.epochs/`, and the room's subvolume if missing.
-    pub fn ensure_room(&self, room: &str) -> io::Result<PathBuf> {
+    /// Creates `live/` and `.epochs/`, and the workspace's subvolume if
+    /// missing.
+    pub fn ensure_workspace(&self, workspace: &str) -> io::Result<PathBuf> {
         fs::create_dir_all(self.live())?;
         fs::create_dir_all(self.epochs())?;
-        let path = self.room(room);
+        let path = self.workspace(workspace);
         if !path.exists() {
             btrfs::create_subvolume(&path)?;
         }

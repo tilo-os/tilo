@@ -12,7 +12,8 @@ fn fixture_network(
     Arc<ShellNetwork>,
     tokio::sync::mpsc::Receiver<tilo_network_actor::NetCmd>,
 ) {
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     let certificate = owner
         .with_current(room, |view| Ok(view.device().clone()))
         .unwrap();
@@ -30,7 +31,7 @@ fn fixture_network(
 }
 fn destination() -> tilo_desktop::feedback::Destination {
     tilo_desktop::feedback::Destination {
-        room: tilo_peer_state::owner::testing::ROOM.into(),
+        room: tilo_peer_state::owner::testing::WORKSPACE.into(),
         provider: "record:so.tilo.chat:".into(),
         channel: "feedback".into(),
     }
@@ -260,7 +261,8 @@ fn native_configuration_cannot_supply_role_or_reporter_authority() {
 
 fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::SigningKey) {
     use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     owner
         .commit_document_with_current(
             room,
@@ -313,7 +315,7 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                     return Err("fixture signed write absent".into());
                 };
                 Ok(OwnerCommitRequest {
-                    room: room.to_string(),
+                    workspace: room.to_string(),
                     operation: CommitOperation::Document {
                         app: "so.tilo.chat".into(),
                         record: String::new(),
@@ -332,7 +334,7 @@ fn certified_manager(
 ) -> ui::collaboration::CollaborationManager {
     use ed25519_dalek::Signer as _;
     use std::os::fd::IntoRawFd as _;
-    let room = tilo_peer_state::owner::testing::ROOM;
+    let room = tilo_peer_state::owner::testing::WORKSPACE;
     let presentation = runtime_collab::CertifiedJoinIdentity {
         workspace_id: room.into(),
         device_certificate: serde_json::to_vec(reporter).unwrap(),

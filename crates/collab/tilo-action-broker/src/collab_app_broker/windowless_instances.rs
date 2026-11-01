@@ -7,19 +7,19 @@ use tilo_actions::remote::{APPLICATION_OPEN_ACTION, ActionHostError};
 use super::AppBrokerState;
 
 impl AppBrokerState {
-    /// Have the host run `app_id` with no window in `room`, for an action
+    /// Have the host run `app_id` with no window in `workspace`, for an action
     /// that shows nothing: how its start ends, where it does.
     pub(super) fn run_windowless(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
     ) -> Result<Option<crate::services::WindowlessStart>, ActionHostError> {
         let started = match (
             self.launchable.windowless(),
             self.services.launcher.as_ref(),
         ) {
-            (Some(stand_in), _) => stand_in(app_id, room),
-            (None, Some(launcher)) => launcher.windowless(app_id, room),
+            (Some(stand_in), _) => stand_in(app_id, workspace),
+            (None, Some(launcher)) => launcher.windowless(app_id, workspace),
             (None, None) => Ok(None),
         };
         started.map_err(|why| ActionHostError::Unavailable {

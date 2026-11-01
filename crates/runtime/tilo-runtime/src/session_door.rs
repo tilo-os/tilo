@@ -103,11 +103,11 @@ pub struct Hello {
 /// What the person decided about one connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Consent {
-    /// Serve it as agent `agent`, confined to `room`, acting for `person`:
+    /// Serve it as agent `agent`, confined to `workspace`, acting for `person`:
     /// the person who admitted it, whose own records it reads and whose
     /// authority bounds what it does (the lesser of theirs and the agent's).
     Admit {
-        room: String,
+        workspace: String,
         agent: String,
         person: String,
     },
@@ -391,12 +391,12 @@ where
         let stream = stream.try_clone()?;
         move || client_connected(&stream)
     };
-    let (room, agent, person) = match ask(&hello, &probe) {
+    let (workspace, agent, person) = match ask(&hello, &probe) {
         Consent::Admit {
-            room,
+            workspace,
             agent,
             person,
-        } => (room, agent, person),
+        } => (workspace, agent, person),
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
@@ -417,7 +417,7 @@ where
     // of the task's own (docs/designs/app-language/agents.md, "How a program runs").
     let run = format!("door-{}", uuid::Uuid::new_v4().simple());
     let server = std::sync::Arc::new(
-        crate::mcp::McpServer::for_agent(host, room, &agent, &person)
+        crate::mcp::McpServer::for_agent(host, workspace, &agent, &person)
             .with_agent_run(run, agent.clone())
             .with_task_hosts(tasks),
     );
@@ -653,7 +653,7 @@ mod tests {
         let (near, served, host, asked) = door(
             &format!("{LIST_APPS}\n{INITIALIZE}\n"),
             Consent::Admit {
-                room: "room".into(),
+                workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
             },
@@ -677,7 +677,7 @@ mod tests {
         let (near, served, host, asked) = door(
             &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
             Consent::Admit {
-                room: "room".into(),
+                workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
             },
@@ -713,7 +713,7 @@ mod tests {
         let (near, served, host, asked) = door(
             &flood,
             Consent::Admit {
-                room: "room".into(),
+                workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
             },
@@ -743,11 +743,11 @@ mod tests {
     }
 
     #[test]
-    fn an_admitted_client_is_served_as_its_agent_in_its_room() {
+    fn an_admitted_client_is_served_as_its_agent_in_its_workspace() {
         let (near, served, host, asked) = door(
             &format!("{INITIALIZE}\n{LIST_APPS}\n"),
             Consent::Admit {
-                room: "room".into(),
+                workspace: "workspace".into(),
                 agent: "claude-code".into(),
                 person: "ada".into(),
             },
@@ -771,7 +771,7 @@ mod tests {
                 caller.principal(),
                 &tilo_actions::remote::CallerPrincipal::Agent("claude-code".into())
             );
-            assert_eq!(caller.room(), Some("room"));
+            assert_eq!(caller.room(), Some("workspace"));
             assert!(caller.execution_id().is_some());
         }
     }

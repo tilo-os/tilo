@@ -149,7 +149,7 @@ fn owner() -> String {
     "a1".repeat(32)
 }
 
-fn owned_room() -> (DesktopTree, String) {
+fn owned_workspace() -> (DesktopTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(91), "Sampled authority");
     workspace.set_owner(owner());
     workspace.effect_receipts = (0..RECEIPTS)
@@ -161,20 +161,20 @@ fn owned_room() -> (DesktopTree, String) {
             completed_at: 0,
         })
         .collect();
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let tree = DesktopTree {
         active: WorkspaceId(91),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
-    (tree, room)
+    (tree, workspace_id)
 }
 
-fn write_surface(room: &str) -> PublishedSurface {
+fn write_surface(workspace: &str) -> PublishedSurface {
     PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.test".into(),
-        route: CrdtRoute::record("so.tilo.test", room, "record-a"),
+        route: CrdtRoute::record("so.tilo.test", workspace, "record-a"),
         actions: vec![PublishedAction {
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
@@ -217,10 +217,10 @@ fn invoke_request() -> InvokeRequest {
 }
 
 /// A broker over `authority` with one live application publishing a
-/// Write action in `room`, and the caller it is offered to.
+/// Write action in `workspace`, and the caller it is offered to.
 fn invocation_fixture(
     authority: &Arc<SampledAuthority>,
-    room: &str,
+    workspace: &str,
 ) -> (
     Arc<AppBrokerState>,
     Caller,
@@ -231,10 +231,10 @@ fn invocation_fixture(
         HostServices::default(),
     );
     let state = Arc::clone(broker.state());
-    state.replace_published_surfaces_for_test(vec![write_surface(room)]);
+    state.replace_published_surfaces_for_test(vec![write_surface(workspace)]);
     let receiver = state.capture_invocations_for_test(7);
     let caller = Caller::local_person(owner())
-        .in_room(room.to_owned())
+        .in_room(workspace.to_owned())
         .in_new_execution();
     authority.reset();
     (state, caller, receiver)
@@ -242,7 +242,7 @@ fn invocation_fixture(
 
 #[test]
 fn the_heap_meter_sees_one_copy_of_the_receipt_history() {
-    let (tree, _) = owned_room();
+    let (tree, _) = owned_workspace();
     meter_start();
     let copy = tree.clone();
     let copied = meter_stop();
@@ -259,9 +259,9 @@ fn the_heap_meter_sees_one_copy_of_the_receipt_history() {
 
 #[test]
 fn action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot() {
-    let (tree, room) = owned_room();
+    let (tree, workspace) = owned_workspace();
     let authority = SampledAuthority::new(tree);
-    let (state, caller, mut app) = invocation_fixture(&authority, &room);
+    let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
 
     meter_start();
     let admitted = state
@@ -288,9 +288,9 @@ fn action_host_invocation_admission_samples_authority_once_without_an_owned_snap
 
 #[test]
 fn admission_decides_on_one_consistent_sample() {
-    let (tree, room) = owned_room();
+    let (tree, workspace) = owned_workspace();
     let authority = SampledAuthority::new(tree);
-    let (state, caller, mut app) = invocation_fixture(&authority, &room);
+    let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
     // The caller is offered the action on the first sample; ownership moves
     // away just before the admission reads authority again.
     authority.revise_before_sample(
@@ -388,14 +388,14 @@ impl wire::DirectorySource for WideDirectory {
     }
 }
 
-/// Query one page of the wide directory in `room` as `actor`.
+/// Query one page of the wide directory in `workspace` as `actor`.
 #[allow(
     clippy::future_not_send,
     reason = "the directory registry is Rc-backed and driven on the test's LocalSet, like production"
 )]
 async fn query_wide_page(
     authority: &Arc<SampledAuthority>,
-    room: &str,
+    workspace: &str,
     actor: &BrokerActor,
 ) -> (runtime_collab::ActionDirectoryPage, usize) {
     let fanout = Arc::new(FanoutState::new());
@@ -408,7 +408,7 @@ async fn query_wide_page(
         None,
         HostServices::default(),
     );
-    let route = CrdtRoute::record("so.tilo.atlas", room, "atlas");
+    let route = CrdtRoute::record("so.tilo.atlas", workspace, "atlas");
     let directories = LocalActionDirectoryRegistry::new(bridge_rx);
     directories.directories.borrow_mut().insert(
         41,
@@ -427,7 +427,7 @@ async fn query_wide_page(
         .query_action_directory_for_actor(
             &directories,
             actor,
-            room,
+            workspace,
             &runtime_collab::ActionDirectoryQuery {
                 peer_id: 41,
                 revision: String::new(),
@@ -450,11 +450,11 @@ async fn query_wide_page(
 async fn directory_page_samples_authority_once_regardless_of_rows() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let (tree, room) = owned_room();
+            let (tree, workspace) = owned_workspace();
             let authority = SampledAuthority::new(tree);
 
             let (page, requested) =
-                query_wide_page(&authority, &room, &BrokerActor::person(owner())).await;
+                query_wide_page(&authority, &workspace, &BrokerActor::person(owner())).await;
             assert_eq!(page.rows.len(), PAGE_ROWS, "the owner sees every row");
             assert_eq!(authority.samples(), 1);
             assert_eq!(authority.owned_snapshots(), 0);
@@ -464,7 +464,7 @@ async fn directory_page_samples_authority_once_regardless_of_rows() {
             );
 
             let (page, requested) =
-                query_wide_page(&authority, &room, &BrokerActor::person("stranger")).await;
+                query_wide_page(&authority, &workspace, &BrokerActor::person("stranger")).await;
             assert!(page.rows.is_empty(), "a stranger sees no row");
             assert_eq!(authority.samples(), 1);
             assert_eq!(authority.owned_snapshots(), 0);

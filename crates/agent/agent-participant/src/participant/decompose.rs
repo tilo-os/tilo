@@ -293,7 +293,7 @@ impl AgentParticipant {
             |(_, descriptors): &(DocumentRoute, Vec<ActionDescriptor>)| !descriptors.is_empty(),
         );
         context.previews.retain(|(app, _)| item_app(app));
-        // An item's app of which neither the agent nor the room holds a
+        // An item's app of which neither the agent nor the workspace holds a
         // record is offered as a new one, as the task's first plan would
         // be, though the item may not name it.
         let held = |app: &str| {

@@ -4,12 +4,12 @@ use std::os::unix::fs::PermissionsExt as _;
 #[test]
 fn the_channel_state_key_file_is_created_once_owner_only() {
     let directory = tempfile::tempdir().unwrap();
-    let room = RoomId::new();
+    let workspace_id = RoomId::new();
     let path = directory.path().join(CHANNEL_STATE_KEY);
-    vault_key(directory.path(), room, IdentityStorage::Files).unwrap();
+    vault_key(directory.path(), workspace_id, IdentityStorage::Files).unwrap();
     let first = std::fs::read(&path).unwrap();
     assert_eq!(first.len(), 32);
-    vault_key(directory.path(), room, IdentityStorage::Files).unwrap();
+    vault_key(directory.path(), workspace_id, IdentityStorage::Files).unwrap();
     assert_eq!(
         std::fs::read(&path).unwrap(),
         first,
@@ -19,7 +19,7 @@ fn the_channel_state_key_file_is_created_once_owner_only() {
     assert_eq!(mode & 0o077, 0, "the key is owner-only");
     std::fs::write(&path, b"short").unwrap();
     assert!(
-        vault_key(directory.path(), room, IdentityStorage::Files).is_err(),
+        vault_key(directory.path(), workspace_id, IdentityStorage::Files).is_err(),
         "a damaged key is refused, never replaced"
     );
 }
@@ -31,11 +31,11 @@ mod pump {
     use collab_types::ChannelId;
     use std::time::Instant;
     use tilo_action_broker::{
-        channel_encryption::testing::{Directory, Endpoint, Policy, Room, key, public},
+        channel_encryption::testing::{Directory, Endpoint, Policy, Workspace, key, public},
         collab_core::BrokerChannels,
     };
 
-    /// Device `seed`'s channel service in a room device `governor` governs.
+    /// Device `seed`'s channel service in a workspace device `governor` governs.
     fn service((seed, governor): (u8, u8), dir: &Path) -> ChannelEncryption {
         ChannelEncryption::open(
             ChannelEncryptionConfig {
@@ -52,9 +52,9 @@ mod pump {
         .unwrap()
     }
 
-    /// A pump on endpoint `id` of `room`, woken as `channels::open` wires it.
+    /// A pump on endpoint `id` of `workspace`, woken as `channels::open` wires it.
     fn parked(
-        room: &Arc<Room>,
+        workspace: &Arc<Workspace>,
         room_id: RoomId,
         id: usize,
         service: ChannelEncryption,
@@ -64,15 +64,20 @@ mod pump {
         let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
         let pump = spawn_pump(
             access.clone(),
-            Arc::new(Endpoint::join(room, room_id, id)),
+            Arc::new(Endpoint::join(workspace, room_id, id)),
             Arc::clone(&wake),
         )
         .unwrap();
         (access, wake, pump)
     }
 
-    fn queued(room: &Room, id: usize) -> usize {
-        room.queues.lock().unwrap().get(&id).map_or(0, Vec::len)
+    fn queued(workspace: &Workspace, id: usize) -> usize {
+        workspace
+            .queues
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map_or(0, Vec::len)
     }
 
     /// The pump, and on Linux its thread once it has parked: with no live
@@ -94,45 +99,45 @@ mod pump {
 
     #[test]
     fn a_first_channel_is_announced_without_waiting_for_a_timer() {
-        let room = Arc::new(Room::default());
+        let workspace = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
-        let listener = Endpoint::join(&room, room_id, 1);
+        let listener = Endpoint::join(&workspace, room_id, 1);
         let ((access, _, _pump), _) =
-            parked_thread(|| parked(&room, room_id, 0, service((1, 1), dir.path())));
-        assert_eq!(queued(&room, listener.id), 0);
+            parked_thread(|| parked(&workspace, room_id, 0, service((1, 1), dir.path())));
+        assert_eq!(queued(&workspace, listener.id), 0);
 
         // Parked without a timer: only the poke the new channel gives can
         // announce it.
         access.access(room_id, ChannelId::new());
         tilo_test_env::wait_until(
             "the parked pump to announce the new channel's genesis",
-            || queued(&room, listener.id) > 0,
+            || queued(&workspace, listener.id) > 0,
         );
     }
 
     #[test]
     fn arriving_governance_wakes_a_parked_pump() {
-        let room = Arc::new(Room::default());
+        let workspace = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let governor_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
         let ((_access, wake, _pump), tid) =
-            parked_thread(|| parked(&room, room_id, 0, service((2, 1), member_dir.path())));
+            parked_thread(|| parked(&workspace, room_id, 0, service((2, 1), member_dir.path())));
 
-        let governing = Endpoint::join(&room, room_id, 1);
+        let governing = Endpoint::join(&workspace, room_id, 1);
         let mut governor = service((1, 1), governor_dir.path());
         governor.access(room_id, ChannelId::new(), Instant::now());
         governor.pump(&governing, Instant::now(), 1_000);
-        assert!(queued(&room, 0) > 0, "the governor announced nothing");
+        assert!(queued(&workspace, 0) > 0, "the governor announced nothing");
         assert!(
-            tid.is_none_or(|tid| tilo_test_env::idle::blocked(&tid)) && queued(&room, 0) > 0,
+            tid.is_none_or(|tid| tilo_test_env::idle::blocked(&tid)) && queued(&workspace, 0) > 0,
             "the parked pump ran without a poke"
         );
 
         wake.poke();
         tilo_test_env::wait_until("the poked pump to read the arrived governance", || {
-            queued(&room, 0) == 0
+            queued(&workspace, 0) == 0
         });
     }
 
@@ -141,12 +146,12 @@ mod pump {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_idle_pump_with_no_channel_is_never_scheduled() {
-        let room = Arc::new(Room::default());
+        let workspace = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
         let ((access, _, _pump), tid) =
             tilo_test_env::idle::spawned_thread("tilo-runtime-ch", || {
-                parked(&room, room_id, 0, service((1, 1), dir.path()))
+                parked(&workspace, room_id, 0, service((1, 1), dir.path()))
             });
         assert!(!access.has_live_channels());
         tilo_test_env::idle::assert_stays_asleep(&tid, "channel pump");
@@ -158,9 +163,9 @@ mod keychain {
     use super::*;
     use tilo_secrets::{Protection, Secret, SecretBackend, SecretError};
 
-    fn stored(room: RoomId) -> Option<Vec<u8>> {
+    fn stored(workspace_id: RoomId) -> Option<Vec<u8>> {
         tilo_secrets::SecretStore::for_app("so.tilo.runtime")
-            .get_blocking(&format!("channel-state-v1.{room}"))
+            .get_blocking(&format!("channel-state-v1.{workspace_id}"))
             .unwrap()
             .map(|secret| secret.expose().to_vec())
     }
@@ -207,17 +212,17 @@ mod keychain {
     fn a_conflicting_or_refusing_keychain_fails_closed_and_keeps_the_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(CHANNEL_STATE_KEY);
-        let room = RoomId::new();
+        let workspace_id = RoomId::new();
         {
             let _keychain = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
-            vault_key(directory.path(), room, IdentityStorage::Platform).unwrap();
+            vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap();
             std::fs::write(&path, [9; 32]).unwrap();
-            let error = vault_key(directory.path(), room, IdentityStorage::Platform).unwrap_err();
+            let error = vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
             assert!(error.to_string().contains("different"), "{error}");
         }
         {
             let _keychain = tilo_secrets::scope_thread(std::sync::Arc::new(Locked));
-            let error = vault_key(directory.path(), room, IdentityStorage::Platform).unwrap_err();
+            let error = vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         }
         assert_eq!(std::fs::read(&path).unwrap(), [9; 32]);

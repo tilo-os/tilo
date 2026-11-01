@@ -1,7 +1,7 @@
 //! The person's own confirmation for someone acting for them.
 //!
 //! An agent, or an application, never confirms an action by its own word:
-//! where an action asks for confirmation, or the room's grants let the
+//! where an action asks for confirmation, or the workspace's grants let the
 //! caller take it only after asking, the person who admitted the
 //! connection is asked on their own device, on a sheet only the host draws.
 //! While they decide, the view the action would run in shows the caller
@@ -36,19 +36,19 @@ pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
 }
 
 /// The Store disclosure `request` puts to the person, signed as `caller`'s
-/// person or this device's in `room`.
+/// person or this device's in `workspace`.
 ///
 /// # Errors
 /// No identity to sign with, or an `operation` that does not decode: the
 /// request is refused with why.
 fn store_disclosure(
     caller: &Caller,
-    room: &str,
+    workspace: &str,
     request: &InvokeRequest,
 ) -> Result<crate::app_actions::ModerationConsentPreview, ActionHostError> {
     let signing_key = match caller.user_public_key() {
         Some(key) => *key,
-        None => tilo_identity_host::broker::trusted_current_device(room)
+        None => tilo_identity_host::broker::trusted_current_device(workspace)
             .map(|(_, certificate)| certificate.user_public_key)
             .map_err(|error| ActionHostError::Unavailable {
                 reason: format!("no identity to sign the Store disclosure with: {error}"),
@@ -157,13 +157,13 @@ impl AppBrokerState {
     pub(crate) fn witness_binding(
         &self,
         actor: &str,
-        room: &str,
+        workspace: &str,
         request: &InvokeRequest,
     ) -> super::WitnessBinding {
         super::WitnessBinding {
             actor: actor.into(),
             provider: request.target.provider.clone(),
-            room: room.into(),
+            workspace: workspace.into(),
             revision: request.revision.clone(),
             publication: self.witness_publication(&request.target.provider),
             invocation: request.invocation,
@@ -183,7 +183,7 @@ impl AppBrokerState {
         super::WitnessBinding {
             actor: actor.into(),
             provider: offered.0.peer_id.to_string(),
-            room: offered.0.route.cluster_id.clone(),
+            workspace: offered.0.route.cluster_id.clone(),
             revision: None,
             publication: self.witness_publication(&offered.0.peer_id.to_string()),
             invocation,
@@ -274,7 +274,7 @@ impl AppBrokerState {
         let question = Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", uuid::Uuid::new_v4()),
-                room: run.cluster_id.clone(),
+                workspace: run.cluster_id.clone(),
                 person: binding.starter.ok_or("native task starter absent")?,
                 app_id: run.agent_id.clone(),
                 target_app: app.into(),
@@ -448,7 +448,7 @@ impl AppBrokerState {
     fn witness_directory(
         &self,
         provider: &str,
-        room: &str,
+        workspace: &str,
         revision: Option<&str>,
     ) -> Option<super::ActionDirectoryRoot> {
         // A directory's contents can move without replacing its root.
@@ -460,9 +460,9 @@ impl AppBrokerState {
             let peer = provider.parse::<u64>().ok()?;
             self.action_directory_roots()
                 .into_iter()
-                .find(|candidate| candidate.peer_id == peer && candidate.cluster_id == room)?
+                .find(|candidate| candidate.peer_id == peer && candidate.cluster_id == workspace)?
         };
-        (directory.cluster_id == room).then_some(directory)
+        (directory.cluster_id == workspace).then_some(directory)
     }
 
     /// The question `request` puts to `person`: the action as the catalogue
@@ -475,11 +475,11 @@ impl AppBrokerState {
         person: &str,
         request: &InvokeRequest,
     ) -> Result<Option<Question>, ActionHostError> {
-        let Some(room) = caller.room() else {
+        let Some(workspace) = caller.room() else {
             return Ok(None);
         };
-        let actor = self.caller_actor(caller, room);
-        let binding = self.witness_binding(actor.id(), room, request);
+        let actor = self.caller_actor(caller, workspace);
+        let binding = self.witness_binding(actor.id(), workspace, request);
         let provider = request.target.provider.as_str();
         let address = &request.target.address;
         // The action as the catalogue offers it, or, for an application
@@ -516,7 +516,7 @@ impl AppBrokerState {
             )
         } else {
             let Some(directory) =
-                self.witness_directory(provider, room, request.revision.as_deref())
+                self.witness_directory(provider, workspace, request.revision.as_deref())
             else {
                 return Ok(None);
             };
@@ -552,14 +552,14 @@ impl AppBrokerState {
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
         let moderation = if requires_store_witness(&app_id, &address.action) {
-            Some(store_disclosure(caller, room, request)?)
+            Some(store_disclosure(caller, workspace, request)?)
         } else {
             None
         };
         Ok(Some(Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", request.invocation.0),
-                room: room.to_owned(),
+                workspace: workspace.to_owned(),
                 person: person.to_owned(),
                 app_id: asker,
                 target_app: app_id,

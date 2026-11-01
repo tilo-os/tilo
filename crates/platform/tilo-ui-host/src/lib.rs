@@ -2,7 +2,7 @@
 //!
 //! A tilolang app's views run in an app instance (`tilolang_tilo::instance`), which holds the
 //! data and sends its window component patches (`tilo_render_protocol::patch`). This crate is
-//! the other half, the one the room's UI host runs for every window: it keeps a copy of each
+//! the other half, the one the workspace's UI host runs for every window: it keeps a copy of each
 //! view's tree, composes the window's one shell from them, builds and reconciles the toolkit's
 //! widgets through the one generic adapter, and reports what the person did. Text is edited in
 //! the toolkit's own fields, so typing shows on the next frame; the app hears of it as a splice.

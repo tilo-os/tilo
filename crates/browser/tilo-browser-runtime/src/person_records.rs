@@ -4,7 +4,7 @@
 //!
 //! Every mount of the page keeps them in the store of the profile it shows,
 //! and one writer holds each app's records for all of them: the person's
-//! records are the same whichever room a window is open in, so two
+//! records are the same whichever workspace a window is open in, so two
 //! desktops of one page must not open them twice. The page writes them out
 //! with its other records ([`flush`]).
 

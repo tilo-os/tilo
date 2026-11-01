@@ -1,5 +1,5 @@
 //! A person's devices as a test runs them: each an identified actor on a
-//! loopback endpoint with its own room host open, as every desktop's is,
+//! loopback endpoint with its own workspace host open, as every desktop's is,
 //! keeping a session with each of the person's devices it is told of
 //! ([`crate::NetCmd::Connect`]).
 use std::path::Path;

@@ -4,7 +4,7 @@
 //! database, a VM image) while other devices read it (`storage.md` §11.2).
 //! Leases travel with the namespace, so every peer that sees a file also
 //! sees who holds its lease, in causal order with the file's own changes.
-//! Each lease is one root-level scalar keyed by record id. A room's lease
+//! Each lease is one root-level scalar keyed by record id. A workspace's lease
 //! authority (its always-on host) grants free leases one at a time; a
 //! device that cannot reach it takes a lease optimistically. Concurrent
 //! writes of the scalar are resolved by content, the same way on every
@@ -40,7 +40,7 @@ pub struct WriteLease {
     /// The lease lapses at this time (Unix ms) unless renewed. A released
     /// lease keeps its holder and epoch with an expiry in the past.
     pub expires_ms: u64,
-    /// Granted by the room's lease authority, rather than taken by a device
+    /// Granted by the workspace's lease authority, rather than taken by a device
     /// that could not reach it.
     pub granted: bool,
 }
@@ -208,7 +208,7 @@ impl Namespace {
             .max_by_key(|f| (f.epoch, f.holder))
     }
 
-    /// The room's lease authority. Two claims resolve to the greater key.
+    /// The workspace's lease authority. Two claims resolve to the greater key.
     pub fn lease_authority(&self) -> Option<[u8; 32]> {
         all_values::<[u8; 32]>(self, AUTHORITY_KEY)
             .into_iter()

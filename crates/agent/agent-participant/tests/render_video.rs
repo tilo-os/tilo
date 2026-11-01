@@ -27,7 +27,7 @@ use tilo_content::ContentStore;
 use video_editor::Project;
 use video_editor::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const VIDEO: &str = "so.tilo.video-editor";
 
 /// Whether this host renders; a test that needs it says so otherwise.
@@ -80,19 +80,19 @@ fn timeline(source: Option<&str>) -> Project {
     project
 }
 
-/// `project` held for an agent, lent `room`: a new record the agent loads
+/// `project` held for an agent, lent `workspace`: a new record the agent loads
 /// the project into through the door, as opening a project file does.
-fn agents_record(project: &Project, room: &ContentStore) -> ConfinedReplica {
+fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
     let agent = ConfinedReplica::open(
         &catalogue(),
         VIDEO,
-        ROOM,
+        WORKSPACE,
         "editor",
         &ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap()
-    .lending(room.clone());
+    .lending(workspace.clone());
     let load = offered(&agent, "field-edit").expect("field edits are offered");
     let edit = serde_json::json!({ "edit": video_editor::resource::load_project(project) });
     agent
@@ -141,8 +141,8 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
     if !renders() {
         return;
     }
-    let room = ContentStore::memory();
-    let agent = agents_record(&timeline(None), &room);
+    let workspace = ContentStore::memory();
+    let agent = agents_record(&timeline(None), &workspace);
     let export = offered(&agent, "export-video-content").unwrap().address;
     let ask = arguments(serde_json::json!({ "width": 320, "height": 180, "fps": 24 }));
     let first = agent
@@ -171,7 +171,7 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
         "the export states the facts of the version it rendered"
     );
     let hash = tilo_actions::content_hash(address).unwrap();
-    let video = room.read(hash).expect("the room keeps the video");
+    let video = workspace.read(hash).expect("the workspace keeps the video");
     assert_eq!(video.get(4..8), Some(&b"ftyp"[..]));
     let again = agent.invoke(&export, &ask, true).unwrap();
     assert_eq!(
@@ -232,8 +232,8 @@ fn a_still_is_drawn_on_the_host_as_a_png_kept_as_content() {
     if !renders() {
         return;
     }
-    let room = ContentStore::memory();
-    let agent = agents_record(&timeline(None), &room);
+    let workspace = ContentStore::memory();
+    let agent = agents_record(&timeline(None), &workspace);
     let frame = offered(&agent, "view-frame-content").unwrap().address;
     let output = agent
         .invoke(
@@ -248,27 +248,27 @@ fn a_still_is_drawn_on_the_host_as_a_png_kept_as_content() {
         (Some(160), Some(90))
     );
     let hash = tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
-    let png = room.read(hash).unwrap();
+    let png = workspace.read(hash).unwrap();
     assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 }
 
 #[test]
-fn a_render_of_content_the_room_lacks_or_a_size_too_large_is_refused_before_rendering() {
+fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before_rendering() {
     if !renders() {
         return;
     }
-    let room = ContentStore::memory();
+    let workspace = ContentStore::memory();
     let missing = format!("tilo.content:{}", "ab".repeat(32));
-    let agent = agents_record(&timeline(Some(&missing)), &room);
+    let agent = agents_record(&timeline(Some(&missing)), &workspace);
     let export = offered(&agent, "export-video-content").unwrap().address;
     match agent.invoke(&export, &serde_json::Map::new(), true) {
         Err(DoorError::Unavailable { code, reason }) => {
             assert_eq!(code, "render_refused");
             assert!(reason.contains("does not hold"), "{reason}");
         }
-        other => panic!("a source the room lacks is refused: {other:?}"),
+        other => panic!("a source the workspace lacks is refused: {other:?}"),
     }
-    let plain = agents_record(&timeline(None), &room);
+    let plain = agents_record(&timeline(None), &workspace);
     let too_big = arguments(serde_json::json!({ "width": 3840, "height": 2160 }));
     assert!(matches!(
         plain.invoke(&export, &too_big, true),
@@ -278,15 +278,15 @@ fn a_render_of_content_the_room_lacks_or_a_size_too_large_is_refused_before_rend
 
 /// One agent brings footage into a new project and places it on V1, the
 /// lane a new project lacks until a clip names it; another participant's
-/// replica of the same record, on the room's content, views a frame of it.
+/// replica of the same record, on the workspace's content, views a frame of it.
 #[test]
 fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
     if !renders() {
         return;
     }
-    let room = ContentStore::memory();
-    // The footage: a second of a title, rendered and kept in the room.
-    let maker = agents_record(&timeline(None), &room);
+    let workspace = ContentStore::memory();
+    // The footage: a second of a title, rendered and kept in the workspace.
+    let maker = agents_record(&timeline(None), &workspace);
     let export = offered(&maker, "export-video-content").unwrap().address;
     let made = maker
         .invoke(
@@ -300,13 +300,13 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
     let editor = ConfinedReplica::open(
         &catalogue(),
         VIDEO,
-        ROOM,
+        WORKSPACE,
         "editor",
         &ReplicaActor::Agent,
         Seed::New,
     )
     .unwrap()
-    .lending(room.clone());
+    .lending(workspace.clone());
     let import = offered(&editor, "import-content").unwrap().address;
     editor
         .invoke(
@@ -332,7 +332,7 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
     let reviewer = ConfinedReplica::open(
         &catalogue(),
         VIDEO,
-        ROOM,
+        WORKSPACE,
         "reviewer",
         &ReplicaActor::Agent,
         Seed::Existing {
@@ -341,7 +341,7 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         },
     )
     .unwrap()
-    .lending(room.clone());
+    .lending(workspace.clone());
     let frame = offered(&reviewer, "view-frame-content").unwrap().address;
     let answer = reviewer
         .invoke(
@@ -353,6 +353,6 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         .value
         .unwrap();
     let hash = tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
-    let png = room.read(hash).expect("the room keeps the frame");
+    let png = workspace.read(hash).expect("the workspace keeps the frame");
     assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 }

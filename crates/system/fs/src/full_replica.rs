@@ -53,7 +53,7 @@ pub struct HomePeerBundle {
     pub principals: Vec<String>,
     /// Shell/relay workspace shards backed by this filesystem workspace.
     /// A desktop may attach one filesystem tree to several collaboration
-    /// rooms, so this explicit mapping is authoritative for relay binding.
+    /// workspaces, so this explicit mapping is authoritative for relay binding.
     #[serde(default, with = "relay_workspace_ids_serde")]
     pub relay_workspace_ids: Vec<u64>,
 }
@@ -85,7 +85,7 @@ mod relay_workspace_ids_serde {
 /// The one configuration file installed on a home peer.
 ///
 /// Tilo currently has one global Files namespace and one certified filesystem
-/// transport identity per device. Shell rooms are mapped through
+/// transport identity per device. Workspaces are mapped through
 /// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
 /// bundles would bind competing endpoints under that same certified `NodeId`.
 /// Reject that unsafe topology before any worker starts.

@@ -1,4 +1,4 @@
-//! A renamed app keeps using the record of the earliest id it had (`<room>#app:<earlier id>`),
+//! A renamed app keeps using the record of the earliest id it had (`<workspace>#app:<earlier id>`),
 //! where it is: its launch joins that channel as its own and works on it as itself.
 //!
 //! Only an id the launcher's catalogue believes the app had counts: the same publisher signed it

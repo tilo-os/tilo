@@ -1162,7 +1162,7 @@ impl Rooms {
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self
-                    .room(&tilo_peer_state::join_ledger::invitation_room(
+                    .room(&tilo_peer_state::join_ledger::invitation_workspace(
                         &invitation,
                         now,
                     )?)

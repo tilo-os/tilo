@@ -2,8 +2,8 @@
 //! may do right now, never beyond its own grant, never governing the room.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, KindSet, Level, Refusal, Role, RoomPolicy, Rule,
-    Standing, Subject, TreePath, bot,
+    ActionKind, Answer, Authority, Context, KindSet, Level, Refusal, Role, Rule, Standing, Subject,
+    TreePath, WorkspacePolicy, bot,
     roles::{self, governance},
 };
 
@@ -57,8 +57,8 @@ fn program_rules() -> Vec<Rule> {
     ]
 }
 
-fn room_with_bot(installer: &str, installer_role: Option<Role>) -> RoomPolicy {
-    let mut room = RoomPolicy::new(ROOM, OWNER);
+fn room_with_bot(installer: &str, installer_role: Option<Role>) -> WorkspacePolicy {
+    let mut room = WorkspacePolicy::new(ROOM, OWNER);
     if let Some(role) = installer_role {
         room.members.insert(installer.to_owned(), role);
     }
@@ -70,7 +70,7 @@ fn room_with_bot(installer: &str, installer_role: Option<Role>) -> RoomPolicy {
     room
 }
 
-fn bot_of(room: RoomPolicy, installer: &str) -> Standing {
+fn bot_of(room: WorkspacePolicy, installer: &str) -> Standing {
     Standing::person(room, installer).with_bound(bot::bound(BOT))
 }
 
@@ -159,7 +159,7 @@ fn bot_rules_refuse_governance_and_other_rooms() {
     );
     assert_eq!(
         bot::scoped_rules(ROOM, &[other_room]),
-        Err(bot::BotRuleError::OutsideRoom)
+        Err(bot::BotRuleError::OutsideWorkspace)
     );
     let asking = Rule::new(
         TreePath::root().any(Level::Room).app("so.tilo.chat"),
@@ -192,7 +192,7 @@ fn bot_grants_carry_ids_installer_and_the_governance_deny() {
 fn privileged_governance_refuses_an_installer_who_is_only_asked() {
     // Bob is an Editor, and the owner gave Editors an Ask on install-bot and
     // pause-bot.
-    let mut room = RoomPolicy::new(ROOM, OWNER);
+    let mut room = WorkspacePolicy::new(ROOM, OWNER);
     room.members.insert(EDITOR.into(), Role::Editor);
     for (n, action) in [governance::INSTALL_BOT, governance::PAUSE_BOT]
         .into_iter()

@@ -19,8 +19,8 @@
 //! agents come back paused. A host shutting down leaves its agents'
 //! statuses as they were, so the next start resumes them.
 //!
-//! Each room's content (the bytes its records name by hash) is kept under
-//! `content/<room>` in the state directory, in this process: an agent's
+//! Each workspace's content (the bytes its records name by hash) is kept under
+//! `content/<workspace>` in the state directory, in this process: an agent's
 //! app workers are handed what an operation names and give back what they
 //! store ([`ConfinedReplica`](crate::ConfinedReplica)). A harness puts
 //! content in and reads it back by address ([`AgentHost::put_content`],
@@ -50,7 +50,7 @@ const STATE_FILE: &str = "agents.json";
 /// The least time between two writes of the state: a burst of changes (an
 /// agent's steps) is written as one.
 const WRITE_SPACING: Duration = Duration::from_millis(500);
-/// The directory under the state directory each room's content is kept in.
+/// The directory under the state directory each workspace's content is kept in.
 const CONTENT_DIR: &str = "content";
 
 /// Builds the apps an agent may open, on the agent's own thread.
@@ -89,7 +89,7 @@ struct Shared {
     stopping: AtomicBool,
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
-    /// Each room's content store, by the room's uuid.
+    /// Each workspace's content store, by the workspace's uuid.
     content: Mutex<BTreeMap<String, ContentStore>>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
@@ -104,18 +104,18 @@ struct Shared {
 type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 impl Shared {
-    /// The content store of `room`, under the state directory. One room's
+    /// The content store of `workspace`, under the state directory. One workspace's
     /// store never answers for another's.
-    fn room_content(&self, room: &str) -> Result<ContentStore, String> {
-        let room = uuid::Uuid::parse_str(room)
-            .map_err(|_| "the room is not a uuid".to_string())?
+    fn workspace_content(&self, workspace: &str) -> Result<ContentStore, String> {
+        let workspace = uuid::Uuid::parse_str(workspace)
+            .map_err(|_| "the workspace is not a uuid".to_string())?
             .hyphenated()
             .to_string();
         let mut stores = self.content.lock_recover();
         let store = stores
-            .entry(room)
-            .or_insert_with_key(|room| {
-                ContentStore::in_dir(self.state_dir.join(CONTENT_DIR).join(room))
+            .entry(workspace)
+            .or_insert_with_key(|workspace| {
+                ContentStore::in_dir(self.state_dir.join(CONTENT_DIR).join(workspace))
             })
             .clone();
         drop(stores);
@@ -281,33 +281,33 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Keep `bytes` in `room`'s content store, where its agents' apps read
+    /// Keep `bytes` in `workspace`'s content store, where its agents' apps read
     /// them, and answer their content address (`tilo.content:<hash>`), the
     /// way an operation's arguments name them.
     ///
     /// # Errors
     ///
-    /// Returns why the room is not one, or why the store refused the bytes.
-    pub fn put_content(&self, room: &str, bytes: &[u8]) -> Result<String, String> {
+    /// Returns why the workspace is not one, or why the store refused the bytes.
+    pub fn put_content(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
         let hash = self
             .shared
-            .room_content(room)?
+            .workspace_content(workspace)?
             .put(bytes)
             .map_err(|error| error.to_string())?;
         tilo_actions::content_resource(&hash).ok_or_else(|| "the store named no content".into())
     }
 
-    /// The content `room` keeps at `address` (a content address or a bare
+    /// The content `workspace` keeps at `address` (a content address or a bare
     /// hash): what was put, and what its agents' apps stored. `None` when
-    /// the room holds none there.
+    /// the workspace holds none there.
     #[must_use]
-    pub fn content(&self, room: &str, address: &str) -> Option<Vec<u8>> {
+    pub fn content(&self, workspace: &str, address: &str) -> Option<Vec<u8>> {
         let hash = tilo_actions::content_hash(address).unwrap_or(address);
         if !tilo_content::valid_hash(hash) {
             return None;
         }
         self.shared
-            .room_content(room)
+            .workspace_content(workspace)
             .ok()?
             .read(&hash.to_ascii_lowercase())
     }
@@ -349,16 +349,24 @@ fn spawn_agent(
         .get()
         .cloned()
         .ok_or("the agent host has not started")?;
-    let room = control
-        .room()
+    let workspace = control
+        .workspace()
         .or_else(|| identity.delegation.scope.rooms.first().cloned())
-        .ok_or("the agent has no room")?;
+        .ok_or("the agent has no workspace")?;
     let thread_shared = shared.clone();
     let name = format!("agent-{}", crate::control::agent_id(&identity.delegation));
     let thread_control = control.clone();
     let handle = std::thread::Builder::new()
         .name(name)
-        .spawn(move || run_agent(&thread_shared, endpoint, room, identity, &thread_control))
+        .spawn(move || {
+            run_agent(
+                &thread_shared,
+                endpoint,
+                workspace,
+                identity,
+                &thread_control,
+            );
+        })
         .map_err(|error| error.to_string())?;
     let mut threads = shared.threads.lock_recover();
     threads.retain(|(thread, _)| !thread.is_finished());
@@ -370,7 +378,7 @@ fn spawn_agent(
 fn run_agent(
     shared: &Shared,
     endpoint: HostEndpoint,
-    room: String,
+    workspace: String,
     identity: AgentIdentity,
     control: &Arc<AgentControl>,
 ) {
@@ -385,7 +393,7 @@ fn run_agent(
     // it plans with the host's model.
     let planner = Box::new(shared.model.planner());
     let catalogue = (shared.catalogue)();
-    let content = match shared.room_content(&room) {
+    let content = match shared.workspace_content(&workspace) {
         Ok(content) => content,
         Err(error) => {
             control.fail(&error);
@@ -403,7 +411,7 @@ fn run_agent(
         ParticipantConfig {
             host: endpoint.host,
             host_cert: endpoint.host_cert,
-            room,
+            workspace,
             content,
         },
         identity,
@@ -414,12 +422,12 @@ fn run_agent(
     ) {
         Ok(participant) => participant,
         Err(error) => {
-            tracing::warn!(agent = %agent_id, %error, "agent could not join its room");
+            tracing::warn!(agent = %agent_id, %error, "agent could not join its workspace");
             control.fail(&error);
             return;
         }
     };
-    tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its room");
+    tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its workspace");
     participant.run_until(None, |_| {
         shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
     });
@@ -428,7 +436,7 @@ fn run_agent(
         participant.pump();
     }
     participant.close();
-    tracing::info!(agent = %agent_id, "agent left its room");
+    tracing::info!(agent = %agent_id, "agent left its workspace");
 }
 
 fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
@@ -556,8 +564,8 @@ mod tests {
         host.shutdown();
     }
 
-    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    const OTHER_ROOM: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const OTHER_WORKSPACE: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
 
     fn agent_host(state: &Path) -> AgentHost {
         AgentHost::new(
@@ -569,32 +577,34 @@ mod tests {
     }
 
     #[test]
-    fn content_put_in_a_room_reads_back_by_its_address() {
+    fn content_put_in_a_workspace_reads_back_by_its_address() {
         let state = tempfile::tempdir().unwrap();
         let host = agent_host(state.path());
-        let address = host.put_content(ROOM, b"a picture's bytes").unwrap();
+        let address = host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
         let hash = tilo_actions::content_hash(&address).unwrap();
         assert_eq!(hash, tilo_content::hash_bytes(b"a picture's bytes"));
         assert_eq!(
-            host.content(ROOM, &address).as_deref(),
+            host.content(WORKSPACE, &address).as_deref(),
             Some(&b"a picture's bytes"[..])
         );
         assert_eq!(
-            host.content(&ROOM.to_uppercase(), hash).as_deref(),
+            host.content(&WORKSPACE.to_uppercase(), hash).as_deref(),
             Some(&b"a picture's bytes"[..]),
-            "a bare hash, in the room however its uuid is spelt"
+            "a bare hash, in the workspace however its uuid is spelt"
         );
         // Kept under the state directory: a host started again reads it.
         let again = agent_host(state.path());
-        assert!(again.content(ROOM, &address).is_some());
+        assert!(again.content(WORKSPACE, &address).is_some());
     }
 
     #[test]
-    fn one_rooms_content_is_not_anothers() {
+    fn one_workspaces_content_is_not_anothers() {
         let state = tempfile::tempdir().unwrap();
         let host = agent_host(state.path());
-        let address = host.put_content(ROOM, b"kept in one room").unwrap();
-        assert!(host.content(OTHER_ROOM, &address).is_none());
+        let address = host
+            .put_content(WORKSPACE, b"kept in one workspace")
+            .unwrap();
+        assert!(host.content(OTHER_WORKSPACE, &address).is_none());
         assert!(host.put_content("../escape", b"anything").is_err());
         assert!(host.content("../escape", &address).is_none());
     }
@@ -663,15 +673,15 @@ mod tests {
     }
 
     /// An agent whose work is done leaves nothing in the host's state
-    /// directory but its credentials and the room's content: no notes, no
+    /// directory but its credentials and the workspace's content: no notes, no
     /// facts, nothing read off a record. What it learned, it wrote where a
-    /// person would, in the room's records, which the state directory does
+    /// person would, in the workspace's records, which the state directory does
     /// not hold.
     #[test]
     fn the_host_keeps_credentials_and_content_and_nothing_learned() {
         let state = tempfile::tempdir().unwrap();
         let host = agent_host(state.path());
-        host.put_content(ROOM, b"a picture's bytes").unwrap();
+        host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
         // A grant survives a restart, which is the state file's whole job.
         let root = SigningKey::from_bytes(&[7; 32]);
         let expires_at = tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000);
@@ -679,7 +689,7 @@ mod tests {
             .add_grant(crate::control::tests::identity_until(&root, expires_at));
         host.flush();
 
-        // The credential file, and the one content address the room
+        // The credential file, and the one content address the workspace
         // holds: no file of any other kind anywhere under it.
         let kept = contents(&state.path().join(CONTENT_DIR));
         let address = tilo_content::hash_bytes(b"a picture's bytes");

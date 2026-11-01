@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 use crate::store::ContentStore;
 
-fn scope(room: &str, app: &str) -> BlobScope {
-    BlobScope::new(room, app).unwrap()
+fn scope(workspace: &str, app: &str) -> BlobScope {
+    BlobScope::new(workspace, app).unwrap()
 }
 
 struct OwnerAuthority {
@@ -33,8 +33,8 @@ fn action(hashes: Vec<String>, max_bytes: u64) -> (LegacyImportRequest, LegacyIm
     (
         LegacyImportRequest {
             source_store: "host-legacy".into(),
-            source_room: "old-room".into(),
-            destination_room: "new-room".into(),
+            source_workspace: "old-workspace".into(),
+            destination_workspace: "new-workspace".into(),
             hashes,
             max_bytes,
         },
@@ -75,30 +75,38 @@ async fn explicit_import_without_historical_provenance_is_new_durable_reachabili
     let source = DocumentMedia::new(source_store.clone());
     let destination = DocumentMedia::new(destination_store.clone());
     let hash = source
-        .store(&scope("old-room", "photos"), b"legacy bytes".to_vec())
+        .store(&scope("old-workspace", "photos"), b"legacy bytes".to_vec())
         .await
         .unwrap();
     let (request, approval) = action(vec![hash.to_hex()], 12);
     let (importer, _) = host(source.clone(), destination.clone(), &request, &approval);
     assert!(
         !destination
-            .contains(&scope("new-room", "photos"), hash)
+            .contains(&scope("new-workspace", "photos"), hash)
             .await
     );
     let permit = importer
         .permit(request.clone(), approval.clone(), Duration::from_secs(30))
         .unwrap();
     assert_eq!(importer.import(permit).await.unwrap(), 12);
-    assert!(source.contains(&scope("old-room", "photos"), hash).await);
-    assert!(!source.contains(&scope("new-room", "photos"), hash).await);
+    assert!(
+        source
+            .contains(&scope("old-workspace", "photos"), hash)
+            .await
+    );
+    assert!(
+        !source
+            .contains(&scope("new-workspace", "photos"), hash)
+            .await
+    );
     assert!(
         !destination
-            .contains(&scope("old-room", "photos"), hash)
+            .contains(&scope("old-workspace", "photos"), hash)
             .await
     );
     assert_eq!(
         destination
-            .read_range(scope("new-room", "photos"), hash, 0, 100)
+            .read_range(scope("new-workspace", "photos"), hash, 0, 100)
             .await,
         runtime_fs::blobs::ReadOutcome::Ready {
             bytes: b"legacy bytes".to_vec(),
@@ -117,7 +125,7 @@ async fn explicit_import_without_historical_provenance_is_new_durable_reachabili
     let destination = DocumentMedia::new(reopened.clone());
     assert!(
         destination
-            .contains(&scope("new-room", "photos"), hash)
+            .contains(&scope("new-workspace", "photos"), hash)
             .await
     );
     let (importer, _) = host(source.clone(), destination, &request, &approval);
@@ -125,7 +133,11 @@ async fn explicit_import_without_historical_provenance_is_new_durable_reachabili
         .permit(request, approval, Duration::from_secs(30))
         .unwrap();
     assert!(importer.import(replay).await.is_err());
-    assert!(source.contains(&scope("old-room", "photos"), hash).await);
+    assert!(
+        source
+            .contains(&scope("old-workspace", "photos"), hash)
+            .await
+    );
     reopened.shutdown().await.unwrap();
     source_store.shutdown().await.unwrap();
 }
@@ -135,7 +147,7 @@ async fn changed_custody_arguments_revocation_expiry_and_cross_host_permits_fail
     let source = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let destination = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let hash = source
-        .store(&scope("old-room", "photos"), vec![1])
+        .store(&scope("old-workspace", "photos"), vec![1])
         .await
         .unwrap();
     let (request, approval) = action(vec![hash.to_hex()], 1);
@@ -163,12 +175,12 @@ async fn changed_custody_arguments_revocation_expiry_and_cross_host_permits_fail
                 .is_err()
         );
     }
-    for field in ["source", "room", "destination", "hash", "limit"] {
+    for field in ["source", "workspace", "destination", "hash", "limit"] {
         let mut changed = request.clone();
         match field {
             "source" => changed.source_store = "foreign".into(),
-            "room" => changed.source_room = "other".into(),
-            "destination" => changed.destination_room = "other".into(),
+            "workspace" => changed.source_workspace = "other".into(),
+            "destination" => changed.destination_workspace = "other".into(),
             "hash" => changed.hashes = vec![Hash::new(b"guessed").to_hex()],
             _ => changed.max_bytes += 1,
         }
@@ -196,10 +208,14 @@ async fn changed_custody_arguments_revocation_expiry_and_cross_host_permits_fail
     assert!(other.import(wrong_host).await.is_err());
     assert!(
         !destination
-            .contains(&scope("new-room", "photos"), hash)
+            .contains(&scope("new-workspace", "photos"), hash)
             .await
     );
-    assert!(source.contains(&scope("old-room", "photos"), hash).await);
+    assert!(
+        source
+            .contains(&scope("old-workspace", "photos"), hash)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -207,7 +223,7 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
     let source = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let destination = DocumentMedia::new(Arc::new(ContentStore::memory()));
     let hash = source
-        .store(&scope("old-room", "photos"), vec![1; 5])
+        .store(&scope("old-workspace", "photos"), vec![1; 5])
         .await
         .unwrap();
     let unreferenced = source
@@ -228,7 +244,7 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
         assert!(importer.import(permit).await.is_err());
         assert!(
             !destination
-                .contains(&scope("new-room", "photos"), hash)
+                .contains(&scope("new-workspace", "photos"), hash)
                 .await
         );
     }
@@ -246,5 +262,9 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
                 .is_err()
         );
     }
-    assert!(source.contains(&scope("old-room", "photos"), hash).await);
+    assert!(
+        source
+            .contains(&scope("old-workspace", "photos"), hash)
+            .await
+    );
 }

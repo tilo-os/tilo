@@ -1,4 +1,4 @@
-//! Who put which content into which room: the attributions in
+//! Who put which content into which workspace: the attributions in
 //! `content-puts.jsonl`, beside the journal's records and under its
 //! single-writer lock. No bytes are kept here, only the attribution; the
 //! uploader's identity is never consulted for access.
@@ -8,8 +8,8 @@
 //! Once the appended lines would outgrow the snapshot, the next put rewrites
 //! the whole file through an atomic rename, so it stays bounded instead of
 //! growing by one line per put for the life of the device. A compaction keeps
-//! every attribution that still refers to content a room holds, asked through
-//! [`ContentHolds`], and drops the ones whose content no room holds any more.
+//! every attribution that still refers to content a workspace holds, asked through
+//! [`ContentHolds`], and drops the ones whose content no workspace holds any more.
 //!
 //! A put is answered only once its line is durable, so an appended line is an
 //! attribution whose put was answered. A line a failed write left half-made
@@ -36,15 +36,17 @@ pub(crate) struct ContentPutRecord {
     pub(crate) at: u64,
     /// The broker actor that put it (`agent:<id>`, a person's id).
     pub(crate) actor: String,
-    pub(crate) room: String,
+    /// Written as `room`: existing attribution files keep their exact lines.
+    #[serde(rename = "room")]
+    pub(crate) workspace: String,
     pub(crate) hash: String,
     pub(crate) len: u64,
 }
 
-/// Whether the room a put names still holds its content: what a compaction
+/// Whether the workspace a put names still holds its content: what a compaction
 /// keeps an attribution by.
 pub(crate) trait ContentHolds {
-    fn holds(&mut self, room: &str, hash: &str) -> bool;
+    fn holds(&mut self, workspace: &str, hash: &str) -> bool;
 }
 
 /// The file's first line: the attributions that still mattered when the file
@@ -72,7 +74,7 @@ pub(super) struct ContentPutsStore {
     /// The snapshot line, as last compacted.
     snapshot: Vec<u8>,
     /// The puts appended after it, which a compaction folds into the snapshot
-    /// so that it keeps the ones a room still holds.
+    /// so that it keeps the ones a workspace still holds.
     appended: Vec<ContentPutRecord>,
     /// Length of the snapshot plus every line appended after it, as staged.
     len: u64,
@@ -209,7 +211,7 @@ impl ContentPutsStore {
         for put in &self.appended {
             match kept
                 .iter_mut()
-                .find(|kept| kept.room == put.room && kept.hash == put.hash)
+                .find(|kept| kept.workspace == put.workspace && kept.hash == put.hash)
             {
                 Some(kept) => kept.clone_from(put),
                 None => kept.push(put.clone()),
@@ -219,7 +221,7 @@ impl ContentPutsStore {
     }
 
     /// The write `record` needs: one appended line, or a compaction of every
-    /// attribution a room still holds, this one included.
+    /// attribution a workspace still holds, this one included.
     fn put(
         &mut self,
         record: &ContentPutRecord,
@@ -242,13 +244,13 @@ impl ContentPutsStore {
         let mut kept: Vec<ContentPutRecord> = self
             .held()?
             .into_iter()
-            .filter(|put| holds.holds(&put.room, &put.hash))
+            .filter(|put| holds.holds(&put.workspace, &put.hash))
             .collect();
         // The put this compaction records, and one already kept for the same
-        // room and content: the later of the two times.
+        // workspace and content: the later of the two times.
         match kept
             .iter_mut()
-            .find(|put| put.room == record.room && put.hash == record.hash)
+            .find(|put| put.workspace == record.workspace && put.hash == record.hash)
         {
             Some(kept) => {
                 kept.at = kept.at.max(record.at);

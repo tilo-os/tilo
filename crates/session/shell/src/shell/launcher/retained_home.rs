@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]

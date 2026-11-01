@@ -105,7 +105,7 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
-/// Presence is a room signal, not the app's request: a publish the peer
+/// Presence is a workspace signal, not the app's request: a publish the peer
 /// refused is logged where it happened, and the request that carried the
 /// update still answers.
 async fn publish_presence(
@@ -2466,7 +2466,7 @@ struct ConnectedBroker {
 #[cfg(unix)]
 pub struct JoiningProbe {
     answer: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    room: tokio::sync::watch::Sender<Result<runtime_collab::RoomStatus, String>>,
+    room: tokio::sync::watch::Sender<Result<runtime_collab::WorkspaceStatus, String>>,
     sent: Box<dyn Fn() -> usize>,
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -2486,7 +2486,7 @@ impl JoiningProbe {
     /// The reason [`Self::refuse`] gives.
     pub const REFUSAL: &'static str = "fixture join gate dropped";
     /// The broker reports the room as `status` from now on.
-    pub fn set_room(&self, status: runtime_collab::RoomStatus) {
+    pub fn set_room(&self, status: runtime_collab::WorkspaceStatus) {
         let _ = self.room.send(Ok(status));
     }
     /// The broker cannot be asked how the room stands, and why.
@@ -3512,10 +3512,10 @@ enum InitStatus {
     Failed(runtime_portal::NotAvailable),
 }
 
-/// Report what holds up the pending join of the room `channel` names, as the
-/// broker says it ([`super::JoinHold`]): the room is waiting on this device,
-/// for each change of its status, or the broker cannot be asked. Ends once
-/// the room is ready or refused (the join itself then answers), or the
+/// Report what holds up the pending join of the workspace `channel` names, as
+/// the broker says it ([`super::JoinHold`]): the workspace is waiting on this
+/// device, for each change of its status, or the broker cannot be asked. Ends
+/// once the workspace is ready or refused (the join itself then answers), or the
 /// broker cannot be reached; the join is what ends the wait, never this.
 #[allow(
     clippy::future_not_send,
@@ -3526,22 +3526,25 @@ async fn report_join_hold(
     channel: &str,
     state: &BridgeState,
 ) {
-    let mut status = client.room_status(channel).await;
+    let mut status = client.workspace_status(channel).await;
     loop {
         match status {
-            Ok(runtime_collab::RoomStatus::Waiting { reason, detail }) => {
+            Ok(runtime_collab::WorkspaceStatus::Waiting { reason, detail }) => {
                 state.set_join_hold(Some(super::JoinHold::RoomWaiting {
                     reason: reason.clone(),
                     detail: detail.clone(),
                 }));
                 status = client
-                    .await_room(
+                    .await_workspace(
                         channel,
-                        &runtime_collab::RoomStatus::Waiting { reason, detail },
+                        &runtime_collab::WorkspaceStatus::Waiting { reason, detail },
                     )
                     .await;
             }
-            Ok(runtime_collab::RoomStatus::Ready | runtime_collab::RoomStatus::Refused(_)) => {
+            Ok(
+                runtime_collab::WorkspaceStatus::Ready
+                | runtime_collab::WorkspaceStatus::Refused(_),
+            ) => {
                 state.set_join_hold(None);
                 return;
             }
@@ -3889,7 +3892,7 @@ async fn drive_shovel(
                 // The join ends when the broker answers it or it fails, with
                 // the broker's reason; a broker that goes away fails it. No
                 // clock guesses that an answer is not coming: under load
-                // the broker's join, and the room's host behind it, take
+                // the broker's join, and the workspace's host behind it, take
                 // what they take. While it is pending the broker says what
                 // holds it up, which the owner shows.
                 let joined = {
@@ -7124,10 +7127,10 @@ mod tests {
         pub join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
         /// Refuse every ungated join, as a broker does for a revoked peer.
         pub join_refusal: Option<String>,
-        /// The room's status as the broker reports it, or why the broker
+        /// The workspace's status as the broker reports it, or why the broker
         /// cannot be asked; without it the host refuses to say.
         pub room_status:
-            Option<tokio::sync::watch::Receiver<Result<runtime_collab::RoomStatus, String>>>,
+            Option<tokio::sync::watch::Receiver<Result<runtime_collab::WorkspaceStatus, String>>>,
         pub committed_reads: Vec<runtime_collab::committed_document::Request>,
         pub media_commands: Vec<runtime_collab::native_media::Request>,
         pub media_active_fixture: bool,
@@ -7569,7 +7572,7 @@ mod tests {
         fn answer(self: &Rc<Self>, request: Operation) -> FakeAnswer {
             match request {
                 Operation::Join(join) => self.join(join),
-                Operation::Room { seen, .. } => {
+                Operation::Workspace { seen, .. } => {
                     let Some(mut status) = self.captures().room_status.clone() else {
                         return answered(Err("the fixture reports no room status".into()));
                     };
@@ -7578,9 +7581,9 @@ mod tests {
                             let now = status.borrow_and_update().clone();
                             match (now, &seen) {
                                 (Err(reason), _) => return Err(reason),
-                                (Ok(now), None) => return Ok(Reply::Room(now)),
+                                (Ok(now), None) => return Ok(Reply::Workspace(now)),
                                 (Ok(now), Some(seen)) if now != *seen => {
-                                    return Ok(Reply::Room(now));
+                                    return Ok(Reply::Workspace(now));
                                 }
                                 (Ok(_), Some(_)) => {}
                             }
@@ -9842,7 +9845,7 @@ mod tests {
     }
 
     /// A route the channel service answered as waiting, or as unavailable
-    /// (its room's governance unknown yet), is told when that changes: it is not asked
+    /// (its workspace's governance unknown yet), is told when that changes: it is not asked
     /// about on a timer while the broker pushes, and a pushed change asks.
     #[test]
     #[cfg(unix)]

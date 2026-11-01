@@ -331,7 +331,7 @@ impl TopBarSurface {
     /// Whether the compact bar on `bar`'s display steps aside for a
     /// fullscreen window there. The full bar steps aside on its own.
     fn suppressed(&self, bar: &Bar) -> bool {
-        !bar.place.full && self.placement.fullscreen.contains(&bar.place.display)
+        !bar.place.full && self.placement.fullscreen.contains(&Some(bar.place.display))
     }
 
     /// Bring the bar up to date with the desktop: its feed, its commands,
@@ -1091,7 +1091,7 @@ mod tests {
         assert_eq!(surface.bars.len(), 2);
         assert_eq!(surface.bars.iter().filter(|bar| bar.place.full).count(), 1);
         link.place(Placement {
-            fullscreen: vec![2],
+            fullscreen: vec![Some(2)],
             ..crate::fixture::placement(Some("displays"), (2560.0, 800.0))
         });
         surface.catch_up();

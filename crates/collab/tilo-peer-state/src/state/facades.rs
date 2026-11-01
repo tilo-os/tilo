@@ -8,28 +8,28 @@
 //! reaches the peer's core through it that the peer did not already expose.
 use super::StatePeer;
 
-/// The media-call governance of a peer's room, read side: the security
+/// The media-call governance of a peer's workspace, read side: the security
 /// metadata proofs and the admitted Chat bindings a call is checked against.
 #[derive(Clone, Copy)]
 pub struct PeerMediaGovernance<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// The media-call governance of a peer's room, write side: authoring the room
+/// The media-call governance of a peer's workspace, write side: authoring the workspace
 /// media policy and reconciling it with verified revocations.
 pub struct PeerMediaGovernanceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
 
-/// The workspace a peer's room governs, read side: who may read, name and
-/// write its checkpoints, run its tasks and administer it, and the roots its
-/// effect history and checkpoints currently stand at.
+/// What a peer's workspace governs, read side: who may read, name and write
+/// its checkpoints, run its tasks and administer it, and the roots its effect
+/// history and checkpoints currently stand at.
 #[derive(Clone, Copy)]
 pub struct PeerWorkspace<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// The workspace a peer's room governs, write side: effect receipts, checkpoint
+/// What a peer's workspace governs, write side: effect receipts, checkpoint
 /// and effect-history roots, task commands and membership commands.
 pub struct PeerWorkspaceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
@@ -48,7 +48,7 @@ pub struct PeerOutboxMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
 
-/// The room's membership and its governance, read side: who is a member,
+/// The workspace's membership and its governance, read side: who is a member,
 /// agent or bot and with what access, and the checks that verify a member's
 /// or owner's refresh against the admitted roster.
 #[derive(Clone, Copy)]
@@ -56,9 +56,9 @@ pub struct PeerGovernance<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// The room's membership and its governance, write side: inviting, removing,
+/// The workspace's membership and its governance, write side: inviting, removing,
 /// banning and re-roling members, admitting agents, installing delegations,
-/// editing grants, and naming the room.
+/// editing grants, and naming the workspace.
 pub struct PeerGovernanceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
@@ -78,37 +78,37 @@ pub struct PeerPublicationMut<'peer> {
 }
 
 impl StatePeer {
-    /// Read this peer's room membership and governance.
+    /// Read this peer's workspace membership and governance.
     #[must_use]
     pub fn governance(&self) -> PeerGovernance<'_> {
         PeerGovernance { peer: self }
     }
 
-    /// Author this peer's room membership and governance.
+    /// Author this peer's workspace membership and governance.
     #[must_use]
     pub fn governance_mut(&mut self) -> PeerGovernanceMut<'_> {
         PeerGovernanceMut { peer: self }
     }
 
-    /// Read this peer's room media governance.
+    /// Read this peer's workspace media governance.
     #[must_use]
     pub fn media(&self) -> PeerMediaGovernance<'_> {
         PeerMediaGovernance { peer: self }
     }
 
-    /// Author or reconcile this peer's room media governance.
+    /// Author or reconcile this peer's workspace media governance.
     #[must_use]
     pub fn media_mut(&mut self) -> PeerMediaGovernanceMut<'_> {
         PeerMediaGovernanceMut { peer: self }
     }
 
-    /// Check against, or read, the workspace this peer's room governs.
+    /// Check against, or read, the workspace this peer's workspace governs.
     #[must_use]
     pub fn workspace(&self) -> PeerWorkspace<'_> {
         PeerWorkspace { peer: self }
     }
 
-    /// Apply a workspace effect, task or membership command to this peer's room.
+    /// Apply a workspace effect, task or membership command to this peer's workspace.
     #[must_use]
     pub fn workspace_mut(&mut self) -> PeerWorkspaceMut<'_> {
         PeerWorkspaceMut { peer: self }

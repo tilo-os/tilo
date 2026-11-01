@@ -281,7 +281,6 @@ impl ShellOverlayHost {
             active_exposures: state.active_exposures().to_vec(),
             // Native presence has no spectator role yet.
             watching: 0,
-            top_bar: state.top_bar_presence(),
             own: Some(own),
             invite: tilo_desktop::chrome::Invite::when(state.may_invite_here()),
             waved: state.wave_notice.clone(),
@@ -343,7 +342,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             bars.iter()
                 .filter(|bar| !bar.full && state.fullscreen_covers_display(bar.display))
-                .map(|bar| bar.display)
+                .map(|bar| Some(bar.display))
                 .collect()
         });
         Placement { bars, fullscreen }

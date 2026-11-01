@@ -3,7 +3,7 @@
 use super::{
     AdmissionError, ArtifactKind, BTreeMap, ChannelState, Document, DocumentAdmission,
     DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpKind, ReadDoc,
-    Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
+    Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, workspace,
 };
 use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
@@ -44,11 +44,11 @@ impl StatePeer {
         else {
             return Err("retained local publication requires AppDocument".into());
         };
-        if cluster_id != &self.core.room
+        if cluster_id != &self.core.workspace
             || envelope.author.as_bytes() != &selected
             || *peer != peer_handle(&selected)
         {
-            return Err("retained local publication selected author or room mismatch".into());
+            return Err("retained local publication selected author or workspace mismatch".into());
         }
         collab_types::verify_op(envelope).map_err(err)?;
         let route = Route {
@@ -143,16 +143,16 @@ impl StatePeer {
         };
         let coverage = crate::coverage::entries(
             self.core
-                .room_doc
+                .workspace_doc
                 .as_deref()
-                .ok_or("missing room governance")?,
+                .ok_or("missing workspace governance")?,
         )?;
         let Some(coverage) = coverage.get(&crate::coverage::route_key(&route.app, &route.record))
         else {
             return Ok(false);
         };
         let accepted = snapshot.decoded()?;
-        Ok(coverage.room == self.core.room
+        Ok(coverage.workspace == self.core.workspace
             && coverage.app == route.app
             && coverage.record == route.record
             && self.signed_by_owner(&coverage.author)
@@ -392,7 +392,7 @@ impl PeerOutboxMut<'_> {
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: local.route.app,
-            cluster_id: candidate.core.room.clone(),
+            cluster_id: candidate.core.workspace.clone(),
             record_id: local.route.record,
             envelope: Box::new(renewal),
         };
@@ -409,8 +409,8 @@ fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
         return Err("local publication count limit".into());
     }
     messages.iter().try_fold(0usize, |total, message| {
-        let room = MAX_PUBLICATION_BYTES.saturating_sub(total);
-        crate::postcard_sink::encoded_len(message, room)
+        let workspace = MAX_PUBLICATION_BYTES.saturating_sub(total);
+        crate::postcard_sink::encoded_len(message, workspace)
             .map(|size| total.saturating_add(size))
             .map_err(|_| "local publication byte limit".into())
     })

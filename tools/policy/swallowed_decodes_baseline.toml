@@ -41,7 +41,6 @@
 "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs" = 1
 "crates/session/shell/src/shell/broker_services/file_clipboard/journal.rs" = 2
 "crates/session/shell/src/shell/catalogue.rs" = 2
-"crates/session/shell/src/shell/collab_broker.rs" = 1
 "crates/session/shell/src/shell/continuation.rs" = 2
 "crates/session/shell/src/shell/crash_notice.rs" = 1
 "crates/session/shell/src/shell/crash_records.rs" = 3

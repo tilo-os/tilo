@@ -541,7 +541,7 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
     // A commit waits for the open in its own future, instead of failing
     // closed or running without the owner.
     let pending = commit.commit(OwnerCommitRequest {
-        room: "not a room".into(),
+        workspace: "not a room".into(),
         operation: CommitOperation::RetiredAgentRuntime,
     });
     let (thread_id, commit_thread) = std::sync::mpsc::channel();
