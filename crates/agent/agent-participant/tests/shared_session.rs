@@ -79,7 +79,7 @@ use tilo_user_identity::{
 };
 
 use common::catalogue;
-use support::{Device, ROOM as WORKSPACE, TestHost, enrol, ready, start_peer, wait_for, workspace};
+use support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
