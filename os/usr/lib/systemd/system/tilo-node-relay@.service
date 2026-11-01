@@ -1,7 +1,7 @@
 # A node's relay for account %i's session: serves browsers (run --web), waits
 # for the person's page to install it with the provisioned token, certifies
-# the session beside it at the same time, and then governs the person's rooms
-# for their pages. Enable together with tilo-node-session@%i.path.
+# the session beside it at the same time, and then governs the person's
+# workspaces for their pages. Enable together with tilo-node-session@%i.path.
 [Unit]
 Description=Tilo node relay for %i's session
 After=network-online.target var-lib-tilo.mount tilo-node-session-key@%i.service

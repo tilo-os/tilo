@@ -25,13 +25,13 @@
 //            window whose every frame carries its number in black and white
 //            blocks (the session's `draw_code`)
 //   page     the desktop bundle (build.sh --bundle desktop) as a certified
-//            browser device of the same user in the same room, through the
+//            browser device of the same user in the same workspace, through the
 //            production peer.mjs and host.mjs, in Chrome (headless, over the
 //            DevTools protocol) or in Safari (--platform safari, over
 //            WebDriver: macOS, a logged-in user, `safaridriver --enable`
 //            once, and a person to accept the dev host's certificate)
 //
-// The room is one the host governs, as a shared workspace is: the page
+// It is a workspace the host governs, as a shared workspace is: the page
 // creates it and enters it as its owner's device, and the session enters it
 // as another, so its roles decide who drives the window.
 //
@@ -42,7 +42,7 @@
 //             first (a desktop once presented a frame for every picture
 //             of a window opened after another had closed)
 //   startup   the session starts its stream (grant, stream start) while the
-//             page shows the room's desktop: to the first presented picture
+//             page shows the workspace's desktop: to the first presented picture
 //             of the window, visible on the desktop
 //   warm-up   with --warm-up S (default 10 on SwiftShader, 0 on a GPU) the
 //             window streams S seconds more, judged but not timed: a software
@@ -314,26 +314,26 @@ try {
   const stage = name => { globalThis.harnessStage = name; };
   if (q.get('invite')) {
     // Another person, with a root of their own and an invitation: the
-    // room's owner admits them.
+    // workspace's owner admits them.
     stage('joining');
     const {createIdentity} = await import('./root-identity.mjs');
     const {identity} = await createIdentity({passkey: false});
     peer = await joinWorkspace({origin, invitation: q.get('invite'), identity, runtime: wasm, profile,
       displayName: label, label, pollMs: 250, onProgress: progress => stage('joining: ' + progress.phase)});
   } else {
-    // A device of the host's person, in a room the host governs (as a
-    // workspace in Tilo Cloud is): it creates the room when none is named,
+    // A device of the host's person, in a workspace the host governs (as a
+    // shared one in Tilo Cloud is): it creates it when none is named,
     // and enters it as its owner's device before working in it.
     const person = {origin, userPublicKey: q.get('user'), label, displayName: label, runtime: wasm, profile};
     let room = q.get('room');
     stage('certifying');
     const door = await connectPeer({...person, live: false});
     try {
-      stage('entering the room');
+      stage('entering the workspace');
       room ||= (await door.workspaces.create('Stream qualification')).room;
       await door.workspaces.enter(room);
     } finally { await door.dispose(); }
-    stage('connecting to the room');
+    stage('connecting to the workspace');
     peer = await connectPeer({...person, room});
   }
   globalThis.peer = peer;
@@ -815,7 +815,8 @@ async function until(page, expression, ms, what) {
   }
 }
 
-// The page's room phase, live plane (state, members, the carrier it took) and its live members.
+// The page's workspace phase, live plane (state, members, the carrier it took) and its live
+// members.
 const LIVE = `JSON.stringify({phase: globalThis.peer?.getSnapshot?.()?.phase ?? null,
   live: globalThis.peer?.live?.stats?.() ?? null, members: globalThis.peer?.live?.members?.() ?? null,
   room: JSON.stringify({...(globalThis.peer?.getSnapshot?.() ?? {}), records: undefined}).slice(0, 1500)})`;
@@ -876,7 +877,7 @@ async function main() {
       openPage(browser, {name, url, params: {origin, user: host.userPublicKey, profile: `stream-${randomUUID()}`, ...params}, viewport, page, relay});
     // The stream starts on a desktop already shown, with its live layer and
     // the legacy-window layer on it, so startup is the stream's own. The page
-    // creates the room, which the host governs.
+    // creates the workspace, which the host governs.
     const page = await open('first', {});
     const room = await page.evaluate('globalThis.peer.room');
     const decodable = await page.evaluate(`(async () => (await VideoDecoder.isConfigSupported({codec: ${JSON.stringify(VIDEO_DECODER_CONFIGS[options.codec])}, optimizeForLatency: true})).supported)()`);
@@ -900,9 +901,9 @@ async function main() {
       {RUST_LOG: process.env.STREAM_SOURCE_LOG ?? 'warn'});
       children.push(process_);
       const ready = JSON.parse(await process_.line(event('ready'), 120_000, 'its subscription'));
-      // Every acceptance case is in a room the host governs, as a workspace
+      // Every acceptance case is in a workspace the host governs, as a shared one
       // a person shares is: its roles decide who drives a window.
-      if (!ready.enteredRoom) throw new Invalid(`the ${name} could not enter the room as its owner's device: the host does not govern it`);
+      if (!ready.enteredRoom) throw new Invalid(`the ${name} could not enter the workspace as its owner's device: the host does not govern it`);
       const exited = () => within(new Promise(done => { if (process_.exited()) done(); else process_.process.on('exit', done); }),
         15_000, `the ${name}'s exit`);
       return {source: process_, session: ready, log, exited};
@@ -998,7 +999,7 @@ async function main() {
     const summary = Object.fromEntries(Object.entries(analysis.samples).map(([name, values]) => [name, stats(values)]));
 
     // The acceptance cases (native_stream_acceptance.mjs), on the same
-    // host, room and desktop, after the timed run so they cost it nothing.
+    // host, workspace and desktop, after the timed run so they cost it nothing.
     console.error('timed run done; acceptance cases');
     const acceptance = await runAcceptance({
       browser, main: page, w1: {source, session, stop, log: framesLog}, pagesOrigin: pages.origin, viewport: options.viewport, room, live: LIVE,

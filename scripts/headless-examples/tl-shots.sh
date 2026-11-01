@@ -2,7 +2,7 @@
 # Shots of the tilolang example apps (apps/tl), headless on lavapipe only: each package is
 # compiled into a runtime bundle and captured by `tilolang-app --shots` in every state below.
 #
-#   cargo build -p tilolang-app --bin tilolang-app --example seeded_room
+#   cargo build -p tilolang-app --bin tilolang-app --example seeded_workspace
 #   scripts/headless-examples/tl-shots.sh OUT [app...]     (default: notes tasks chat board mail today)
 #
 # Writes OUT/<app>-<state>-<size>[-light].png: `seeded` (the package's first scenario, its
@@ -14,7 +14,7 @@ out=$(realpath -m "$1"); shift
 tl=${TL_DIR:-$here/apps/tl}
 apps=("$@"); [ ${#apps[@]} -gt 0 ] || apps=(notes tasks chat board mail today)
 bin=${TILOLANG_APP:-$here/target/debug/tilolang-app}
-seed=${SEEDED_ROOM:-$here/target/debug/examples/seeded_room}
+seed=${SEEDED_WORKSPACE:-$here/target/debug/examples/seeded_workspace}
 # Software Vulkan only: the loader sees lavapipe and nothing else, so no shot reaches the GPU.
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json
 export WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe VK_LOADER_DEBUG=driver

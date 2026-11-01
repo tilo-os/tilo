@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An enum that serde encodes keeps every variant it had, in its place.
 
-Compact encodings (postcard, which rooms, relays and the device's records
+Compact encodings (postcard, which workspaces, relays and the device's records
 are written in) name a variant by its position: removing a variant, or
 moving one, makes every later variant read as another, and bytes already
 held anywhere change meaning. Name-based encodings (JSON) cannot read a

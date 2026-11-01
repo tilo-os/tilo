@@ -3,7 +3,7 @@ name = "tilo-room-host"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The room host every Tilo device runs and the relay embeds: room governance, the member session stack, and the retained store beneath it."
+description = "The workspace host every Tilo device runs and the relay embeds: workspace governance, the member session stack, and the retained store beneath it."
 license = "MIT OR Apache-2.0"
 
 [lib]

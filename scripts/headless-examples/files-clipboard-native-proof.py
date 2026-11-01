@@ -108,7 +108,7 @@ def observe_grants(socket, room, output, phase):
     tree = call(socket, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
     rows = [row for row in tree.get("workspaces", []) if row.get("room") == room]
     if len(rows) != 1 or not isinstance(rows[0].get("capabilities"), list):
-        raise RuntimeError("exact Files room grants are unobservable")
+        raise RuntimeError("exact Files workspace grants are unobservable")
     (output / f"grants-{phase}.json").write_text(json.dumps(rows[0]["capabilities"], indent=2))
 
 

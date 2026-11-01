@@ -167,10 +167,11 @@ does not enable GPU timestamp queries.
 
 The capture never touches the person's notebook. Every Notes window in a
 workspace opens that workspace's one notebook, so the capture first creates a
-workspace of its own (`workspace.create`, which mints a new room), opens Notes
+workspace of its own (`workspace.create`), opens Notes
 there (`applications so.tilo.notes`) and addresses every Notes action by that
-room and its record (`scratch_notes.py`). A room that existed before the run is
-refused, and so is any Notes row outside the scratch room. In that notebook it
+workspace and its record (`scratch_notes.py`). A workspace that existed before
+the run is refused, and so is any Notes row outside the scratch workspace. In
+that notebook it
 creates and opens a fresh scratch note. Before every kernel key it checks the
 actual selected/bound page, adopted canonical and rendered hashes, caret,
 editor focus and that the keyboard goes to the scratch workspace's one Notes

@@ -417,7 +417,7 @@ A bot entry's program is uploaded the same way, to
 `PUT /uploads/<blake3>.program`, as the Shortcut's canonical JSON
 (`tilo_automation::program`), at most 256 KiB. The registry refuses bytes that
 are not exactly the canonical encoding (`422`), because the entry signs their
-hash and a room stores the same bytes. The answer's `url` is
+hash and a workspace stores the same bytes. The answer's `url` is
 `https://apps.tilo.so/blobs/<blake3>`, which serves the program once review
 approves a version that binds it. Pruning keeps a program blob while any
 retained entry binds it.
@@ -440,7 +440,7 @@ A bot version is `{"version", "released_at_unix", "bot": {"program_url",
 [{"package_id", "min_version"}], "apps", "appearance", "triggers"}}}`.
 `requires` must equal what the program uses: the registry
 checks it on submission and clients check it again on install. A bot is
-never installed as an app; it goes into a room through that room's
+never installed as an app; it goes into a workspace through that workspace's
 `install-bot` action.
 
 A newer request for a package replaces the one waiting for review and must

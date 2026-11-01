@@ -127,7 +127,7 @@ set in, applying only what that face has and leaving out the rest silently.
 | `Prose` (default) | Running text; numbers in sentences stay proportional | none (the `Reading` role's own old-style figures stay) |
 | `Numeric` | Times, dates, durations, counts in tables and lists, prices, sizes, progress, clocks, table numeric columns, stat values, timestamps in rows | tabular lining figures (`tnum`, `lnum`), in place of any figure style the role set |
 | `Secret` | Verification and recovery codes, TOTP, API keys, hashes, IDs, revealed passwords, Wi-Fi and licence keys | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
-| `Identifier` | Usernames, handles, email addresses, invite codes, room names, other people's file names | distinct I and l |
+| `Identifier` | Usernames, handles, email addresses, invite codes, workspace names, other people's file names | distinct I and l |
 | `Url` | Web and other links (`https://…`, `www.…`, `mailto:…`) | slashed or dotted zero (`zero`), distinct I and l |
 | `Code` | Source and terminal text | none; set in the mono face |
 
@@ -156,7 +156,7 @@ identifiers in it become spans of their own kind, in every shaping path
 | A link: a scheme, `www.`, a host with a path or port, or a bare host with a common top-level domain | `https://paypa1.com/I0l`, `www.tilo.so`, `example.org/docs` | `Url` |
 | An email address | `Il0@example.org` | `Identifier` |
 | A mention | `@lena_l1`, `@ilya:tilo.so` | `Identifier` |
-| A room address (a bare `#tag` is not one) | `#general:tilo.so` | `Identifier` |
+| A workspace address (a bare `#tag` is not one) | `#general:tilo.so` | `Identifier` |
 
 Punctuation the sentence wraps a word in (brackets, quotes, a closing full
 stop) stays outside the span, and `file.txt` or `node.js` in a sentence stays

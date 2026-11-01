@@ -1,12 +1,12 @@
 """A Notes notebook of a measurement's own, never the person's.
 
 Every Notes window in a workspace opens that workspace's one notebook (the
-room's record), so a script that types into "the Notes window" types into the
-person's notes. A measurement instead creates a workspace of its own, which
-mints a new room, opens Notes there through the ordinary application action,
-and addresses every Notes action by that room and its record. Any room that
-existed before the run belongs to the person and is refused, as is any row
-that is not the scratch room's.
+workspace's record), so a script that types into "the Notes window" types into the
+person's notes. A measurement instead creates a workspace of its own through
+`workspace.create`, opens Notes there through the ordinary application action,
+and addresses every Notes action by that workspace and its record. Any workspace
+that existed before the run belongs to the person and is refused, as is any row
+that is not the scratch workspace's.
 
 The transport stays the caller's: `state()` answers the compositor's state
 dump, `invoke(provider, id, args)` runs one action to its end, and `rows()`
@@ -27,16 +27,16 @@ class ScratchRoomError(RuntimeError):
 
 @dataclass(frozen=True)
 class ScratchNotes:
-    """The workspace this run made, its room, and the notebook record Notes opened there."""
+    """The workspace this run made, its id, and the notebook record Notes opened there."""
 
     workspace: Any
     room: str
     record: str
-    # Rooms of the workspaces that existed before the run: the person's.
+    # Workspaces that existed before the run: the person's.
     protected: frozenset[str]
 
     def owns(self, row: dict[str, Any]) -> bool:
-        """Whether an action row is Notes' in this run's room and record."""
+        """Whether an action row is Notes' in this run's workspace and record."""
         return (row.get("application") == NOTES_APP
                 and row.get("room") == self.room
                 and row.get("room") not in self.protected
@@ -59,10 +59,11 @@ def workspaces(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def rooms(state: dict[str, Any]) -> frozenset[str]:
-    """Every workspace's room. A workspace without a room cannot be told apart, so it fails."""
+    """Every workspace's id. A workspace whose id is missing cannot be told apart, so it
+    fails."""
     found = [workspace.get("room") for workspace in workspaces(state)]
     if not all(isinstance(room, str) and room for room in found):
-        raise ScratchRoomError("A workspace in the state dump has no room")
+        raise ScratchRoomError("A workspace in the state dump has no id")
     return frozenset(found)
 
 
@@ -73,7 +74,7 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
     """Create a workspace named `name`, open Notes in it, and return its notebook.
 
     Fails, after at most the workspace and the launch, unless exactly one new
-    room appeared, it is the active workspace, and Notes there publishes
+    workspace appeared, it is the active workspace, and Notes there publishes
     actions for exactly one record."""
     protected = rooms(state())
     invoke("actions", "workspace.create", {"name": name})
@@ -92,16 +93,16 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
         time.sleep(.1)
     workspace, room = fresh[0].get("id"), fresh[0]["room"]
     if not isinstance(room, str) or not room or room in protected:
-        raise ScratchRoomError("The scratch workspace has no room of its own")
+        raise ScratchRoomError("The scratch workspace has no id of its own")
     invoke("applications", NOTES_APP, {})
     while True:
         records = {row.get("record") for row in rows()
                    if row.get("application") == NOTES_APP and row.get("room") == room}
         if len(records) > 1:
-            raise ScratchRoomError("Notes in the scratch room publishes more than one record")
+            raise ScratchRoomError("Notes in the scratch workspace publishes more than one record")
         if len(records) == 1 and isinstance(next(iter(records)), str) and next(iter(records)):
             break
         if time.monotonic() >= deadline:
-            raise ScratchRoomError("Notes never opened in the scratch room")
+            raise ScratchRoomError("Notes never opened in the scratch workspace")
         time.sleep(.1)
     return ScratchNotes(workspace, room, records.pop(), protected)

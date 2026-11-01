@@ -64,9 +64,9 @@ compositor, its profile, its sockets and the client are removed on exit,
 whatever happens. Against a running desktop (`--socket`, a device's
 admin-control.sock, with its `agent.sock` beside it) nothing is seeded, and
 the task never touches the notebook a person already has: the run first
-creates a workspace of its own (a new room) and opens Notes there
+creates a workspace of its own and opens Notes there
 (`scratch_notes.py`), so the agent is admitted to that workspace and its
-`notes` is that room's notebook; the agent is removed again at the end.
+`notes` is that workspace's notebook; the agent is removed again at the end.
 """
 
 from __future__ import annotations

@@ -253,7 +253,7 @@ def public_action_observation(row):
 
 
 def offered_chat_view(socket, room, operation):
-    """Retain exactly one published primary Chat operation in this room."""
+    """Retain exactly one published primary Chat operation in this workspace."""
     matches = [row for row in actions(socket)
                if row.get("application") == "so.tilo.chat"
                and row.get("room") == room and row.get("record") == ""

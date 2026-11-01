@@ -81,8 +81,7 @@ class Fixture:
         if self.routing_diagnostics:
             env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"
             env["TILO_RELAY_CORRELATED_DIAGNOSTICS"] = "1"
-            env["RUST_LOG"] += (",tilo_relay::peer=info,tilo_relay::rooms=debug,tilo_relay::native_publication=debug"
-                                ",tilo_network_actor=debug"
+            env["RUST_LOG"] += (",tilo_network_actor=debug"
                                 ",shell::shell::network::native_ingress=debug")
         if self.pipewire is not None:
             env["GST_PLUGIN_PATH"] = str(self.pipewire / "usr/lib64/gstreamer-1.0")
@@ -886,7 +885,7 @@ class Fixture:
 
     def reconnect(self, sessions, bootstrap, host, early):
         # Only the disposable host this fixture spawned is stopped. Its keys,
-        # room, app workers and grants are unchanged; no revocation is minted.
+        # workspace, app workers and grants are unchanged; no revocation is minted.
         if host not in self.processes or host.poll() is not None:
             raise RuntimeError("private governor custody is unavailable")
         os.kill(host.pid, signal.SIGSTOP)

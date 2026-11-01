@@ -505,10 +505,10 @@ Welcome bytes.
 
 **Production adapter now present.** `crates/collab/tilo-action-broker/src/channel_encryption.rs`
 runs a participant (`channel_crypto::ChannelPeer`) for every channel a device takes part in: it
-reconciles each MLS group with the room's access policy, so an invite, a removal, a role change
+reconciles each MLS group with the workspace's access policy, so an invite, a removal, a role change
 that ends access or a revoked device becomes a commit (`ChannelPeer::reconcile`, which stages
 removals and admissions in one commit through `ChannelGroup::stage_commit`), and it publishes the
-commit over the room transport (`NeighbourMsg::MlsGovernance`) until the transport takes it. Held by
+commit over the workspace transport (`NeighbourMsg::MlsGovernance`) until the transport takes it. Held by
 that module's `an_announced_revocation_is_enforced_at_once_and_idle_groups_park`,
 `a_new_channel_is_encrypted_from_creation_and_follows_the_policy`,
 `delivery_survives_a_network_outage` and
@@ -947,18 +947,19 @@ Peer sync with a second device was not part of that run. The shipped kernel has 
 the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
 AVCs on a kernel that has it.
 
-## P1-11 — A Read Deny below the room does not withhold that record's channel key
+## P1-11 — A Read Deny below the workspace does not withhold that record's channel key
 
-`docs/architecture/permissions.md` §5.3. Room grants can deny Read on one app or record, and every
-per-record read path honours it (`StatePeer::check_document_read`). Channels used to admit
-devices per room: `allowed_devices` in `crates/session/shell/src/shell/channel_policy.rs` asked Read
-once, on the room node, and `crates/collab/tilo-action-broker/src/channel_encryption.rs`
-admitted every allowed device to every record channel of that room. A person denied one record
-therefore still received that record's MLS keys, and the room was the confidentiality boundary
-against the member's own modified client.
+`docs/architecture/permissions.md` §5.3. Workspace grants can deny Read on one app or record, and
+every per-record read path honours it (`StatePeer::check_document_read`). Channels used to admit
+devices per workspace: `allowed_devices` in
+`crates/session/shell/src/shell/channel_policy.rs` asked Read once, on the workspace's node, and
+`crates/collab/tilo-action-broker/src/channel_encryption.rs` admitted every allowed device to
+every record channel of that workspace. A person denied one record therefore still received that
+record's MLS keys, and the workspace was the confidentiality boundary against the member's own
+modified client.
 
 **Resolved for records, apps and patterns of records.** Participants admit per channel
-(`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
+(`ChannelDirectory::allowed_devices(workspace, channel, route, now)`; the relay's
 `PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
 every door applies, and refuse a commit that admits anyone else. A channel id is a hash of its
 record's route, so a participant names the record
@@ -1015,7 +1016,7 @@ both pipelines, and the Windows capsule planner). Masking alone would leave a wr
 to rename `~/.config` aside and plant new trust files at the old path, so each directory between a
 writable grant and the store is bound onto itself (a mount point cannot be renamed or removed), and
 a writable grant holding a symlink on the store's route is bound read-only. Held by
-`room_confinement::a_home_grant_never_reaches_tilos_private_configuration` (live bwrap and
+`workspace_confinement::a_home_grant_never_reaches_tilos_private_configuration` (live bwrap and
 Landlock: unreadable secret and vault key, unwritable trust files, unmovable `~/.config`, Documents
 grant unchanged) and the plan/argv tests in `capabilities.rs` and `sandbox.rs`. The macOS Seatbelt
 profile confines the same plan (`launcher_macos::policy::SeatbeltPolicy::resolve`) and, after every
@@ -1037,8 +1038,8 @@ settings records and anything added to the root later stay out. Settings lists, 
 removes and protects identities, lists and revokes devices and removes home servers through the
 host's `tilo.identity` actions (`shell::identity_admin`), which sign with the root key on the
 host. Held by
-`room_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. A read-only
-file bind holds the inode it found, so the Permissions pane shows the workspace tree as of the
+`workspace_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. A
+read-only file bind holds the inode it found, so the Permissions pane shows the workspace tree as of the
 launch.
 
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
@@ -1129,7 +1130,7 @@ These are load-bearing and correct. Changing them requires understanding why the
   refused rather than partially applied.
 - `crates/session/shell/src/shell/state.rs` (`PeerOrigin`) — `PeerOrigin` is *"named as the transport authenticated it —
   not as the message claims."*
-- `crates/session/shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
+- `crates/session/shell/src/shell/state.rs:1750-1753` — re-pinning workspace authority is refused, because otherwise
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
 - `crates/session/shell/src/shell/state.rs:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.

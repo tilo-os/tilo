@@ -51,7 +51,7 @@ Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
 is no other package manifest and no other permission file.
 
 The supervisor keeps the records where Terminal keeps its own —
-`<data home>/tilo-rooms/personal/so.tilo.terminal/.local/share`, room
+`<data home>/tilo-rooms/personal/so.tilo.terminal/.local/share`, scope
 `personal` — joins the record's shared writers, applies actions through the
 record layer (attributed to `so.tilo.ush`), and appends. A session that names
 no record gets the **default environment**, created on first use with the
@@ -197,7 +197,7 @@ One line of JSON out, one line plus the session descriptors back:
 ```
 
 `record` is a record key (`[A-Za-z0-9._-]`, at most 64 bytes); the owning app
-and the room are fixed by the supervisor, never taken from the request. The
+and the workspace are fixed by the supervisor, never taken from the request. The
 answer is `{"result":"session","session":…,"environment":…}` with the pty
 master attached, or `{"result":"denied","reason":…}`.
 

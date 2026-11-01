@@ -52,7 +52,7 @@ machines that cannot unlock their system by themselves:
 
 | | Device storage | Personal storage |
 |---|---|---|
-| Holds | the OS's state: `/etc`, `/var/lib` system state, Wi-Fi networks shared by everyone, the device identity, update and rollback state | a person's home, rooms, saved passwords, account identity share, private Wi-Fi networks, browser profiles |
+| Holds | the OS's state: `/etc`, `/var/lib` system state, Wi-Fi networks shared by everyone, the device identity, update and rollback state | a person's home, workspaces, saved passwords, account identity share, private Wi-Fi networks, browser profiles |
 | Encrypted by | the system volume key | that person's **user key** |
 | Available | from boot | from that person's sign-in until shutdown (or sleep, if they choose, §6.3) |
 | Released by | the TPM, to a verified boot; otherwise any disk-unlocking person's user key | that person's factors (§4) |
@@ -67,9 +67,9 @@ storage exists until the first unlock.
 - **Homes** become per-person encrypted volumes (§5.1).
 - **The vault** is keyed from the person's user key, not from the device key. The
   device key no longer protects anyone's secrets; it identifies the machine.
-- **The room store** is unlocked by its owner's user key instead of a key file on
-  the root. Before its owner signs in, the machine still relays ciphertext for
-  collaborators but cannot read or serve room contents.
+- **The workspace store** is unlocked by its owner's user key instead of a key
+  file on the root. Before its owner signs in, the machine still relays
+  ciphertext for collaborators but cannot read or serve workspace contents.
 - **Wi-Fi networks** a person adds are personal by default; a network the admin
   marks "for everyone" stays in device storage so updates and remote unlock can
   use it before sign-in.
@@ -263,8 +263,8 @@ and of the greeter after switch-root must show the same card.
 ## 4. The user key and its wrappers
 
 Each person has a random 256-bit **user key**, created with their account. It is
-the root of their personal scope: it opens their home, keys their vault and room
-store, and (if they may unlock the machine) derives their system-volume keyslot.
+the root of their personal scope: it opens their home, keys their vault and
+workspace store, and (if they may unlock the machine) derives their system-volume keyslot.
 It is never stored in the clear. It is stored several times, each copy wrapped by
 one factor, in the person's record in device storage:
 
@@ -538,7 +538,7 @@ Each step leaves every machine working and is useful on its own.
 2. **The boot-time login screen and the handoff.** A person's keyslot on the system
    volume, derived from the user key. This alone gets every current machine, verified
    or not, to one secret per boot.
-3. **Personal storage.** Homed-backed homes, the vault and the room store re-keyed
+3. **Personal storage.** Homed-backed homes, the vault and the workspace store re-keyed
    from the user key, personal Wi-Fi networks. Migration of existing homes (§9).
 4. **Automatic system unlock** on verified boots, and the pre-sign-in hardening of
    §6.1.

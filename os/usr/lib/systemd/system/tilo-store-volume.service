@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo room store volume
+Description=Tilo store volume
 Documentation=file:///usr/libexec/tilo-store-volume
 # fs.service pulls this in and starts after it, so the store is mounted,
 # owned by the local person and announced before the daemon picks its data

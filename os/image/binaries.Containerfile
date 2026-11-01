@@ -100,7 +100,7 @@ COPY --from=native-builder-payload \
 # Read-only, being inside the image. That is the *only* way these packages
 # differ from a user's: the sandbox is still built from the manifest, the
 # payload is still ro-bound, and the single writable directory still comes from
-# the launcher's per-room app dir. Nothing here is trusted for being shipped.
+# the launcher's per-workspace app dir. Nothing here is trusted for being shipped.
 # Which key signed them, for auditing a built image. Not a trust root: package
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the

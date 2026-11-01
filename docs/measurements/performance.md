@@ -85,8 +85,7 @@ node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
 on a fast machine; such a run is never this group's series.
 
 The `hosting` group measures the relay's cost per collaborator-hour
-(`relay_load`, rooms of four): fan-out latency and the priced capacity of a
-relay VM.
+(`relay_load`, workspaces of four): fan-out latency and the priced capacity of a relay VM.
 
 The `stream` group qualifies a native window on the browser desktop:
 `scripts/perf/native_stream_qualification.mjs` runs this commit's host
@@ -117,7 +116,7 @@ VP9 run is its own series, with the codec after the group in each KPI id
 `--carrier https` takes the live plane over the HTTPS stream fallback instead of
 WebTransport.
 
-After the timed run, on the same host and in the same room (one the host
+After the timed run, on the same host and in the same workspace (one the host
 governs, as a shared workspace is), the harness drives the acceptance cases of
 `scripts/perf/native_stream_acceptance.mjs`, and a case that breaks fails the
 run like any other incorrect stream: focus moving onto and off the window with

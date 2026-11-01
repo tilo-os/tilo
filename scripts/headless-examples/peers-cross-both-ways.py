@@ -3,10 +3,10 @@
 
 The one-way rig checks that a guest can see the host. This covers only one
 direction: a host and a guest are not symmetric. The guest joined the
-host's room, so the host's pointer goes out under a room the guest is a
+host's workspace, so the host's pointer goes out under one the guest is a
 member of. The reverse only holds if joining also moved the guest *into*
-that room as the workspace it is looking at — and if it did not, the
-guest's pointer is published under a room the host has never heard of,
+that workspace as the one it is looking at — and if it did not, the
+guest's pointer is published under a workspace the host has never heard of,
 dropped on arrival, and the host watches an empty desktop while the
 guest sees a cursor and everyone assumes it works.
 
@@ -15,7 +15,7 @@ This checks both directions across two compositors:
   - the guest paints the host's cursor, and
   - the host paints the guest's, and
   - both are still there seconds after either pointer stopped, and
-  - both carry the name the room gave them, not a raw handle, and
+  - both carry the name the workspace gave them, not a raw handle, and
   - both can be found in the store by the person's name, and
   - neither session paints anybody at the origin.
 
@@ -230,9 +230,9 @@ def mint_named_invite(host: Session, peer: str, name: str) -> str | None:
     """Invite a peer *by name*.
 
     A plain `peer.invite` says nothing about who its token is for, so
-    the room learns only the host's own name and attribution resolves
+    the workspace learns only the host's own name and attribution resolves
     in one direction: the guest sees a name and the host sees a handle.
-    Naming the invitee is what makes the room able to attribute both
+    Naming the invitee is what makes the workspace able to attribute both
     cursors to people.
     """
     resp = host.invoke("peer.invite.named", {"peer": peer, "name": name})
@@ -336,12 +336,12 @@ def main() -> int:
             if not check(f"{s.name} came up", s.wait_up(), f"see {s.log_path}"):
                 return 1
 
-        print("\n[2] one room, nothing open in it")
+        print("\n[2] one workspace, nothing open in it")
         exported = {f"{a['provider']}:{a['id']}" for a in ada.enumerate("")}
         if not check("peer-sync is on", f"{ACTIONS}:peer.invite" in exported):
             print(f"        check {ada.log_path} for 'device key load failed'")
             return 1
-        # Named, both ways. An unnamed invite leaves the room knowing
+        # Named, both ways. An unnamed invite leaves the workspace knowing
         # only the host's name, and then attribution resolves in one
         # direction — the guest sees a person and the host sees a
         # handle. The invitee's own invite is how it says who it is.
@@ -352,23 +352,23 @@ def main() -> int:
         token = mint_named_invite(ada, bob_peer, "bob")
         if not check("ada minted an invite naming bob", bool(token)):
             return 1
-        if not check("bob joined the room", join(bob, token)):
+        if not check("bob joined the workspace", join(bob, token)):
             return 1
 
         host_room = ada.active_room()
         guest_room = bob.active_room()
-        print(f"        ada is looking at room {host_room}")
-        print(f"        bob   is looking at room {guest_room}")
-        print(f"        ada holds rooms {ada.rooms()}")
-        print(f"        bob   holds rooms {bob.rooms()}")
+        print(f"        ada is looking at workspace {host_room}")
+        print(f"        bob   is looking at workspace {guest_room}")
+        print(f"        ada holds workspaces {ada.rooms()}")
+        print(f"        bob   holds workspaces {bob.rooms()}")
         # The asymmetry that makes the reverse direction a separate
-        # question. A session publishes its pointer under the room it is
-        # *looking at*, and folds in only rooms it is a member of, so if
-        # the guest is still looking at a private room of its own its
-        # cursor is addressed to a room the host has never heard of.
-        # Asserted on a room that was actually read, or "both are
+        # question. A session publishes its pointer under the workspace it is
+        # *looking at*, and folds in only workspaces it is a member of, so if
+        # the guest is still looking at a private workspace of its own its
+        # cursor is addressed to a workspace the host has never heard of.
+        # Asserted on a workspace that was actually read, or "both are
         # looking at None" would pass while nothing was being compared.
-        check("both are looking at one real room",
+        check("both are looking at one real workspace",
               bool(host_room) and host_room == guest_room,
               f"{host_room} vs {guest_room}")
 
@@ -384,7 +384,7 @@ def main() -> int:
         check("bob holds ada's cursor where ada put it", bool(on_bob),
               json.dumps(bob.pointers())[:300])
         if on_bob:
-            check("and the room names him", on_bob[0].get("name") == "ada",
+            check("and the workspace names him", on_bob[0].get("name") == "ada",
                   json.dumps(on_bob[0]))
             check("not a raw handle",
                   not str(on_bob[0].get("name", "")).startswith("peer@"),
@@ -396,7 +396,7 @@ def main() -> int:
         check("ada holds bob's cursor where bob put it", bool(on_ada),
               json.dumps(ada.pointers())[:300])
         if on_ada:
-            check("and the room names him", on_ada[0].get("name") == "bob",
+            check("and the workspace names him", on_ada[0].get("name") == "bob",
                   json.dumps(on_ada[0]))
             check("not a raw handle",
                   not str(on_ada[0].get("name", "")).startswith("peer@"),
@@ -418,7 +418,7 @@ def main() -> int:
         # The question every reader of this store actually asks: "which
         # of these rows is ada's". A row carries two things — the
         # identity, which is the handle the frames arrive under, and the
-        # name, which is what the room calls that handle — and only one
+        # name, which is what the workspace calls that handle — and only one
         # of them is a person. A harness that looks a person up in the
         # other field finds nothing while the cursor is on screen,
         # correctly drawn and correctly named, and reports that presence
@@ -453,7 +453,7 @@ def main() -> int:
         if failures:
             print(f"FAILED: {len(failures)} claim(s): {', '.join(failures)}")
             return 1
-        print("Two sessions, each painting the other, both named by the room.")
+        print("Two sessions, each painting the other, both named by the workspace.")
         return 0
     finally:
         if args.keep:

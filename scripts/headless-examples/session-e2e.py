@@ -2,15 +2,15 @@
 """The session's real paths end to end, in one headless nested session, in under a minute.
 
 One session (dist/dev/nested-session.sh, headless, lavapipe only) runs what a person's session
-runs: the shell with its broker and room host, the launcher and its sandboxes, the tilolang host,
-native Tasks and the agent runtime, and four tilolang apps built from apps/tl (Notes, Tasks,
+runs: the shell with its broker and workspace host, the launcher and its sandboxes, the
+host, native Tasks and the agent runtime, and four tilolang apps built from apps/tl (Notes, Tasks,
 Mail, Chat) and installed as signed packages. Every check below drives it the way a person, the
 REPL or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
 
   open     the four apps, opened at once onto the workspace's canvas, each present a first
            frame on the first try.
-           Catches the broker, channel-key and room lock deadlock (fixed in b33cc45ace7):
+           Catches the broker, channel-key and workspace lock deadlock (fixed in b33cc45ace7):
            fails on 08636f201d9 (before the fix), where only one of the four apps presented a
            frame.
   canvas   every window placed on the canvas is drawn on screen, inside the canvas's frame.
@@ -27,7 +27,7 @@ unit tests and found only by starting a session by hand:
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
            stops at `open` first. Also catches a tilolang app's first change (its schema
            stamp) being committed without the Genesis claim, which the sealed channel refuses
-           ("a document change carries no claim") and after which the room's readers miss the
+           ("a document change carries no claim") and after which the workspace's readers miss the
            record: the check fails on any refused change, so it fails on integration
            70ba3301da0 until `open_stored` commits the Genesis (fix not landed yet).
   ask      asking an agent makes its issue in the tracker, opens no window, and starts a task
@@ -43,7 +43,7 @@ unit tests and found only by starting a session by hand:
   dev      the session started once more, and while its four windows come back four
            `tilolang dev` at once, each installing an app the session has not had (DEV_APPS):
            each window presents a first frame within DEV_BOUND (3 s) of its install; 0.5 to
-           0.9 s here. Catches an app's first opening in a room waiting on the broker's
+           0.9 s here. Catches an app's first opening in a workspace waiting on the broker's
            invocation journal (its authorship grant was an invocation, answered once its
            admission and outcome were synced behind every other one, with a 30 s timeout as
            the way out), the dev tool waiting for the whole catalogue listing to settle, and
@@ -346,8 +346,8 @@ def windows_by_app(session: Session) -> dict[str, dict]:
 
 def read_content(session: Session, name: str) -> str | None:
     """What the running instance of tilolang `name` holds, as its "Read the content" answers:
-    the room's records and, read one by one, each record of the app's own kinds. The instance
-    in the workspace in front answers it, from its own replica."""
+    the workspace's records and, read one by one, each record of the app's own kinds. The
+    instance in the workspace in front answers it, from its own replica."""
     action = wait_for(f"{name}'s 'Read the content'", lambda: next((
         a for a in session.actions("Read the content")
         if a.get("application") == app_id(name)
@@ -539,12 +539,12 @@ def check_repl(session: Session, out: Path) -> dict:
                  lambda: holds(session, "tasks", TASK_TITLE) is False)
         wait_for("a frame of the Tasks window without the undone task",
                  lambda: (window_frame(session, "tasks") or 0) > drawn)
-        # The room admitted every change the apps and the REPL made: a change the sealed
+        # The workspace admitted every change the apps and the REPL made: a change the sealed
         # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
-        # with only this line to say so, and its record is missing wherever the room is read.
+        # with only this line to say so, and its record is missing wherever it is read.
         refused = [line[:400] for line in session.log_lines() if "change carries no claim" in line]
         if refused:
-            raise Failed(f"the room refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
+            raise Failed(f"the workspace refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
         return {"find": found.strip(), "grep_notes": in_notes.strip().splitlines()[0],
                 "grep_chat": in_chat.strip().splitlines()[0], "added": added.strip(), "undone": undone.strip()}
     finally:

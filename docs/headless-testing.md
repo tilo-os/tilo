@@ -18,11 +18,11 @@ cargo test --locked -p tilo-action-broker --lib collab_app_broker::tests::certif
 The Browser and Store fixtures provision a disposable identity and run the actual
 identity service, collaboration broker, original application factory and directory
 RPC. Browser retains its primary document, browsing history and address book. All
-three are records of Browser in the launch room, so publication must wait for their
-initial joins to become ready. Store must publish `inspect-catalogue` through the
-same authorized context. No application action is invoked.
+three are records of Browser in the launch workspace, so publication must wait for their initial
+joins to become ready. Store must publish `inspect-catalogue` through the same authorized context.
+No application action is invoked.
 
-This qualifies matching-room publication. It does not qualify an application
+This qualifies matching-workspace publication. It does not qualify an application
 spanning a foreground workspace and the person's own store: a certification for
 the workspace cannot authorize their store. The broker's cross-workspace rejection stays
 covered independently. Installed control-socket timeouts require separate runtime
@@ -463,10 +463,10 @@ For exploratory / partial flows, see `scripts/headless-examples/` (full walkthro
 
 Alongside those, the `*-proof.py` scripts in the same directory stand up
 **two or three real compositors** with separate identities and homes, put
-them in one room, and assert across them. Reach for one of those when the
+them in one workspace, and assert across them. Reach for one of those when the
 question is about collaboration rather than about one session's chrome —
 `peers-cross-both-ways.py` is the presence regression net (each session
-must paint the other's cursor, under the name the room gave it).
+must paint the other's cursor, under the name the workspace gave it).
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 

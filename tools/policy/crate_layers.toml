@@ -68,7 +68,7 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-session"
-  why = "the session is the person's local host and runs the engine beside the desk: it keeps the room of each workspace, takes in what a join brings here and publishes actions into it"
+  why = "the session is the person's local host and runs the engine beside the desk: it keeps each workspace's engine, takes in what a join brings here and publishes actions into it"
 
   [[rule.allow]]
   package = "tilo-runtime"
@@ -80,11 +80,11 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-room-host"
-  why = "the room host is the store node: it holds and governs a room's retained state"
+  why = "the workspace host is the store node: it holds and governs a workspace's retained state"
 
   [[rule.allow]]
   package = "tilo-relay"
-  why = "the relay embeds the room host and keeps rooms for offline peers, the store node's network side"
+  why = "the relay embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
 
   [[rule.allow]]
   package = "tilo-relay-shell"
@@ -96,7 +96,7 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-store-link"
-  why = "the store link joins the engine to a workspace's store: it replays the frames kept there into the engine and keeps what the engine seals, so a member catches up without a long-lived room host"
+  why = "the store link joins the engine to a workspace's store: it replays the frames kept there into the engine and keeps what the engine seals, so a member catches up without a long-lived workspace host"
 
   [[rule.allow]]
   package = "tilo-agent-participant"

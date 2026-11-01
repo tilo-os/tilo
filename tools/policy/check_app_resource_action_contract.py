@@ -1801,8 +1801,9 @@ def dynamic_resource_host(app_dir: Path) -> bool:
 # package's view attached to the control (a typed field edit or verb of the package), so no
 # control's closure is an action of its own.
 DYNAMIC_HOST_RULES = frozenset({"widget_owned_document", "widget_search_source", "closure_control"})
-# The legacy APIs a dynamic resource host keeps: its one resource, the room of packages, is
-# described from the packages' metadata at run time, so there is no record to derive it from.
+# The legacy APIs a dynamic resource host keeps: its one resource, the workspace of packages,
+# is described from the packages' metadata at run time, so there is no record to derive it
+# from.
 DYNAMIC_HOST_LEGACY_APIS = frozenset({"hand_resource_impl"})
 
 PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
