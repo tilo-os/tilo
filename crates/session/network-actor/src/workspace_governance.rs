@@ -1,5 +1,5 @@
-//! Invoking what a relay answers itself as this device, on a room's relay
-//! session, addressed to the relay's own device: a room's own governance
+//! Invoking what a relay answers itself as this device, on a workspace's relay
+//! session, addressed to the relay's own device: a workspace's own governance
 //! (`tilo.workspace`) and a member's own business in it (`tilo.member`).
 //! It is the action surface agents, scripts and screen readers use, which
 //! the relay decides by the same `Rooms::authorize` its other doors do.
@@ -28,7 +28,7 @@ const FORGET_AFTER: Duration = Duration::from_secs(60);
 pub struct Request {
     /// The workspace topic whose relay session carries it.
     pub ws: u64,
-    /// The relay's own device, which a room names as its governor: it is
+    /// The relay's own device, which a workspace names as its governor: it is
     /// reached on whichever relay session of the workspace gets there.
     pub to: EndpointId,
     /// The invocation; its target names the provider.
@@ -67,7 +67,7 @@ pub(super) enum Sessions {
     Closed,
 }
 
-/// What became of invocations to a room's host, kept in tests only, so a
+/// What became of invocations to a workspace's host, kept in tests only, so a
 /// test that times out waiting on one says where it stopped: output from
 /// the network's threads is not captured with the test's.
 pub mod trace {
@@ -168,7 +168,7 @@ pub mod trace {
 }
 
 /// Why an invocation sent on a workspace's sessions has no answer coming.
-const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
+const SESSIONS_CLOSED: &str = "the connection to the workspace's host was lost";
 
 impl Waiting {
     /// Whether anything here waits on where a workspace stands with its
@@ -279,7 +279,7 @@ impl Waiting {
         self.forget(now);
         let invocation = invoke.invocation;
         if self.entries.len() >= MAX_WAITING || self.entries.contains_key(&invocation) {
-            let _ = reply.send(Err("too many requests to the room's relay".into()));
+            let _ = reply.send(Err("too many requests to the workspace's relay".into()));
             return None;
         }
         let Ok(frame) = RemoteActionFrame::new(RemoteActionMessage::Invoke(invoke)).encode() else {
@@ -362,7 +362,7 @@ mod tests {
         let invocation = InvocationId::new();
         let invoke = InvokeRequest {
             invocation,
-            target: RemoteActionTarget::room_governance("room", "invitation.list"),
+            target: RemoteActionTarget::room_governance("workspace", "invitation.list"),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -394,13 +394,13 @@ mod tests {
         .expect("receipt frame")
     }
 
-    /// What waits on a room's host ends when the room's last session does:
+    /// What waits on a workspace's host ends when the workspace's last session does:
     /// an invocation sent there is failed, and who watched is told, while
-    /// another room's still waits. A room whose session is being
+    /// another workspace's still waits. A workspace whose session is being
     /// established keeps its watchers, and what was held for its session
     /// is sent once it is up, or failed once the attempt ends without one.
     #[test]
-    fn the_last_session_of_a_room_closing_ends_what_waited_on_it() {
+    fn the_last_session_of_a_workspace_closing_ends_what_waited_on_it() {
         let relay = iroh::SecretKey::from_bytes(&[1; 32]).public();
         let mut waiting = Waiting::default();
         assert!(!waiting.waits_on_sessions());
@@ -425,13 +425,16 @@ mod tests {
         assert!(
             closing_answer
                 .try_recv()
-                .expect("the closed room's invocation is answered")
+                .expect("the closed workspace's invocation is answered")
                 .is_err()
         );
-        assert!(closed.try_recv().is_ok(), "who watched the room is told");
+        assert!(
+            closed.try_recv().is_ok(),
+            "who watched the workspace is told"
+        );
         assert!(
             staying_answer.try_recv().is_err(),
-            "the other room's still waits"
+            "the other workspace's still waits"
         );
         assert!(other_closed.try_recv().is_err());
 
@@ -439,13 +442,13 @@ mod tests {
         waiting.watch_sessions(9, Sessions::Closed, watch);
         assert!(
             none.try_recv().is_ok(),
-            "a room with no session ends at once"
+            "a workspace with no session ends at once"
         );
     }
 
-    /// An invocation for a room whose session is being established waits
+    /// An invocation for a workspace whose session is being established waits
     /// for it: sent once the session is up, failed when the attempt ends
-    /// without one, and a watcher of the room is told only then.
+    /// without one, and a watcher of the workspace is told only then.
     #[test]
     fn an_invocation_waits_for_a_session_being_established() {
         let relay = iroh::SecretKey::from_bytes(&[1; 32]).public();
@@ -478,7 +481,7 @@ mod tests {
                 .map(|request| request.invoke.invocation)
                 .collect::<Vec<_>>(),
             vec![invocation],
-            "the room whose session came up sends what waited for it"
+            "the workspace whose session came up sends what waited for it"
         );
         assert!(connects_answer.try_recv().is_err(), "sent, not answered");
         assert!(
@@ -491,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_relay_asked_on_the_room_asked_answers_an_invocation() {
+    fn only_the_relay_asked_on_the_workspace_asked_answers_an_invocation() {
         let relay = iroh::SecretKey::from_bytes(&[1; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[2; 32]).public();
         let mut waiting = Waiting::default();
@@ -509,7 +512,7 @@ mod tests {
         );
         assert!(
             !waiting.answer(8, relay, &receipt(invocation)),
-            "another room"
+            "another workspace"
         );
         assert!(
             !waiting.answer(7, relay, &receipt(InvocationId::new())),

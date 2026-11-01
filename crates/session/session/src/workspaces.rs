@@ -420,7 +420,7 @@ struct Stored {
 
 /// The list's stable id for `room`: the room's collaboration topic.
 fn entry_id(room: RoomId) -> u64 {
-    tilo_network_actor::room_topic_id(room)
+    tilo_network_actor::workspace_topic_id(room)
 }
 
 /// The list's entries that carry a valid room, in the person's order.

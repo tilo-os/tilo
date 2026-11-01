@@ -880,7 +880,7 @@ mod tests {
     use tilo_action_broker::collab_core::BrokerChannels;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
-    use tilo_network_actor::{HostIdentity, NetEvent, room_topic_id};
+    use tilo_network_actor::{HostIdentity, NetEvent, workspace_topic_id};
 
     use super::*;
     use crate::sync::{Client, OwnPresence};
@@ -1062,7 +1062,7 @@ mod tests {
     /// One thing `from` said in the room.
     fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> NetEvent {
         NetEvent::Msg {
-            ws: room_topic_id(room()),
+            ws: workspace_topic_id(room()),
             peer: public(from),
             membership_epoch: None,
             replayed: false,

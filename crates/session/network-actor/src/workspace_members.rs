@@ -1,7 +1,7 @@
-//! Who sends and receives a room's window streams: the devices its governor
-//! admitted, as this device's native owner projected the room's roster.
-//! A connection a peer opened is bound, per room, to the membership active
-//! on its first frame there, and stops counting for that room once that
+//! Who sends and receives a workspace's window streams: the devices its governor
+//! admitted, as this device's native owner projected the workspace's roster.
+//! A connection a peer opened is bound, per workspace, to the membership active
+//! on its first frame there, and stops counting for that workspace once that
 //! membership is removed, even if the device is admitted again later.
 //! A member whose device certificate expired is removed by the first frame
 //! that finds it past expiry, so no timer watches expiries.
@@ -15,16 +15,16 @@ use super::{MembershipEpoch, WorkspaceId};
 #[derive(Default)]
 struct Ingress {
     connection: Option<iroh::endpoint::Connection>,
-    /// The membership each room's frames on it are bound to; `None` once
+    /// The membership each workspace's frames on it are bound to; `None` once
     /// that membership was removed, so the connection never rebinds.
     bound: HashMap<WorkspaceId, Option<MembershipEpoch>>,
 }
 
-/// A device on a room's roster, and when its certificate expires (Unix
+/// A device on a workspace's roster, and when its certificate expires (Unix
 /// nanoseconds; `None` when it never does).
 pub type RosterDevice = (EndpointId, Option<u64>);
 
-/// One device's membership of a room.
+/// One device's membership of a workspace.
 #[derive(Clone, Copy)]
 struct Member {
     epoch: MembershipEpoch,
@@ -37,15 +37,15 @@ impl Member {
     }
 }
 
-/// The admitted rosters of the rooms this device is in, and the
+/// The admitted rosters of the workspaces this device is in, and the
 /// window-stream connections bound to them.
 #[derive(Default)]
-pub(super) struct RoomMembers {
+pub(super) struct WorkspaceMembers {
     rosters: HashMap<WorkspaceId, HashMap<EndpointId, Member>>,
     ingress: HashMap<(EndpointId, u64), Ingress>,
 }
 
-/// Whether a frame counts for its room ([`RoomMembers::admit`]).
+/// Whether a frame counts for its workspace ([`WorkspaceMembers::admit`]).
 pub(super) enum Admission {
     /// It does, under this membership.
     Member(MembershipEpoch),
@@ -58,21 +58,21 @@ pub(super) enum Admission {
 }
 
 /// What a roster change ended: the connections bound to a removed
-/// membership, and the devices no room holds any more.
+/// membership, and the devices no workspace holds any more.
 #[derive(Default)]
 pub(super) struct Removed {
     pub connections: Vec<iroh::endpoint::Connection>,
     pub devices: Vec<EndpointId>,
 }
 
-impl RoomMembers {
-    /// Whether `ws` is a room with a roster here, rather than a personal
+impl WorkspaceMembers {
+    /// Whether `ws` is a workspace with a roster here, rather than a personal
     /// topic whose members are the person's devices it has sessions with.
     pub(super) fn has_roster(&self, ws: WorkspaceId) -> bool {
         self.rosters.contains_key(&ws)
     }
 
-    /// `peer`'s membership of room `ws` at `now_ns`.
+    /// `peer`'s membership of workspace `ws` at `now_ns`.
     pub(super) fn member(
         &self,
         ws: WorkspaceId,
@@ -83,7 +83,7 @@ impl RoomMembers {
         (!member.expired_at(now_ns)).then_some(member.epoch)
     }
 
-    /// Every device on room `ws`'s roster whose certificate holds at `now_ns`.
+    /// Every device on workspace `ws`'s roster whose certificate holds at `now_ns`.
     pub(super) fn members(&self, ws: WorkspaceId, now_ns: u64) -> Vec<EndpointId> {
         self.rosters
             .get(&ws)
@@ -97,16 +97,16 @@ impl RoomMembers {
             .unwrap_or_default()
     }
 
-    /// Whether any room here still holds `device`.
+    /// Whether any workspace here still holds `device`.
     fn holds(&self, device: EndpointId) -> bool {
         self.rosters
             .values()
             .any(|roster| roster.contains_key(&device))
     }
 
-    /// Take room `ws`'s roster as `devices`, leaving out `local`: a device
+    /// Take workspace `ws`'s roster as `devices`, leaving out `local`: a device
     /// already on it keeps its membership, a new one gets `mint`'s. With no
-    /// devices the room has no roster here any more.
+    /// devices the workspace has no roster here any more.
     pub(super) fn set_roster(
         &mut self,
         ws: WorkspaceId,
@@ -139,9 +139,9 @@ impl RoomMembers {
         removed
     }
 
-    /// `device`'s membership `epoch` of room `ws`, already off its roster,
+    /// `device`'s membership `epoch` of workspace `ws`, already off its roster,
     /// ended: the connections bound to it stop counting and close, and so
-    /// does this device's own to it once no room holds it.
+    /// does this device's own to it once no workspace holds it.
     fn end_membership(
         &mut self,
         ws: WorkspaceId,
@@ -186,11 +186,11 @@ impl RoomMembers {
         }
     }
 
-    /// Admit a frame of room `ws` that `peer` sent on its connection
+    /// Admit a frame of workspace `ws` that `peer` sent on its connection
     /// `incarnation` at `now_ns`: its membership, binding the connection to
-    /// it on its first frame of the room. A peer whose certificate expired
+    /// it on its first frame of the workspace. A peer whose certificate expired
     /// leaves the roster here, and the connection the frame came on is
-    /// tombstoned for the room with every other bound to that membership.
+    /// tombstoned for the workspace with every other bound to that membership.
     pub(super) fn admit(
         &mut self,
         ws: WorkspaceId,
@@ -234,7 +234,7 @@ impl RoomMembers {
 mod tests {
     use super::*;
 
-    const ROOM: WorkspaceId = 7;
+    const WORKSPACE: WorkspaceId = 7;
 
     fn device(seed: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
@@ -248,7 +248,7 @@ mod tests {
     }
 
     fn admitted(
-        members: &mut RoomMembers,
+        members: &mut WorkspaceMembers,
         ws: WorkspaceId,
         peer: EndpointId,
         incarnation: u64,
@@ -268,28 +268,28 @@ mod tests {
     }
 
     #[test]
-    fn a_room_members_frame_is_taken_and_a_non_members_dropped() {
+    fn a_workspace_members_frame_is_taken_and_a_non_members_dropped() {
         let (here, member, outsider) = (device(1), device(2), device(3));
-        let mut members = RoomMembers::default();
+        let mut members = WorkspaceMembers::default();
         let mut mint = minting();
-        members.set_roster(ROOM, here, lasting(&[here, member]), &mut mint, true);
+        members.set_roster(WORKSPACE, here, lasting(&[here, member]), &mut mint, true);
 
         assert!(
-            admitted(&mut members, ROOM, member, 1).is_some(),
+            admitted(&mut members, WORKSPACE, member, 1).is_some(),
             "a member's frame is taken"
         );
         assert_eq!(
-            admitted(&mut members, ROOM, outsider, 1),
+            admitted(&mut members, WORKSPACE, outsider, 1),
             None,
             "a non-member's is dropped"
         );
         assert_eq!(
-            admitted(&mut members, ROOM + 1, member, 1),
+            admitted(&mut members, WORKSPACE + 1, member, 1),
             None,
-            "membership of one room is no membership of another"
+            "membership of one workspace is no membership of another"
         );
         assert_eq!(
-            members.members(ROOM, NOW),
+            members.members(WORKSPACE, NOW),
             vec![member],
             "this device streams to members only"
         );
@@ -298,86 +298,89 @@ mod tests {
     #[test]
     fn a_connection_stays_bound_to_the_membership_it_started_in() {
         let (here, member) = (device(1), device(2));
-        let mut members = RoomMembers::default();
+        let mut members = WorkspaceMembers::default();
         let mut mint = minting();
-        members.set_roster(ROOM, here, lasting(&[member]), &mut mint, true);
-        let first = admitted(&mut members, ROOM, member, 1).expect("a member");
+        members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
+        let first = admitted(&mut members, WORKSPACE, member, 1).expect("a member");
 
         // Removed: its frames stop counting, and the device leaves.
-        let removed = members.set_roster(ROOM, here, lasting(&[]), &mut mint, true);
+        let removed = members.set_roster(WORKSPACE, here, lasting(&[]), &mut mint, true);
         assert_eq!(removed.devices, vec![member]);
-        assert_eq!(admitted(&mut members, ROOM, member, 1), None);
+        assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
 
         // Admitted again: a new membership, which the old connection never
         // carries; a new connection does.
-        members.set_roster(ROOM, here, lasting(&[member]), &mut mint, true);
-        assert_eq!(admitted(&mut members, ROOM, member, 1), None);
-        let again = admitted(&mut members, ROOM, member, 2).expect("a new connection");
+        members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
+        assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
+        let again = admitted(&mut members, WORKSPACE, member, 2).expect("a new connection");
         assert_ne!(first, again);
     }
 
     #[test]
     fn a_roster_change_keeps_the_devices_that_stay() {
         let (here, stays, leaves) = (device(1), device(2), device(3));
-        let mut members = RoomMembers::default();
+        let mut members = WorkspaceMembers::default();
         let mut mint = minting();
-        members.set_roster(ROOM, here, lasting(&[stays, leaves]), &mut mint, true);
-        let before = admitted(&mut members, ROOM, stays, 1);
-        members.set_roster(ROOM, here, lasting(&[stays]), &mut mint, true);
+        members.set_roster(WORKSPACE, here, lasting(&[stays, leaves]), &mut mint, true);
+        let before = admitted(&mut members, WORKSPACE, stays, 1);
+        members.set_roster(WORKSPACE, here, lasting(&[stays]), &mut mint, true);
         assert_eq!(
-            admitted(&mut members, ROOM, stays, 1),
+            admitted(&mut members, WORKSPACE, stays, 1),
             before,
             "its connection still counts"
         );
-        assert_eq!(members.member(ROOM, leaves, NOW), None);
+        assert_eq!(members.member(WORKSPACE, leaves, NOW), None);
     }
 
     #[test]
     fn a_frame_from_a_device_whose_certificate_expired_is_dropped_and_its_connection_tombstoned() {
         let (here, lapsing, lasting_member) = (device(1), device(2), device(3));
-        let mut members = RoomMembers::default();
+        let mut members = WorkspaceMembers::default();
         let mut mint = minting();
         members.set_roster(
-            ROOM,
+            WORKSPACE,
             here,
             [(lapsing, Some(NOW + 10)), (lasting_member, None)],
             &mut mint,
             true,
         );
         assert!(
-            matches!(members.admit(ROOM, lapsing, 1, NOW), Admission::Member(_)),
+            matches!(
+                members.admit(WORKSPACE, lapsing, 1, NOW),
+                Admission::Member(_)
+            ),
             "before its expiry the device's frame is taken"
         );
 
-        let Admission::Expired(removed) = members.admit(ROOM, lapsing, 1, NOW + 10) else {
+        let Admission::Expired(removed) = members.admit(WORKSPACE, lapsing, 1, NOW + 10) else {
             panic!("a frame at the certificate's expiry is dropped");
         };
         assert_eq!(
             removed.devices,
             vec![lapsing],
-            "no room holds the device any more"
+            "no workspace holds the device any more"
         );
         assert!(
             matches!(
-                members.admit(ROOM, lapsing, 1, NOW + 10),
+                members.admit(WORKSPACE, lapsing, 1, NOW + 10),
                 Admission::Refused
             ),
             "the device is off the roster"
         );
         assert!(
             matches!(
-                members.admit(ROOM, lapsing, 2, NOW + 10),
+                members.admit(WORKSPACE, lapsing, 2, NOW + 10),
                 Admission::Refused
             ),
             "a new connection does not bring it back"
         );
         assert!(
-            members.ingress[&(lapsing, 1)].bound[&ROOM].is_none(),
-            "the connection it came on is tombstoned for the room"
+            members.ingress[&(lapsing, 1)].bound[&WORKSPACE].is_none(),
+            "the connection it came on is tombstoned for the workspace"
         );
-        assert_eq!(members.members(ROOM, NOW + 10), vec![lasting_member]);
+        assert_eq!(members.members(WORKSPACE, NOW + 10), vec![lasting_member]);
         assert!(matches!(
-            members.admit(ROOM, lasting_member, 1, NOW + 10),
+            members.admit(WORKSPACE, lasting_member, 1, NOW + 10),
             Admission::Member(_)
         ));
     }
@@ -385,10 +388,10 @@ mod tests {
     #[test]
     fn a_device_past_its_certificate_expiry_is_streamed_to_no_more() {
         let (here, lapsing) = (device(1), device(2));
-        let mut members = RoomMembers::default();
-        members.set_roster(ROOM, here, [(lapsing, Some(NOW))], minting(), true);
-        assert_eq!(members.members(ROOM, NOW - 1), vec![lapsing]);
-        assert!(members.members(ROOM, NOW).is_empty());
-        assert_eq!(members.member(ROOM, lapsing, NOW), None);
+        let mut members = WorkspaceMembers::default();
+        members.set_roster(WORKSPACE, here, [(lapsing, Some(NOW))], minting(), true);
+        assert_eq!(members.members(WORKSPACE, NOW - 1), vec![lapsing]);
+        assert!(members.members(WORKSPACE, NOW).is_empty());
+        assert_eq!(members.member(WORKSPACE, lapsing, NOW), None);
     }
 }

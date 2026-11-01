@@ -1,4 +1,4 @@
-use super::room_lane::{Direct, Lanes};
+use super::workspace_lane::{Direct, Lanes};
 use super::*;
 use iroh::endpoint::Connection;
 use std::sync::atomic::AtomicUsize;
@@ -61,7 +61,7 @@ fn direct(connection: &Connection, bytes: Vec<u8>) -> Direct {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stalled_send_in_one_room_does_not_delay_another_rooms_send() {
+async fn a_stalled_send_in_one_workspace_does_not_delay_another_workspaces_send() {
     let (sender, _) = endpoint().await;
     let (stalled, _) = endpoint().await;
     let (healthy, _) = endpoint().await;
@@ -92,25 +92,25 @@ async fn a_stalled_send_in_one_room_does_not_delay_another_rooms_send() {
     }
     assert!(
         lanes
-            .queue_direct(2, direct(&to_healthy, b"room two".to_vec()))
+            .queue_direct(2, direct(&to_healthy, b"workspace two".to_vec()))
             .is_ok()
     );
 
-    let event = tilo_test_env::within("room two's send", internal.recv())
+    let event = tilo_test_env::within("workspace two's send", internal.recv())
         .await
         .expect("the lanes report");
     let InternalEvent::DirectSent { ws, outcome } = event else {
         panic!("only direct sends were queued");
     };
-    assert_eq!(ws, 2, "room one's stalled sends came back first");
+    assert_eq!(ws, 2, "workspace one's stalled sends came back first");
     assert!(outcome.delivered);
     assert_eq!(
-        tilo_test_env::within("room two's message", read.recv()).await,
-        Some(b"room two".to_vec())
+        tilo_test_env::within("workspace two's message", read.recv()).await,
+        Some(b"workspace two".to_vec())
     );
     assert!(
         internal.try_recv().is_err(),
-        "room one's sends are still waiting on their device"
+        "workspace one's sends are still waiting on their device"
     );
 
     drop(lanes);
@@ -119,15 +119,15 @@ async fn a_stalled_send_in_one_room_does_not_delay_another_rooms_send() {
     sender.close().await;
 }
 
-/// Room 7 holds only `stalled` besides this device; send it `sends` record
+/// Workspace 7 holds only `stalled` besides this device; send it `sends` record
 /// pieces too big for a device that never reads.
-async fn stall_room_7(
+async fn stall_workspace_7(
     cmd: &mpsc::Sender<NetCmd>,
     stalled: EndpointId,
     sends: usize,
 ) -> mpsc::Receiver<NetEvent> {
     let (on_event, events) = mpsc::channel(64);
-    cmd.send(NetCmd::SetRoomRoster {
+    cmd.send(NetCmd::SetWorkspaceRoster {
         ws: 7,
         devices: vec![(stalled, None)],
     })
@@ -158,7 +158,7 @@ async fn stall_room_7(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_room_whose_device_stalls_holds_up_no_other_room() {
+async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
     const STALLED_SENDS: usize = 8;
     let (stalled, _) = endpoint().await;
     let opened = NeverReads::default();
@@ -171,12 +171,12 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
     let (cmd_a, rx_b, a_id, b_id) = (&a.cmd, &mut b.rx, a.id, b.id);
     a.lookup.add_endpoint_info(stalled.addr());
 
-    // In room 7, the one other device takes what is sent to it and never
+    // In workspace 7, the one other device takes what is sent to it and never
     // reads it: each piece waits out its whole budget.
-    let _rx_7 = stall_room_7(cmd_a, stalled.id(), STALLED_SENDS).await;
+    let _rx_7 = stall_workspace_7(cmd_a, stalled.id(), STALLED_SENDS).await;
 
     // What goes to the other device of the person still goes through, and
-    // the actor still answers, while room 7's sends wait.
+    // the actor still answers, while workspace 7's sends wait.
     let (reply, tally) = tokio::sync::oneshot::channel();
     cmd_a.send(NetCmd::WireTally(reply)).await.unwrap();
     tilo_test_env::within("the actor answers", tally)
@@ -222,7 +222,7 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
     }
     assert!(
         opened.0.load(Ordering::SeqCst) < STALLED_SENDS,
-        "the other device waited for every one of room 7's stalled sends"
+        "the other device waited for every one of workspace 7's stalled sends"
     );
 
     stalled_router.shutdown().await.unwrap();

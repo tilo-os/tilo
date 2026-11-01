@@ -43,7 +43,7 @@ use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
     HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceControlRoute,
-    WorkspaceId, native_ingress, room_topic_id,
+    WorkspaceId, native_ingress, workspace_topic_id,
 };
 
 use crate::channels::ChannelLink;
@@ -869,7 +869,7 @@ impl Client {
             .filter(|workspace| !workspace.room().is_nil())
             .map(|workspace| {
                 (
-                    room_topic_id(workspace.room()),
+                    workspace_topic_id(workspace.room()),
                     workspace.room().to_string(),
                 )
             })
@@ -877,7 +877,7 @@ impl Client {
         let active = tree
             .active_workspace()
             .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| room_topic_id(workspace.room()));
+            .map(|workspace| workspace_topic_id(workspace.room()));
         let mut joined = Vec::new();
         let mut left = Vec::new();
         let mut changed = false;
@@ -2165,7 +2165,7 @@ async fn carry_out(
             plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
         }
         Outgoing::Roster { ws, devices } => plane
-            .send(NetCmd::SetRoomRoster { ws, devices })
+            .send(NetCmd::SetWorkspaceRoster { ws, devices })
             .await
             .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
@@ -2194,7 +2194,7 @@ async fn redeem(
     request: Enrolling,
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
-    let topic = room_topic_id(request.workspace_id);
+    let topic = workspace_topic_id(request.workspace_id);
     // The workspace is joined as this person, under the identity they keep for
     // it: a workspace they select another of their identities for shows that one.
     let (selected, _) = identity.current_native_material(topic)?;

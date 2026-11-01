@@ -40,7 +40,7 @@ use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::{RosterDevice, WorkspaceId, room_topic_id};
+use tilo_network_actor::{RosterDevice, WorkspaceId, workspace_topic_id};
 
 use crate::engine::Engine;
 use crate::sync::Outgoing;
@@ -221,7 +221,7 @@ impl ChannelLink {
     /// head): its history then arrives as the room's other documents do, and
     /// later reads ask nobody.
     pub(crate) fn ask_record(&self, room: RoomId, channel: [u8; 32]) {
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
             return;
@@ -243,7 +243,7 @@ impl ChannelLink {
     pub(crate) fn ask_replay(&self, room: RoomId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::Replay(room_topic_id(room)));
+            let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(room)));
         }
     }
 
@@ -275,7 +275,7 @@ impl GovernanceTransport for ChannelLink {
         outgoing.is_some_and(|outgoing| {
             outgoing
                 .send(Outgoing::Publish {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     msg: Box::new(message),
                 })
                 .is_ok()
@@ -315,7 +315,7 @@ impl Rosters {
             if !engine.holds(room) {
                 // The room is gone here, and what the plane held of it went
                 // with the leave.
-                self.told.remove(&room_topic_id(room));
+                self.told.remove(&workspace_topic_id(room));
                 continue;
             }
             if let Ok(roster) = roster_of(engine, room) {
@@ -332,7 +332,7 @@ impl Rosters {
     /// Tell the plane `room`'s `roster`, and remember it as told only when
     /// the plane took it: one it did not take is read again on a later pass.
     fn tell(&mut self, link: &ChannelLink, room: RoomId, roster: Roster) {
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         if !self.moved(ws, &roster) {
             return;
         }
@@ -621,7 +621,7 @@ mod tests {
     /// its devices changing is told nothing.
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
-        let room = room_topic_id(RoomId::new());
+        let room = workspace_topic_id(RoomId::new());
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();

@@ -2,13 +2,13 @@
 //!
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
 //! iroh. Tilo only names authenticated endpoint ids and workspaces. Every
-//! workspace travels on one protocol, the session a room host serves: a
+//! workspace travels on one protocol, the session a workspace host serves: a
 //! device reaches the devices that hold a workspace through the hosts that
 //! store it, each device serving its own ([`local_host`]). Two of the
 //! person's own devices keep one session of their own between them
 //! ([`device_sessions`]), which carries what is for the person's devices
 //! alone: their device fabric, nearby transfers, codec adverts and their
-//! workspace list. Only what is for one exact device of a room (input,
+//! workspace list. Only what is for one exact device of a workspace (input,
 //! window streams, remote actions) goes directly to it, on the
 //! authenticated device plane.
 //! The actor is the desktop's transport, below the compositor: what arrives
@@ -34,21 +34,21 @@ pub mod workspace_sync;
 
 /// Wakes the compositor loop; on the native backend, a calloop ping.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
-/// Compatibility/control topic used only when a message has no room identity.
+/// Compatibility/control topic used only when a message has no workspace identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
-/// Stable transport/host shard for a durable room. Local workspace handles are
+/// Stable transport/host shard for a durable workspace. Local workspace handles are
 /// deliberately not used: they differ between devices.
-pub fn room_topic_id(room: tilo_desktop_model::RoomId) -> u64 {
-    if room.is_nil() {
+pub fn workspace_topic_id(workspace: tilo_desktop_model::RoomId) -> u64 {
+    if workspace.is_nil() {
         return DEFAULT_WS_TOPIC;
     }
-    // `room.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
+    // `workspace.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
     // can always re-parse, so the `Err` path is unreachable in practice.
-    // Fall back to the "no room identity" topic rather than panic on this
+    // Fall back to the "no workspace identity" topic rather than panic on this
     // hot path — `room_workspace_id` never returns 0 on success, so a real
     // topic id can't collide with the fallback.
-    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// A workspace host connection's error, as the actor reports it. A host at
@@ -61,14 +61,14 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
     error.to_string()
 }
 
-pub mod room_governance;
-mod room_lane;
-#[cfg(test)]
-mod room_lane_tests;
-mod room_members;
 mod sealed_outbox;
-use room_members::Admission;
-pub use room_members::RosterDevice;
+pub mod workspace_governance;
+mod workspace_lane;
+#[cfg(test)]
+mod workspace_lane_tests;
+mod workspace_members;
+use workspace_members::Admission;
+pub use workspace_members::RosterDevice;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -246,22 +246,22 @@ pub enum PersonalFabricPayload {
     Request,
     Snapshot(Vec<u8>),
     /// Ephemeral, exact-target command encoded independently of snapshot
-    /// schema so it is never persisted or relayed through room history.
+    /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
     /// The one lane for file bytes between a person's devices: Nearby sends
     /// and media handoffs alike. Offers and resume checkpoints travel as
     /// authenticated actions; this lane carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
-    /// One signed mutation of a record in the person's own room. Its room is
+    /// One signed mutation of a record in the person's own store. Its scope is
     /// implied by the route: the fabric only ever joins one person's devices.
-    /// `record_id` is the sealed wire name, as on a room topic.
+    /// `record_id` is the sealed wire name, as on a workspace topic.
     Document {
         app_id: String,
         record_id: String,
         envelope: Box<collab_types::SignedOp>,
     },
     /// A device of the person asking for content one of `app_id`'s person
-    /// records references. Its room is the person's, implied by the route.
+    /// records references. Its scope is the person's, implied by the route.
     RecordContentWant {
         app_id: String,
         hash: String,
@@ -350,7 +350,7 @@ impl std::fmt::Debug for LoopWake {
 
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Ask `ws`'s workspace hosts to replay the room's retained history, as
+    /// Ask `ws`'s workspace hosts to replay the workspace's retained history, as
     /// for a first subscription: a local app joined a record whose earlier
     /// traffic this device dropped because nothing held it then.
     Replay {
@@ -362,7 +362,7 @@ pub enum NetCmd {
     AnnounceIdentity {
         ws: WorkspaceId,
     },
-    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// Ask the host of the joined workspace on `ws` to replay what it retains:
     /// something an app message let go earlier waited for has arrived, and
     /// the message is decided again when it comes back.
     NativeReplay {
@@ -371,7 +371,7 @@ pub enum NetCmd {
     /// Ask `ws`'s hosts for the on-demand record on `channel`
     /// (`neighbour_wire::record_sync`: an on-demand record, or a part of a
     /// chain behind its head), which they replay a joining device only once
-    /// it asks: a local app reads it. Its history arrives as the room's
+    /// it asks: a local app reads it. Its history arrives as the workspace's
     /// other documents do, and its changes keep arriving; a host session
     /// that starts later is asked too.
     OpenRecord {
@@ -385,13 +385,13 @@ pub enum NetCmd {
         ws: WorkspaceId,
         frame: Vec<u8>,
     },
-    /// Hold an enrolled room's relay session, over its host's HTTPS routes
+    /// Hold an enrolled workspace's relay session, over its host's HTTPS routes
     /// when given, else over the iroh endpoint its hint names.
     NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
-    /// This device's own room host opened: join the rooms it hosts that
+    /// This device's own workspace host opened: join the workspaces it hosts that
     /// wait for it.
     LocalHostReady,
-    /// Where this actor queues the channel traffic of rooms' host sessions
+    /// Where this actor queues the channel traffic of workspaces' host sessions
     /// for the collaboration broker's drain ([`native_ingress::ChannelQueue`]),
     /// while one runs; without one it goes to the frame loop.
     ChannelQueue(Option<Arc<native_ingress::ChannelQueue>>),
@@ -413,19 +413,19 @@ pub enum NetCmd {
     },
     NativeMedia(services::ServiceCommand),
     NativeEnrollment(services::ServiceCommand),
-    /// Invoke what a relay answers itself (a room's governance, or a
-    /// member's own business in it) on a room's relay session, and answer
+    /// Invoke what a relay answers itself (a workspace's governance, or a
+    /// member's own business in it) on a workspace's relay session, and answer
     /// the relay's receipt.
-    RoomGovernance(Box<room_governance::Request>),
+    WorkspaceGovernance(Box<workspace_governance::Request>),
     /// Tell `ended` once workspace `ws` has no session with a host left: at
-    /// once when it has none now. What waits on a room's host lasts as long
-    /// as the room's sessions do.
+    /// once when it has none now. What waits on a workspace's host lasts as long
+    /// as the workspace's sessions do.
     WatchHostSessions {
         ws: u64,
         ended: tokio::sync::oneshot::Sender<()>,
     },
     /// Take part in workspace `ws`: its events reach `on_event`, and its
-    /// workspace hosts are dialled. A room's traffic travels over its host
+    /// workspace hosts are dialled. A workspace's traffic travels over its host
     /// sessions alone.
     JoinWorkspace {
         ws: WorkspaceId,
@@ -451,11 +451,11 @@ pub enum NetCmd {
     LeaveWorkspace {
         ws: WorkspaceId,
     },
-    /// Room `ws`'s admitted roster changed: `devices` are every device its
+    /// Workspace `ws`'s admitted roster changed: `devices` are every device its
     /// governor admitted, by endpoint id, with its certificate's expiry.
-    /// They alone send and receive the room's window streams; a device that
+    /// They alone send and receive the workspace's window streams; a device that
     /// left, or whose certificate expired, has its connections closed.
-    SetRoomRoster {
+    SetWorkspaceRoster {
         ws: WorkspaceId,
         devices: Vec<RosterDevice>,
     },
@@ -477,7 +477,7 @@ pub enum NetCmd {
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
     /// QUIC surface/control plane. Workspace-wide relay publication is refused
-    /// because input must never be fanned out to other room participants.
+    /// because input must never be fanned out to other workspace participants.
     PublishWorkspaceControl {
         ws: WorkspaceId,
         msg: NeighbourMsg,
@@ -528,10 +528,10 @@ pub enum NetCmd {
     },
 }
 
-/// A piece of a record's content on its way to the device of the room that
+/// A piece of a record's content on its way to the device of the workspace that
 /// asked: over the direct plane when that device is a live member of the
-/// workspace, else through the room's workspace hosts, which hand it to
-/// that device alone and keep nothing.
+/// workspace, else through the workspace's hosts, which hand it to that
+/// device alone and keep nothing.
 #[derive(Debug)]
 pub struct RecordContentDelivery {
     pub ws: WorkspaceId,
@@ -598,9 +598,9 @@ pub enum NetEvent {
         cause: PeerDepartureCause,
         membership_epoch: Option<MembershipEpoch>,
     },
-    /// The host of the joined room on topic `ws` admits this device's
-    /// person no longer: they were removed (a public room prunes guests it
-    /// has not seen for long). The shell joins again through the room's
+    /// The host of the joined workspace on topic `ws` admits this device's
+    /// person no longer: they were removed (a public workspace prunes guests it
+    /// has not seen for long). The shell joins again through the workspace's
     /// door, where it has one.
     NotAdmitted {
         ws: WorkspaceId,
@@ -615,7 +615,7 @@ pub enum NetEvent {
     },
     /// A host of `ws` sent everything it retains of the on-demand
     /// record on `channel` this device asked for ([`NetCmd::OpenRecord`]):
-    /// `frames` of it, which arrived before this as the room's documents do.
+    /// `frames` of it, which arrived before this as the workspace's documents do.
     RecordOpened {
         ws: WorkspaceId,
         channel: [u8; 32],
@@ -682,7 +682,7 @@ impl NetEvent {
 }
 
 /// Actor-minted identity of one endpoint's membership incarnation: of a
-/// room's roster, or of a session with one of the person's devices. This
+/// workspace's roster, or of a session with one of the person's devices. This
 /// value never crosses the wire: it is authority only for local consumers
 /// of [`NetEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -716,7 +716,7 @@ pub enum PeerDepartureCause {
 }
 
 enum InternalEvent {
-    /// A room's hold reached a host: the session runs until the actor lets
+    /// A workspace's hold reached a host: the session runs until the actor lets
     /// go of `held`.
     NativeHostConnected {
         ws: u64,
@@ -724,7 +724,7 @@ enum InternalEvent {
         scope: Arc<native_ingress::Scope>,
         held: tokio::sync::oneshot::Sender<()>,
     },
-    /// A room's hold failed to dial `via`, its `governor` or another host.
+    /// A workspace's hold failed to dial `via`, its `governor` or another host.
     NativeDialFailed {
         ws: u64,
         via: Box<tilo_peer_state::join::TransportHint>,
@@ -818,10 +818,10 @@ enum InternalEvent {
         outcome: PersonalTransferOutcome,
         sent_bytes: u64,
     },
-    /// A direct send queued on a room's lane went, or did not.
+    /// A direct send queued on a workspace's lane went, or did not.
     DirectSent {
         ws: WorkspaceId,
-        outcome: Box<room_lane::DirectOutcome>,
+        outcome: Box<workspace_lane::DirectOutcome>,
     },
 }
 
@@ -924,7 +924,7 @@ impl HostedTopic {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
-    /// Held while a room's hold runs this session; let go with it.
+    /// Held while a workspace's hold runs this session; let go with it.
     native_held: Option<tokio::sync::oneshot::Sender<()>>,
     /// The session goes to this device's own host, in this process: no
     /// remote party, nothing to keep up.
@@ -1145,16 +1145,16 @@ fn read_personal_fabric(
 
 /// Why `command` means a remote party is involved, so this device must be
 /// reachable for a while (`tilo_endpoint_reachability`): it dials a peer
-/// or host, enrols a device, administers a relay room, joins a call or
+/// or host, enrols a device, administers a relay workspace, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
-/// else is on (its rooms, its fabric broadcast) sends nothing, and a lone
+/// else is on (its workspaces, its fabric broadcast) sends nothing, and a lone
 /// desktop does that on every local change.
 fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
-        NetCmd::RoomGovernance(_) => "talking to a room's host",
+        NetCmd::WorkspaceGovernance(_) => "talking to a workspace's host",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1246,10 +1246,10 @@ impl Actor {
         )
     }
 
-    /// [`Self::spawn_deferring_relays`] for a device that hosts the rooms
+    /// [`Self::spawn_deferring_relays`] for a device that hosts the workspaces
     /// placed on it: with `hosting`, its endpoint also serves this device's
-    /// room host's protocols (refusing them until the host opens), and the
-    /// native owner joins the rooms hosted here through that host.
+    /// workspace host's protocols (refusing them until the host opens), and the
+    /// native owner joins the workspaces hosted here through that host.
     pub fn spawn_hosting(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1302,25 +1302,25 @@ impl Actor {
 }
 
 /// What this endpoint serves beside the actor's own protocols: this
-/// device's room host's handlers, when it hosts the rooms placed on it, and
-/// the session's own (its action plane, say) — all on the one endpoint both
-/// reach this device at.
+/// device's own host's handlers, when it hosts the workspaces placed on it,
+/// and the session's own (its action plane, say) — all on the one endpoint
+/// both reach this device at.
 struct Serving {
     hosting: Option<Hosting>,
     served: crate::local_host::Protocols,
 }
 
-/// This device's room host, for the actor: the handle the native owner
-/// joins the rooms hosted here through, and the handlers serving the host
+/// This device's workspace host, for the actor: the handle the native owner
+/// joins the workspaces hosted here through, and the handlers serving the host
 /// on the router ([`crate::local_host`]).
 pub struct Hosting {
     pub host: crate::local_host::LocalHost,
     pub protocols: crate::local_host::Protocols,
-    /// Where this device logs the sealed writes held for rooms' hosts.
+    /// Where this device logs the sealed writes held for workspaces' hosts.
     pub held_writes: std::path::PathBuf,
 }
 
-/// The channel governance a device published to one room: each message's
+/// The channel governance a device published to one workspace: each message's
 /// retention channel and its encoded frame.
 type GovernanceLog = VecDeque<([u8; 32], Vec<u8>)>;
 
@@ -1335,22 +1335,22 @@ struct ActorState {
     native_media: Box<dyn services::Calls>,
     native_enrollment: Box<dyn services::Enrollments>,
     native_routes: native_ingress::Routes,
-    /// Where the channel traffic of rooms' host sessions goes while the
+    /// Where the channel traffic of workspaces' host sessions goes while the
     /// collaboration broker's drain runs: straight to it.
     channel_queue: Option<Arc<native_ingress::ChannelQueue>>,
-    /// This device's room host, through which the native owner joins the
-    /// rooms hosted here.
+    /// This device's workspace host, through which the native owner joins the
+    /// workspaces hosted here.
     local_host: Option<crate::local_host::LocalHost>,
-    /// Governance invocations waiting for their room's relay to answer.
-    room_governance: room_governance::Waiting,
+    /// Governance invocations waiting for their workspace's relay to answer.
+    workspace_governance: workspace_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     internal_tx: mpsc::Sender<InternalEvent>,
     /// The topics only the person's hosts carry that this device joined.
     topics: HashMap<WorkspaceId, HostedTopic>,
-    /// Each room's direct sends, so one room's slow devices hold up no
-    /// other room ([`room_lane`]).
-    lanes: room_lane::Lanes,
+    /// Each workspace's direct sends, so one workspace's slow devices hold up no
+    /// other workspace ([`workspace_lane`]).
+    lanes: workspace_lane::Lanes,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     /// The person's other devices ([`NetCmd::Connect`]), where each is
     /// reached.
@@ -1369,8 +1369,8 @@ struct ActorState {
     sibling_events: Option<mpsc::Sender<NetEvent>>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
-    /// The on-demand records this device asked its rooms' hosts for
-    /// ([`NetCmd::OpenRecord`]), by room.
+    /// The on-demand records this device asked its workspaces' hosts for
+    /// ([`NetCmd::OpenRecord`]), by workspace.
     opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
@@ -1378,26 +1378,26 @@ struct ActorState {
     /// sheet, one per connected host.
     agent_questions: Box<dyn services::Approvers>,
     next_membership_epoch: u64,
-    /// Each room's admitted roster ([`NetCmd::SetRoomRoster`]), and the
+    /// Each workspace's admitted roster ([`NetCmd::SetWorkspaceRoster`]), and the
     /// window-stream connections peers opened to this device, bound to it.
-    room_members: room_members::RoomMembers,
+    workspace_members: workspace_members::WorkspaceMembers,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
     recent_input: HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
-    /// Channel governance this device published to each room, by retention
+    /// Channel governance this device published to each workspace, by retention
     /// channel (see [`remember_governance`]).
     governance: HashMap<WorkspaceId, GovernanceLog>,
-    /// Retained state published to a room while none of its hosts had a
+    /// Retained state published to a workspace while none of its hosts had a
     /// session (see [`ActorState::hold_for_host`]).
     host_backlog: HashMap<WorkspaceId, HostBacklog>,
-    /// This device's sealed writes to each room whose records are sealed
-    /// channels, until a host of the room keeps them (see
+    /// This device's sealed writes to each workspace whose records are sealed
+    /// channels, until a host of the workspace keeps them (see
     /// [`sealed_outbox`]).
     sealed_outbox: HashMap<WorkspaceId, sealed_outbox::SealedOutbox>,
-    /// Keeps those writes in their rooms' logs, off this actor's turn.
+    /// Keeps those writes in their workspaces' logs, off this actor's turn.
     sealed_records: sealed_outbox::RecordKeeper,
-    /// Where those logs are, read when a room's route is set up.
+    /// Where those logs are, read when a workspace's route is set up.
     held_log: Option<held_log::HeldLog>,
     wake: Option<Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
@@ -1502,19 +1502,19 @@ impl Drop for HostRuntime {
         if let Some(scope) = &self.native_scope {
             scope.close();
         }
-        // The room's hold dials again once its session is let go.
+        // The workspace's hold dials again once its session is let go.
         drop(self.native_held.take());
         self.pump.abort();
     }
 }
 
 impl ActorState {
-    /// Whether `peer` is a member of `ws` for window streams: on the room's
+    /// Whether `peer` is a member of `ws` for window streams: on the workspace's
     /// admitted roster, or, on a topic without one, one of the person's
     /// devices whose session is up.
     fn is_surface_member(&self, ws: WorkspaceId, peer: EndpointId) -> bool {
-        if self.room_members.has_roster(ws) {
-            self.room_members
+        if self.workspace_members.has_roster(ws) {
+            self.workspace_members
                 .member(ws, peer, tilo_clock::unix_now_ns())
                 .is_some()
         } else {
@@ -1524,20 +1524,22 @@ impl ActorState {
 
     /// Every device a window of `ws` streams to ([`Self::is_surface_member`]).
     fn surface_members(&self, ws: WorkspaceId) -> Vec<EndpointId> {
-        if self.room_members.has_roster(ws) {
-            return self.room_members.members(ws, tilo_clock::unix_now_ns());
+        if self.workspace_members.has_roster(ws) {
+            return self
+                .workspace_members
+                .members(ws, tilo_clock::unix_now_ns());
         }
         self.siblings.keys().copied().collect()
     }
 
-    /// Take room `ws`'s admitted roster as `devices` (none, and not `keep`,
+    /// Take workspace `ws`'s admitted roster as `devices` (none, and not `keep`,
     /// once this device left it): the connections bound to a membership that
-    /// ended close, and so does this device's own to a device no room holds
+    /// ended close, and so does this device's own to a device no workspace holds
     /// any more.
-    fn set_room_roster(&mut self, ws: WorkspaceId, devices: Vec<RosterDevice>, keep: bool) {
+    fn set_workspace_roster(&mut self, ws: WorkspaceId, devices: Vec<RosterDevice>, keep: bool) {
         let local = self.endpoint.id();
         let next = &mut self.next_membership_epoch;
-        let removed = self.room_members.set_roster(
+        let removed = self.workspace_members.set_roster(
             ws,
             local,
             devices,
@@ -1551,8 +1553,8 @@ impl ActorState {
     }
 
     /// Close what ended memberships removed: the connections bound to them,
-    /// and this device's own to a device no room holds any more.
-    fn close_removed(&mut self, removed: room_members::Removed, reason: &[u8]) {
+    /// and this device's own to a device no workspace holds any more.
+    fn close_removed(&mut self, removed: workspace_members::Removed, reason: &[u8]) {
         for connection in removed.connections {
             connection.close(0_u32.into(), reason);
         }
@@ -1605,10 +1607,10 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
-            Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request),
+            Some(NetCmd::WorkspaceGovernance(request)) => self.send_workspace_governance(*request),
             Some(NetCmd::WatchHostSessions { ws, ended }) => {
                 let now = self.sessions_of(ws);
-                self.room_governance.watch_sessions(ws, now, ended);
+                self.workspace_governance.watch_sessions(ws, now, ended);
             }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
@@ -1619,15 +1621,15 @@ impl ActorState {
             }
             Some(NetCmd::WatchSiblings { on_event }) => self.watch_siblings(on_event).await,
             Some(NetCmd::PublishToSiblings { msg }) => self.publish_to_siblings(msg),
-            Some(NetCmd::SetRoomRoster { ws, devices }) => {
-                self.set_room_roster(ws, devices, true);
+            Some(NetCmd::SetWorkspaceRoster { ws, devices }) => {
+                self.set_workspace_roster(ws, devices, true);
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.topics.remove(&ws);
                 self.native_routes.remove(ws);
                 self.opened_records.remove(&ws);
                 self.subscribers.remove(&ws);
-                self.set_room_roster(ws, Vec::new(), false);
+                self.set_workspace_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
                 self.held_surface_units
@@ -1703,10 +1705,10 @@ impl ActorState {
                     if !begins_replay(&runtime.replaying) {
                         tracing::debug!(
                             ws,
-                            "joined room replay already running; its Ready answers this too"
+                            "joined workspace replay already running; its Ready answers this too"
                         );
                     } else if let Err(error) = runtime.session.resubscribe() {
-                        tracing::debug!(ws, %error, "joined room replay not asked: not connected");
+                        tracing::debug!(ws, %error, "joined workspace replay not asked: not connected");
                     }
                 }
             }
@@ -1724,7 +1726,7 @@ impl ActorState {
                 if self.native_routes.contains(ws)
                     && matches!(&msg, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
                 {
-                    // A sealed write in a room whose records are sealed
+                    // A sealed write in a workspace whose records are sealed
                     // channels: the governor never admits it, the relay
                     // retains it for the record's channel members.
                     self.publish_sealed_native(ws, &msg);
@@ -2385,7 +2387,7 @@ impl ActorState {
         match route {
             WorkspaceControlRoute::Direct { target } => {
                 // Input lands within its frame budget or not at all: a
-                // backed-up room has nothing better to do with it.
+                // backed-up workspace has nothing better to do with it.
                 let _ = self.publish_direct(ws, target, msg);
             }
             WorkspaceControlRoute::Relayed { via } => {
@@ -2455,11 +2457,11 @@ impl ActorState {
         }
     }
 
-    /// Send `request` to the room's relay device it is addressed to
-    /// ([`room_governance`]), on any session of the room.
-    fn send_room_governance(&mut self, request: room_governance::Request) {
+    /// Send `request` to the workspace's relay device it is addressed to
+    /// ([`workspace_governance`]), on any session of the workspace.
+    fn send_workspace_governance(&mut self, request: workspace_governance::Request) {
         let (ws, to) = (request.ws, request.to);
-        room_governance::trace::note(|| {
+        workspace_governance::trace::note(|| {
             format!(
                 "send {:?} {} on ws {ws} to {to:?}: sessions {:?}, replaying {:?}",
                 request.invoke.invocation,
@@ -2479,19 +2481,19 @@ impl ActorState {
         // waits for one being established, and with none of those there is
         // nothing to wait for.
         match self.sessions_of(ws) {
-            room_governance::Sessions::Open => {}
-            room_governance::Sessions::Connecting => {
-                self.room_governance.hold_for_session(request);
+            workspace_governance::Sessions::Open => {}
+            workspace_governance::Sessions::Connecting => {
+                self.workspace_governance.hold_for_session(request);
                 return;
             }
-            room_governance::Sessions::Closed => {
+            workspace_governance::Sessions::Closed => {
                 let _ = request.reply.send(Err(
-                    "this device holds no session with the room's host".into(),
+                    "this device holds no session with the workspace's host".into(),
                 ));
                 return;
             }
         }
-        if let Some(frame) = self.room_governance.send(request, to, Instant::now()) {
+        if let Some(frame) = self.workspace_governance.send(request, to, Instant::now()) {
             self.publish_to_host_sessions(ws, to, &frame);
         }
     }
@@ -2501,9 +2503,9 @@ impl ActorState {
     /// shell: this device's own host and the person's devices are no
     /// durable hosts it seeds.
     fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
-        // The room's own host caught this device up: the room holds what it
+        // The workspace's own host caught this device up: the workspace holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
-        // nothing about the room's host.
+        // nothing about the workspace's host.
         if !self.native_routes.contains(ws)
             || self
                 .host_sessions
@@ -2512,7 +2514,7 @@ impl ActorState {
         {
             crate::workspace_sync::synced(ws);
         }
-        // The room's host replayed what it retains: the sealed writes it
+        // The workspace's host replayed what it retains: the sealed writes it
         // replayed are queued for the broker ahead of this.
         if self.native_routes.contains(ws)
             && self
@@ -2530,10 +2532,10 @@ impl ActorState {
             .then_some(NetEvent::HostReady { ws, peer })
     }
 
-    /// Send `frame`, addressed to the room host whose device is `host`, on a
+    /// Send `frame`, addressed to the workspace host whose device is `host`, on a
     /// host session of `ws`: the one whose handshake authenticated that
     /// device, else any other, which routes it there. Never the direct
-    /// surface route: a device hosting its own rooms is also a member of
+    /// surface route: a device hosting its own workspaces is also a member of
     /// them under the same key, and its shell does not answer for its host.
     fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: &[u8]) {
         let device = *host.as_bytes();
@@ -2549,9 +2551,11 @@ impl ActorState {
                 .publish_remote_action(device, frame.to_vec())
                 .is_ok()
         });
-        room_governance::trace::note(|| format!("published to ws {ws} host {host}: sent {sent}"));
+        workspace_governance::trace::note(|| {
+            format!("published to ws {ws} host {host}: sent {sent}")
+        });
         if !sent {
-            tracing::warn!(ws, %host, "no session with the room's host to send a request on");
+            tracing::warn!(ws, %host, "no session with the workspace's host to send a request on");
         }
     }
 
@@ -2570,7 +2574,7 @@ impl ActorState {
         let msg = match target {
             Some(target) if self.is_surface_member(ws, target) => {
                 match self.publish_direct(ws, target, msg) {
-                    // How it went comes back from the room's lane.
+                    // How it went comes back from the workspace's lane.
                     Ok(()) => return,
                     Err(msg) => *msg,
                 }
@@ -2609,7 +2613,7 @@ impl ActorState {
     }
 
     /// Queue one message for exactly `target` on the authenticated direct
-    /// surface/control plane, on the room's lane: the peer must be live on
+    /// surface/control plane, on the workspace's lane: the peer must be live on
     /// this workspace. Gives the message back when it cannot go that way
     /// now; how a queued one went comes back as
     /// [`InternalEvent::DirectSent`] ([`Self::direct_sent`]).
@@ -2640,7 +2644,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return Err(Box::new(wire.message));
         };
-        let direct = room_lane::Direct {
+        let direct = workspace_lane::Direct {
             addr: self
                 .own_devices
                 .get(&target)
@@ -2652,15 +2656,15 @@ impl ActorState {
             budget,
         };
         self.lanes.queue_direct(ws, direct).inspect_err(|_| {
-            tracing::warn!(ws, peer = %target, "room's remote work is backed up; not sent directly");
+            tracing::warn!(ws, peer = %target, "workspace's remote work is backed up; not sent directly");
         })
     }
 
     /// A direct send queued on `ws`'s lane went (or did not): keep its
     /// connection, and send what failed the way it would have gone without
     /// a direct route.
-    fn direct_sent(&mut self, ws: WorkspaceId, outcome: room_lane::DirectOutcome) {
-        let room_lane::DirectOutcome {
+    fn direct_sent(&mut self, ws: WorkspaceId, outcome: workspace_lane::DirectOutcome) {
+        let workspace_lane::DirectOutcome {
             target,
             msg,
             connection,
@@ -2773,11 +2777,11 @@ impl ActorState {
                 session,
                 event,
             }) => {
-                // A room's governance answering this device is taken here:
+                // A workspace's governance answering this device is taken here:
                 // its caller waits off the thread other answers go to.
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
                     std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) && !self.room_governance.takes(ws, &event)
+                }) && !self.workspace_governance.takes(ws, &event)
                 {
                     self.handle_host_event(ws, peer, event).await;
                 }
@@ -2798,7 +2802,7 @@ impl ActorState {
                 connection_incarnation,
                 connection,
             }) => {
-                self.room_members
+                self.workspace_members
                     .connection(peer, connection_incarnation, connection);
             }
             Some(InternalEvent::SurfaceFanoutComplete {
@@ -2882,12 +2886,12 @@ impl ActorState {
         msg: NeighbourMsg,
     ) {
         // A bare ALPN connection is not workspace admission. Require the
-        // peer to be a member: of the room's admitted roster, or, on a topic
+        // peer to be a member: of the workspace's admitted roster, or, on a topic
         // without one, one of the person's devices whose session is up.
         // ShellNetwork performs the capability and claimed-publisher checks
         // before dispatch.
-        let membership = if self.room_members.has_roster(ws) {
-            match self.room_members.admit(
+        let membership = if self.workspace_members.has_roster(ws) {
+            match self.workspace_members.admit(
                 ws,
                 peer,
                 connection_incarnation,
@@ -3144,7 +3148,7 @@ impl ActorState {
         event: HostEvent,
     ) -> Option<NetEvent> {
         match event {
-            // A sealed write in a room whose records are sealed channels:
+            // A sealed write in a workspace whose records are sealed channels:
             // no owner admits it, so it goes straight to the broker, which
             // checks it before any app sees it.
             HostEvent::NativeInput(input)
@@ -3216,10 +3220,10 @@ impl ActorState {
             runtime.pump.abort();
             if runtime.native_scope.is_some() {
                 drop(runtime);
-                // The room's hold dials again at once: no heartbeat runs
-                // for a room this device's own host serves.
+                // The workspace's hold dials again at once: no heartbeat runs
+                // for a workspace this device's own host serves.
                 self.native_routes.retry(ws);
-                // What this device holds for the room is not on its way now.
+                // What this device holds for the workspace is not on its way now.
                 self.tell_unsynced(ws);
             } else if runtime.local {
                 // This device's own host is no peer of it.
@@ -3234,7 +3238,7 @@ impl ActorState {
         })
     }
 
-    /// Hand `event` to the room's subscriber and wake the loop for the
+    /// Hand `event` to the workspace's subscriber and wake the loop for the
     /// recorded streams, which are written out of band.
     async fn publish_to_subscriber(&self, ws: WorkspaceId, event: NetEvent) {
         let Some(tx) = self.subscribers.get(&ws) else {
@@ -3301,7 +3305,7 @@ impl ActorState {
 
     /// Whether [`Self::run_heartbeat_tick`] has anything to do: one of the
     /// person's devices without a session, a workspace host or a governed
-    /// room's relay to keep connected, or a remote action held for a peer.
+    /// workspace's relay to keep connected, or a remote action held for a peer.
     /// A converged pair of desktops has none of these, so its runtime sleeps
     /// until one appears ([`run`]).
     fn needs_upkeep(&self) -> bool {
@@ -3315,51 +3319,51 @@ impl ActorState {
 
     /// Where workspace `ws` stands with its hosts, this device's own
     /// included: a session up, one being established, or neither.
-    fn sessions_of(&self, ws: u64) -> room_governance::Sessions {
-        // A session with a host standing in for a room's governor carries
+    fn sessions_of(&self, ws: u64) -> workspace_governance::Sessions {
+        // A session with a host standing in for a workspace's governor carries
         // none of its governance: only the governor's own counts.
         if self
             .host_sessions
             .iter()
             .any(|((session_ws, _), runtime)| *session_ws == ws && reaches_governor(runtime))
         {
-            room_governance::Sessions::Open
+            workspace_governance::Sessions::Open
         } else if self.native_routes.establishing(ws)
             || self
                 .connecting_hosts
                 .iter()
                 .any(|(connecting_ws, _)| *connecting_ws == ws)
         {
-            room_governance::Sessions::Connecting
+            workspace_governance::Sessions::Connecting
         } else {
-            room_governance::Sessions::Closed
+            workspace_governance::Sessions::Closed
         }
     }
 
     /// Settle what waits on where workspaces stand with their hosts
-    /// ([`room_governance::Waiting::sessions_changed`]), and send what
+    /// ([`workspace_governance::Waiting::sessions_changed`]), and send what
     /// waited for a session now up. Every change to a workspace's sessions
     /// is made handling one event of [`run`]'s loop, which settles before
     /// it waits again, so a session ending with nothing else going on is
     /// settled at once. Costs nothing while nothing waits.
     fn settle_session_waits(&mut self) {
-        if !self.room_governance.waits_on_sessions() {
+        if !self.workspace_governance.waits_on_sessions() {
             return;
         }
-        let sessions: HashMap<u64, room_governance::Sessions> = self
-            .room_governance
+        let sessions: HashMap<u64, workspace_governance::Sessions> = self
+            .workspace_governance
             .workspaces()
             .into_iter()
             .map(|ws| (ws, self.sessions_of(ws)))
             .collect();
-        let ready = self.room_governance.sessions_changed(|ws| {
+        let ready = self.workspace_governance.sessions_changed(|ws| {
             sessions
                 .get(&ws)
                 .copied()
-                .unwrap_or(room_governance::Sessions::Closed)
+                .unwrap_or(workspace_governance::Sessions::Closed)
         });
         for request in ready {
-            self.send_room_governance(request);
+            self.send_workspace_governance(request);
         }
     }
 
@@ -3381,7 +3385,7 @@ impl ActorState {
                     })
                 })
             }
-            NetCmd::RoomGovernance(request) => request.to == own,
+            NetCmd::WorkspaceGovernance(request) => request.to == own,
             _ => false,
         }
     }
@@ -3389,7 +3393,7 @@ impl ActorState {
     /// The remote party this actor is connected to or keeps dialling, if
     /// any, which holds this device's relays up ([`Need::Transport`]): a
     /// peer it dials, a peer on one of its topics, a workspace host, a
-    /// governed room's relay, one of the person's devices, a window streamed
+    /// governed workspace's relay, one of the person's devices, a window streamed
     /// with a peer, a remote action waiting for its peer, a device being
     /// enrolled or a Messages account its contacts text. A peer that left
     /// stops counting once its membership lapses.
@@ -3406,7 +3410,7 @@ impl ActorState {
         {
             "a workspace host"
         } else if self.native_routes.any_remote() {
-            "a room hosted elsewhere"
+            "a workspace hosted elsewhere"
         } else if !self.active_personal_transfers.is_empty() {
             "one of the person's devices"
         } else if !self.surface_connections.is_empty()
@@ -3431,13 +3435,13 @@ impl ActorState {
         self.retry_native_routes();
         // A session with this device's own host loses nothing between
         // heartbeats: it publishes as the owner commits.
-        let rooms: Vec<_> = self
+        let workspaces: Vec<_> = self
             .host_sessions
             .iter()
             .filter(|(_, runtime)| !runtime.local)
             .map(|((ws, _), _)| *ws)
             .collect();
-        for ws in rooms {
+        for ws in workspaces {
             self.request_native_refresh(ws);
             self.drive_native_publication(ws);
         }
@@ -3458,7 +3462,7 @@ impl ActorState {
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
-    /// for the room and the revocations that come with it.
+    /// for the workspace and the revocations that come with it.
     fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
         let identity = self.host_identity.as_ref()?;
         let (cert, revocations) = identity.material_for(ws);
@@ -3544,7 +3548,7 @@ impl ActorState {
         }) || *author == self.endpoint.id()
     }
 
-    /// Keep `msg` for the room's host when the host should retain it but no
+    /// Keep `msg` for the workspace's host when the host should retain it but no
     /// session to a configured host is up: a session is replaced (a pinned
     /// home peer takes over an unpinned dial) or redialled, and what a device
     /// writes meanwhile (a record it creates at launch, say) would otherwise
@@ -3567,8 +3571,8 @@ impl ActorState {
         self.hold_backlog(ws, channel, kind, bytes);
     }
 
-    /// Keep one message for room `ws`'s host until its session is up, the
-    /// oldest dropped past the room's bounds.
+    /// Keep one message for workspace `ws`'s host until its session is up, the
+    /// oldest dropped past the workspace's bounds.
     fn hold_backlog(
         &mut self,
         ws: WorkspaceId,
@@ -3638,8 +3642,8 @@ impl ActorState {
     }
 }
 
-/// Whether `runtime` may carry its room's governance: any session but one
-/// with a host standing in for the room's governor.
+/// Whether `runtime` may carry its workspace's governance: any session but one
+/// with a host standing in for the workspace's governor.
 fn reaches_governor(runtime: &HostRuntime) -> bool {
     runtime
         .native_scope
@@ -3870,7 +3874,7 @@ async fn run(
             tilo_relay_protocol::transport::SIBLING_ALPN,
             device_sessions::SiblingProtocol(internal_tx.clone()),
         );
-    // This device's room host answers here once it opens: until then its
+    // This device's workspace host answers here once it opens: until then its
     // handlers refuse, as a device hosting nothing does.
     let (local_host, mut protocols, held_log) = match hosting {
         Some(Hosting {
@@ -3896,7 +3900,7 @@ async fn run(
         })
         .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
-    let lanes = room_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
+    let lanes = workspace_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
         private_messages: crate::private_messages::Transport::new(
             endpoint.clone(),
@@ -3912,7 +3916,7 @@ async fn run(
         native_routes: native_ingress::Routes::default(),
         channel_queue: None,
         local_host,
-        room_governance: room_governance::Waiting::default(),
+        workspace_governance: workspace_governance::Waiting::default(),
         lanes,
         internal_tx,
         topics: HashMap::new(),
@@ -3930,7 +3934,7 @@ async fn run(
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
         next_membership_epoch: 0,
-        room_members: room_members::RoomMembers::default(),
+        workspace_members: workspace_members::WorkspaceMembers::default(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         recent_input: HashMap::new(),
@@ -3962,7 +3966,7 @@ async fn run(
     let mut reported_party = None;
 
     loop {
-        // What waited on a room's sessions follows them, however they
+        // What waited on a workspace's sessions follows them, however they
         // changed.
         state.settle_session_waits();
         // The relays stay up while a remote party lasts, and rest a while
@@ -4149,7 +4153,7 @@ fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
 
 /// Publish `msg` on every session of `ws` with its workspace hosts. Each
 /// session's client enqueues it into its already authenticated QUIC pump at
-/// once: none waits for another, nor for any other room.
+/// once: none waits for another, nor for any other workspace.
 fn publish(
     host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     ws: WorkspaceId,
@@ -4204,10 +4208,10 @@ fn send_encoded(
     }
 }
 
-/// Channel governance kept per room for the host sessions that start later.
+/// Channel governance kept per workspace for the host sessions that start later.
 const MAX_REMEMBERED_GOVERNANCE: usize = 512;
 
-/// Bounds of what one room holds for its host while no session is up.
+/// Bounds of what one workspace holds for its host while no session is up.
 const MAX_HOST_BACKLOG: usize = 4096;
 const MAX_HOST_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
 
@@ -4248,12 +4252,12 @@ fn remember_governance(
     else {
         return;
     };
-    let room = remembered.entry(ws).or_default();
-    room.retain(|(kept, _)| *kept != channel);
-    if room.len() >= MAX_REMEMBERED_GOVERNANCE {
-        room.pop_front();
+    let workspace = remembered.entry(ws).or_default();
+    workspace.retain(|(kept, _)| *kept != channel);
+    if workspace.len() >= MAX_REMEMBERED_GOVERNANCE {
+        workspace.pop_front();
     }
-    room.push_back((channel, bytes));
+    workspace.push_back((channel, bytes));
 }
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
@@ -4263,7 +4267,7 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// Remote input is not deduplicated for good: a second click or key press is
 /// byte-identical to the first. Only a copy that another host session
 /// delivers within [`INPUT_COPY`] (the same event over another route to this
-/// room) is dropped; one session delivers each event once, in order, so
+/// workspace) is dropped; one session delivers each event once, in order, so
 /// identical events over it (a doubled letter in one batch) are all new.
 /// The tally name of a host session's event.
 fn host_event_kind(event: &HostEvent) -> &'static str {
@@ -4720,7 +4724,7 @@ fn host_event(
             HostEvent::RecordOpened { channel, frames }
         }
         HostInbound::Committed { op } => HostEvent::Kept { op },
-        // Not kept: the write stays held, and the room's next
+        // Not kept: the write stays held, and the workspace's next
         // session sends it again.
         HostInbound::CommitRefused { op, reason } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
@@ -4785,7 +4789,7 @@ fn spawn_host_pump(
                 inbound = session.recv() => inbound,
                 // A session with this device's own host runs in process: no
                 // link can die under it, and its end ends `recv`. Only a
-                // remote host is kept up, so a device hosting its rooms with
+                // remote host is kept up, so a device hosting its workspaces with
                 // nobody connected wakes for nothing.
                 alive = host_keepalive(&session, &mut pinged), if keepalive => {
                     if !alive {
@@ -4856,7 +4860,7 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
 )]
 mod tests;
 
-/// Mark a replay of a room host's session as running: whether this begins
+/// Mark a replay of a workspace host's session as running: whether this begins
 /// one (`false` while one already runs, until its `Ready` clears the mark).
 /// The host serves one replay per session; a second asked mid-replay makes
 /// it start over and end the session whose replay it replaced.
@@ -4869,7 +4873,7 @@ mod replay_requests {
     use super::begins_replay;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Apps opened at once each ask the room's host for a replay: the
+    /// Apps opened at once each ask the workspace's host for a replay: the
     /// first asks, the rest wait on it, and the next is asked once its
     /// `Ready` came.
     #[test]

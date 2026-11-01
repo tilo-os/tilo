@@ -1,13 +1,13 @@
-//! Each room's direct sends, on a lane of its own.
+//! Each workspace's direct sends, on a lane of its own.
 //!
-//! The actor keeps every room's state and decides what goes where; the
+//! The actor keeps every workspace's state and decides what goes where; the
 //! sending itself (a write to one device on its direct connection) waits on
 //! other devices, and one slow or unreachable device must hold up only its
-//! own room. So each room's direct sends run in order on its own spawned
+//! own workspace. So each workspace's direct sends run in order on its own spawned
 //! task, and the actor only queues them there and never waits for them. How
 //! a send went comes back as an [`InternalEvent`].
 //!
-//! A lane's queue is bounded: a room whose devices stall fills only its own
+//! A lane's queue is bounded: a workspace whose devices stall fills only its own
 //! queue, and what no longer fits goes another way or not at all.
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use super::{InternalEvent, SURFACE_STREAM_ALPN, WorkspaceId};
 use neighbour_wire::NeighbourMsg;
 
-/// How many direct sends one room may have waiting. Beyond it the room's
+/// How many direct sends one workspace may have waiting. Beyond it the workspace's
 /// devices are not keeping up, and more waiting would only send stale
 /// state late.
 const LANE_DEPTH: usize = 256;
@@ -48,11 +48,11 @@ pub(super) struct DirectOutcome {
     pub(super) delivered: bool,
 }
 
-/// Every room's lane.
+/// Every workspace's lane.
 pub(super) struct Lanes {
     endpoint: Endpoint,
     internal_tx: mpsc::Sender<InternalEvent>,
-    rooms: HashMap<WorkspaceId, Lane>,
+    workspaces: HashMap<WorkspaceId, Lane>,
 }
 
 struct Lane {
@@ -65,13 +65,13 @@ impl Lanes {
         Self {
             endpoint,
             internal_tx,
-            rooms: HashMap::new(),
+            workspaces: HashMap::new(),
         }
     }
 
-    /// `ws`'s lane, started when the room has none yet.
+    /// `ws`'s lane, started when the workspace has none yet.
     fn lane(&mut self, ws: WorkspaceId) -> &Lane {
-        self.rooms.entry(ws).or_insert_with(|| {
+        self.workspaces.entry(ws).or_insert_with(|| {
             let (queue, rx) = mpsc::channel(LANE_DEPTH);
             let task = tokio::spawn(run(ws, rx, self.endpoint.clone(), self.internal_tx.clone()));
             Lane { queue, task }
@@ -79,7 +79,7 @@ impl Lanes {
     }
 
     /// Queue `direct` on `ws`'s lane. Gives its message back when the
-    /// room's lane is full, for the caller to send another way.
+    /// workspace's lane is full, for the caller to send another way.
     pub(super) fn queue_direct(
         &mut self,
         ws: WorkspaceId,
@@ -94,9 +94,9 @@ impl Lanes {
         }
     }
 
-    /// The room was left: what its lane still had to send goes with it.
+    /// The workspace was left: what its lane still had to send goes with it.
     pub(super) fn close(&mut self, ws: WorkspaceId) {
-        if let Some(lane) = self.rooms.remove(&ws) {
+        if let Some(lane) = self.workspaces.remove(&ws) {
             lane.task.abort();
         }
     }
@@ -104,13 +104,13 @@ impl Lanes {
 
 impl Drop for Lanes {
     fn drop(&mut self) {
-        for lane in self.rooms.values() {
+        for lane in self.workspaces.values() {
             lane.task.abort();
         }
     }
 }
 
-/// One room's lane: its direct sends, in the order they were queued.
+/// One workspace's lane: its direct sends, in the order they were queued.
 async fn run(
     ws: WorkspaceId,
     mut work: mpsc::Receiver<Direct>,

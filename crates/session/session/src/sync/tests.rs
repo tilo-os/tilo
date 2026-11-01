@@ -16,7 +16,7 @@ fn device(seed: u8) -> EndpointId {
 }
 
 fn topic(workspace: &str) -> WorkspaceId {
-    room_topic_id(RoomId::parse(workspace).expect("a workspace id"))
+    workspace_topic_id(RoomId::parse(workspace).expect("a workspace id"))
 }
 
 /// A desktop showing one workspace, in `workspace`.
@@ -62,7 +62,7 @@ fn list_of(
     );
     let workspace = RoomId::parse(workspace).expect("a workspace id");
     directory
-        .add_room_workspace(room_topic_id(workspace), &workspace.to_string(), "Desk")
+        .add_room_workspace(workspace_topic_id(workspace), &workspace.to_string(), "Desk")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())

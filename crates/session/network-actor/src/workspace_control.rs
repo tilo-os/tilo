@@ -101,7 +101,7 @@ impl WorkspaceControlSession {
     }
 
     /// Accept one already-authenticated legacy stream message. Messages from
-    /// other publishers/surfaces are ignored, so a room peer cannot grant
+    /// other publishers/surfaces are ignored, so a workspace peer cannot grant
     /// consent on the target's behalf.
     pub fn observe(&mut self, message: &NeighbourMsg) -> Option<WorkspaceControlUpdate> {
         self.observe_from(Some(self.target), message)
