@@ -63,12 +63,16 @@ mod media_governance;
 mod native_publication;
 mod room_hosts;
 pub use room_hosts::{ROOM_HOSTS_KEY, room_hosts_of};
+mod personal;
 mod room_layout;
 mod room_name;
 mod room_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
+#[cfg(not(target_arch = "wasm32"))]
+pub use personal::link::{PERSONAL_ALPN, PersonalSync};
+pub use personal::{PeerPersonal, PersonalStore};
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{

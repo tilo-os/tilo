@@ -32,10 +32,10 @@ const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Messages published while a link is writing; a link further behind than
 /// this ends, and the next connection catches up from the checkpoint.
-const OUTGOING: usize = 1024;
+pub(crate) const OUTGOING: usize = 1024;
 
 /// Application close code of a refused connection.
-const REFUSED: u32 = 1;
+pub(crate) const REFUSED: u32 = 1;
 
 /// One workspace's replica, held by the device whose key signs its changes.
 ///
@@ -304,7 +304,7 @@ impl ProtocolHandler for DirectSync {
     }
 }
 
-fn bump(count: &mut u64) {
+pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
 }
 
@@ -317,7 +317,7 @@ fn now_ns() -> u64 {
 }
 
 /// Write `catch_up`, then every message published live, to `send`.
-async fn send_all(
+pub(crate) async fn send_all(
     mut send: SendStream,
     catch_up: Vec<NeighbourMsg>,
     mut live: broadcast::Receiver<NeighbourMsg>,
@@ -336,7 +336,10 @@ async fn send_all(
     }
 }
 
-async fn write_frame(send: &mut SendStream, message: &NeighbourMsg) -> Result<(), String> {
+pub(crate) async fn write_frame(
+    send: &mut SendStream,
+    message: &NeighbourMsg,
+) -> Result<(), String> {
     let bytes = postcard::to_allocvec(message).map_err(|error| error.to_string())?;
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
@@ -351,7 +354,7 @@ async fn write_frame(send: &mut SendStream, message: &NeighbourMsg) -> Result<()
 }
 
 /// The next frame, or `None` once the other side finished its stream.
-async fn read_frame(recv: &mut RecvStream) -> Result<Option<NeighbourMsg>, String> {
+pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Option<NeighbourMsg>, String> {
     let mut len = [0_u8; 4];
     match recv.read_exact(&mut len).await {
         Ok(()) => {}

@@ -36,13 +36,16 @@ pub use state::{
     GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation,
     MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority, MembershipError, NativePublicationCut,
     OpenedRecord, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
-    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
-    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ROOM_HOSTS_KEY,
-    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
-    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
-    room_host_actor, room_hosts_of, seed_room, workspace_seed,
+    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
+    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
+    PlaintextChanges, ROOM_HOSTS_KEY, ReceiveOutcome, RecordReaders, RequestedBot, Reseal,
+    SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason,
+    UnmergedWrite, committed_document_revision, decide_with_surfaces, default_surfaces,
+    peer_handle, room_host_actor, room_hosts_of, seed_room, workspace_seed,
 };
+/// The person's own documents between their devices, with no host in between.
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{PERSONAL_ALPN, PersonalSync};
 pub mod coverage;
 mod governed_routes;
 pub use collab_types::DocumentMutation;

@@ -40,6 +40,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{Arc, Mutex},
+    time::SystemTime,
 };
 use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
@@ -58,11 +59,14 @@ use tilo_identity_host::{
     provisioning::IdentityStorage,
 };
 use tilo_peer_state::owner_commit::OwnerCommitService;
+use tilo_peer_state::{PeerPersonal, PersonalStore};
 use workspace::{ProfileGrants, ProfileWorkspace};
 
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
+/// The person's own documents on this device, beside the workspaces.
+const PERSONAL_STORE: &str = "state/tilo/personal/documents";
 /// Where the room host this runtime runs keeps its rooms.
 const ROOM_HOST: &str = "room-host";
 
@@ -82,6 +86,8 @@ pub struct Standalone {
     /// Before the media host, whose content store it uses.
     _files: Option<files::WorkspaceFiles>,
     _media: profile::MediaHost,
+    /// The person's own documents, opened on their identity root.
+    _personal: PeerPersonal,
     _lock: advisory_lock::FileLock,
 }
 
@@ -98,6 +104,15 @@ impl Standalone {
         media
     }
 
+    #[cfg(test)]
+    fn personal(&self) -> &PeerPersonal {
+        let Self {
+            _personal: personal,
+            ..
+        } = self;
+        personal
+    }
+
     fn start(root: &Path, stage: &mut dyn FnMut(&str), dev: bool) -> io::Result<Self> {
         stage("locking the profile");
         let lock = profile::lock(root)?;
@@ -112,6 +127,8 @@ impl Standalone {
         let actor = identity.principal_id();
         stage("saving the workspace");
         workspace.adopt(&actor)?;
+        stage("opening the personal store");
+        let personal = personal_store(root, identity.user_public_key, &room_id)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
         serve_device_grants(root, &apps);
@@ -200,6 +217,7 @@ impl Standalone {
             blob_socket: root.join(BLOB_SOCKET),
             _files: files,
             _media: media,
+            _personal: personal,
             _lock: lock,
         })
     }
@@ -724,6 +742,23 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
+}
+
+/// The person's own documents on this device: kept beside the profile's
+/// workspaces, opened on the identity `root` this device acts for. A store an
+/// earlier start kept is read back; the first start opens it empty.
+fn personal_store(profile: &Path, identity_root: [u8; 32], room: &str) -> io::Result<PeerPersonal> {
+    let (_, device) = tilo_identity_host::broker::trusted_current_device(room)?;
+    let now = SystemTime::now();
+    let path = profile.join(PERSONAL_STORE);
+    let store = match std::fs::read(&path) {
+        Ok(bytes) => PersonalStore::restore(&bytes, &device, now).map_err(io::Error::other)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            PersonalStore::open(identity_root, device, now).map_err(io::Error::other)?
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(PeerPersonal::new(store))
 }
 
 /// This device's collaboration identity, provisioned in `storage` on first

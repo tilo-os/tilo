@@ -570,6 +570,33 @@ fn listed_room(root: &Path) -> String {
     tree.workspaces[0].room().to_string()
 }
 
+const PERSONAL_STORE_TEST: &str =
+    "standalone::tests::a_running_host_holds_the_persons_own_documents_store";
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session holds the profile and brokers for the whole scenario on purpose"
+)]
+fn a_running_host_holds_the_persons_own_documents_store() {
+    let Some(root) = isolated_root(PERSONAL_STORE_TEST) else {
+        return;
+    };
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let identity = tilo_identity_host::registry::selected_identity_profile(session.room())
+        .unwrap()
+        .unwrap();
+    let personal = session.personal();
+    // The store opens on the identity the profile acts as, so every device of
+    // this person finds the same documents without naming a workspace.
+    assert_eq!(
+        personal.read(tilo_peer_state::PersonalStore::root),
+        identity.user_public_key
+    );
+    assert_eq!(personal.store_key(), hex::encode(identity.user_public_key));
+    assert!(personal.rows().is_empty(), "nothing is written yet");
+}
+
 #[test]
 fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     let temp = tempfile::tempdir().unwrap();
