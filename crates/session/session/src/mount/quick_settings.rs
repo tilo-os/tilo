@@ -81,6 +81,7 @@ pub(crate) fn answer(shared: &Shared) {
     device.pump();
     super::devices::land(shared);
     super::displays::land(shared);
+    super::panel_power::land(shared);
     for request in device.take_requests() {
         match request {
             SessionRequest::Effect(QsEffect::PowerMenu) => {

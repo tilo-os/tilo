@@ -254,6 +254,9 @@ struct Shared {
     devices: mount::devices::Devices,
     /// The session's displays as the panel was last fed them.
     displays: mount::displays::Displays,
+    /// The machine's charge and what holds it awake, as the panel was last fed
+    /// them.
+    panel_power: mount::panel_power::PanelPower,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -1565,6 +1568,7 @@ impl Session {
             fabric,
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
+            panel_power: mount::panel_power::PanelPower::default(),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,

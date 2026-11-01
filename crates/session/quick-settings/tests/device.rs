@@ -92,12 +92,7 @@ fn the_device_is_read_off_the_ui_thread_and_lands_in_the_panel() {
         !desk.has("qs-tile-vpn"),
         "nothing is read yet: no VPN, no tile"
     );
-    desk.until("the first reading", |state| {
-        state
-            .status
-            .battery
-            .is_some_and(|battery| battery.percent == 64)
-    });
+    desk.until("the first reading", |state| state.status.link.is_some());
     let state = desk.host.state();
     assert!(state.wifi && state.bluetooth && state.bluetooth_available);
     assert_eq!(
@@ -106,7 +101,10 @@ fn the_device_is_read_off_the_ui_thread_and_lands_in_the_panel() {
     );
     assert_eq!(state.power_profile, PowerProfile::Performance);
     assert_eq!(state.vpns.len(), 1);
-    assert!(state.status.link.is_some(), "the top bar's link too");
+    assert!(
+        state.status.battery.is_none(),
+        "the charge is the power service's to read, and none published"
+    );
     assert!(
         !state.volume_available,
         "the sound is the audio service's to read, and none published"

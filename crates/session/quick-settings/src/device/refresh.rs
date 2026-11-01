@@ -355,7 +355,6 @@ pub(crate) mod tests {
     use os_actions as qs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
-    use tilo_power_mgmt::BatterySnapshot;
 
     /// A machine with nothing to read.
     pub(crate) struct NoReads;
@@ -371,12 +370,6 @@ pub(crate) mod tests {
             None
         }
         fn wired(&self) -> Option<qs::WiredInfo> {
-            None
-        }
-        fn battery(&self) -> BatterySnapshot {
-            BatterySnapshot::absent()
-        }
-        fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
             None
         }
         fn radios(&self) -> Option<qs::RadioState> {
@@ -651,14 +644,6 @@ pub(crate) mod tests {
         }
         fn wired(&self) -> Option<qs::WiredInfo> {
             self.hit("wired");
-            None
-        }
-        fn battery(&self) -> BatterySnapshot {
-            self.hit("battery");
-            BatterySnapshot::absent()
-        }
-        fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
-            self.hit("battery_time");
             None
         }
         fn radios(&self) -> Option<qs::RadioState> {

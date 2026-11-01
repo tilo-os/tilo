@@ -29,7 +29,6 @@ struct Inner {
     accessories: Vec<os_actions::BtDeviceInfo>,
     nearby: Vec<os_actions::NearbyBtDevice>,
     scanning: bool,
-    battery: u8,
     /// Changes made, in order.
     calls: Vec<String>,
     /// Changes the machine refuses, by name.
@@ -97,7 +96,6 @@ impl Machine {
                 rssi: Some(-52),
                 paired: false,
             }];
-            inner.battery = 64;
         }
         machine
     }
@@ -162,16 +160,6 @@ impl DeviceReads for Machine {
     }
     fn wired(&self) -> Option<os_actions::WiredInfo> {
         self.0.lock().unwrap().wired.clone()
-    }
-    fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
-        tilo_power_mgmt::BatterySnapshot {
-            present: true,
-            percent: self.0.lock().unwrap().battery,
-            state: tilo_power_mgmt::BatteryState::Discharging,
-        }
-    }
-    fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
-        None
     }
     fn radios(&self) -> Option<os_actions::RadioState> {
         Some(self.0.lock().unwrap().radios.clone())

@@ -1,8 +1,8 @@
 //! The device behind the panel: the [`PanelHost`] a desktop lends the panel
 //! to read this machine and carry out its effects.
 //!
-//! [`DeviceHost`] reads battery, network, radios, Bluetooth and the power
-//! mode through `os-actions`, follows the media players through the
+//! [`DeviceHost`] reads network, radios, Bluetooth and the power mode
+//! through `os-actions`, follows the media players through the
 //! session's audio helper, and is handed the sound the audio service reads
 //! ([`DeviceHost::sound`]), whose actions every sound change becomes.
 //! Nothing it does waits on the device: reads and writes run on workers

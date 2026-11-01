@@ -4,13 +4,13 @@
 //! The reads go through the OS (`NetworkManager`, `BlueZ`, the power daemon)
 //! and some take seconds, so they only ever run on a worker
 //! ([`super::refresh`]). [`DeviceReads`] is the seam: the desktop reads the
-//! OS ([`OsReads`]), a test reads stand-ins. The sound and the brightness are
-//! not read here: the audio service and the session's displays own them, and
-//! the session hands the panel what they read ([`super::DeviceHost::sound`],
+//! OS ([`OsReads`]), a test reads stand-ins. The sound, the brightness, the
+//! battery and what holds the machine awake are not read here: the audio
+//! service, the session's displays and the power service own them, and the
+//! session hands the panel what they read ([`super::DeviceHost::sound`],
 //! [`super::DeviceHost::update`]).
 
 use os_actions as qs;
-use tilo_power_mgmt::{BatterySnapshot, BatteryTime};
 
 use crate::actions::QsActionAvailability;
 use crate::i18n::t;
@@ -25,8 +25,6 @@ pub trait DeviceReads: Send + Sync {
     /// The profiles the power daemon offers.
     fn power_profiles(&self) -> Option<Vec<qs::PowerProfile>>;
     fn wired(&self) -> Option<qs::WiredInfo>;
-    fn battery(&self) -> BatterySnapshot;
-    fn battery_time(&self) -> Option<BatteryTime>;
     /// One snapshot of every radio; Wi-Fi on or off is taken from it.
     fn radios(&self) -> Option<qs::RadioState>;
     fn privacy(&self) -> qs::PrivacyStatus;
@@ -82,14 +80,6 @@ impl DeviceReads for OsReads {
 
     fn wired(&self) -> Option<qs::WiredInfo> {
         qs::log_get("get_wired", qs::get_wired())
-    }
-
-    fn battery(&self) -> BatterySnapshot {
-        tilo_power_mgmt::sysfs_battery_snapshot()
-    }
-
-    fn battery_time(&self) -> Option<BatteryTime> {
-        tilo_power_mgmt::sysfs_battery_time()
     }
 
     fn radios(&self) -> Option<qs::RadioState> {
@@ -160,8 +150,6 @@ pub(crate) struct FastReading {
     pub(crate) power: Option<qs::PowerProfile>,
     pub(crate) power_profiles: Option<Vec<qs::PowerProfile>>,
     pub(crate) wired: Option<qs::WiredInfo>,
-    pub(crate) battery: BatterySnapshot,
-    pub(crate) battery_time: Option<BatteryTime>,
     pub(crate) radios: Option<qs::RadioState>,
     pub(crate) privacy: qs::PrivacyStatus,
     pub(crate) vpns: Option<Vec<qs::VpnConnectionInfo>>,
@@ -179,8 +167,6 @@ impl FastReading {
             power: reads.power(),
             power_profiles: reads.power_profiles(),
             wired: reads.wired(),
-            battery: reads.battery(),
-            battery_time: reads.battery_time(),
             radios: reads.radios(),
             privacy: reads.privacy(),
             vpns: reads.vpns(),
@@ -211,8 +197,6 @@ impl FastReading {
             power: None,
             power_profiles: None,
             wired: None,
-            battery: BatterySnapshot::absent(),
-            battery_time: None,
             radios: None,
             privacy: qs::PrivacyStatus::default(),
             vpns: None,

@@ -34,8 +34,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
         power,
         power_profiles,
         wired,
-        battery,
-        battery_time,
         radios,
         privacy,
         vpns,
@@ -65,8 +63,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     if let Some(link) = link {
         qs.status.link = Some(link);
     }
-    qs.status.battery = Some(battery);
-    qs.status.battery_time = battery_time;
     qs.privacy = privacy;
 }
 
