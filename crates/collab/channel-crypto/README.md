@@ -75,7 +75,7 @@ history.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
 - **Granularity: per channel.** A channel is one document route (app,
-  workspace room, record), so per-channel keys are already per-resource. A
+  workspace, record), so per-channel keys are already per-resource. A
   finer split would add key-management state without narrowing who can read
   what, because channel membership is the access boundary. Membership is
   decided per record: a Read Deny on a record, its app or any pattern over it
@@ -117,9 +117,9 @@ history.
 ## Participants and endpoints
 
 A channel's MLS group holds exactly the participant devices its membership
-lets read it: a projection the caller computes from the room's membership
-and access policy, never a second record of who belongs. Every participant
-keeps a [`ChannelPeer`]:
+lets read it: a projection the caller computes from the workspace's
+membership and access policy, never a second record of who belongs. Every
+participant keeps a [`ChannelPeer`]:
 
 - **Any participant commits.** `reconcile(allowed)` writes the one commit
   that moves the group to `allowed`: it removes every member the projection
@@ -198,20 +198,20 @@ plaintext path.
   broker admitted it before the gate closed. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
-  - every person on the room's roster, or named by a grant (a share, a
-    time-limited reader), who may Read the room node now, through each of
-    their certified devices (root-signed, unexpired, not revoked, admitted
-    by the room's governor);
+  - every person on the workspace's roster, or named by a grant (a share, a
+    time-limited reader), who may Read the workspace node now, through each
+    of their certified devices (root-signed, unexpired, not revoked, admitted
+    by the workspace's governor);
   - the governing identity's own fleet;
   - live service members (below).
 
   Always-on host certificates are never a person's reading device. The
-  room's governor is a participant of every channel of the room. Every
-  participant reconciles the group with this set on every policy change
-  and every new request. Invites, removals, role changes that end reading, and
-  device enrolment or revocation all become commits.
-- **Governance transport.** Frames and access requests travel on the room's
-  topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`,
+  workspace's governor is a participant of every channel of the workspace.
+  Every participant reconciles the group with this set on every policy
+  change and every new request. Invites, removals, role changes that end
+  reading, and device enrolment or revocation all become commits.
+- **Governance transport.** Frames and access requests travel on the
+  workspace's topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`,
   `MlsRoutedAccessRequest`) to every member. Workspace hosts retain each
   channel's geneses, its newest frame (and the copy with join material for
   the devices it adds) and each device's newest request, so a device that is
@@ -248,14 +248,15 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
-- **Rooms a node governs** have no committed routes. A node is a relay whose
-  certificate lets it host and own workspaces; it takes part in the channels
-  of the rooms it governs. A desktop session enrolled in such a room serves
-  each route as a channel: its apps ask for keys, seal and open, and its
-  sealed writes go to the relay as the device's own, never through the
-  governor. A company node's own session is such a member: a device of the
-  node's person with its own key and certificate, which enters every room
-  of the person's workspace list the node hosts, as the list brings it.
+- **Workspaces a node governs** have no committed routes. A node is a relay
+  whose certificate lets it host and own workspaces; it takes part in the
+  channels of the workspaces it governs. A desktop session enrolled in such a
+  workspace serves each route as a channel: its apps ask for keys, seal and
+  open, and its sealed writes go to the relay as the device's own, never
+  through the governor. A company node's own session is such a member: a
+  device of the node's person with its own key and certificate, which enters
+  every workspace of the person's workspace list the node hosts, as the list
+  brings it.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and
@@ -263,12 +264,13 @@ plaintext path.
 
 ### Service members
 
-A cloud agent run, server-side search or a preview renderer reads a room's
-content only as a **service member** (`shell/service_members.rs`):
+A cloud agent run, server-side search or a preview renderer reads a
+workspace's content only as a **service member**
+(`shell/service_members.rs`):
 
 - It has its own device key, which is also its MLS leaf.
-- A room administrator admits it with a purpose, a scope (the verb it may
-  exercise) and an optional deadline. The grant is a room-membership
+- A workspace administrator admits it with a purpose, a scope (the verb it
+  may exercise) and an optional deadline. The grant is a workspace-membership
   capability on the agent principal `service:<device key hex>`.
 - It is listed in the Agents pane as a service row, with its purpose and
   when access ends.
@@ -286,7 +288,7 @@ ciphertext and MLS control material without decoding either.
   class, channel, epoch, seq, timestamp) and ciphertext. They never see
   content and never hold a content key. An end-to-end test asserts that no
   byte the relay stores contains the plaintext.
-- **Membership follows the room ACL and the certified device set.** No
+- **Membership follows the workspace ACL and the certified device set.** No
   separate channel membership list can drift from permissions.
 - **Joiners read all history** through the key history in their Welcome.
 - **Removal protects future content.** Removing a person, a device or a
@@ -319,15 +321,15 @@ replacement machine brings back the person's root identity, and onboarding
 certifies a **new** device key for that machine. Channel access comes back
 through the normal paths:
 
-1. The new device announces its root-signed certificate. Once the room's
-   governor has admitted it, the policy allows it.
+1. The new device announces its root-signed certificate. Once the
+   workspace's governor has admitted it, the policy allows it.
 2. A participant admits it, and its key history opens every earlier content
    key, so the whole channel history reads again
    (`a_restored_identity_regains_the_whole_channel_on_its_new_device`).
 3. Revoking the lost device (fleet revocation) makes the next reconcile
    remove it, so it cannot read anything written afterwards.
 
-If the lost machine was the room's governor, see the known limits above.
+If the lost machine was the workspace's governor, see the known limits above.
 
 ## Remaining work
 
