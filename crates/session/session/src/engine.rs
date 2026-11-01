@@ -423,6 +423,62 @@ impl Engine {
     }
 }
 
+/// What the broker's owner commits ask of this device's rooms: the engine's
+/// owner is the canonical copy of every room it holds, and what it commits
+/// leaves on the plane's session with the room's host.
+impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
+    /// A held room whose host takes part in no channels: its records are
+    /// documents the owner commits, never sealed channels.
+    fn commits_documents(&self, room: RoomId) -> bool {
+        self.holds(room)
+            && self
+                .owner
+                .with_current(room, |view| {
+                    Ok(!view
+                        .workspace_host()
+                        .capabilities
+                        .takes_part_in_room_channels())
+                })
+                .unwrap_or(false)
+    }
+
+    fn projects_room(&self, room: RoomId) -> bool {
+        self.holds(room)
+    }
+
+    /// The engine opened its owner before the session started.
+    fn opened_owner(&self, _unavailable: &str) -> Result<NativeWorkspaceOwner, String> {
+        Ok(self.owner.clone())
+    }
+
+    fn resolve_owner(&self) -> Result<NativeWorkspaceOwner, String> {
+        Ok(self.owner.clone())
+    }
+
+    fn check_custody(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> Result<(), String> {
+        tilo_network_actor::native_ingress::Connect::new(owner.clone(), room)?
+            .material(&self.identity)
+            .map(drop)
+    }
+
+    fn signing_key(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+    ) -> Result<ed25519_dalek::SigningKey, String> {
+        self.check_custody(owner, room)?;
+        Ok(self.identity.device_signing_key.clone())
+    }
+
+    /// Without a plane, what the owner committed stays in its custody until
+    /// a plane runs and the room's session publishes it.
+    fn schedule_publication(&self, room: RoomId) {
+        if let Some(link) = self.link() {
+            link.publish_custody(room);
+        }
+    }
+}
+
 /// A room's revocations, as the threads beside the session's loop ask for
 /// them: the broker decides on its own thread and the automation host arms
 /// shortcuts on the loop, and both refuse a device the room revoked.
