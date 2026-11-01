@@ -286,6 +286,7 @@ mod index_build;
 use index_build::AppIndex;
 mod outbox;
 mod plan;
+pub(crate) use plan::rich_edit;
 mod unsaved;
 mod upgrade_fields;
 mod versions;
