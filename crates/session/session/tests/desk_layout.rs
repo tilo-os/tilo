@@ -244,9 +244,9 @@ fn window(id: u64, app: &str) -> Window {
 }
 
 /// Install [`PROBE`] in `home`'s own app store, and write the launcher the
-/// session starts it through: it records the pid of every start and runs until
-/// the test creates `stop`.
-fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path, stop: &Path) -> PathBuf {
+/// session starts it through: it records the pid of every start and runs, as
+/// the app would, until the test is over.
+fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
     fs::create_dir_all(payload.join("bin")).unwrap();
@@ -293,18 +293,14 @@ fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path, stop: &Pa
     )
     .unwrap();
     home.env().set("TILO_APPS_DATA_DIR", &store);
-    let launcher = home.home().join("tilo-launcher");
-    tilo_test_env::script(
-        &launcher,
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
         &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '{started}'\n\
-             while [ ! -e '{stop}' ]; do sleep 0.05; done\n",
+            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
             started = started.display(),
-            stop = stop.display(),
         ),
     )
-    .unwrap();
-    launcher
+    .unwrap()
 }
 
 #[test]
@@ -403,11 +399,13 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
-    let stop = home.home().join("stop");
-    let launcher = installed_probe(&mut home, &started, &stop);
+    let launcher = installed_probe(&mut home, &started);
     save_desk(&state_of(&home), &one_window(PROBE, "Probe"));
 
-    let mut session = session_keeping(&state_of(&home), Some(apps_at(&home, Some(launcher))));
+    let mut session = session_keeping(
+        &state_of(&home),
+        Some(apps_at(&home, Some(launcher.path().to_owned()))),
+    );
     let before = tabs(&session);
     assert_eq!(before, [(100u64, 10u64)], "the desk as it was left");
 
@@ -436,7 +434,6 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
         Some(11),
         "and it is the window the person sees"
     );
-    fs::write(&stop, "").unwrap();
 }
 
 #[test]

@@ -31,6 +31,9 @@
 //!   scopes nest on one thread.
 //! - [`script`] writes an executable fixture script without racing
 //!   concurrent `fork`/`exec` in sibling tests.
+//! - [`stand_in()`] writes a stand-in for a program the code under test starts
+//!   (a `tilo-launcher`, a host app), whose `hold` keeps it running only as
+//!   long as the test that wrote it.
 //! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
 //!   FUSE, fanotify, chown or namespaces where the host lacks it, and fails it
 //!   instead on a CI lane that sets `TILO_REQUIRE_<CAP>=1`.
@@ -111,6 +114,8 @@ pub mod net;
 mod own_process;
 pub mod requested_allocations;
 pub mod scenario;
+#[cfg(target_os = "linux")]
+mod stand_in;
 pub mod swtpm;
 mod wall;
 
@@ -128,11 +133,15 @@ pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use environment::{Clock, Network, TestEnv};
 pub use fixture::{Fixture, WORKSPACE_DOCUMENT};
+#[cfg(target_os = "linux")]
+pub use hang::exited;
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
 #[cfg(feature = "document")]
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};
 pub use own_process::in_own_process;
+#[cfg(target_os = "linux")]
+pub use stand_in::{StandIn, stand_in};
 pub use wall::held_wall_clock;
 
 use std::ffi::{OsStr, OsString};
