@@ -1623,16 +1623,23 @@ impl BackdropBlur {
         let Some(last) = last else {
             return false;
         };
-        let across = ensure_texture(
-            device,
-            &mut self.across,
-            last_size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            None,
-        )
-        .view
-        .clone();
-        self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+        // A sharp sample's horizontal pass is one tap, a copy: the last
+        // pass reads the level itself.
+        let across = if plan.sigma > 0.0 {
+            let across = ensure_texture(
+                device,
+                &mut self.across,
+                last_size,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                None,
+            )
+            .view
+            .clone();
+            self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+            across
+        } else {
+            last
+        };
         pass = pass.saturating_add(1);
         if self.outputs.len() <= slot {
             self.outputs.resize_with(slot.saturating_add(1), || None);
