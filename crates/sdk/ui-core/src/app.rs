@@ -2623,6 +2623,8 @@ impl Drop for App {
         self.layout.node_map.clear();
         self.close_wake_scope();
         let _entry = self.enter_wake_scope();
+        // Its widgets go for good: they leave no motion for a rebuild.
+        let _closing = crate::motion::closing_window();
         let root = std::mem::replace(
             &mut self.root_widget,
             Box::new(crate::widget::Container::new()),
