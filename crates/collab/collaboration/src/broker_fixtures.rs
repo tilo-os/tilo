@@ -2,6 +2,12 @@
 //! a route can be in, for the tests here and in crates that test against the
 //! `test-support` feature.
 
+// The fixtures stand in for the broker's own wiring, so they reach every name
+// it has at hand as its tests do.
+#[allow(
+    clippy::wildcard_imports,
+    reason = "a fixture module reaches the broker's whole scope, as its tests do"
+)]
 use super::*;
 
 impl CollaborationManager {
