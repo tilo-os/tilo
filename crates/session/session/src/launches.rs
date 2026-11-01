@@ -2,7 +2,7 @@
 //! is admitted by.
 //!
 //! An app reaches its session's socket with the launcher's handoff, which
-//! names the app and the room it was launched into. The handoff alone grants
+//! names the app and the workspace it was launched into. The handoff alone grants
 //! nothing: the broker admits the connection only for a launch its host
 //! recorded ([`LauncherServices`]), and the record is here — made when the
 //! session started the app, keyed by the process it started. The process's
@@ -25,12 +25,12 @@ use tilo_app_launch::doors::ancestry;
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
 
-/// One launch the session made: which app it started, in which room, the
-/// process that runs it, and whether the launch bound the documents store
+/// One launch the session made: which app it started, in which workspace,
+/// the process that runs it, and whether the launch bound the documents store
 /// into it.
 struct Launch {
     app: String,
-    room: String,
+    workspace: String,
     /// The process's start time, in clock ticks since boot.
     start: u64,
     /// The launch bound the session's documents store into the app, where
@@ -44,7 +44,7 @@ struct Launch {
 /// instance, and the launch whose process it opens in.
 struct Window {
     app: String,
-    room: String,
+    workspace: String,
     instance: u64,
     /// The process of the launch it belongs to, while that runs.
     launch: Option<u32>,
@@ -63,13 +63,14 @@ pub struct Launches {
 }
 
 impl Launches {
-    /// Record that `pid` runs `app` in `room`, as this session started it: the
+    /// Record that `pid` runs `app` in `workspace`, as this session started
+    /// it: the
     /// app's connection is admitted from here. A pid whose process cannot be
     /// read is recorded by nothing and starts an app that reaches no service.
     ///
     /// `sandboxed` is whether the launch bound the session's documents store
     /// into it, which only a package's sandbox is given.
-    pub fn started(&self, pid: u32, app: &str, room: &str, sandboxed: bool) {
+    pub fn started(&self, pid: u32, app: &str, workspace: &str, sandboxed: bool) {
         let Some(start) = start_time(pid) else {
             tracing::warn!(
                 pid,
@@ -82,7 +83,7 @@ impl Launches {
             pid,
             Launch {
                 app: app.to_owned(),
-                room: room.to_owned(),
+                workspace: workspace.to_owned(),
                 start,
                 sandboxed,
             },
@@ -90,16 +91,16 @@ impl Launches {
     }
 
     /// Record that the session is about to connect window `instance` of `app`
-    /// in `room`, a window of the launch whose process is `launch` while it
-    /// runs. A window has one record: recording it again replaces the one it
+    /// in `workspace`, a window of the launch whose process is `launch` while
+    /// it runs. A window has one record: recording it again replaces the one it
     /// had. Only the session records windows, and only the connection naming
     /// the instance spends the record.
-    pub fn window(&self, app: &str, room: &str, instance: u64, launch: Option<u32>) {
+    pub fn window(&self, app: &str, workspace: &str, instance: u64, launch: Option<u32>) {
         let mut windows = self.windows.lock_recover();
-        windows.retain(|window| !window.is(app, room, instance));
+        windows.retain(|window| !window.is(app, workspace, instance));
         windows.push(Window {
             app: app.to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             instance,
             launch,
         });
@@ -107,10 +108,10 @@ impl Launches {
 
     /// The session gave the connection it recorded up before the broker could
     /// attest it: its record ends.
-    pub fn window_withdrawn(&self, app: &str, room: &str, instance: u64) {
+    pub fn window_withdrawn(&self, app: &str, workspace: &str, instance: u64) {
         self.windows
             .lock_recover()
-            .retain(|window| !window.is(app, room, instance));
+            .retain(|window| !window.is(app, workspace, instance));
     }
 
     /// Record that the session is about to connect the shell-ui socket for a
@@ -160,18 +161,18 @@ impl Launches {
             .collect()
     }
 
-    /// The room of the launch that `pid` is or was started by, when it runs
-    /// `app`: the app a connection came from, as the window it names.
-    pub fn room_of(&self, pid: u32, app: &str) -> Option<String> {
+    /// The workspace of the launch that `pid` is or was started by, when it
+    /// runs `app`: the app a connection came from, as the window it names.
+    pub fn workspace_of(&self, pid: u32, app: &str) -> Option<String> {
         let lineage = ancestry(pid);
         let launched = self
             .started
             .lock_recover()
             .iter()
             .find(|(launched, launch)| launch.app == app && lineage.contains(launched))
-            .map(|(launched, launch)| (*launched, launch.start, launch.room.clone()))?;
-        let (launched, start, room) = launched;
-        (start_time(launched) == Some(start)).then_some(room)
+            .map(|(launched, launch)| (*launched, launch.start, launch.workspace.clone()))?;
+        let (launched, start, workspace) = launched;
+        (start_time(launched) == Some(start)).then_some(workspace)
     }
 
     /// The app this session launched that `pid` descends from, while that
@@ -192,23 +193,23 @@ impl Launches {
     }
 
     /// The start time of the process `pid` started, when that process is the
-    /// launch of `app` in `room` and still runs.
-    fn live(&self, pid: u32, app: &str, room: &str) -> Option<u64> {
+    /// launch of `app` in `workspace` and still runs.
+    fn live(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
         let start = match self.started.lock_recover().get(&pid) {
-            Some(launch) if launch.app == app && launch.room == room => launch.start,
+            Some(launch) if launch.app == app && launch.workspace == workspace => launch.start,
             _ => return None,
         };
         (start_time(pid) == Some(start)).then_some(start)
     }
 
     /// The window record a connection from the session's own process naming
-    /// `app` in `room` and `instance` spends, while the launch it belongs to
-    /// runs. Nothing else spends it, and it is spent once.
+    /// `app` in `workspace` and `instance` spends, while the launch it belongs
+    /// to runs. Nothing else spends it, and it is spent once.
     fn take_window(
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         instance: Option<u64>,
     ) -> Option<AuthenticatedApplicationLaunch> {
         if pid != std::process::id() {
@@ -219,11 +220,11 @@ impl Launches {
             let mut windows = self.windows.lock_recover();
             let index = windows
                 .iter()
-                .position(|window| window.is(app, room, instance))?;
+                .position(|window| window.is(app, workspace, instance))?;
             windows.remove(index)
         };
         if let Some(launch) = record.launch
-            && self.live(launch, app, room).is_none()
+            && self.live(launch, app, workspace).is_none()
         {
             // The window's launch is over: its windows went with it.
             return None;
@@ -238,8 +239,8 @@ impl Launches {
 }
 
 impl Window {
-    fn is(&self, app: &str, room: &str, instance: u64) -> bool {
-        self.app == app && self.room == room && self.instance == instance
+    fn is(&self, app: &str, workspace: &str, instance: u64) -> bool {
+        self.app == app && self.workspace == workspace && self.instance == instance
     }
 }
 
@@ -260,8 +261,8 @@ impl LauncherServices for Launches {
         Err("this session starts no app on a service's behalf".into())
     }
 
-    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        self.live(pid, app, room).is_some()
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.live(pid, app, workspace).is_some()
     }
 
     /// The connection proved the process the session started is the one
@@ -272,9 +273,9 @@ impl LauncherServices for Launches {
         launcher_pid: u32,
         peer: &runtime_portal::process_binding::ExecutingPeer,
         app: &str,
-        room: &str,
+        workspace: &str,
     ) -> bool {
-        self.live(launcher_pid, app, room)
+        self.live(launcher_pid, app, workspace)
             .is_some_and(|start| peer.belongs_to(launcher_pid, start))
     }
 
@@ -288,18 +289,18 @@ impl LauncherServices for Launches {
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
-        if self.live(pid, app, room).is_some() {
+        if self.live(pid, app, workspace).is_some() {
             return Ok(Some(AuthenticatedApplicationLaunch {
-                creation: self.application_creation_evidence(pid, app, room)?,
+                creation: self.application_creation_evidence(pid, app, workspace)?,
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,
             }));
         }
-        Ok(self.take_window(pid, app, room, window_instance))
+        Ok(self.take_window(pid, app, workspace, window_instance))
     }
 }
 
@@ -320,47 +321,48 @@ mod tests {
     use super::*;
 
     /// A window's own connection is spent by the one connection naming its
-    /// app, room and instance, and only the session's own process makes one:
+    /// app, workspace and instance, and only the session's own process makes
+    /// one:
     /// nothing else is admitted by it, and nothing is left for a second.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_window_connection_is_spent_once_by_the_window_it_names() {
         let launches = Launches::default();
         let app = "so.tilo.code.window";
-        let room = "room-window";
+        let workspace = "workspace-window";
         let session = std::process::id();
-        launches.window(app, room, 42, None);
+        launches.window(app, workspace, 42, None);
 
         assert!(
             launches
-                .authenticated_launch(session, app, "other-room", Some(42))
+                .authenticated_launch(session, app, "other-workspace", Some(42))
                 .unwrap()
                 .is_none(),
-            "a window of another room"
+            "a window of another workspace"
         );
         assert!(
             launches
-                .authenticated_launch(session, app, room, Some(41))
+                .authenticated_launch(session, app, workspace, Some(41))
                 .unwrap()
                 .is_none(),
             "another window"
         );
         assert!(
             launches
-                .authenticated_launch(u32::MAX, app, room, Some(42))
+                .authenticated_launch(u32::MAX, app, workspace, Some(42))
                 .unwrap()
                 .is_none(),
             "only the session connects a window"
         );
 
         let bound = launches
-            .authenticated_launch(session, app, room, Some(42))
+            .authenticated_launch(session, app, workspace, Some(42))
             .unwrap()
             .expect("the window's own connection");
         assert_eq!(bound.continuation_instance, Some(42));
         assert!(
             launches
-                .authenticated_launch(session, app, room, Some(42))
+                .authenticated_launch(session, app, workspace, Some(42))
                 .unwrap()
                 .is_none(),
             "spent by its connection"
@@ -374,13 +376,13 @@ mod tests {
     fn a_withdrawn_window_connection_admits_nothing() {
         let launches = Launches::default();
         let app = "so.tilo.code.withdrawn";
-        let room = "room-withdrawn";
+        let workspace = "workspace-withdrawn";
         let session = std::process::id();
-        launches.window(app, room, 9, None);
-        launches.window_withdrawn(app, room, 9);
+        launches.window(app, workspace, 9, None);
+        launches.window_withdrawn(app, workspace, 9);
         assert!(
             launches
-                .authenticated_launch(session, app, room, Some(9))
+                .authenticated_launch(session, app, workspace, Some(9))
                 .unwrap()
                 .is_none()
         );
@@ -393,19 +395,19 @@ mod tests {
     fn a_window_of_an_ended_launch_is_not_admitted() {
         let launches = Launches::default();
         let app = "so.tilo.code.ended";
-        let room = "room-ended";
+        let workspace = "workspace-ended";
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("a process to launch");
-        launches.started(child.id(), app, room, true);
-        launches.window(app, room, 7, Some(child.id()));
+        launches.started(child.id(), app, workspace, true);
+        launches.window(app, workspace, 7, Some(child.id()));
         child.kill().ok();
         child.wait().ok();
 
         assert!(
             launches
-                .authenticated_launch(std::process::id(), app, room, Some(7))
+                .authenticated_launch(std::process::id(), app, workspace, Some(7))
                 .unwrap()
                 .is_none(),
             "the launch that made the window is over"
@@ -424,8 +426,13 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("a process to launch");
-        launches.started(child.id(), "so.tilo.sandboxed", "room-sandboxed", true);
-        launches.started(std::process::id(), "so.tilo.host", "room-sandboxed", false);
+        launches.started(child.id(), "so.tilo.sandboxed", "workspace-sandboxed", true);
+        launches.started(
+            std::process::id(),
+            "so.tilo.host",
+            "workspace-sandboxed",
+            false,
+        );
 
         assert_eq!(launches.sandboxed_apps(), ["so.tilo.sandboxed".to_owned()]);
 
@@ -450,7 +457,12 @@ mod tests {
             .expect("a process to launch");
         assert_eq!(launches.app_of_descendant(child.id()), None, "no launch");
 
-        launches.started(std::process::id(), "so.tilo.terminal", "room-desk", false);
+        launches.started(
+            std::process::id(),
+            "so.tilo.terminal",
+            "workspace-desk",
+            false,
+        );
         assert_eq!(
             launches.app_of_descendant(std::process::id()).as_deref(),
             Some("so.tilo.terminal"),

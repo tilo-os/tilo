@@ -732,7 +732,7 @@ fn launched_room(launches: &Launches, peer: Option<u32>, app: &str) -> Option<St
         Some(pid) if pid == std::process::id() => launches.take_window_shell_ui(app)?,
         peer => peer?,
     };
-    launches.room_of(pid, app)
+    launches.workspace_of(pid, app)
 }
 
 /// Whether `message` is one this service answers.
