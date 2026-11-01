@@ -748,7 +748,7 @@ fn participant_presence_payload(
 pub(crate) struct RemoteCaretOverlay {
     pub user: UserId,
     pub rect: Rect,
-    /// The pill text: the room's name for this peer, or their id if unnamed.
+    /// The pill text: the workspace's name for this peer, or their id if unnamed.
     /// Resolved here (not at paint time) so it is directly assertable.
     pub label: String,
 }

@@ -108,7 +108,7 @@ const ANALYSIS_QUEUE_LIMIT: usize = 2;
 const LIBRARY_PAGE_SIZE: usize = 24;
 
 /// How many seconds a photograph is shown before the slide show moves on:
-/// enough to look at it, and short enough that a room does not wait. It is the
+/// enough to look at it, and short enough that a workspace does not wait. It is the
 /// content's own pace, not a motion's, so it is a number of seconds and not a
 /// duration constant: a slide show dwell is a preference waiting to be a
 /// setting, and a duration here reads as animation timing to anyone scanning.
@@ -552,7 +552,7 @@ pub struct Photos {
     canvas_rect: Rect,
     status_rect: Rect,
     /// Whether the open photograph has the screen (`FullscreenProvider`):
-    /// showing photographs to a room is what full screen is for.
+    /// showing photographs to a workspace is what full screen is for.
     presenting: bool,
     /// When the slide show moves on, while it runs; `None` when it is off.
     /// The window wakes at that instant (`Widget::next_wake_deadline`).
@@ -1277,7 +1277,7 @@ impl Photos {
             Some(img) => {
                 // Put the bytes in the content store before naming them, so
                 // the hash this document is about to carry is one this machine
-                // can already answer for — and one the room can be handed.
+                // can already answer for — and one the workspace can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
                 let content = match self.content.put(bytes.unwrap_or_default()) {
@@ -1608,7 +1608,7 @@ impl Photos {
                 .filter(|refused| refused.action == share)
                 .map(|refused| refused.reason.clone())
         });
-        // What this window said it did, once the room kept it
+        // What this window said it did, once the workspace kept it
         // ([`Self::say_when_kept`]); a refusal, said after it, wins.
         let said = dispatch.said();
         if let Some(text) = said.with(Clone::clone) {
@@ -1622,8 +1622,8 @@ impl Photos {
     }
 
     /// Say `text` of a library change just submitted once it is kept: at
-    /// once in a library nobody else decides, once the room accepts it in a
-    /// shared one, and never when the room refuses it.
+    /// once in a library nobody else decides, once the workspace accepts it in a
+    /// shared one, and never when the workspace refuses it.
     fn say_when_kept(&mut self, text: String) {
         match &self.dispatch {
             Some(dispatch) => dispatch.say_when_kept(text),

@@ -8,7 +8,7 @@
 
 use tilo_action_policy::Role;
 use tilo_desktop::overview::{
-    OverviewGroup, OverviewStrip, OverviewTab, RoomCard, RoomPerson, RoomShare,
+    OverviewGroup, OverviewStrip, OverviewTab, WorkspaceCard, WorkspacePerson, WorkspaceShare,
 };
 use tilo_desktop::overview_panel::OverviewDesk;
 use tilo_desktop::window_switcher::WindowApp;
@@ -31,8 +31,8 @@ fn app(key: &str, kind: AppKind, glyph: Icon) -> WindowApp {
     }
 }
 
-fn person(id: &str, name: &str, present: bool, is_you: bool) -> RoomPerson {
-    RoomPerson {
+fn person(id: &str, name: &str, present: bool, is_you: bool) -> WorkspacePerson {
+    WorkspacePerson {
         id: id.to_owned(),
         name: name.to_owned(),
         role: if is_you { Role::Owner } else { Role::Editor },
@@ -92,11 +92,11 @@ fn chat() -> WindowApp {
 fn single_strip(
     id: u64,
     name: &str,
-    people: Vec<RoomPerson>,
+    people: Vec<WorkspacePerson>,
     strip: u64,
     groups: Vec<OverviewGroup>,
-) -> RoomCard {
-    RoomCard {
+) -> WorkspaceCard {
+    WorkspaceCard {
         id: WorkspaceId(id),
         name: name.to_owned(),
         is_current: false,
@@ -112,7 +112,7 @@ fn single_strip(
 }
 
 /// The workspace this desktop is on: writing beside reading, shared.
-fn launch(maya: RoomPerson, theo: RoomPerson, you: RoomPerson) -> RoomCard {
+fn launch(maya: WorkspacePerson, theo: WorkspacePerson, you: WorkspacePerson) -> WorkspaceCard {
     let mut review = tab(101, "Design review.md", notes(), true);
     review.people = vec![maya.clone()];
     let mut writing = group(
@@ -137,12 +137,12 @@ fn launch(maya: RoomPerson, theo: RoomPerson, you: RoomPerson) -> RoomCard {
         ),
         group(1004, 500, vec![tab(106, "Week 44", calendar(), true)]),
     ];
-    RoomCard {
+    WorkspaceCard {
         id: HERE,
         name: "Launch".to_owned(),
         is_current: true,
         people: vec![you, maya, theo],
-        shares: vec![RoomShare {
+        shares: vec![WorkspaceShare {
             what: "Press kit".to_owned(),
             with: vec!["Ada".to_owned(), "Bo".to_owned()],
             writable: true,
@@ -214,7 +214,7 @@ pub fn desk() -> OverviewDesk {
 pub fn crowded(count: u64) -> OverviewDesk {
     let mut desk = desk();
     desk.cards
-        .extend((10..count.saturating_add(10)).map(|id| RoomCard {
+        .extend((10..count.saturating_add(10)).map(|id| WorkspaceCard {
             id: WorkspaceId(id),
             name: format!("Project {id}"),
             is_current: false,

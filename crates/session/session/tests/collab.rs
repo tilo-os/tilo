@@ -91,9 +91,10 @@ fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
 /// A device's identity: the person it is a device of, and its name here.
 fn hello(from: u8, label: &str) -> NetEvent {
     let device_key = device(from);
-    let cert = tilo_user_identity::DeviceCert {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[from; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
         // Each device a person's own: two devices are two people here.
-        user_public_key: [from; 32],
+        user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device_key.as_bytes(),
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities {
@@ -108,6 +109,7 @@ fn hello(from: u8, label: &str) -> NetEvent {
         expires_at_ns: None,
         signature: [0; 64],
     };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     said(
         from,
         NeighbourMsg::IdentityHello {
@@ -221,7 +223,12 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let labels = session.accessible_labels();
     let listed = |what: &str| labels.iter().any(|label| label.contains(what));
     assert!(listed("Framework 16"), "who is here: {labels:?}");
-    assert!(listed("In Notes"), "where their pointer is: {labels:?}");
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Framework 16 is in Notes"),
+        "where their pointer is: {labels:?}"
+    );
     assert!(listed("Away"), "how they said they are: {labels:?}");
     assert_eq!(
         sync.pointers(ROOM, NOTES),

@@ -67,7 +67,7 @@ pub mod signer;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
-pub use endpoint::ChannelContentKeys;
+pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
 pub use errors::{Error, Result};
 pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};

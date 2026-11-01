@@ -50,6 +50,11 @@ pub struct TextEntry {
     /// The last typing was a touch on the screen: a hardware key since then
     /// hands back to the keyboard the person is holding.
     pub on_the_glass: bool,
+    /// The machine can be typed on by touching it: a touchscreen is
+    /// attached, the glass has been touched, or it is a convertible folded
+    /// into tablet shape. The on-screen keyboard runs wherever this holds, so
+    /// a tap into a field never waits for a keyboard process to start.
+    pub touch_available: bool,
 }
 
 /// A text field as dictation names it: which field the person types into,
@@ -97,6 +102,8 @@ pub(crate) struct TextInput {
     /// When a key was last typed, and the screen last touched.
     last_key: Option<Instant>,
     last_touch: Option<Instant>,
+    /// A touchscreen is attached.
+    touchscreen: bool,
     /// A convertible folded into tablet shape: the screen is the keyboard.
     tablet_mode: bool,
 }
@@ -111,6 +118,7 @@ impl TextInput {
             _virtual_keyboard: VirtualKeyboardManagerState::new::<State, _>(display, trusted),
             last_key: None,
             last_touch: None,
+            touchscreen: false,
             tablet_mode: false,
         }
     }
@@ -125,6 +133,10 @@ impl TextInput {
                     (Some(_), None) => true,
                     _ => false,
                 },
+            // A touch that reached the desktop came from a touchscreen, and
+            // the person may touch it again: the keyboard goes on running,
+            // hidden, after the screen that was touched is unplugged.
+            touch_available: self.touchscreen || self.last_touch.is_some() || self.tablet_mode,
         }
     }
 }
@@ -143,6 +155,11 @@ impl State {
             } => self.text_input.tablet_mode = *on,
             _ => {}
         }
+    }
+
+    /// A touchscreen was attached, or went away.
+    pub(crate) fn note_touchscreen(&mut self, attached: bool) {
+        self.text_input.touchscreen = attached;
     }
 
     /// What a text field and the person's own typing ask the on-screen

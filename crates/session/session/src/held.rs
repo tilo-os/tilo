@@ -41,9 +41,26 @@ impl Session {
             .people(room)
     }
 
+    /// The devices `room` admits, by the publisher each of their sessions is
+    /// known by: everyone whose windows this computer shares with the room
+    /// sees and is seen, and no one else, each until the certificate the room
+    /// holds of it expires. A device the room removed leaves the roster.
+    ///
+    /// # Errors
+    /// The room is not held here, or its governance cannot be read.
+    pub fn roster(&self, room: &str) -> Result<Vec<String>, String> {
+        self.shared
+            .engine
+            .as_ref()
+            .ok_or_else(|| "this session holds no rooms".to_owned())?
+            .roster(room)
+    }
+
     /// What a held room has of the app `app`'s `record`, as the room last
     /// admitted it: what a workspace shows of it, and what it held before
-    /// this computer joined.
+    /// this computer joined. A record the room's hosts send only once asked
+    /// (an on-demand record, or a part of a chain behind its head) reads as
+    /// nothing until it is here, and is asked for on its first read.
     ///
     /// # Errors
     /// The room is not held here, or this computer may not read it.

@@ -1,7 +1,7 @@
 //! What one agent may do in the workspace, app by app: Allow, Ask first or
 //! Deny for reading, changes and outside effects.
 //!
-//! Each answer is an ordinary room grant ([`agent_answers`]); without one the
+//! Each answer is an ordinary workspace grant ([`agent_answers`]); without one the
 //! agent's admission decides, and the view says so. Actions whose contract
 //! asks for confirmation (sending, publishing, deleting for good) still ask
 //! first under an app-wide Allow; only "Always allow this" on the action
@@ -89,7 +89,7 @@ pub struct AgentException {
     pub label: String,
 }
 
-/// The answer `agent` holds for `kind` at `scope`, decided over the room's
+/// The answer `agent` holds for `kind` at `scope`, decided over the workspace's
 /// grants naming it alone: what the person tells this agent, before their
 /// own role bounds it.
 #[must_use]

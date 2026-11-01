@@ -39,6 +39,9 @@ const PROBE: &str = "so.tilo.probe";
 /// The app of a saved window that is not on this machine.
 const GONE: &str = "so.tilo.gone";
 
+/// What a test names a strip it renames.
+const RENAMED: &str = "Sketches";
+
 /// Where this device keeps what outlives a session.
 fn state_of(home: &tilo_test_env::TestHome) -> PathBuf {
     home.state().to_path_buf()
@@ -352,6 +355,47 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
         }),
         "a window is kept as the app that opens it again"
     );
+}
+
+/// What a restart brings back is the desk the session itself kept, with no
+/// tree file beside it: a strip renamed in one session is that strip in the
+/// next, at the width it was left.
+#[test]
+fn a_restart_brings_back_the_desk_the_session_kept() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = state_of(&home);
+    save_desk(&state, &wide_desk());
+
+    let kept = {
+        let mut session = session_keeping(&state, None);
+        session.step(Duration::from_millis(1)).expect("step");
+        let mut tree = session.handle().read(Clone::clone);
+        tree.workspaces[0].strips[0].name = RENAMED.into();
+        session.handle().replace_tree(tree);
+        session.step(Duration::from_millis(1)).expect("step");
+        session
+    };
+    // A session keeps the desk as it ends.
+    drop(kept);
+
+    assert!(
+        !desk_file(&state).exists(),
+        "the desk is no longer kept as a tree file"
+    );
+    assert!(
+        state.join("tilo").join("desk.automerge").exists(),
+        "it is kept as its one document"
+    );
+
+    let mut next = session_keeping(&state, None);
+    next.step(Duration::from_millis(1)).expect("step");
+    let (name, width) = next.handle().read(|tree| {
+        let strip = &tree.workspaces[0].strips[0];
+        (strip.name.clone(), strip.window_groups[0].width.permille())
+    });
+    assert_eq!(name, RENAMED, "the strip as it was renamed");
+    assert_eq!(width, 480, "at the width it was left");
 }
 
 #[test]

@@ -20,7 +20,7 @@ use tilo_agent::{Config, Session};
 /// and suggestion engine are a fifth of this tapp.
 #[derive(Debug, PartialEq)]
 struct Cli {
-    /// The room (workspace) the document lives in — the `TILO_WORKSPACE_ID`
+    /// The workspace the document lives in — the `TILO_WORKSPACE_ID`
     /// the app was launched with.
     workspace: uuid::Uuid,
     /// The record the app announced for the document, e.g.
@@ -38,7 +38,7 @@ struct Cli {
     endpoint: Option<PathBuf>,
     /// Receive the runs of issues assigned to it, the agent's only mode; every
     /// launcher passes it. A task uses only the agent's admitted, permission-
-    /// filtered action catalogue and cannot infer work from room traffic.
+    /// filtered action catalogue and cannot infer work from workspace traffic.
     task_runs: bool,
     /// Decide by keyword only, without asking a model. The run is then
     /// reproducible and needs no network — and says so in its log.
@@ -80,7 +80,7 @@ carries out the runs of issues assigned to it.
 Usage: tilo-agent --workspace <UUID> --task-runs [OPTIONS]
 
 Options:
-      --workspace <UUID>          The room the document lives in
+      --workspace <UUID>          The workspace the document lives in
       --record <RECORD>           The record the app announced for the document
       --app <APP>                 The app whose document this is [default: so.tilo.word-processor]
       --name <NAME>               The display name instructions address [default: Claude]
@@ -308,7 +308,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// The device content store the launcher handed this agent: where the
-/// content addresses the room's apps hand it resolve. An agent started
+/// content addresses the workspace's apps hand it resolve. An agent started
 /// without one reads only what it stores itself, in memory.
 fn device_content() -> ui::content::ContentStore {
     if let Some(device) = ui::content::device() {
@@ -327,10 +327,10 @@ mod tests {
 
     #[test]
     fn a_task_agent_is_named_by_its_task_identity() {
-        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let workspace = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
         let cli = parse(&[
             "--workspace",
-            room,
+            workspace,
             "--task-runs",
             "--task-identity",
             "task-0a0b0c0d0e0f",
@@ -338,20 +338,23 @@ mod tests {
         .unwrap();
         assert_eq!(cli.task_identity.as_deref(), Some("task-0a0b0c0d0e0f"));
         assert_eq!(
-            parse(&["--workspace", room, "--task-identity"]),
+            parse(&["--workspace", workspace, "--task-identity"]),
             Err(CliExit::Usage("--task-identity needs a value".into()))
         );
-        assert_eq!(parse(&["--workspace", room]).unwrap().task_identity, None);
+        assert_eq!(
+            parse(&["--workspace", workspace]).unwrap().task_identity,
+            None
+        );
     }
 
     /// The launcher's own command line reads as before, with the defaults the
     /// flags had.
     #[test]
     fn the_launchers_command_line_reads_with_its_defaults() {
-        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let workspace = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
         let cli = parse(&[
             "--workspace",
-            room,
+            workspace,
             "--app",
             "so.tilo.agent",
             "--name",
@@ -359,7 +362,7 @@ mod tests {
             "--task-runs",
         ])
         .unwrap();
-        assert_eq!(cli.workspace, room.parse::<uuid::Uuid>().unwrap());
+        assert_eq!(cli.workspace, workspace.parse::<uuid::Uuid>().unwrap());
         assert_eq!(cli.app, "so.tilo.agent");
         assert_eq!(cli.name, "agent-1");
         assert!(cli.task_runs);
@@ -367,7 +370,7 @@ mod tests {
         assert_eq!(cli.agent_id, None);
         assert_eq!(cli.model_timeout_ms, None);
 
-        let defaults = parse(&["--workspace", room]).unwrap();
+        let defaults = parse(&["--workspace", workspace]).unwrap();
         assert_eq!(defaults.app, "so.tilo.word-processor");
         assert_eq!(defaults.name, "Claude");
         assert!(!defaults.task_runs);
@@ -404,11 +407,11 @@ mod tests {
         assert_eq!(cli.provider.as_deref(), Some(r#"{"profile_id":"p"}"#));
     }
 
-    /// A missing room, a missing value, a bad number or an unknown argument
+    /// A missing workspace, a missing value, a bad number or an unknown argument
     /// is a usage error, and `--help` asks for the help.
     #[test]
     fn a_wrong_command_line_is_a_usage_error() {
-        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let workspace = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
         assert!(matches!(parse(&["--task-runs"]), Err(CliExit::Usage(_))));
         assert!(matches!(parse(&["--workspace"]), Err(CliExit::Usage(_))));
         assert!(matches!(
@@ -416,19 +419,19 @@ mod tests {
             Err(CliExit::Usage(_))
         ));
         assert!(matches!(
-            parse(&["--workspace", room, "--model-timeout-ms", "soon"]),
+            parse(&["--workspace", workspace, "--model-timeout-ms", "soon"]),
             Err(CliExit::Usage(_))
         ));
         assert!(matches!(
-            parse(&["--workspace", room, "--frobnicate"]),
+            parse(&["--workspace", workspace, "--frobnicate"]),
             Err(CliExit::Usage(_))
         ));
         assert!(matches!(
-            parse(&["--workspace", room, "--task-runs=yes"]),
+            parse(&["--workspace", workspace, "--task-runs=yes"]),
             Err(CliExit::Usage(_))
         ));
         assert_eq!(parse(&["--help"]), Err(CliExit::Help));
-        assert_eq!(parse(&["--workspace", room, "-h"]), Err(CliExit::Help));
+        assert_eq!(parse(&["--workspace", workspace, "-h"]), Err(CliExit::Help));
     }
 
     /// A shell-launched agent given `--provider` gets a managed agent's

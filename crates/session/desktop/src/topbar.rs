@@ -1143,7 +1143,7 @@ impl TopBarChrome {
         // Counted with the same `present` filter as the avatars, so the
         // overflow chip agrees with the row.
         let peer_count = roster.iter().filter(present).count();
-        // Settled over the whole room, so a peer's avatar matches the
+        // Settled over the whole workspace, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.
         let colors = roster_colors(roster, local.unwrap_or(""));
         let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);

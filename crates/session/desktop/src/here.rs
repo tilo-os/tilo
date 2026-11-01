@@ -1,11 +1,11 @@
-//! Who is here in a hosted room and what they are doing.
+//! Who is here in a hosted workspace and what they are doing.
 //!
-//! Two sources meet here. A room's live layer names the members present
+//! Two sources meet here. A workspace's live layer names the members present
 //! now (people and agents), their colour, the record they focus and an
 //! agent's own activity line. The host answers `/here` with each person's
 //! one-line status and a summary of their last minutes, built from the
 //! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`).
-//! Neither is written to the room's desktop document: the bar, the People
+//! Neither is written to the workspace's desktop document: the bar, the People
 //! popover and the windows read them as ambient presence.
 //!
 //! A person may be here from several devices at once (each browser tab is a
@@ -49,7 +49,7 @@ pub struct Focus {
     pub record: String,
 }
 
-/// One member of the room's live layer, as the page reports it.
+/// One member of the workspace's live layer, as the page reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct LiveMember {
     pub publisher: String,
@@ -63,7 +63,7 @@ pub struct LiveMember {
     /// An agent's own activity line.
     #[serde(default)]
     pub activity: Option<String>,
-    /// Where within the room's desktop a person is: the id of the strip
+    /// Where within the workspace's desktop a person is: the id of the strip
     /// they are on, as their presence names it.
     #[serde(default)]
     pub place: Option<String>,
@@ -107,7 +107,7 @@ pub struct HostLine {
     /// Model prose that passed the host's grounding check.
     #[serde(default)]
     pub generated: bool,
-    /// The window (tab id, hex) they focus in the room's shared desktop.
+    /// The window (tab id, hex) they focus in the workspace's shared desktop.
     #[serde(default)]
     pub window: Option<String>,
     #[serde(default)]
@@ -150,7 +150,7 @@ pub struct Person {
     /// "Strip · App", the strip only where the workspace has more than one,
     /// the app only where the status does not already name it
     /// (`worded_place`). Where no window here shows their record, as in
-    /// a room whose layout is personal: "In App", from the app their
+    /// a workspace whose layout is personal: "In App", from the app their
     /// presence focuses (`focused_app`).
     pub place: Option<String>,
     pub status: Option<Line>,
@@ -165,7 +165,7 @@ pub struct Person {
     pub call: Option<ui::CallPresence>,
 }
 
-/// What the page told the desktop about the room.
+/// What the page told the desktop about the workspace.
 #[derive(Debug, Default)]
 pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
@@ -313,7 +313,7 @@ impl HereState {
     }
 
     /// Who joined since the last call, by the name everyone here sees: a
-    /// person who was not in the room before. The first roster this page
+    /// person who was not in the workspace before. The first roster this page
     /// sees is who was already here, not arrivals; this page's person and
     /// agents are never announced, and leaving is not news. A device back
     /// within `REJOIN_QUIET_MS` of dropping out never left, and another
@@ -589,10 +589,10 @@ impl HereState {
     }
 
     /// What colour everyone here is drawn in, by live publisher, this page
-    /// included. Settled over the whole room at once
+    /// included. Settled over the whole workspace at once
     /// ([`ui::presence::assign_peer_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every
-    /// page, seeing the same room, settles it alike. A person is settled by
+    /// page, seeing the same workspace, settles it alike. A person is settled by
     /// who they are (their user root) so their other devices wear their
     /// colour; an agent by its own publisher. The colour a page publishes
     /// for itself is not consulted: a page picking alone cannot know who
@@ -762,7 +762,7 @@ impl HereState {
 
     /// The numbers the people here are told apart by, this page's own
     /// person included: the live layer's people, else the host's lines.
-    /// Keyed by live publisher, which every page in the room names alike.
+    /// Keyed by live publisher, which every page in the workspace names alike.
     fn labels(&self) -> ui::presence::ParticipantLabels {
         let mut named: Vec<(&str, String)> = Vec::new();
         if let Some(members) = &self.members {
@@ -859,7 +859,7 @@ impl HereState {
 }
 
 /// `publisher`'s colour in `colors` ([`HereState::colors`]), or the
-/// neutral face while the room has not settled one for it.
+/// neutral face while the workspace has not settled one for it.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
     colors
         .get(publisher)
@@ -970,14 +970,14 @@ fn names(text: &str, name: &str) -> bool {
 }
 
 /// `people` as the active workspace's collaborators, for the bar's avatars:
-/// read from a copy of the tree, never written to the room's document.
+/// read from a copy of the tree, never written to the workspace's document.
 pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
     let active = tree.active;
     let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
         return;
     };
     for person in people {
-        // Who a known member is belongs to the room; where they are and how
+        // Who a known member is belongs to the workspace; where they are and how
         // available they are is presence's, and is said again every frame.
         if let Some(known) = workspace
             .collaborators
@@ -1330,7 +1330,7 @@ mod tests {
     }
 
     /// Two visitors whose identities hash to the same colour still wear two
-    /// once they are here together, and each one's page settles the room
+    /// once they are here together, and each one's page settles the workspace
     /// alike, so a person is the same colour on every screen, their own
     /// included.
     #[test]
@@ -1370,7 +1370,7 @@ mod tests {
     /// Someone whose device is live here before the host's lines pair it
     /// with their person is drawn neutral, never in a colour their device
     /// would key that changes once their person is known: the face on the
-    /// bar, the People list's and the windows' all wear their room colour
+    /// bar, the People list's and the windows' all wear their workspace colour
     /// from the first frame it is known, and none before.
     #[test]
     fn a_face_is_neutral_until_the_room_knows_whose_it_is() {
@@ -1625,7 +1625,7 @@ mod tests {
         );
     }
 
-    /// In a room whose layout is personal nobody's window is on this
+    /// In a workspace whose layout is personal nobody's window is on this
     /// desktop: a person's row still says where they are, from the app
     /// their presence focuses, unless their status already names it.
     #[test]
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     /// Two pages going by one name are numbered, this page included, by
-    /// their publishers — the same numbers on every page in the room.
+    /// their publishers — the same numbers on every page in the workspace.
     #[test]
     fn people_sharing_a_name_are_numbered_alike_on_every_page() {
         let tree = DesktopTree::default();

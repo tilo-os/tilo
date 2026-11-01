@@ -30,7 +30,10 @@ use ui::tilo_resource::{Id, Invoke};
 use crate::model::{AccountConfig, Folder};
 
 /// The account-type id Mail contributes to the shared store.
-pub const TYPE_ID: &str = "email";
+pub const TYPE_ID: &str = accounts::email::TYPE_ID;
+
+/// The app that keeps email accounts: this one.
+pub const KEEPER: &str = accounts::email::KEEPER;
 
 /// A single configured mail account: its connection settings plus the
 /// per-account UI state Mail needs (sidebar expand/collapse).
@@ -89,12 +92,12 @@ impl Account {
     /// Rebuild a mail account from a shared [`StoredAccount`], reading the
     /// password back from `vault`. `None` when the stored config does not
     /// deserialise (a store written by a newer type version).
-    fn from_stored(stored: &StoredAccount, vault: &AccountCredentials) -> Option<Self> {
+    fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
         config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
         if !config.import_pending
-            && let Some(secret) = vault.get(&stored.id)
+            && let Some(secret) = vault.and_then(|vault| vault.get(&stored.id))
         {
             config.password = secret.password;
         }
@@ -153,16 +156,28 @@ impl AccountStore {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(
             &SharedStore::load_in(config_root),
-            &credentials,
+            Some(&credentials),
         ))
     }
 
     /// Project the shared accounts using the trusted account-owner credentials.
     pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
-        Self::from_shared(shared, vault)
+        Self::from_shared(shared, Some(vault))
     }
 
-    fn from_shared(shared: &SharedStore, vault: &AccountCredentials) -> Self {
+    /// Project the shared accounts without their secrets: a window in a
+    /// session, whose secrets the session's custody releases to it one
+    /// account at a time ([`crate::custody`]).
+    pub fn without_secrets(shared: &SharedStore) -> Self {
+        Self::from_shared(shared, None)
+    }
+
+    /// The accounts kept under `config_root`, without their secrets.
+    pub fn load_without_secrets_in(config_root: &Path) -> Self {
+        Self::without_secrets(&SharedStore::load_in(config_root))
+    }
+
+    fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
             .list(&ty)

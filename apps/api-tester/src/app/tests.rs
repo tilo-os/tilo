@@ -992,8 +992,8 @@ fn escape_closes_a_guests_ask_without_leaving_a_search() {
     .unwrap();
 }
 
-/// A guest (an Editor) pressing Send reaches a server outside the room, so
-/// the room's grants ask first: the guest is asked in the window, told they
+/// A guest (an Editor) pressing Send reaches a server outside the workspace, so
+/// the workspace's grants ask first: the guest is asked in the window, told they
 /// decide, and nothing is sent until they confirm. The click is never
 /// dropped unseen.
 #[test]

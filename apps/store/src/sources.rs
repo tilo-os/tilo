@@ -125,7 +125,7 @@ pub fn tilo_to_store_item_on_channel(
 }
 
 /// A directory bot's card: what it does and needs, never an app version to
-/// download, because a bot runs in a room rather than on this device.
+/// download, because a bot runs in a workspace rather than on this device.
 pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
     let requires = &bot.artifact.requires;
     StoreItem {

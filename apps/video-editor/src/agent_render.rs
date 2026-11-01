@@ -295,7 +295,7 @@ fn placed(project: &Project) -> impl Iterator<Item = &crate::model::MediaItem> {
 }
 
 /// Why `project` is no timeline an agent's render takes: empty, longer than
-/// [`AGENT_MAX_SECONDS`], or placing a source that is not room content.
+/// [`AGENT_MAX_SECONDS`], or placing a source that is not workspace content.
 ///
 /// # Errors
 ///
@@ -315,7 +315,7 @@ pub fn renderable(project: &Project) -> Result<(), String> {
         placed(project).find(|item| tilo_actions::content_hash(&item.path).is_none())
     {
         return Err(format!(
-            "{} is not room content: an agent's render reads only sources imported with \
+            "{} is not workspace content: an agent's render reads only sources imported with \
              import-content",
             item.name
         ));
@@ -323,7 +323,7 @@ pub fn renderable(project: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// The room content every source `project` places is read from, once each,
+/// The workspace content every source `project` places is read from, once each,
 /// lowercase.
 #[must_use]
 pub fn placed_content(project: &Project) -> Vec<String> {

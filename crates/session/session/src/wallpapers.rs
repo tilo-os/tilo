@@ -8,7 +8,7 @@
 //! whether it shows on the desk, the lock screen or both.
 //!
 //! Which picture a workspace shows is this device's own record, kept beside
-//! the desk's ([`crate::desk_layout`]): a change that covers one workspace
+//! the desk's ([`crate::desk_doc`]): a change that covers one workspace
 //! leaves the others the pictures they had, and the next session starts
 //! with the same. The settings document itself is the person's on every
 //! device, so it carries the choice, not what each workspace here shows.
@@ -159,6 +159,9 @@ struct State {
     active: Option<String>,
     /// Decoded pictures by the value they show.
     images: HashMap<Option<String>, ImageData>,
+    /// The temperature each picture gives a room, by the value it shows: a
+    /// picture is millions of pixels, so its hue is found once.
+    hues: HashMap<Option<String>, Option<f32>>,
     /// Values decoding off this thread.
     decoding: HashSet<Option<String>>,
     /// Values that could not be decoded: the image does not carry the
@@ -252,6 +255,25 @@ impl Wallpapers {
         self.state.lock_recover().active = id;
     }
 
+    /// The temperature workspace `id`'s wallpaper gives its room: its
+    /// picture's dominant hue, found once per picture and kept while a
+    /// workspace shows it. `None` while the picture is not decoded yet, and
+    /// for a picture with no hue (a grey photograph, a missing file), which
+    /// leaves the room neutral.
+    pub(crate) fn hue(&self, id: &str) -> Option<f32> {
+        let mut state = self.state.lock_recover();
+        let value = state.records.value_for(id).map(str::to_owned);
+        if let Some(known) = state.hues.get(&value) {
+            return *known;
+        }
+        let hue = {
+            let image = state.images.get(&value)?;
+            ui::theme::workspace_hue(image.data.data())
+        };
+        state.hues.insert(value, hue);
+        hue
+    }
+
     /// Start from `document`, the person's settings. A device that kept no
     /// picture yet takes the one chosen as its default; one that has them
     /// keeps each workspace's, as [`Self::follow`] does.
@@ -318,9 +340,11 @@ impl Wallpapers {
         // The pictures no workspace shows any more are let go: each one is
         // the whole screen in pixels.
         let (default, workspaces) = (&records.default, &records.workspaces);
-        state.images.retain(|value, _| {
+        let shown = |value: &Option<String>| {
             value == default || workspaces.values().any(|own| value.as_deref() == Some(own))
-        });
+        };
+        state.images.retain(|value, _| shown(value));
+        state.hues.retain(|value, _| shown(value));
         state.unreadable.clear();
         drop(state);
         self.save(&records);
@@ -394,6 +418,34 @@ mod tests {
         assert_eq!(state.records.value_for("2"), Some("dunes"));
         assert_eq!(state.records.value_for("1"), None);
         drop(state);
+    }
+
+    #[test]
+    fn a_pictures_temperature_is_found_once_and_kept_while_a_workspace_shows_it() {
+        let wallpapers = Wallpapers::new(None, Arc::new(|| {}));
+        let shown = |rgb: [u8; 3]| {
+            let mut state = wallpapers.state.lock_recover();
+            state.images.insert(None, picture(rgb));
+        };
+        // No picture decoded yet: the room is neutral until one arrives.
+        assert_eq!(wallpapers.hue("1"), None);
+        shown([20, 40, 220]);
+        let blue = wallpapers.hue("1").expect("a blue picture has a hue");
+        assert!((blue - 264.0).abs() < 30.0, "blue reads as {blue}");
+        // The picture under the same value is not looked at again: the hue
+        // it gave once is the one it keeps.
+        shown([220, 40, 20]);
+        assert_eq!(wallpapers.hue("1"), Some(blue));
+        // A workspace showing another picture, not decoded, has no hue yet.
+        wallpapers.state.lock_recover().records.workspaces =
+            BTreeMap::from([("2".to_owned(), "meadow".to_owned())]);
+        assert_eq!(wallpapers.hue("2"), None);
+        assert_eq!(wallpapers.hue("1"), Some(blue));
+    }
+
+    fn picture(rgb: [u8; 3]) -> ImageData {
+        let pixel = [rgb[0], rgb[1], rgb[2], 255];
+        ui::raster::rgba8(pixel.repeat(64), 8, 8)
     }
 
     #[test]

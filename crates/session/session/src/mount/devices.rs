@@ -22,6 +22,7 @@
 
 use std::cell::RefCell;
 
+use tilo_desktop::overlays::Slot;
 use tilo_device_fabric::link::SharedLink;
 use tilo_device_fabric::{DeviceId, MediaSourceLocator, PersonalFabricAction};
 use tilo_quick_settings::device::SessionRequest;
@@ -98,11 +99,7 @@ pub(crate) fn land(shared: &Shared) {
     let Some(device) = &shared.device else {
         return;
     };
-    if !shared
-        .quick_settings
-        .as_ref()
-        .is_some_and(|panel| panel.open.get())
-    {
+    if !shared.overlays.is_open(Slot::QuickSettings) {
         return;
     }
     let Some(fabric) = &shared.fabric else {

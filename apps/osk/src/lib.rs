@@ -31,7 +31,7 @@
 //! * [`OskShell`] is the app: the keyboard window over its [`Osk`]
 //!   preferences, which follow the person across their devices.
 //! * [`service`] connects the keyboard's own process to the session it types
-//!   into.
+//!   into, and `session` reads the session's word on whether it shows.
 //! * [`imclient`] is the preferred `input-method-v2` commit path and drives
 //!   focus-based visibility plus content-purpose layouts.
 //! * [`output`] is the ordered preedit/commit/key stream the widget emits and
@@ -98,6 +98,7 @@ pub mod output;
 pub mod predict;
 pub mod resource;
 pub mod service;
+mod session;
 pub mod suggest;
 pub mod surface;
 pub mod swipe;

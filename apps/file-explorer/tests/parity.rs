@@ -205,7 +205,7 @@ fn breadcrumb_component_click_navigates_to_that_component() {
 
 /// A workspace is named, not spelled out.
 ///
-/// The room's folder is mounted wherever the driver put it, which in a
+/// The workspace's folder is mounted wherever the driver put it, which in a
 /// demo is under `/var/tmp`. Spelling that out tells a reader they are
 /// looking at scratch space on somebody's laptop, which is the opposite of
 /// what a workspace is - and the app already knew better, because its own

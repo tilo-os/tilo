@@ -107,7 +107,8 @@ pub(super) fn snapshot(
     {
         return Err(SemanticReadError::InvalidOwner);
     }
-    if ui::record::room_scope(&document).is_some_and(|workspace| workspace != destination.room) {
+    if ui::record::workspace_scope(&document).is_some_and(|workspace| workspace != destination.room)
+    {
         return Err(SemanticReadError::InvalidOwner);
     }
     let receipt = super::receipt_content(&document, &request.id, destination)

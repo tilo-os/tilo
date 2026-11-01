@@ -177,6 +177,21 @@ impl Session {
         self.x11.flush().expect("flush");
     }
 
+    /// Set a window's `WM_NAME` after it was created, as a program does when
+    /// what it shows changes.
+    fn set_title(&self, window: Window, title: &str) {
+        self.x11
+            .change_property8(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_NAME,
+                AtomEnum::STRING,
+                title.as_bytes(),
+            )
+            .expect("title");
+        self.x11.flush().expect("flush");
+    }
+
     fn map(&self, window: Window) {
         self.x11.map_window(window).expect("map");
         self.x11.flush().expect("flush");
@@ -499,17 +514,33 @@ fn an_x11_window_that_is_renamed_is_known_by_its_new_class() {
     let window = session.window("xterm", "XTerm", (400, 300));
     session.map(window);
     session.pump(|session| !session.compositor.windows().is_empty());
-    let (info, _) = session.compositor.windows().remove(0);
+    let (mapped, _) = session.compositor.windows().remove(0);
     session.set_class(window, "thunderbird", "Thunderbird");
+    session.set_title(window, "Inbox - Thunderbird");
+    // The two properties arrive as two separate changes; the desk names the
+    // window once it has both, so wait for both.
     session.pump(|session| {
         session
             .compositor
-            .x11_identity(info.id)
-            .is_some_and(|identity| identity.class.as_deref() == Some("Thunderbird"))
+            .windows()
+            .first()
+            .is_some_and(|(info, _)| {
+                info.app_id.as_deref() == Some("Thunderbird")
+                    && info.title.as_deref() == Some("Inbox - Thunderbird")
+            })
     });
-    let identity = session.compositor.x11_identity(info.id).expect("identity");
+    let identity = session
+        .compositor
+        .x11_identity(mapped.id)
+        .expect("identity");
     assert_eq!(identity.instance.as_deref(), Some("thunderbird"));
     assert_eq!(identity.class.as_deref(), Some("Thunderbird"));
+    // The desk names the tab by what the client says now, not by what it said
+    // when its window mapped.
+    let (renamed, _) = session.compositor.windows().remove(0);
+    assert_eq!(renamed.id, mapped.id);
+    assert_eq!(renamed.app_id.as_deref(), Some("Thunderbird"));
+    assert_eq!(renamed.title.as_deref(), Some("Inbox - Thunderbird"));
 }
 
 #[test]

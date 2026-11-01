@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_network_actor::native_ingress::Connect;
-use tilo_network_actor::{Actor, HostIdentity, NetCmd, room_sync, room_topic_id};
+use tilo_network_actor::{Actor, HostIdentity, NetCmd, room_topic_id, workspace_sync};
 
 /// A room placed on this device's own host.
 const HOSTED_HERE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -43,7 +43,7 @@ fn native_custody_missing_disk_never_uses_retained_certificate() {
 /// so once the try failed, rather than connecting forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
-    use ui::room_sync::RoomSyncState;
+    use ui::workspace_sync::WorkspaceSyncState;
     let (_directory, owner, room, _, key) =
         crate::shell::native_workspace_owner::test_enrolled_owner();
     let certificate = owner
@@ -106,14 +106,14 @@ async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
     }
     let topic = room_topic_id(room);
     tilo_test_env::within("the room to say its host cannot be reached", async {
-        while room_sync::state(topic) != Some(RoomSyncState::Unreachable) {
+        while workspace_sync::state(topic) != Some(WorkspaceSyncState::Unreachable) {
             tokio::task::yield_now().await;
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
     assert_eq!(
-        room_sync::state(room_topic_id(governed)),
+        workspace_sync::state(room_topic_id(governed)),
         None,
         "a room hosted here is not waiting for anyone"
     );

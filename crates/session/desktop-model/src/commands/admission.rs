@@ -110,7 +110,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
 }
 
 /// The next counter an owner mints from in namespace `salt`: past both the
-/// stored room counter and every id of that namespace still in `workspace`.
+/// stored workspace counter and every id of that namespace still in `workspace`.
 pub fn namespace_counter(workspace: &Workspace, salt: u16, stored: u64) -> u64 {
     let maximum = workspace
         .strips

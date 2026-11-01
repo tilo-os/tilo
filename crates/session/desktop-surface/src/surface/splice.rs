@@ -1,6 +1,6 @@
 //! A changed tree applied to a strip's live row in place.
 //!
-//! A tree changed elsewhere (a peer's edit arriving from the room, an undo)
+//! A tree changed elsewhere (a peer's edit arriving from the workspace, an undo)
 //! moves the windows that changed and nothing else: the row keeps its pan,
 //! its windows' motion and every untouched window as it is. Removing,
 //! inserting and reordering go through the row's own operations, so the

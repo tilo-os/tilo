@@ -1,6 +1,6 @@
 //! What an agent does with a deck through the published door: slides added
 //! over the untouched starter, slides named by their number, pictures from
-//! content the room holds, and decks carried in and out as `.pptx` content.
+//! content the workspace holds, and decks carried in and out as `.pptx` content.
 
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;

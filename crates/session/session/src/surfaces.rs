@@ -171,6 +171,9 @@ pub struct Surface {
     /// Whether its window becomes the session's lock screen instead of a
     /// layer surface.
     pub lock: bool,
+    /// The output it stands on when its window names none of its own: the
+    /// display its client is connected for, and any output otherwise.
+    pub output: Option<String>,
 }
 
 impl Surface {
@@ -191,6 +194,7 @@ impl Surface {
             keyboard: Keyboard::None,
             person: String::new(),
             lock: false,
+            output: None,
         }
     }
 
@@ -221,6 +225,14 @@ impl Surface {
     #[must_use]
     pub fn size(mut self, size: (u32, u32)) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Stand `margin` (top, right, bottom, left) logical pixels from the
+    /// edges it is pinned to.
+    #[must_use]
+    pub fn margin(mut self, margin: (i32, i32, i32, i32)) -> Self {
+        self.margin = margin;
         self
     }
 
@@ -264,6 +276,15 @@ impl Surface {
     #[must_use]
     pub fn lock(mut self) -> Self {
         self.lock = true;
+        self
+    }
+
+    /// Stand on the display named `output`, for a window that names no
+    /// output of its own: the person's keyboard goes on the display they
+    /// type on.
+    #[must_use]
+    pub fn on(mut self, output: impl Into<String>) -> Self {
+        self.output = Some(output.into());
         self
     }
 
@@ -426,6 +447,10 @@ struct Running {
     /// The actions socket to it: what it asks, what it reports, and the
     /// invocations the session asked it to run.
     actions: Connection,
+    /// The display of the app's own, while it listens: what the app reaches
+    /// the compositor on beside its window's connection. It listens until
+    /// the app is gone, and nothing else reads it.
+    _display: Option<tilo_compositor::SurfaceDisplay>,
 }
 
 /// The session's end of a surface app's actions socket.
@@ -593,15 +618,32 @@ impl Surfaces {
         surface: &Surface,
         room: &str,
     ) -> Result<(), StartError> {
-        let socket = compositor
-            .connect_trusted_client()
-            .map_err(StartError::Socket)?;
+        let socket = match &surface.output {
+            Some(output) => compositor.connect_trusted_client_on(output),
+            None => compositor.connect_trusted_client(),
+        }
+        .map_err(StartError::Socket)?;
         let descriptor = socket.as_raw_fd();
         let (ours, theirs) = UnixStream::pair().map_err(|source| StartError::Spawn {
             program: surface.program.clone(),
             source,
         })?;
         let actions = theirs.as_raw_fd();
+        // A display of the app's own, beside the connection its window is
+        // drawn on: what speaks the compositor's input protocols — the
+        // on-screen keyboard's input method — reaches it there, as the app
+        // the session started.
+        let display = match compositor.bind_surface_display() {
+            Ok(display) => Some(display),
+            Err(error) => {
+                tracing::debug!(
+                    surface = %surface.name,
+                    %error,
+                    "a surface app has no display of its own: it cannot speak the input protocols"
+                );
+                None
+            }
+        };
         let mut command = Command::new(&surface.program);
         command
             .envs(surface.environment())
@@ -611,6 +653,9 @@ impl Surfaces {
             // session does.
             .env(APP_ID_ENV, &surface.app_id)
             .env(WORKSPACE_ENV, room);
+        if let Some(display) = &display {
+            command.env("WAYLAND_DISPLAY", display.path());
+        }
         if let Some(services) = &self.services {
             command.env(SOCKET_ENV, services);
         }
@@ -649,6 +694,20 @@ impl Surfaces {
             program: surface.program.clone(),
             source,
         })?;
+        // The app is known now: what connects to its display from here on is
+        // the app and what it runs, and is trusted as the surface it is.
+        let display = display.and_then(|display| {
+            compositor
+                .accept_surface_clients(display, child.id(), surface.output.clone())
+                .map_err(|error| {
+                    tracing::debug!(
+                        surface = %surface.name,
+                        %error,
+                        "a surface app's own display did not listen"
+                    );
+                })
+                .ok()
+        });
         // The process that will connect the session's services is the one
         // started here: its launch is written before the app has anything to
         // say, as it is for any app the session starts.
@@ -675,6 +734,7 @@ impl Surfaces {
             child,
             started: Instant::now(),
             actions,
+            _display: display,
         });
         Ok(())
     }
@@ -765,6 +825,21 @@ impl Surfaces {
                         if let Some(state) = state {
                             app.actions.settle(invocation, &state.update);
                         }
+                    }
+                    // The app runs what it publishes: what it asks of its
+                    // own actions comes back over the same socket, as the
+                    // broker hands a provider the invocation of its own
+                    // actions, and nothing of it is the session's.
+                    RemoteActionMessage::Invoke(request)
+                        if request.target.provider == tilo_actions::remote::OWN_PROVIDER =>
+                    {
+                        let invocation = request.invocation;
+                        app.actions.send(RemoteActionMessage::Invoke(request));
+                        app.actions
+                            .send(RemoteActionMessage::Receipt(InvocationReceipt {
+                                invocation,
+                                status: ReceiptStatus::Accepted,
+                            }));
                     }
                     request => {
                         if let Some(answer) = answer(door, &mut app.actions.answered, request) {

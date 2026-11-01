@@ -407,7 +407,7 @@ impl State {
                     None,
                     Kind::Unspecified,
                 ) {
-                    Ok(element) => vec![OutputRenderElement::Hosted(element)],
+                    Ok(element) => vec![OutputRenderElement::Memory(element)],
                     Err(error) => {
                         tracing::warn!(?error, "drag icon not imported");
                         Vec::new()

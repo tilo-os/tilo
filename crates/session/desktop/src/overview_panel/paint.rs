@@ -19,7 +19,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use super::OverviewPanel;
 use super::layout::{Picture, SHARES_MAX_ROWS};
 use crate::i18n::{t, t_args};
-use crate::overview::{RoomCard, RoomPerson, RoomShare};
+use crate::overview::{WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{NoThumbnails, PreviewWell, WindowApp, draw_preview_well};
@@ -221,8 +221,8 @@ impl OverviewPanel {
         ui::chrome::shell::paint_panel_edge(scene, transform, panel, m.panel_radius, theme);
     }
 
-    /// "Where you are": the current room's faces, name, "You are here" chip
-    /// and access line, or a plain statement that no room is marked current.
+    /// "Where you are": the current workspace's faces, name, "You are here" chip
+    /// and access line, or a plain statement that no workspace is marked current.
     fn paint_here_section(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -268,7 +268,7 @@ impl OverviewPanel {
         content: Rect,
         here_rect: Rect,
         hi: usize,
-        card: &RoomCard,
+        card: &WorkspaceCard,
     ) {
         use ui::widget::{ChipFace, ChipLead, ChipStyle};
         let (scene, transform, text, theme) =
@@ -289,7 +289,7 @@ impl OverviewPanel {
             self.colors(),
             ground,
         );
-        // "You are here" says which of these rooms you are in: a quiet
+        // "You are here" says which of these workspaces you are in: a quiet
         // neutral chip. Your colour is for your focus and presence.
         let here_label = t("overview-you-are-here");
         let chip_w = ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text, theme);
@@ -326,7 +326,7 @@ impl OverviewPanel {
             .sites
             .get(&card.id)
             .cloned()
-            .unwrap_or_else(|| crate::overview::room_access_label(card));
+            .unwrap_or_else(|| crate::overview::workspace_access_label(card));
         text.draw_style(
             scene,
             &access,
@@ -337,7 +337,7 @@ impl OverviewPanel {
         );
     }
 
-    /// The keyboard lands on the room you are in when the overview opens,
+    /// The keyboard lands on the workspace you are in when the overview opens,
     /// so it carries the selection a list row does: without it the first
     /// arrow would seem to come from nowhere.
     fn paint_here_selection(
@@ -382,7 +382,7 @@ impl OverviewPanel {
         }
     }
 
-    /// What leaves this room: the share list, or nothing when it shares
+    /// What leaves this workspace: the share list, or nothing when it shares
     /// nothing.
     fn paint_shares_section(&self, ctx: &mut ui::paint::PaintCtx<'_>, content: Rect) {
         let Some(card) = self.here_card().filter(|card| !card.shares.is_empty()) else {
@@ -435,10 +435,10 @@ impl OverviewPanel {
         }
     }
 
-    /// Where else you can go: one row per room, skipping those panned out
+    /// Where else you can go: one row per workspace, skipping those panned out
     /// of the band.
     fn paint_go_to_list(&self, ctx: &mut ui::paint::PaintCtx<'_>, band: Rect) {
-        // A carried window shows the room it would land in as chosen.
+        // A carried window shows the workspace it would land in as chosen.
         let drop_target = self.drop_target();
         for (idx, card) in self.desk.cards.iter().enumerate() {
             if self.slot_of(idx).is_none() {
@@ -468,13 +468,13 @@ impl OverviewPanel {
         }
     }
 
-    /// One room in the "go to" list; `trailing` is kept free at its end for
+    /// One workspace in the "go to" list; `trailing` is kept free at its end for
     /// a control of its own (a site workspace's Leave).
     fn paint_room_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
         rect: Rect,
-        (idx, card): (usize, &RoomCard),
+        (idx, card): (usize, &WorkspaceCard),
         selected: bool,
         trailing: f64,
     ) {
@@ -485,7 +485,7 @@ impl OverviewPanel {
         let ground = ui::chrome::shell::panel_ground(theme);
         let hover = self.cursor.is_some_and(|c| rect.contains(c));
         let m = self.metrics;
-        // A room row is a control you press: which one is chosen is the
+        // A workspace row is a control you press: which one is chosen is the
         // shared selection tier, not an accent.
         ui::chrome::selection_tier(
             theme,
@@ -523,13 +523,13 @@ impl OverviewPanel {
         let name = text.elide_to_width_style(&card.name, f32_of_f64(text_w), &name_style);
         let (_, name_h) = text.measure_style(&name, None, &name_style);
         let sub_style = tokens.typography.style(TextRole::Caption);
-        // Who is in the room now outranks who could be; access is what the
+        // Who is in the workspace now outranks who could be; access is what the
         // line says when it is empty.
         let mut sub = self.desk.sites.get(&card.id).cloned().unwrap_or_else(|| {
-            crate::overview::room_presence_label(card)
-                .unwrap_or_else(|| crate::overview::room_access_label(card))
+            crate::overview::workspace_presence_label(card)
+                .unwrap_or_else(|| crate::overview::workspace_access_label(card))
         });
-        if let Some(shares) = crate::overview::room_shares_label(card) {
+        if let Some(shares) = crate::overview::workspace_shares_label(card) {
             sub = t_args(
                 "overview-two-facts",
                 &[("first", sub.into()), ("second", shares.into())],
@@ -567,7 +567,7 @@ impl OverviewPanel {
     }
 
     /// "New workspace" or "Join a workspace…": a row of the list like any
-    /// room, since making or joining one is somewhere else to go.
+    /// workspace, since making or joining one is somewhere else to go.
     fn paint_list_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -960,7 +960,7 @@ pub(super) fn face_colour(colors_for: &HashMap<String, (u8, u8, u8)>, id: &str) 
 fn paint_face_stack(
     ctx: &mut ui::paint::PaintCtx<'_>,
     anchor: Point,
-    people: &[RoomPerson],
+    people: &[WorkspacePerson],
     colors_for: &HashMap<String, (u8, u8, u8)>,
     ground: Color,
 ) -> f64 {
@@ -1009,9 +1009,9 @@ fn paint_face_stack(
     right - f64_of_usize(slots.saturating_sub(1)) * step - r
 }
 
-/// Marks of the apps open in a room, ending at `right` and centred on
-/// `center_y`, so a room is recognisable by what is in it. Returns the left
-/// edge of what was drawn (`right` when the room is empty).
+/// Marks of the apps open in a workspace, ending at `right` and centred on
+/// `center_y`, so a workspace is recognisable by what is in it. Returns the left
+/// edge of what was drawn (`right` when the workspace is empty).
 fn paint_app_marks(
     scene: &mut Scene,
     transform: Affine,
@@ -1045,7 +1045,12 @@ fn paint_app_marks(
 }
 
 /// One "shared out of here" row: an icon, who holds it, and what.
-fn paint_share_row(ctx: &mut ui::paint::PaintCtx<'_>, row: Rect, share: &RoomShare, glyph: f64) {
+fn paint_share_row(
+    ctx: &mut ui::paint::PaintCtx<'_>,
+    row: Rect,
+    share: &WorkspaceShare,
+    glyph: f64,
+) {
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let tokens = &theme.tokens;

@@ -2,7 +2,7 @@
 //! done with a book, a folder of invoices, a page of notes.
 //!
 //! A skill is not a setting of one app. It is the person's own record, kept
-//! in their room, holding a name, the resources it is for
+//! in their workspace, holding a name, the resources it is for
 //! ([`Selector`]: the kinds and the
 //! fields that pick them out), the instruction that goes to the model, the
 //! style and guidance the answer should keep to, examples of answers they

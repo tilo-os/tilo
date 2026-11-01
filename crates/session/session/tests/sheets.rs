@@ -95,15 +95,23 @@ fn chord(session: &mut Session, keys: &[u32]) {
 }
 
 /// Step the session until `done` holds.
+///
+/// Counting steps would not do: the projector answers on its own socket and
+/// thread, and a busy machine can take many steps' worth of time to get to
+/// it.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         session.step(Duration::from_millis(2)).expect("step");
         if done(session) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition not reached"
+        );
     }
-    panic!("condition not reached");
 }
 
 /// The sheet's seat: whether it is up and what it shows.
@@ -382,6 +390,9 @@ fn differed(before: &Screenshot, after: &Screenshot) -> (u32, u32, u32, u32) {
 #[test]
 fn a_capture_of_the_pin_sheet_withholds_the_pin_and_the_display_shows_it() {
     let _settled = ui::motion::testing::settled();
+    // The two captures this test compares are of the same display: the bar's
+    // own minute turning over between them is not a change the sheet made.
+    let _clock = tilo_test_env::held_wall_clock();
     let broker = Broker::answering(television());
     let mut session = session(&docked(), Some(broker.socket));
 

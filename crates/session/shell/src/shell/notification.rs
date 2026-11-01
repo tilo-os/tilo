@@ -20,7 +20,7 @@ use crate::notifications::{
 };
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t_args;
-use crate::shell::room_activity::RoomActivityPane;
+use crate::shell::room_activity::WorkspaceActivityPane;
 use crate::shell::state::WorkspaceAuthority as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -527,7 +527,7 @@ pub fn remote_action_command(
 /// to a live workspace agent.
 pub struct ChromeNotifications<'a> {
     chrome: &'a Chrome,
-    agents: Option<&'a RoomActivityPane>,
+    agents: Option<&'a WorkspaceActivityPane>,
 }
 
 impl<'a> ChromeNotifications<'a> {
@@ -539,7 +539,7 @@ impl<'a> ChromeNotifications<'a> {
     }
 
     #[must_use]
-    pub fn with_agents(mut self, agents: &'a RoomActivityPane) -> Self {
+    pub fn with_agents(mut self, agents: &'a WorkspaceActivityPane) -> Self {
         self.agents = Some(agents);
         self
     }

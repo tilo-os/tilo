@@ -213,20 +213,20 @@ arriving-received = { $received } received
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
 content-unavailable = None of the connected devices has it
-room-sync-connecting = Connecting to { $workspace }…
-room-sync-connecting-unnamed = Connecting…
-room-sync-unreachable = Can’t reach { $workspace } right now
-room-sync-unreachable-unnamed = Can’t reach this workspace’s host right now
-room-sync-unreachable-body = This is what this device has. Your changes stay here and sync once its host is back.
-room-sync-host-needs-update = This workspace’s host needs to update
-room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
-room-sync-device-needs-update = Tilo needs to update to sync this workspace
-room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
-room-sync-shell-gone = This window lost its connection to Tilo, so what this room holds can’t reach it. Open it again.
-room-sync-not-yet-synced = Not yet synced. Your changes are on this device until { $workspace }’s host has them.
-room-sync-not-yet-synced-unnamed = Not yet synced. Your changes are on this device until the workspace’s host has them.
-room-sync-cannot-keep = Can’t sync right now. This device has no space to keep your changes to { $workspace }.
-room-sync-cannot-keep-unnamed = Can’t sync right now. This device has no space to keep your changes.
+workspace-sync-connecting = Connecting to { $workspace }…
+workspace-sync-connecting-unnamed = Connecting…
+workspace-sync-unreachable = Can’t reach { $workspace } right now
+workspace-sync-unreachable-unnamed = Can’t reach this workspace’s host right now
+workspace-sync-unreachable-body = This is what this device has. Your changes stay here and sync once its host is back.
+workspace-sync-host-needs-update = This workspace’s host needs to update
+workspace-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
+workspace-sync-device-needs-update = Tilo needs to update to sync this workspace
+workspace-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
+workspace-sync-shell-gone = This window lost its connection to Tilo, so what this workspace holds can’t reach it. Open it again.
+workspace-sync-not-yet-synced = Not yet synced. Your changes are on this device until { $workspace }’s host has them.
+workspace-sync-not-yet-synced-unnamed = Not yet synced. Your changes are on this device until the workspace’s host has them.
+workspace-sync-cannot-keep = Can’t sync right now. This device has no space to keep your changes to { $workspace }.
+workspace-sync-cannot-keep-unnamed = Can’t sync right now. This device has no space to keep your changes.
 history-local-action-not-saved = Couldn't save this change to your history.
 history-local-action-retry = Retry
 history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
@@ -924,9 +924,7 @@ reference-open = Open { $label }
 # A field they changed, on hover: $who changed it; $before is what it held.
 change-field = Changed by { $who }
 change-field-before = Changed by { $who }. Before: { $before }
-# The mark on a row or wherever a view places it: the task run it was part of. Who made the
-# change is the face the chip leads with, and its accessible name says it.
-change-mark-run = { $run }
+# The mark on a row or wherever a view places it: who, and the task run it was part of.
 change-mark-who = { $who }
 # What the mark says when read out or hovered: what they did.
 change-mark-created = Made by { $who }

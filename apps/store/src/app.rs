@@ -2890,7 +2890,7 @@ fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
         ActionKind::Unmark => "store-action-release",
         ActionKind::NeedsFlatpakHost if error.is_some() => "store-flatpak-unavailable",
         ActionKind::NeedsFlatpakHost => "store-action-flatpak-setup",
-        ActionKind::AddBot => "store-bot-add-to-room",
+        ActionKind::AddBot => "store-bot-add-to-workspace",
     })
 }
 

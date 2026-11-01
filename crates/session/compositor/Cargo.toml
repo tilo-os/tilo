@@ -37,10 +37,17 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
+# How long a risky display change waits for the person: read through the
+# clock a test can hold, so the wait ends when the person answers and not
+# when the machine was slow.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Monitors are known by their EDID identity, which a layout follows
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
+# A surface's HDR signal and the tone-mapped SDR rendition the scene draws:
+# the plane and the layer compositing it, shared with the colour passes.
+tilo-color-pipeline = { path = "../color-pipeline" }
 # What a window's content is in and what an output displays, in the
 # vocabulary a share stream and the colour pass speak.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
@@ -54,8 +61,9 @@ xcursor = "0.3"
 # A kept copy is known by its bytes.
 blake3.workspace = true
 # Reading a selection takes its pipe non-blocking, so an app that is slow to
-# answer holds up no frame.
-rustix = { workspace = true, features = ["fs"] }
+# answer holds up no frame; a surface app's own display recognises the program
+# that connected to it by the kernel's record of who it is.
+rustix = { workspace = true, features = ["fs", "mm", "net"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -65,6 +73,9 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# A share of a window as the session keeps it, to prove the colour a client
+# commits is what the stream carrying the window's frames announces.
+tilo-window-share = { path = "../window-share" }
 
 [lints]
 workspace = true

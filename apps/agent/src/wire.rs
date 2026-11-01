@@ -517,7 +517,7 @@ mod tests {
     }
 
     /// Answers every cancellation poll at once, each followed by
-    /// an ordinary room event, so detached answers arrive interleaved with
+    /// an ordinary workspace event, so detached answers arrive interleaved with
     /// the traffic the session loop reads.
     struct AnsweringHost {
         events: Vec<CollabEvent>,

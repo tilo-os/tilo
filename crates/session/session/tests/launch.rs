@@ -27,7 +27,7 @@ use tilo_app_launch::Connects as _;
 use tilo_compositor::OutputConfig;
 use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
-use tilo_desktop_policy::Window;
+use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_session::mount::app_tabs::ServiceLinks;
 use tilo_session::mount::apps::Apps;
@@ -584,6 +584,79 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
         "and starts nothing"
     );
     fs::write(&stop, b"").unwrap();
+}
+
+/// The class the X11 app's window announces: no program name here matches it,
+/// so the app is only found through the entry that claims it.
+const X11_CLASS: &str = "tilo.test.class";
+
+#[test]
+fn reopening_a_closed_window_starts_its_app_again() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let socket = home.runtime().join("wayland-7");
+    let launches = home.home().join("launches");
+    host_app_declaring(
+        &home,
+        "org.example.Probe.desktop",
+        &format!("StartupWMClass={X11_CLASS}\n"),
+        &format!("#!/bin/sh\nprintf 'ran\\n' >> '{}'\n", launches.display()),
+    );
+
+    let (mut session, _apps) = session(&socket);
+    session.step(Duration::from_millis(1)).unwrap();
+    // The client's window: its class is the app, its title the tab's.
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(11, X11_CLASS)).unwrap());
+    until(&mut session, "the window is a tab", |session| {
+        groups(session) == vec![vec![X11_CLASS.to_owned()]]
+    });
+
+    // The person closes the tab, and the window goes with it.
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.close_tab_of(X11_CLASS)),
+        "the tab's close is taken"
+    );
+    until(&mut session, "the tab is closed", |session| {
+        groups(session).is_empty()
+    });
+    assert!(!launches.exists(), "nothing had started the app yet");
+
+    // Reopen puts the tab back and starts the app that opens it again: the
+    // class alone names that app through the entry claiming it.
+    assert!(
+        session.desktop().with_policy(DesktopPolicy::reopen_closed),
+        "the reopen is taken"
+    );
+    until(&mut session, "the app runs again", |_| launches.exists());
+    assert_eq!(
+        groups(&session),
+        vec![vec![X11_CLASS.to_owned()]],
+        "the tab is back where it was, waiting for the app"
+    );
+
+    // The window the app opens takes the restored tab.
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(12, X11_CLASS)).unwrap());
+    until(
+        &mut session,
+        "the app's window is in the restored tab",
+        |session| shown_windows(session) == vec![Some(12)],
+    );
+    assert_eq!(
+        groups(&session),
+        vec![vec![X11_CLASS.to_owned()]],
+        "one tab, not two"
+    );
+    assert_eq!(
+        fs::read_to_string(&launches).unwrap().lines().count(),
+        1,
+        "the app started once"
+    );
 }
 
 #[test]

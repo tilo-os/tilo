@@ -67,7 +67,7 @@ pub struct Mail {
     /// What servers still have to be told: flags, moves and deletes the
     /// reader made that a message's server does not hold yet.
     pub server: Outbox<ServerUpdate>,
-    /// Messages the room holds whole, under the ids their state is kept
+    /// Messages the workspace holds whole, under the ids their state is kept
     /// under in `messages`: mail delivered without a server
     /// ([`crate::held`]).
     pub held: Collection<crate::held::HeldMessage>,
@@ -631,7 +631,7 @@ impl Mail {
     /// Deliver message
     ///
     /// Puts an incoming message in the mailbox itself, in a folder, as mail
-    /// fetched from a server would arrive: for a scenario, an event a room
+    /// fetched from a server would arrive: for a scenario, an event a workspace
     /// hands on, or a worker with no account. A reply joins the
     /// conversation it answers. Nothing is sent. Answers its id.
     #[action(answers, local, audience = "agents")]

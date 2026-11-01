@@ -1468,6 +1468,11 @@ impl ArrangementDoor {
 /// shows, ignoring the shell stamps and orders.
 fn same_places(one: &Strips, other: &Strips) -> bool {
     one.rows.len() == other.rows.len()
+        && one
+            .rows
+            .iter()
+            .zip(&other.rows)
+            .all(|(a, b)| a.id == b.id && a.name == b.name)
         && one.strips.len() == other.strips.len()
         && one.strips.iter().zip(&other.strips).all(|(a, b)| {
             a.id == b.id
@@ -1476,7 +1481,7 @@ fn same_places(one: &Strips, other: &Strips) -> bool {
         })
 }
 
-/// Take in the rows and strips the desk made or removed, so the places the
+/// Take in the rows and strips the desk made, renamed or removed, so the places the
 /// same pass opened have a strip to be in. Whether anything changed.
 fn adopt_structure(strips: &mut Strips, became: &Strips) -> bool {
     let was = strips.clone();
@@ -1486,8 +1491,14 @@ fn adopt_structure(strips: &mut Strips, became: &Strips) -> bool {
         }
     }
     for row in &became.rows {
-        if strips.row(row.workspace, row.id).is_none() {
-            strips.rows.push(row.clone());
+        match strips
+            .rows
+            .iter_mut()
+            .find(|held| held.workspace == row.workspace && held.id == row.id)
+        {
+            // A row the person renamed on the desk is renamed in the record.
+            Some(held) => held.name.clone_from(&row.name),
+            None => strips.rows.push(row.clone()),
         }
     }
     // A row the desk no longer has goes, with its strips.

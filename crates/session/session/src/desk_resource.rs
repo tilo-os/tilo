@@ -375,7 +375,9 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
                 tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
             }
             .to_owned(),
-            read: false,
+            // Seen or not is the desk's own count, the same set the bell counts: the centre's
+            // rows and its header never disagree about what is new.
+            read: !notices.is_unread(notification.id),
             group: notification
                 .app_name
                 .clone()

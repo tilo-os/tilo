@@ -1,4 +1,4 @@
-//! One agent session: join the room and carry out the runs of its issues.
+//! One agent session: join the workspace and carry out the runs of its issues.
 
 use std::path::PathBuf;
 use ui::time::{Duration, Instant};
@@ -191,7 +191,7 @@ pub struct Config {
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
-    /// The room (workspace) the document lives in.
+    /// The workspace the document lives in.
     pub cluster: Uuid,
     /// The record the app announced for the document (`file:<path>`), or
     /// `None` for an untitled document.
@@ -265,7 +265,7 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
 }
 
 impl Session {
-    /// Connect, announce the route, and ask the room for the document.
+    /// Connect, announce the route, and ask the workspace for the document.
     ///
     /// # Errors
     ///
@@ -291,7 +291,7 @@ impl Session {
                 cfg.endpoint_identity.clone(),
             )?,
         };
-        // Discovery is room-wide, but writes never are. This subscription
+        // Discovery is workspace-wide, but writes never are. This subscription
         // lets the agent learn other applications' exported operations while
         // every mutation below still names its owning app route explicitly.
         if managed.is_none() {
@@ -312,10 +312,10 @@ impl Session {
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "TILO_SVC_COLLAB_FD" },
             app = %cfg.app_id,
-            room = %cfg.cluster,
+            workspace = %cfg.cluster,
             record = ?cfg.record,
             name = %cfg.name,
-            "joined the room; waiting for the document"
+            "joined the workspace; waiting for the document"
         );
         let is_managed = managed.is_some();
         let cfg_companions = cfg.companions.clone();
@@ -518,7 +518,7 @@ impl Session {
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
-                message: "Reading the actions this room's apps publish".into(),
+                message: "Reading the actions this workspace's apps publish".into(),
                 presentation: None,
             },
         )?;

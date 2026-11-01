@@ -133,8 +133,8 @@ pub enum NodeAction {
     Permits,
 }
 
-/// A window's ask of a node, which the desktop answers through its room
-/// ([`NodeAsk::answer`]): the room decides it, as it decides everything a
+/// A window's ask of a node, which the desktop answers through its workspace
+/// ([`NodeAsk::answer`]): the workspace decides it, as it decides everything a
 /// grant gives.
 pub struct NodeAsk {
     /// The node, in its text form.
@@ -145,7 +145,7 @@ pub struct NodeAsk {
 }
 
 impl NodeAsk {
-    /// Answer the window: the room's output, or why it refused.
+    /// Answer the window: the workspace's output, or why it refused.
     pub fn answer(self, outcome: Result<serde_json::Value, String>) {
         self.answer.complete(Ok(InvocationReceipt {
             invocation: self.invocation,
@@ -192,7 +192,7 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
 }
 
 /// The session handed to the windows a desktop hosts in process, for the
-/// workspace `room`. It serves only what the desktop itself does: opening
+/// workspace `workspace`. It serves only what the desktop itself does: opening
 /// an app as a window of this desktop.
 pub struct DesktopSession {
     room: String,
@@ -445,7 +445,7 @@ impl Openings {
     }
 
     /// What the windows asked of nodes of the workspace's tree since this
-    /// was last taken, for the desktop to ask its room.
+    /// was last taken, for the desktop to ask its workspace.
     #[must_use]
     pub fn take_node_asks(&self) -> Vec<NodeAsk> {
         std::mem::take(&mut *self.nodes.lock_recover())

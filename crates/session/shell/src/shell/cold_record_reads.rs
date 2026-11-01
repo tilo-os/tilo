@@ -111,7 +111,7 @@ impl PersistedRecordHistory for ColdRecordReads {
 
     /// The room's app room documents as the worker last listed them. Never
     /// reads the disk.
-    fn room_documents(&self, room: RoomId) -> Vec<RecordCheckout> {
+    fn workspace_documents(&self, room: RoomId) -> Vec<RecordCheckout> {
         self.asked_rooms.borrow_mut().insert(room);
         self.room_documents
             .borrow()

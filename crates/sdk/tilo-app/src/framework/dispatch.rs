@@ -547,7 +547,7 @@ impl DispatchCore {
         match asked {
             Asked::Need(need) => self.may(need),
             Asked::Govern => self.may_govern(),
-            Asked::Arrived => !ui_core::room_sync::before_first_sync(),
+            Asked::Arrived => !ui_core::workspace_sync::before_first_sync(),
         }
     }
 
@@ -1069,7 +1069,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Whether what the room holds has arrived, as observable view state:
     /// false while the window's room has not finished its first sync with
-    /// its host ([`ui_core::room_sync`]), when a record joined from it may
+    /// its host ([`ui_core::workspace_sync`]), when a record joined from it may
     /// still be missing the content its creator wrote. True outside a room
     /// that syncs with a host, and for a host's own view of a record, which
     /// holds what the room holds.

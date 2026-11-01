@@ -1,8 +1,8 @@
 //! Display capabilities for the receive-side `PeerView` and the output colour
 //! pipeline: can this output show PQ pixels natively, and how bright?
 //!
-//! Built from the sink's EDID ([`tilo_wayland_ext::edid::HdrDisplayInfo`]) and
-//! from whether the compositor is actually driving the output in HDR. A
+//! Built from the sink's EDID ([`HdrDisplayInfo`]) and from whether the
+//! compositor is actually driving the output in HDR. A
 //! presentation-surface probe cannot answer this: on DRM the compositor owns
 //! the scanout buffers, and a format being renderable says nothing about the
 //! sink accepting a PQ signal.
@@ -12,7 +12,59 @@
 //! [`DisplayCapabilities::sdr_default`].
 
 use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
-use tilo_wayland_ext::edid::HdrDisplayInfo;
+
+/// The bits of a display's EDID that matter for color-management-v1.
+///
+/// Chromaticity fields are CIE 1931 xy coordinates scaled the same
+/// way the Wayland protocol reports them: (x, y) multiplied by
+/// `1_000_000`. So (0.708, 0.292) — BT.2020 red — becomes
+/// (`708_000`, `292_000`).
+///
+/// The EDID parser that fills this in reads the bytes a connector reports
+/// (`tilo_wayland_ext::edid::parse_hdr_display_info`); the type lives here so
+/// everything that only reads a display's colour needs no Wayland stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HdrDisplayInfo {
+    /// R, G, B primary chromaticities in (`x_micro`, `y_micro`).
+    pub display_primaries: [(u32, u32); 3],
+    /// White-point chromaticity in (`x_micro`, `y_micro`).
+    pub white_point: (u32, u32),
+    /// Desired content peak luminance in cd/m². `0` = unknown.
+    pub max_luminance_cd_m2: u16,
+    /// Desired content frame-average peak luminance in cd/m². `0` = unknown.
+    pub max_frame_average_luminance_cd_m2: u16,
+    /// Desired content minimum luminance in cd/m² * 10000 (i.e. the
+    /// same 1/10000 unit the SMPTE ST 2086 metadata payload uses).
+    /// `0` = unknown.
+    pub min_luminance_micro_cd_m2: u32,
+    /// Which EOTFs the display accepts. Reduced to the small set we
+    /// route into `color-management-v1`.
+    pub supported_transfers: Vec<TransferCharacteristics>,
+    /// The best-guess named gamut of the display, derived from the
+    /// Colorimetry Data Block (if present) plus the base-block
+    /// chromaticities.
+    pub best_named_primaries: ColorPrimaries,
+}
+
+impl HdrDisplayInfo {
+    /// SDR fallback for parseless paths (winit backend, headless
+    /// tests). BT.709 primaries, 100-nit desktop reference, only the
+    /// BT.1886 SDR EOTF advertised.
+    pub fn default_sdr() -> Self {
+        Self {
+            // BT.709 R (0.640, 0.330), G (0.300, 0.600), B (0.150, 0.060).
+            display_primaries: [(640_000, 330_000), (300_000, 600_000), (150_000, 60_000)],
+            // D65 (0.3127, 0.329).
+            white_point: (312_700, 329_000),
+            max_luminance_cd_m2: 100,
+            max_frame_average_luminance_cd_m2: 100,
+            // 0.05 cd/m² typical.
+            min_luminance_micro_cd_m2: 500,
+            supported_transfers: vec![TransferCharacteristics::Bt709],
+            best_named_primaries: ColorPrimaries::Bt709,
+        }
+    }
+}
 
 /// What the compositor can deliver to one output. Consumed by
 /// the shell's peer view (`PeerView::new_for_stream`) to pick between

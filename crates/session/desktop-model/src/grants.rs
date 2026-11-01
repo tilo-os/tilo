@@ -1,8 +1,8 @@
 //! Grants recorded in a workspace, and the effect receipts that note them in
 //! its history.
 //!
-//! Pure mutations of the tree: every host that governs a room records a
-//! grant and its receipt the same way, then mirrors the change into its room
+//! Pure mutations of the tree: every host that governs a workspace records a
+//! grant and its receipt the same way, then mirrors the change into its workspace
 //! document and persists it however it keeps state.
 
 use tilo_action_policy::{Change, Grant, Preset, Refusal};
@@ -18,7 +18,7 @@ impl DesktopTree {
     /// Grant `grant` in `workspace_id` on behalf of `grantor` at `now`: the
     /// grant as stored, or why it was refused (the workspace is gone, the
     /// grantor may not grant, or not this much). Whether this machine may
-    /// write the room's governance at all is the host's question, asked
+    /// write the workspace's governance at all is the host's question, asked
     /// first.
     ///
     /// # Errors
@@ -107,8 +107,8 @@ pub fn app_action_grant_context(
     )))
 }
 
-/// Order a room's presets by name, ignoring case: the one order every reader
-/// and writer of a room's presets keeps.
+/// Order a workspace's presets by name, ignoring case: the one order every reader
+/// and writer of a workspace's presets keeps.
 pub(crate) fn sort_presets(presets: &mut [Preset]) {
     presets.compact_sort_by_key(|preset| preset.name.to_lowercase());
 }
@@ -304,7 +304,7 @@ mod tests {
 }
 
 /// What a governance change wrote into one workspace's policy, so the host
-/// mirrors exactly that into the room document. Empty means nothing changed:
+/// mirrors exactly that into the workspace document. Empty means nothing changed:
 /// the actor lacked authority, or there was nothing to do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PolicyEdit {
@@ -337,7 +337,7 @@ impl PolicyEdit {
         self
     }
 
-    /// Write this edit of `workspace` into the room document `doc`.
+    /// Write this edit of `workspace` into the workspace document `doc`.
     pub fn write(&self, doc: &mut automerge::AutoCommit, workspace: &crate::Workspace) {
         use crate::desktop_doc;
         let id = workspace.id;
@@ -405,7 +405,7 @@ impl crate::Workspace {
     }
 
     /// Record a sandbox capability as `actor`, who must be allowed to grant
-    /// in the room at `now`.
+    /// in the workspace at `now`.
     ///
     /// # Errors
     /// The actor may not grant.
@@ -425,7 +425,7 @@ impl crate::Workspace {
     }
 
     /// Drop a sandbox capability as `actor`, who must be allowed to revoke
-    /// in the room at `now`.
+    /// in the workspace at `now`.
     ///
     /// # Errors
     /// The actor may not revoke.

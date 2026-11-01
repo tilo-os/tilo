@@ -33,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 use shell::shell::build_tilo_overlay_host_with_inputs;
 use shell::shell::hosted_inputs::HostedTileInputs;
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::room_activity::RoomActivityPane;
+use shell::shell::room_activity::WorkspaceActivityPane;
 use shell::shell::state::WorkspaceTree;
 use tilo_desktop::chrome::ClockSnapshot;
 
@@ -140,7 +140,7 @@ impl Harness {
         // seen-frontier. That changes the activity-glance headline while leaving
         // the UI under test untouched, producing a machine- and run-dependent
         // golden. Production still uses the persistent pane.
-        *host.room_activity_mut() = RoomActivityPane::new();
+        *host.room_activity_mut() = WorkspaceActivityPane::new();
         let active_workspace = owned.desktop.active.raw();
         host.room_activity_mut().refresh(&mut owned);
         host.room_activity_mut().finish_view(active_workspace);

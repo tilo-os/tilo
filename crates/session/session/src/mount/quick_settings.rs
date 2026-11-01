@@ -7,6 +7,7 @@
 //! answers goes on to `mount`'s own modules, and one nothing answers is
 //! logged rather than dropped without trace.
 
+use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::Command;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::SessionRequest;
@@ -23,9 +24,7 @@ const SPEECH_MODELS_ANCHOR: &str = "settings.section:agent_models";
 
 /// Close the panel: what a press that takes the person elsewhere does first.
 pub(crate) fn close(shared: &Shared) {
-    if let Some(panel) = &shared.quick_settings {
-        panel.open.set(false);
-    }
+    shared.overlays.close(Slot::QuickSettings);
 }
 
 /// Take the person where the speech models are set up when the dictation
@@ -75,17 +74,13 @@ pub(crate) fn answer(shared: &Shared) {
     let Some(device) = &shared.device else {
         return;
     };
-    device.set_open(
-        shared
-            .quick_settings
-            .as_ref()
-            .is_some_and(|panel| panel.open.get()),
-    );
+    device.set_open(shared.overlays.is_open(Slot::QuickSettings));
     // The audio service's reading is the only one of the sound: the panel
     // shows it and its effects change it there.
     super::audio::land(shared);
     device.pump();
     super::devices::land(shared);
+    super::displays::land(shared);
     for request in device.take_requests() {
         match request {
             SessionRequest::Effect(QsEffect::PowerMenu) => {
@@ -141,9 +136,7 @@ pub(crate) fn answer(shared: &Shared) {
                 // The switch is persisted, so the settings app and the
                 // desktop's own menu read the same one; the session's
                 // settings watch brings it back into every arrival.
-                if let Err(error) =
-                    crate::notifications::SessionNotifications::set_do_not_disturb(on)
-                {
+                if let Err(error) = shared.notifications.borrow().set_do_not_disturb(on) {
                     tracing::warn!(%error, on, "do not disturb not saved");
                 }
             }
@@ -167,6 +160,7 @@ pub(crate) fn answer(shared: &Shared) {
                 shared.clipboard.clear();
             }
             other if super::audio::follow(shared, &other) => {}
+            other if super::displays::follow(shared, &other) => {}
             other if super::devices::follow(shared, &other) => {}
             other => {
                 tracing::debug!(?other, "quick settings asks what the session cannot do yet");

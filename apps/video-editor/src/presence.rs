@@ -53,7 +53,7 @@
 //!   an empty range on the timeline key, which — because the store is
 //!   exclusive — is what retracts a previously published outline.
 //! * **Pointer** — their mouse. This one is free: [`ui::App`] broadcasts it
-//!   under the room scope on every move, and the toolkit's shared cursor
+//!   under the workspace scope on every move, and the toolkit's shared cursor
 //!   painter draws it. Nothing here has to do anything for it to work.
 //!
 //! Times cross the wire as **milliseconds** ([`ticks`]), because the payload
@@ -544,13 +544,13 @@ pub fn external_driver_recipe() -> &'static str {
         "Connect to the collaboration broker socket and send:\n",
         "\n",
         "1. CollabRequest::Hello { app_id: \"so.tilo.video-editor\",\n",
-        "                          cluster_id: <the room uuid>,\n",
+        "                          cluster_id: <the workspace uuid>,\n",
         "                          record: <the open project, or None>,\n",
         "                          handle: Some(\"<the name to show>\") }\n",
         "   The handle is what the name chips read; without one the peer is\n",
         "   labelled with its raw id.\n",
         "\n",
-        "2. CollabRequest::Presence { key: Workspace { id: <the room uuid> },\n",
+        "2. CollabRequest::Presence { key: Workspace { id: <the workspace uuid> },\n",
         "                             payload: Arrived }\n",
         "   Announces arrival, and asks whoever holds the project to send it.\n",
         "\n",
@@ -564,7 +564,7 @@ pub fn external_driver_recipe() -> &'static str {
         "                                                        end: 0 }\n",
         "  typing     path [\"ve_field\", \"title_words\", <media uuid>]\n",
         "                                             Caret { pos: byte }\n",
-        "  pointer    the room scope                  Pointer { x, y }\n",
+        "  pointer    the workspace scope               Pointer { x, y }\n",
         "\n",
         "Times are milliseconds. Uuids are hyphenated lower case. A caret and\n",
         "a selection are one each per participant, so publishing a new one\n",
@@ -922,7 +922,7 @@ mod tests {
             );
         }
         // Case `an_empty_room_resolves_to_nothing`:
-        // Nobody in the room means nothing to draw — the single-user path must
+        // Nobody in the workspace means nothing to draw — the single-user path must
         // not paint stray chrome.
         {
             let ctx = PresenceCtx::empty();

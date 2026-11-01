@@ -158,7 +158,7 @@ impl PlacesSearch {
     }
 }
 
-/// Complete search over the mount's ACL-filtered room record catalog. Record
+/// Complete search over the mount's ACL-filtered workspace record catalog. Record
 /// UUIDs, rather than paths, are action identity: paths are mutable provenance
 /// used only for matching and presentation.
 #[derive(Clone)]

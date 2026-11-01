@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 18;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 19;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -702,11 +702,11 @@ pub enum FloatingSurfaceHostMessage {
         /// A presence hue by its stored name (`PresenceHue::id`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         your_colour: Option<String>,
-        /// Whether the room the window is in has synced with its host
-        /// ([`crate::room_sync`]); absent for a workspace that syncs with no
-        /// host, and from older shells.
+        /// Whether the workspace the window is in has synced with its host
+        /// ([`crate::workspace_sync`]); absent for a workspace that syncs
+        /// with no host, and from older shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        room_sync: Option<crate::room_sync::RoomSync>,
+        workspace_sync: Option<crate::workspace_sync::WorkspaceSync>,
         /// How round the shell draws the window's corners, in logical
         /// pixels: its window radius while the window is framed among
         /// others, 0 while it is drawn edge to edge. Absent from older
@@ -743,7 +743,7 @@ impl FloatingSurfaceHostMessage {
             network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
-            room_sync: None,
+            workspace_sync: None,
             corner_radius: appearance.corner_radius.filter(|radius| radius.is_finite()),
         }
     }

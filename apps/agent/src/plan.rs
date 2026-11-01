@@ -1,7 +1,7 @@
 //! What the agent was asked to do, and the gate an answered operation id
 //! passes before it becomes an instruction.
 //!
-//! What an instruction may ask for is exactly what the room's apps currently
+//! What an instruction may ask for is exactly what the workspace's apps currently
 //! publish, through
 //! [`Instruction::Perform`]: surveyed through [`crate::surface`] and checked
 //! against it again at dispatch, never against a remembered list. There are
@@ -14,7 +14,7 @@ use crate::surface::{self, Offer};
 /// What the agent was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Instruction {
-    /// Perform one operation the room exports, named by its address. The
+    /// Perform one operation the workspace exports, named by its address. The
     /// address is the app's own `(resource, action)` pair; the argument is
     /// the text that operation collects, when it collects any. Neither is
     /// interpreted here — resolving it is done against the live surface at
@@ -44,7 +44,7 @@ pub enum ConfirmationEvidence {
 /// Why an answer did not become an instruction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// The id is not one the room exports right now. Nothing is dispatched.
+    /// The id is not one the workspace exports right now. Nothing is dispatched.
     NotExported(String),
     /// The id is exported, but the content that came with it cannot be
     /// written as it stands.
@@ -52,7 +52,7 @@ pub enum Refused {
 }
 
 impl Instruction {
-    /// The full gate over an answered id: checked against what the room
+    /// The full gate over an answered id: checked against what the workspace
     /// exports **now**, not against what it exported when the id was
     /// offered.
     ///

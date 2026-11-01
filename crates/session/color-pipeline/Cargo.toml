@@ -11,8 +11,6 @@ license.workspace = true
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The SDR white the person may choose is the settings' range.
 settings-store = { path = "../../system/settings-store" }
-# What a display reports in its EDID.
-tilo-wayland-ext = { path = "../wayland-ext" }
 vello.workspace = true
 workspace-hack = { version = "0.1" }
 

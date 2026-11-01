@@ -1111,7 +1111,7 @@ impl DesktopSurface {
         }
     }
     /// Rebuild chrome/container structure while retaining unchanged checked
-    /// owners in the same admitted room, including input and unsaved history.
+    /// owners in the same admitted workspace, including input and unsaved history.
     pub fn rebuild_retaining(
         &mut self,
         tree: &DesktopTree,

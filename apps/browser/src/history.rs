@@ -5,7 +5,7 @@
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It is the person's own record
 //! ([`BrowsingHistory`]): it follows them to their other devices and never
-//! reaches a collaborator, whatever room the browser is open in.
+//! reaches a collaborator, whatever workspace the browser is open in.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title

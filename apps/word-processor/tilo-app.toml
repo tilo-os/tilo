@@ -1,6 +1,6 @@
 # Word Processor — Tilo application manifest.
 #
-# Documents are the room's; the user dictionary and crash-recovery
+# Documents are the workspace's; the user dictionary and crash-recovery
 # copies are the app's own state and live in its own directory.
 #
 # Beyond the system read profile it needs, as a consented capability:
@@ -61,7 +61,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@12"
 tilo-fs = "optional@12"
-shell-ui = "optional@18"
+shell-ui = "optional@19"
 
 [entrypoint]
 bin             = "bin/word-processor"

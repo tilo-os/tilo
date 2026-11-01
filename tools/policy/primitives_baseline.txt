@@ -75,7 +75,6 @@ glyph-join 1 apps/video-player/src/actions.rs
 glyph-join 1 apps/video-player/src/app.rs
 glyph-join 1 apps/weather/src/main.rs
 glyph-join 1 apps/word-processor/src/widget.rs
-glyph-join 1 crates/session/audio-service/src/sound.rs
 glyph-join 1 crates/session/desktop-surface/src/activity/pane.rs
 glyph-join 1 crates/session/desktop-surface/src/activity/replay.rs
 glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
@@ -83,9 +82,6 @@ glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/desktop/src/workspace_settings.rs
 glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
 glyph-join 1 crates/session/messaging-service/src/service/sms.rs
-glyph-join 1 crates/session/session/src/directory.rs
-glyph-join 1 crates/session/session/src/people.rs
-glyph-join 1 crates/session/sheets/src/shortcut_guide.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
 glyph-join 5 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/native.rs
@@ -95,7 +91,6 @@ glyph-join 1 crates/session/shell/src/portal/print.rs
 glyph-join 2 crates/session/shell/src/shell/automation_host.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
-glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/shell/src/shell/now_playing_panel.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/keyboard.rs
@@ -138,14 +133,12 @@ raw-colour 5 apps/word-processor/src/widget.rs
 raw-colour 1 apps/word-processor/src/widget/pagination.rs
 raw-colour 3 apps/word-processor/src/widget/paint.rs
 raw-colour 1 apps/word-processor/src/widget/panels.rs
-raw-colour 1 crates/session/desktop-search/src/providers/happening.rs
 raw-colour 2 crates/session/desktop/src/backdrop.rs
 raw-colour 1 crates/session/desktop/src/collaborators.rs
 raw-colour 1 crates/session/desktop/src/overview_panel/paint.rs
 raw-colour 1 crates/session/desktop/src/topbar.rs
 raw-colour 1 crates/session/desktop/src/topbar/sharing.rs
 raw-colour 2 crates/session/render-service/src/surface.rs
-raw-colour 1 crates/session/session/src/people.rs
 raw-colour 1 crates/session/shell/src/compositor/backend/headless.rs
 raw-colour 1 crates/session/shell/src/compositor/backend/winit.rs
 raw-colour 1 crates/session/shell/src/compositor/projection_capture.rs

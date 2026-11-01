@@ -35,7 +35,8 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Point;
+pub use vello::kurbo::{Affine, Rect};
 use vello::peniko::ImageData;
 
 use crate::color_pipeline::{
@@ -543,6 +544,96 @@ pub fn record(
     })
 }
 
+/// An HDR surface's frame: its signal at the buffer's precision, and the
+/// tone-mapped SDR rendition a desktop draws it as.
+///
+/// Both renditions are built in one pass over the buffer, so a surface with
+/// an HDR description is read once, and [`Self::record`] hands the pair to a
+/// frame being recorded as its [`HdrLayer`].
+#[derive(Debug, Clone)]
+pub struct HdrSurface {
+    plane: Arc<HdrPlane>,
+    rendition: ImageData,
+}
+
+impl HdrSurface {
+    /// Build a surface from `rgb`, normalised signal values in `signal`'s
+    /// transfer, one per pixel of `width` × `height`: the plane keeps them at
+    /// half-float precision and the SDR rendition is tone-mapped from them.
+    pub fn from_signal_rgb(
+        width: u32,
+        height: u32,
+        rgb: impl IntoIterator<Item = [f32; 3]>,
+        signal: SurfaceSignal,
+    ) -> Option<Self> {
+        let count = usize::try_from(width)
+            .ok()?
+            .checked_mul(usize::try_from(height).ok()?)?;
+        let mut rgb = rgb.into_iter();
+        if width == 0 || height == 0 || rgb.size_hint().1.is_some_and(|high| high != count) {
+            return None;
+        }
+        let mut values = Vec::with_capacity(count);
+        let mut sdr = Vec::with_capacity(count.checked_mul(4)?);
+        for value in &mut rgb {
+            if values.len() >= count {
+                return None;
+            }
+            let [r, g, b] = crate::hdr_tonemap::tonemap_rgb_signal_to_srgb8(
+                value,
+                signal.colorimetry,
+                signal.tonemap,
+            );
+            sdr.extend_from_slice(&[r, g, b, 255]);
+            values.push(value);
+        }
+        if values.len() != count {
+            return None;
+        }
+        let plane = HdrPlane::from_signal_rgb(width, height, values, signal)?;
+        let rendition = ImageData {
+            data: vello::peniko::Blob::new(Arc::new(sdr)),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+            width: plane.width(),
+            height: plane.height(),
+        };
+        Some(Self {
+            plane: Arc::new(plane),
+            rendition,
+        })
+    }
+
+    /// The signal at the buffer's precision.
+    pub fn plane(&self) -> &Arc<HdrPlane> {
+        &self.plane
+    }
+
+    /// The tone-mapped SDR rendition, opaque RGBA8, drawn in the scene.
+    pub fn sdr(&self) -> &[u8] {
+        self.rendition.data.data()
+    }
+
+    /// The rendition as an image, for a scene that draws images.
+    pub fn rendition(&self) -> &ImageData {
+        &self.rendition
+    }
+
+    pub fn width(&self) -> u32 {
+        self.plane.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.plane.height()
+    }
+
+    /// Register this surface's layer where `image_to_scene` places the
+    /// rendition, covering at most `bounds`; see [`record`].
+    pub fn record(&self, image_to_scene: Affine, bounds: Rect) -> bool {
+        record(&self.plane, &self.rendition, image_to_scene, bounds)
+    }
+}
+
 /// Decode a normalised signal into linear BT.2020 light in cd/m², as an HDR
 /// output shows it with SDR white at `sdr_white_nits`.
 pub fn signal_to_output_nits(
@@ -711,6 +802,7 @@ impl CpuComposite<'_> {
 mod tests {
     use super::*;
     use crate::color_pipeline::pq_inverse_eotf;
+    use crate::hdr_tonemap::tonemap_rgb_signal_to_srgb8;
     use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn pq_signal() -> SurfaceSignal {
@@ -837,6 +929,34 @@ mod tests {
         }
 
         {
+            // A described surface keeps its signal at the buffer's precision
+            // and the tone-mapped rendition the desktop draws it as.
+            let signal = pq_signal();
+            let surface =
+                HdrSurface::from_signal_rgb(2, 1, [[0.25, 0.5, 0.75], [1.0, 0.0, 0.0]], signal)
+                    .expect("a described surface");
+            assert_eq!(surface.plane().signal_at(0, 0), [0.25, 0.5, 0.75]);
+            let expected =
+                tonemap_rgb_signal_to_srgb8([0.25, 0.5, 0.75], signal.colorimetry, signal.tonemap);
+            assert_eq!(
+                &surface.sdr()[..3],
+                &expected,
+                "the rendition is tone-mapped"
+            );
+            assert_eq!(surface.sdr()[3], 255, "the rendition is opaque");
+            assert_eq!(surface.sdr().len(), 8);
+            assert_eq!((surface.width(), surface.height()), (2, 1));
+            let recording = HdrLayerRecording::begin();
+            assert!(surface.record(Affine::IDENTITY, Rect::new(0.0, 0.0, 2.0, 1.0)));
+            let layers = recording.finish();
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0].plane.id(), surface.plane().id());
+            // A sample count the size does not match is refused, not guessed.
+            assert!(HdrSurface::from_signal_rgb(2, 1, [[0.5; 3]], signal).is_none());
+            assert!(HdrSurface::from_signal_rgb(0, 0, std::iter::empty(), signal).is_none());
+        }
+
+        {
             let white = 203.0;
             let code = pq_inverse_eotf(1000.0);
             let plane = Arc::new(
@@ -893,6 +1013,61 @@ mod tests {
                 HdrTonemapConfig::default(),
             );
             assert!(close(sdr, reference, 5e-3), "{sdr:?} vs {reference:?}");
+        }
+    }
+
+    #[test]
+    fn two_layers_mastered_at_different_volumes_tone_map_differently() {
+        use neighbour_wire::hdr_metadata::{
+            ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
+        };
+
+        let signal = |max_nits: u32| {
+            let metadata = Hdr10Metadata {
+                mastering: MasteringDisplayColorVolume {
+                    max_display_mastering_luminance: max_nits.saturating_mul(10_000),
+                    ..MasteringDisplayColorVolume::hdr10_reference()
+                },
+                light: ContentLightLevel::unknown(),
+            };
+            SurfaceSignal::for_colorimetry(
+                Colorimetry::hdr10(),
+                HdrTonemapConfig::from_metadata(Some(metadata)),
+            )
+            .expect("PQ is HDR")
+        };
+        // The same 1000 cd/m² of PQ light, mastered for a bright cinema and
+        // for the HDR10 baseline display.
+        let code = pq_inverse_eotf(1000.0);
+        let surface = |signal: SurfaceSignal| {
+            HdrSurface::from_signal_rgb(1, 1, [[code; 3]], signal).expect("a described surface")
+        };
+        let cinema = surface(signal(4000));
+        let baseline = surface(signal(1000));
+        assert_eq!(
+            cinema.plane().signal().tonemap.source_peak_nits,
+            4000.0,
+            "the volume the client named is the one its content is compressed from"
+        );
+        assert_ne!(
+            cinema.sdr(),
+            baseline.sdr(),
+            "a film made for a 4000 cd/m² master looks different from one made for 1000"
+        );
+        // Compressing from a higher peak leaves the same light dimmer on an
+        // SDR desktop.
+        assert!(
+            cinema.sdr()[0] < baseline.sdr()[0],
+            "{} should be below {}",
+            cinema.sdr()[0],
+            baseline.sdr()[0]
+        );
+        // On an HDR output the same light is the light the client sent,
+        // whatever volume it was mastered in.
+        let white = 203.0;
+        for signal in [cinema.plane().signal(), baseline.plane().signal()] {
+            let nits = signal_to_output_nits([code; 3], signal, white);
+            assert!(close(nits, [1000.0; 3], 0.01), "{nits:?}");
         }
     }
 }

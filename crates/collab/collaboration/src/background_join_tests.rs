@@ -229,3 +229,97 @@ fn a_join_waited_for_off_its_thread_wakes_the_app_it_was_made_for() {
         },
     );
 }
+
+/// A window asks the session for its account custody as soon as it is
+/// built, while its route is still joining (the live launch builds
+/// local-first). The handle it captured keeps working: the request waits in
+/// the worker for the route the app named, and the session's answer comes
+/// back on the window's own route once it joined.
+#[test]
+fn account_custody_taken_while_the_route_joins_answers_once_it_is_admitted() {
+    let mut scope = crate::wake::WakeScope::new();
+    let wakes = wakes_of(&mut scope);
+    let route = joining_route();
+    let (manager, broker) = {
+        let _entry = scope.enter();
+        CollaborationManager::native_joining_fixture_for_test(
+            route.clone(),
+            "notes.notebook",
+            automerge::AutoCommit::new().save(),
+            runtime_collab::RoomStatus::Ready,
+        )
+    };
+    assert!(manager.is_joining(), "the live launch builds while joining");
+    let construction = native_initial::NativeConstruction::enter_component(manager, scope)
+        .expect("a joining manager builds on the local replica");
+    // The window's client, captured while its route is still joining.
+    let client = crate::browser_service_sessions::Client::capture()
+        .expect("a joining window reaches the session");
+    let (mut manager, _scope) = construction.into_parts();
+
+    let mut sealed = client
+        .request(
+            runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {
+                account: "hiring@studio.example".into(),
+                password: zeroize::Zeroizing::new("app-password".into()),
+            },
+            None,
+        )
+        .expect("the request waits for the route");
+
+    // The route joins; the request is served on it, by the custodian.
+    broker.answer();
+    let manager = manager.as_mut().unwrap();
+    poll_on_wakes(manager, &wakes, "the route to be admitted", |manager, _| {
+        manager.primary_route().is_some()
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    let answer = loop {
+        if let Some(answer) = sealed.poll() {
+            break answer;
+        }
+        assert!(
+            crate::time::now() < deadline,
+            "the session answered the request it was handed while joining"
+        );
+        std::thread::yield_now();
+    };
+    assert!(
+        matches!(
+            answer.expect("the session sealed the account's secret"),
+            runtime_collab::BrowserServiceSessionReply::AccountSecretStored { account }
+                if account == "hiring@studio.example"
+        ),
+        "the secret is sealed on the app's own route"
+    );
+
+    // The other half: the app that keeps Mail's account type is released
+    // its secret on the same client, which never had to be taken again.
+    let mut released = client
+        .request(
+            runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {
+                account: "hiring@studio.example".into(),
+            },
+            None,
+        )
+        .expect("the released secret is asked for on the joined route");
+    let answer = loop {
+        if let Some(answer) = released.poll() {
+            break answer;
+        }
+        assert!(
+            crate::time::now() < deadline,
+            "the session released the account's secret"
+        );
+        std::thread::yield_now();
+    };
+    assert!(
+        matches!(
+            answer.expect("the session released the secret"),
+            runtime_collab::BrowserServiceSessionReply::AccountSecret { account, password }
+                if account == "hiring@studio.example"
+                    && password.as_str() == "released-secret"
+        ),
+        "the app that keeps the account's type is released its secret"
+    );
+}

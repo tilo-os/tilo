@@ -85,10 +85,10 @@ pub enum ContactsEffect {
     },
     /// Export vCard content.
     ///
-    /// Keeps every contact, or one, as vCard 4.0 in the room's content and
-    /// answers its content address. Nothing leaves the room and no file is
+    /// Keeps every contact, or one, as vCard 4.0 in the workspace's content and
+    /// answers its content address. Nothing leaves the workspace and no file is
     /// written, so unlike a file export it asks no one: the cards are a copy
-    /// of what every member of the room already reads.
+    /// of what every member of the workspace already reads.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ExportVcardContent {
         #[param("The contact's id; every contact when neither it nor a name is given")]

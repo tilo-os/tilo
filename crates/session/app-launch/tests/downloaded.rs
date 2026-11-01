@@ -14,14 +14,13 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use desktop_entry::downloaded::ProcessFacts;
 use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps as wire;
 use tilo_app_launch::downloaded::{Downloaded, ObservedWindow, RESOURCE, WindowArtwork};
 use tilo_service::Service;
-use tilo_test_env::TestEnv;
+use tilo_test_env::{TestEnv, wait_for, wait_until};
 
 /// The first eight bytes of a PNG, which is all an icon's format is read
 /// from.
@@ -112,19 +111,6 @@ fn read(service: &mut Downloaded) -> wire::DownloadedApps {
     serde_json::from_value(value).expect("a reading")
 }
 
-/// Wait for `condition`, which a worker or a directory watch answers on its
-/// own thread.
-fn until(what: &str, mut condition: impl FnMut() -> bool) {
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(10) {
-        if condition() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("{what} did not happen");
-}
-
 fn arguments(pairs: &[(&str, Value)]) -> Map<String, Value> {
     pairs
         .iter()
@@ -171,8 +157,10 @@ fn an_appimage_dropped_in_downloads_is_offered_and_added_to_applications() {
         )
         .expect("add is offered");
     let moved = env.join("Applications/Dropped.AppImage");
-    until("the program is in Applications", || moved.is_file());
-    let app = apps(&mut service).pop().expect("the added app");
+    // The app, once the worker moved the program and wrote its entry: a
+    // reading taken between the two is not the answer yet.
+    let app = wait_for("the added app is listed", || apps(&mut service).pop());
+    assert!(moved.is_file(), "the program is in Applications");
     assert_eq!(app.name, "Dropped");
     assert_eq!(Path::new(&app.file), moved);
     assert!(app.present);
@@ -272,7 +260,7 @@ fn a_deleted_file_reads_missing_until_the_person_finds_it() {
     assert!(apps(&mut service).pop().expect("the added app").present);
 
     std::fs::remove_file(&program).expect("delete the program");
-    until("the entry says its file is gone", || {
+    wait_until("the entry says its file is gone", || {
         apps(&mut service).first().is_some_and(|app| !app.present)
     });
     let app = apps(&mut service).pop().expect("the app");
@@ -404,7 +392,7 @@ fn an_offer_goes_when_the_program_closes() {
     offer_at(&gone, &mut service);
 
     service.handle().closed(8);
-    until("the offer is gone with the window", || {
+    wait_until("the offer is gone with the window", || {
         read(&mut service).offers.is_empty()
     });
 }

@@ -484,21 +484,6 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
-        let compiled = packages.last().expect("the shell package compiles last");
-        let lock = compiled.ids.to_text();
-        assert_eq!(
-            lock,
-            tilo_surface_host::shell_part::shell_ids(),
-            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
-        );
-    }
-}
-
 impl crate::Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
@@ -607,5 +592,20 @@ impl crate::Session {
     #[must_use]
     pub fn shell_bars(&self) -> Vec<BarPlace> {
         self.shell.as_ref().map(Shell::parts).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
+        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let compiled = packages.last().expect("the shell package compiles last");
+        let lock = compiled.ids.to_text();
+        assert_eq!(
+            lock,
+            tilo_surface_host::shell_part::shell_ids(),
+            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
+        );
     }
 }

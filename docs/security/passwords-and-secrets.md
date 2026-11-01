@@ -103,6 +103,41 @@ same-key edit fails and requires reopening, rather than overwriting a changed
 origin binding or resurrecting a removed credential. Atomic file replacement
 alone is not sufficient for a whole-inventory transaction.
 
+## Account secrets for sandboxed apps: the session is the custodian
+
+A sandboxed app never opens the person's account vault. Its config root is
+its own app directory, the vault's files are outside the sandbox, and the key
+custody that seals them (the Secret Service, or `TILO_SECRETS_DIR` on a
+headless machine) is outside it too: the app's D-Bus proxy passes portals
+only, and the sandbox environment is cleared. The session process holds the
+person's vault under session custody and is the one custodian.
+
+Apps reach it with one request shape on their own certified route
+(`runtime_collab::BrowserServiceSessionCommand`, the channel method that also
+carries Browser's website sessions). The session's broker service
+(`shell/broker_services/service_sessions.rs`) authorizes each request for the
+app that sends it: the certified person's own route, Read on that app, no
+agent or host connection.
+
+- **Sealing** (`StoreAccountSecret`): only Settings, the keeper of the
+  person's accounts. Settings' `add-email-account` effect seals the password
+  first, then adds the account to the person's accounts record, so an
+  account never shows without its secret. The secret is a `secret` parameter:
+  kept out of logs, history and confirmations, and never readable back by
+  Settings.
+- **Release** (`ReleaseAccountSecret`): one account's secret, only to the app
+  that keeps that account's type (`accounts::person::secret_keeper`: Mail for
+  email), only for an enabled account in the person's accounts. The app
+  keeps it in memory for signing in and never writes it anywhere.
+
+Custody does not sign in for the app: Mail's IMAP and SMTP sessions run in
+Mail, so a password account's secret is released to it. Each seal and release
+is logged by the session with the account and app, never the value.
+
+Outside a session (a test, a `--data-dir` profile) an explicit config root
+keeps its own vault under a local key, and Settings and Mail open that
+directly.
+
 ## Remaining consumer migrations
 
 Mail, Calendar and system account custody use `accounts::AccountCredentials`,

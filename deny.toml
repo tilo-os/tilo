@@ -7,8 +7,48 @@
 # every library the workspace builds. Pruned from the graph, deny sees the
 # dependency edges members really have, so `workspace` scoped advisories stay
 # about direct dependencies.
+#
+# The apps are pruned for a different reason: each turns its own `samples`
+# feature on for its tests through a renamed dev-dependency on itself, and
+# cargo-deny's graph builder (krates) cannot resolve a dependency whose manifest
+# key is not the package name — it aborts before checking anything. Pruning them
+# costs no coverage: every crate they depend on is also reachable from the rest
+# of the workspace, so license, advisory, ban and source checks still see all of
+# them.
 [graph]
-exclude = ["workspace-hack", "workspace-unify"]
+exclude = [
+    "workspace-hack",
+    "workspace-unify",
+    "activity",
+    "canvas",
+    "chat",
+    "code-editor",
+    "db-client",
+    "diffmerge",
+    "discord",
+    "ebook",
+    "feeds",
+    "file-explorer",
+    "firewall",
+    "git-client",
+    "hex-editor",
+    "mail",
+    "maps",
+    "notes",
+    "pdf-viewer",
+    "photos",
+    "poker",
+    "remote",
+    "sheets",
+    "shortcuts",
+    "slides",
+    "tasks",
+    "terminal",
+    "tube",
+    "typst-editor",
+    "video-editor",
+    "weather",
+]
 
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:
@@ -152,8 +192,8 @@ deny = [
     ], reason = "old RustCrypto generation" },
     { crate = "rand_chacha:<0.10", wrappers = ["lipsum", "openmls_rust_crypto", "proptest", "rand"], reason = "old RustCrypto generation" },
     { crate = "sha2:<0.11", wrappers = [
-        "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2", "p256", "p384",
-        "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
+        "cranelift-codegen", "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2",
+        "p256", "p384", "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
     ], reason = "old RustCrypto generation" },
     { crate = "hmac:<0.13", wrappers = ["davey", "hkdf", "librespot-core", "librespot-discovery", "pbkdf2", "rfc6979"], reason = "old RustCrypto generation" },
     { crate = "chacha20poly1305:<0.11", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow"], reason = "old RustCrypto generation" },

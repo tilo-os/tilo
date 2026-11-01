@@ -23,10 +23,18 @@ thiserror.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
+[features]
+default = ["dmabuf"]
+# A captured window's dmabuf staged for the encoder as the compositor holds
+# it: the owner side hands one in, a viewer never does. It is the only use of
+# a host graphics stack here, so it is opt-in and a viewer of a share (the
+# desktop drawing another device's window) turns it off.
+dmabuf = ["dep:smithay"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # A client's dmabuf, staged for the encoder without a copy; only smithay's
 # buffer types, no backend.
-smithay = { version = "0.7", default-features = false }
+smithay = { version = "0.7", default-features = false, optional = true }
 
 [dev-dependencies]
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }

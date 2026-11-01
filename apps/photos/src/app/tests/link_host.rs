@@ -3,7 +3,7 @@
 //! put on it. They live apart so a test reads as what it checks.
 
 use super::*;
-/// The room's host behind the door, announcing a web entry for links.
+/// The workspace's host behind the door, announcing a web entry for links.
 pub(super) fn link_host() -> tilo_actions::remote::TestHost {
     tilo_actions::remote::TestHost::new()
         .with_catalogue(|_, query| {

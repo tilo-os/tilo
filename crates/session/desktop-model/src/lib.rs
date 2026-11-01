@@ -6,9 +6,9 @@
 //! runtime or host filesystem. Hosts own id minting (see [`IdMinter`]),
 //! persistence and admission of peer changes.
 //!
-//! [`projection`] is the one room-document schema every host reads and
+//! [`projection`] is the one workspace-document schema every host reads and
 //! writes, and [`commands`] the vocabulary a desktop surface uses to ask a
-//! room's topology owner for a change, with the owner's pure reduction.
+//! workspace's topology owner for a change, with the owner's pure reduction.
 
 pub mod app;
 pub mod apps;
@@ -42,7 +42,7 @@ pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
 pub use arrangement::{Arrangement, ArrangementKind, CANVAS_GAP, CanvasPlace};
-pub use bots::RoomBot;
+pub use bots::WorkspaceBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
 pub use collaborator::Collaborator;

@@ -67,7 +67,7 @@ pub struct DesktopTree {
     /// reload.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
-    /// Mirror of each room's record index (record id → kind), pushed by
+    /// Mirror of each workspace's record index (record id → kind), pushed by
     /// the host so replication can reach it. Not persisted.
     #[serde(skip, default)]
     pub room_records_held: HashMap<RoomId, BTreeMap<String, String>>,
@@ -132,6 +132,23 @@ impl DesktopTree {
 
     pub fn active_workspace(&self) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.id == self.active)
+    }
+
+    /// The workspace holding a window of `app`, the first in the tree's
+    /// order: the one whose temperature and workspace that window lives in. A
+    /// window the tree does not hold yet is in none.
+    #[must_use]
+    pub fn workspace_holding_app(&self, app: &str) -> Option<&Workspace> {
+        self.workspaces.iter().find(|workspace| {
+            workspace.strips.iter().any(|strip| {
+                strip.window_groups.iter().any(|group| {
+                    group
+                        .tabs
+                        .iter()
+                        .any(|tab| crate::apps::canonical_app_id(&tab.tile).as_deref() == Some(app))
+                })
+            })
+        })
     }
 
     /// The first instant after `now` (Unix seconds) at which a grant of any

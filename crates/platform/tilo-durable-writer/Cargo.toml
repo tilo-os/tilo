@@ -12,6 +12,7 @@ test-support = []
 
 [dependencies]
 parking_lot.workspace = true
+tilo-files = { path = "../tilo-files" }
 tracing.workspace = true
 
 [dev-dependencies]

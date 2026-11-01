@@ -282,8 +282,8 @@ fn former_records_are_validated_and_adopted_exactly_once() {
                 Some("made before files had ids")
             );
             assert_eq!(identity(&state.doc).unwrap().id, new.id);
-            assert!(room::holds(&room_doc, &file));
-            assert!(!room::holds(&room_doc, &RecordId::for_file(path)));
+            assert!(index::holds(&room_doc, &file));
+            assert!(!index::holds(&room_doc, &RecordId::for_file(path)));
             set.flush(&mut state.doc).unwrap();
         }
         let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));

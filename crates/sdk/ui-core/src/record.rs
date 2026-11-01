@@ -7,7 +7,7 @@
 //! so "share the book without my notes" is expressible.
 //!
 //! A record id is scoped by the room that hydrates it. Rooms hold references
-//! ([`room::reference`]), but an identical id in another room gets a distinct
+//! ([`index::reference`]), but an identical id in another room gets a distinct
 //! local document and collaboration route; explicit export/import is required
 //! to move content across that authority boundary.
 //!
@@ -60,8 +60,8 @@ const FORMERLY: &str = "formerly";
 /// Upper bound for the records an app learns from one room index at once.
 /// This is deliberately small: the index is replicated input, not a request
 /// to allocate one local document per entry.
-pub const MAX_DISCOVERED_ROOM_RECORDS: usize = 64;
-const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
+pub const MAX_DISCOVERED_RECORDS: usize = 64;
+const MAX_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_RECORDS * 4;
 
 /// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -313,7 +313,7 @@ fn adopt_former(
         let Some(mut doc) = load(&former_key)? else {
             continue;
         };
-        if room_scope(&doc).is_some_and(|scope| scope != room)
+        if workspace_scope(&doc).is_some_and(|scope| scope != room)
             || identity(&doc).is_none_or(|found| found.id != *former || found.kind != want.kind)
         {
             tracing::warn!(record = %want.id, former = %former, "former record does not match; not adopting it");
@@ -341,11 +341,11 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
     str_at(doc, &m, "home")
 }
 
-/// The room this local record replica is bound to.  Absent only for records
-/// written before room-partitioned persistence; callers may adopt those once
-/// with [`init_scoped`], but must never treat an explicit different room as
-/// interchangeable.
-pub fn room_scope(doc: &AutoCommit) -> Option<String> {
+/// The workspace this local record replica is bound to.  Absent only for
+/// records written before records were scoped to a workspace; callers may
+/// adopt those once with [`init_scoped`], but must never treat an explicit
+/// different workspace as interchangeable.
+pub fn workspace_scope(doc: &AutoCommit) -> Option<String> {
     let m = meta_ro(doc)?;
     str_at(doc, &m, ROOM)
 }
@@ -496,17 +496,17 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 }
 
 // ---------------------------------------------------------------------------
-// The room index: which records a room holds.
+// The record index: which records a workspace holds.
 // ---------------------------------------------------------------------------
 
-/// A room's index of the records it holds. Ownership of the index document
-/// is the caller's business — the compositor keeps one per room
+/// A workspace's index of the records it holds. Ownership of the index
+/// document is the caller's business — the session keeps one per workspace
 /// (`shell::room_records`).
 ///
 /// **The reference is what grants access.** A member can reach only the
-/// records the room references. Removing a reference stops future changes
-/// flowing; it cannot un-share bytes a peer already synced.
-pub mod room;
+/// records the workspace references. Removing a reference stops future
+/// changes flowing; it cannot un-share bytes a peer already synced.
+pub mod index;
 
 /// One record this process has open but is not currently showing.
 struct Parked {
@@ -753,7 +753,7 @@ impl RecordSet {
     /// already-open data remains in memory: revocation stops future access;
     /// it cannot un-share bytes the process has already received.
     pub fn discover_room(&mut self, room: &AutoCommit) -> Vec<RecordCheckout> {
-        let found = room::discoverable_references(room);
+        let found = index::discoverable_references(room);
         self.known = found
             .iter()
             .map(|checkout| (checkout.id.clone(), checkout.kind.clone()))
@@ -993,11 +993,11 @@ impl RecordSet {
             );
         }
         if let Some(room) = room {
-            room::reference(room, &want.id, &want.kind);
+            index::reference(room, &want.id, &want.kind);
             // Targets too: a room holding the annotations but not their
             // target would hand a member a reference they can't reach.
             for (target, _) in &want.references {
-                room::reference(room, &target.id, &target.kind);
+                index::reference(room, &target.id, &target.kind);
             }
         }
         self.active = Some(want.id.clone());
@@ -1246,9 +1246,9 @@ impl RecordSet {
             );
         }
         if let Some(room) = room {
-            room::reference(room, &want.id, &want.kind);
+            index::reference(room, &want.id, &want.kind);
             for (target, _) in &want.references {
-                room::reference(room, &target.id, &target.kind);
+                index::reference(room, &target.id, &target.kind);
             }
         }
         self.remember(want);
@@ -1874,23 +1874,23 @@ pub struct RecordRefusal {
 }
 
 /// What windows said they did to a record ("Added Buy milk"), held until
-/// the room it is shared in keeps the change, so success is never said of
-/// a change the room then refuses ([`RecordStore::hold_notice`]).
+/// the workspace it is shared in keeps the change, so success is never said
+/// of a change the workspace then refuses ([`RecordStore::hold_notice`]).
 ///
 /// A record no host replicates is decided by nobody else: what is said of
 /// it is said at once. A replicated one holds each notice with the heads it
-/// was said at; the next publication carries them, and once the room
+/// was said at; the next publication carries them, and once the workspace
 /// answered every commit of the record ([`RecordStore::room_settled`]) the
 /// notices are said. A refusal withdraws the changes, and a notice whose
 /// heads went with them is dropped: the refusal is said instead.
 #[derive(Debug, Default)]
-pub(crate) struct RoomNotices {
-    /// A host replicates the record to a room that decides its changes.
+pub(crate) struct WorkspaceNotices {
+    /// A host replicates the record to a host that decides its changes.
     replicated: bool,
     held: Vec<HeldNotice>,
     /// The heads the last publication carried.
     sent: Vec<automerge::ChangeHash>,
-    /// The room answered every commit published so far.
+    /// The workspace answered every commit published so far.
     answered: bool,
     said: Vec<String>,
 }
@@ -1903,7 +1903,7 @@ struct HeldNotice {
     published: bool,
 }
 
-impl RoomNotices {
+impl WorkspaceNotices {
     fn hold(&mut self, text: String, heads: Vec<automerge::ChangeHash>) {
         let unchanged = heads == self.sent;
         if !self.replicated || (unchanged && self.answered) {
@@ -1932,7 +1932,7 @@ impl RoomNotices {
         }
     }
 
-    /// The room answered every commit published so far.
+    /// The workspace's host answered every commit published so far.
     fn settled(&mut self) {
         self.answered = true;
         let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
@@ -2062,7 +2062,7 @@ fn validate_identity(
         return if primary_document(doc)
             && !want.kind.as_str().is_empty()
             && !workspace.is_empty()
-            && room_scope(doc).is_none_or(|room| room == workspace)
+            && workspace_scope(doc).is_none_or(|room| room == workspace)
         {
             Ok(())
         } else {
@@ -2072,7 +2072,7 @@ fn validate_identity(
     if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
         || want.kind.as_str().is_empty()
         || home(doc).is_none_or(|home| home.is_empty())
-        || room_scope(doc).as_deref() != Some(workspace)
+        || workspace_scope(doc).as_deref() != Some(workspace)
     {
         return Err(RecordOpenError::IdentityMismatch);
     }
@@ -2090,7 +2090,7 @@ fn validate_created_identity(
         || !want.is_valid_local_storage_request()
         || !primary_document(doc)
         || home(doc).is_some_and(|found| found != workspace)
-        || room_scope(doc).is_some_and(|found| found != workspace)
+        || workspace_scope(doc).is_some_and(|found| found != workspace)
         || transfer::is_retired(doc)
     {
         return Err(RecordOpenError::IdentityMismatch);
@@ -3245,7 +3245,7 @@ impl RecordStore {
         if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
             || want.kind.as_str().is_empty()
             || home(doc).as_deref() != Some(set.home.as_str())
-            || room_scope(doc).as_deref() != expected_scope
+            || workspace_scope(doc).as_deref() != expected_scope
         {
             return Err(RecordOpenError::IdentityMismatch);
         }
@@ -3682,9 +3682,10 @@ impl RecordStore {
     }
 
     /// Say `text` of what was just done to the open record `id` once the
-    /// room it is shared in keeps it (`RoomNotices`): at once when no host
-    /// replicates it, never when the room refuses it. The pending action is
-    /// committed first, so the change it names is among the heads held.
+    /// workspace it is shared in keeps it (`WorkspaceNotices`): at once when no
+    /// host replicates it, never when the workspace refuses it. The pending
+    /// action is committed first, so the change it names is among the heads
+    /// held.
     ///
     /// # Errors
     /// The record is not open here or its owner is busy.
@@ -3696,7 +3697,7 @@ impl RecordStore {
         })
     }
 
-    /// The room answered every commit of record `id` its host published:
+    /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
     pub fn room_settled(&self, id: &RecordId) {
         if let Ok(mut set) = self.0.try_borrow_mut()
@@ -3897,7 +3898,7 @@ impl ReplicaIdentityStamp {
             workspace: workspace.to_string(),
             metadata,
             home: home(doc),
-            room: room_scope(doc),
+            room: workspace_scope(doc),
         })
     }
 
@@ -3906,7 +3907,7 @@ impl ReplicaIdentityStamp {
             .map_err(|error| error.to_string())?;
         if record_metadata_present(doc)? != self.metadata
             || home(doc) != self.home
-            || room_scope(doc) != self.room
+            || workspace_scope(doc) != self.room
         {
             return Err("conflicting record identity".into());
         }
@@ -4278,11 +4279,11 @@ mod tests {
         {
             let mut room_doc = AutoCommit::new();
             let origin = RecordCheckout::new(RecordId::minted(), RecordKind::new("book"));
-            room::reference(&mut room_doc, &origin.id, &origin.kind);
-            let copy = room::duplicate(&mut room_doc, &origin);
+            index::reference(&mut room_doc, &origin.id, &origin.kind);
+            let copy = index::duplicate(&mut room_doc, &origin);
             assert_ne!(copy.id, origin.id, "copying mints a new identity");
-            assert!(room::holds(&room_doc, &copy.id));
-            assert!(room::holds(&room_doc, &origin.id));
+            assert!(index::holds(&room_doc, &copy.id));
+            assert!(index::holds(&room_doc, &origin.id));
         }
     }
     use crate::state::State;
@@ -4587,28 +4588,28 @@ mod tests {
             let a = RecordId::for_file("/work/a.odt");
             let b = RecordId::for_file("/work/b.odt");
             let kind = RecordKind::new("document");
-            assert!(room::reference(&mut room_doc, &a, &kind));
+            assert!(index::reference(&mut room_doc, &a, &kind));
             assert!(
-                !room::reference(&mut room_doc, &a, &kind),
+                !index::reference(&mut room_doc, &a, &kind),
                 "referencing twice adds nothing"
             );
-            assert!(room::reference(&mut room_doc, &b, &kind));
-            assert!(room::holds(&room_doc, &a) && room::holds(&room_doc, &b));
-            assert_eq!(room::references(&room_doc).len(), 2);
+            assert!(index::reference(&mut room_doc, &b, &kind));
+            assert!(index::holds(&room_doc, &a) && index::holds(&room_doc, &b));
+            assert_eq!(index::references(&room_doc).len(), 2);
 
-            assert!(room::unreference(&mut room_doc, &a));
+            assert!(index::unreference(&mut room_doc, &a));
             assert!(
-                !room::holds(&room_doc, &a),
+                !index::holds(&room_doc, &a),
                 "dropping the reference removes the access"
             );
-            assert!(room::holds(&room_doc, &b), "and touches nothing else");
+            assert!(index::holds(&room_doc, &b), "and touches nothing else");
         }
 
         // Case `room_discovery_is_metadata_only_and_tracks_remote_grants`.
         {
             let mut remote_room = AutoCommit::new();
             let remote = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
-            assert!(room::reference(&mut remote_room, &remote.id, &remote.kind));
+            assert!(index::reference(&mut remote_room, &remote.id, &remote.kind));
 
             // Simulate a collaborator's room-index snapshot arriving before this
             // process starts. Learning it must not manufacture a record document.
@@ -4624,7 +4625,7 @@ mod tests {
                 "discovery does not open replicas"
             );
 
-            assert!(room::unreference(&mut local_room, &remote.id));
+            assert!(index::unreference(&mut local_room, &remote.id));
             assert!(set.discover_room(&local_room).is_empty());
             assert!(
                 set.known_records().is_empty(),
@@ -4642,14 +4643,18 @@ mod tests {
             // Not an ID shape the host understands, and not a typed map.
             let _ = room_doc.put(&idx, "../../escape", "annotation-set");
             let _ = room_doc.put_object(&idx, "uuid:not-a-uuid", ObjType::Map);
-            for _ in 0..(MAX_DISCOVERED_ROOM_RECORDS + 8) {
+            for _ in 0..(MAX_DISCOVERED_RECORDS + 8) {
                 let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-                assert!(room::reference(&mut room_doc, &checkout.id, &checkout.kind));
+                assert!(index::reference(
+                    &mut room_doc,
+                    &checkout.id,
+                    &checkout.kind
+                ));
             }
 
             let mut set = RecordSet::in_memory().with_home("room-a");
             let found = set.discover_room(&room_doc);
-            assert_eq!(found.len(), MAX_DISCOVERED_ROOM_RECORDS);
+            assert_eq!(found.len(), MAX_DISCOVERED_RECORDS);
             assert!(found.iter().all(RecordCheckout::is_valid));
             assert!(set.open_records().is_empty());
         }
@@ -4670,7 +4675,7 @@ mod tests {
                 )
             };
             let (mut room_a, mut saver_a) = open_room(a);
-            assert!(room::reference(&mut room_a, &entry.id, &entry.kind));
+            assert!(index::reference(&mut room_a, &entry.id, &entry.kind));
             saver_a.request(&mut room_a);
             saver_a.flush();
 
@@ -4690,7 +4695,7 @@ mod tests {
             let mut set = RecordSet::in_memory();
             let mut state = State::new();
             let file = RecordId::for_file("/work/book.pdf");
-            room::reference(&mut room_doc, &file, &RecordKind::new("file"));
+            index::reference(&mut room_doc, &file, &RecordKind::new("file"));
 
             let markup = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
             set.checkout(&mut state, Some(&mut room_doc), &markup);
@@ -4699,7 +4704,7 @@ mod tests {
             let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
             set.checkout(&mut state, Some(&mut room_doc), &other);
 
-            let found = room::referencing(&room_doc, &set, &file, "marks-up");
+            let found = index::referencing(&room_doc, &set, &file, "marks-up");
             assert_eq!(found.len(), 1, "exactly the markup for this file");
             assert_eq!(found[0].id, markup.id);
         }
@@ -4715,8 +4720,8 @@ mod tests {
             let mut room_b = AutoCommit::new();
             let id = RecordId::minted();
             let kind = RecordKind::new("book");
-            room::reference(&mut room_a, &id, &kind);
-            room::reference(&mut room_b, &id, &kind);
+            index::reference(&mut room_a, &id, &kind);
+            index::reference(&mut room_b, &id, &kind);
 
             let mut set_a = RecordSet::in_memory().with_home("room-a");
             let mut state_a = State::new();
@@ -4760,7 +4765,7 @@ mod tests {
                 let mut state = State::new();
                 assert!(set.checkout(&mut state, None, &record));
                 assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));
-                assert_eq!(room_scope(&state.doc).as_deref(), Some(room));
+                assert_eq!(workspace_scope(&state.doc).as_deref(), Some(room));
             }
         }
 
@@ -4782,7 +4787,7 @@ mod tests {
                 !init_scoped(&mut remote, &id, &kind, "room-b", Some("room-b")),
                 "a received document's recorded room is authority, not a hint"
             );
-            assert_eq!(room_scope(&remote).as_deref(), Some("room-a"));
+            assert_eq!(workspace_scope(&remote).as_deref(), Some("room-a"));
         }
 
         // Case `each_record_persists_to_its_own_file_and_comes_back`.
