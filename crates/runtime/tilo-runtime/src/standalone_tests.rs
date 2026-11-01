@@ -100,7 +100,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor)
-        .in_room(&workspace_id)
+        .in_workspace(&workspace_id)
         .in_new_execution();
     let host = RuntimeActionHost {
         broker,
@@ -794,7 +794,7 @@ fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
         tilo_action_policy::Subject::App("so.tilo.caller".into()),
-        tilo_action_policy::TreePath::room(workspace)
+        tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
             .resource("target.document")

@@ -202,7 +202,7 @@ async fn every_settled_decision_is_announced_with_its_room() {
     let deny_outside = Grant::new(
         "public-guests-no-outside",
         Subject::Role(Role::Editor),
-        tilo_action_policy::TreePath::room(&created.room),
+        tilo_action_policy::TreePath::workspace(&created.room),
         KindSet::OUTSIDE,
         Answer::Deny,
         Subject::Person(hex::encode(cert.user_public_key)),
@@ -692,7 +692,7 @@ async fn legacy_window_write_respects_current_member_grants() {
         let read_only = Grant::new(
             "legacy-window-read-only-foreign",
             Subject::ForeignDevice,
-            tilo_action_policy::TreePath::room(&created.room),
+            tilo_action_policy::TreePath::workspace(&created.room),
             KindSet::UNDOABLE,
             Answer::Deny,
             Subject::Person(hex::encode(cert.user_public_key)),
@@ -1280,7 +1280,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
 fn bridge_program() -> String {
     let rule = tilo_action_policy::Rule::new(
         tilo_action_policy::TreePath::root()
-            .any(tilo_action_policy::Level::Room)
+            .any(tilo_action_policy::Level::Workspace)
             .app("so.tilo.chat")
             .kind("chat.workspace")
             .any(tilo_action_policy::Level::Resource)

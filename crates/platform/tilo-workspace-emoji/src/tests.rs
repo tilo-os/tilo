@@ -170,7 +170,7 @@ fn the_rooms_roles_decide_who_adds_and_who_moderates() {
             .find(|decl| decl.id == id)
             .unwrap();
         tilo_actions::action_node(
-            &tilo_action_policy::TreePath::room("r"),
+            &tilo_action_policy::TreePath::workspace("r"),
             super::OWNER,
             WorkspaceEmoji::KIND,
             "workspace-emoji",

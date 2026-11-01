@@ -823,7 +823,7 @@ fn bot_standing(
     // It takes the entry out of the outbox, which the room judges as
     // reaching outside, as it did: the connector reached it.
     rules.extend(connectors.iter().flat_map(|app| {
-        let app = TreePath::root().any(Level::Room).app(app.clone());
+        let app = TreePath::root().any(Level::Workspace).app(app.clone());
         let settle = app
             .clone()
             .any(Level::Kind)

@@ -112,7 +112,7 @@ impl AppActionAuthorityProjection {
         }
         let app = self.policy.node().app(&self.app_id);
         for grant in &self.policy.grants {
-            if !grant.node.overlaps(&app) || grant.node.room_id() != Some(self.room.as_str()) {
+            if !grant.node.overlaps(&app) || grant.node.workspace_id() != Some(self.room.as_str()) {
                 return Err("invalid host action policy projection");
             }
         }
@@ -165,8 +165,8 @@ mod tests {
         invalid.schema_version = 2;
         assert!(invalid.validate().is_err(), "another schema is refused");
         for node in [
-            TreePath::room("room-a").app("so.tilo.settings"),
-            TreePath::room("room-b"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-b"),
             TreePath::root(),
         ] {
             let mut invalid = original.clone();
@@ -236,7 +236,7 @@ mod tests {
         written.policy.grants.push(Grant::new(
             "foreign",
             Subject::person("person-b"),
-            TreePath::room("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),
@@ -254,7 +254,7 @@ mod tests {
             room.grants.push(Grant::new(
                 id,
                 Subject::person("person-b"),
-                TreePath::room("room-a").app(app),
+                TreePath::workspace("room-a").app(app),
                 KindSet::UNDOABLE,
                 Answer::Allow,
                 Subject::person("person-a"),
@@ -304,7 +304,7 @@ mod tests {
         projection.policy.grants.push(Grant::new(
             "governance",
             Subject::person("person-a"),
-            roles::room_resource("room-a"),
+            roles::workspace_resource("room-a"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),

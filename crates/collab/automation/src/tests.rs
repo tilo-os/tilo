@@ -421,7 +421,7 @@ pub(crate) fn caller() -> Caller {
 
 pub(crate) fn app_rule(app: &str) -> Rule {
     Rule::new(
-        TreePath::root().any(Level::Room).app(app),
+        TreePath::root().any(Level::Workspace).app(app),
         KindSet::ALL,
         Answer::Allow,
     )
@@ -979,7 +979,7 @@ fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
         contract,
     ));
     let reads_notes = vec![Rule::new(
-        TreePath::root().any(Level::Room).app(NOTES),
+        TreePath::root().any(Level::Workspace).app(NOTES),
         KindSet::READ,
         Answer::Allow,
     )];

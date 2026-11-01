@@ -699,7 +699,7 @@ mod tests {
             None,
             Subject::person(person(&owner)),
         ));
-        let finance = tilo_action_policy::TreePath::room(&room_id).app("finance");
+        let finance = tilo_action_policy::TreePath::workspace(&room_id).app("finance");
         let read = |id: &str, subject: Subject, node, answer| {
             Grant::new(
                 id,

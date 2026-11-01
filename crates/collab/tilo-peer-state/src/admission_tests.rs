@@ -129,7 +129,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     let hold = Grant::new(
         "hold",
         Subject::Person(person.clone()),
-        TreePath::room(workspace_id),
+        TreePath::workspace(workspace_id),
         KindSet::UNDOABLE,
         Answer::Deny,
         Subject::person("another-person"),
@@ -167,7 +167,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         peer.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
     );
-    let workspace_node = TreePath::room(workspace_id);
+    let workspace_node = TreePath::workspace(workspace_id);
     assert!(
         !peer
             .permissions(cert.device_public_key, now)

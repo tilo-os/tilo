@@ -268,7 +268,7 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         let ctx = PermissionContext::member("alice", Role::Editor).with_grant(policy::Grant::new(
             "terminal",
             policy::Subject::person("alice"),
-            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            TreePath::workspace(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
             policy::Subject::person("owner"),
@@ -296,7 +296,7 @@ fn grants_and_capabilities_are_inspectable_scoped_and_expire() {
         let grant = policy::Grant::new(
             "terminal",
             policy::Subject::person("alice"),
-            TreePath::room(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
+            TreePath::workspace(tilo_ui::permissions::LOCAL_ROOM).join(&terminal),
             policy::KindSet::ALL,
             Answer::Allow,
             policy::Subject::person("owner"),

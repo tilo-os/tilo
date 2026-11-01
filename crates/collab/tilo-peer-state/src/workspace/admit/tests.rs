@@ -40,7 +40,7 @@ fn governed() -> AutoCommit {
         .unwrap();
     }
     let grants = doc.put_object(ROOT, "grants", ObjType::Map).unwrap();
-    for grant in roles::room_role_grants(WORKSPACE, &Subject::Person(person_id(OWNER))) {
+    for grant in roles::workspace_role_grants(WORKSPACE, &Subject::Person(person_id(OWNER))) {
         doc.put(
             &grants,
             grant.id.as_str(),
@@ -400,7 +400,7 @@ fn share_of_note(
     person: [u8; 32],
     access: tilo_action_policy::share::ShareAccess,
 ) -> Vec<tilo_action_policy::Grant> {
-    let note = tilo_action_policy::TreePath::room(WORKSPACE)
+    let note = tilo_action_policy::TreePath::workspace(WORKSPACE)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)

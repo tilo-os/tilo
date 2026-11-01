@@ -29,8 +29,8 @@ pub fn step_node(
     address: &ActionAddress,
 ) -> TreePath {
     let base = match room {
-        Some(room) => TreePath::room(room),
-        None => TreePath::root().any(Level::Room),
+        Some(room) => TreePath::workspace(room),
+        None => TreePath::root().any(Level::Workspace),
     };
     base.app(app_id)
         .kind(resource_kind)
@@ -49,8 +49,8 @@ pub fn step_node_at(
     at: &TreePath,
 ) -> TreePath {
     let base = match room {
-        Some(room) => TreePath::room(room),
-        None => TreePath::root().any(Level::Room),
+        Some(room) => TreePath::workspace(room),
+        None => TreePath::root().any(Level::Workspace),
     };
     base.app(app_id)
         .kind(resource_kind)
@@ -166,7 +166,7 @@ pub fn action_rule(
     answer: Answer,
 ) -> Rule {
     let node = TreePath::root()
-        .any(Level::Room)
+        .any(Level::Workspace)
         .app(app_id)
         .kind(resource_kind);
     let node = match resource {
@@ -285,7 +285,9 @@ impl Permission {
 
     /// The resources it reaches, in any room.
     fn resources(&self) -> TreePath {
-        let app = TreePath::root().any(Level::Room).app(self.app_id.clone());
+        let app = TreePath::root()
+            .any(Level::Workspace)
+            .app(self.app_id.clone());
         match &self.reach {
             Reach::Resource(resource) => app.any(Level::Kind).resource(resource.clone()),
             Reach::Kind(kind) => app.kind(kind.clone()).any(Level::Resource),
@@ -410,7 +412,7 @@ fn add(
 /// the connector's app.
 #[must_use]
 pub fn trigger_rules(triggers: &[crate::TriggerSpec]) -> Vec<Rule> {
-    let any = TreePath::root().any(Level::Room);
+    let any = TreePath::root().any(Level::Workspace);
     let mut out: Vec<Rule> = Vec::new();
     for trigger in triggers {
         let rule = match trigger {
@@ -680,7 +682,7 @@ mod tests {
             &ActionAddress::new("notes.note:1", "delete"),
         );
         let app = [Rule::new(
-            TreePath::root().any(Level::Room).app(NOTES),
+            TreePath::root().any(Level::Workspace).app(NOTES),
             KindSet::ALL,
             Answer::Allow,
         )];
@@ -714,7 +716,7 @@ mod tests {
                 filter: serde_json::Map::new(),
             },
         ]);
-        let any = TreePath::root().any(Level::Room);
+        let any = TreePath::root().any(Level::Workspace);
         assert_eq!(
             rules,
             vec![
@@ -785,7 +787,7 @@ mod tests {
         assert_eq!(settles.len(), 1, "only what is queued outside is settled");
         // It reaches an entry of a guild's outbox, as the room decides a
         // settle (an item of the record), and none of the guild's own fields.
-        let guild = TreePath::room("r")
+        let guild = TreePath::workspace("r")
             .app("so.tilo.discord")
             .kind("discord.guild")
             .resource("g");
@@ -865,7 +867,7 @@ mod tests {
         );
         // The guild's migration is decided at the record, the way the room
         // claims it, and rewriting its outbox reaches outside as `send` does.
-        let guild = TreePath::room("r")
+        let guild = TreePath::workspace("r")
             .app("so.tilo.discord")
             .kind("discord.guild")
             .resource("");
@@ -935,7 +937,7 @@ mod tests {
                 .iter()
                 .map(|rule| rule.node.to_string())
                 .collect::<Vec<_>>(),
-            ["room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
+            ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
         );
 
         // The room decides a run's edit at its concrete path.
@@ -964,7 +966,7 @@ mod tests {
         ));
         assert_eq!(
             whole[0].node.to_string(),
-            "room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
+            "workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
         );
         // So does one whose field is chosen when it runs.
         let bound_field = Binding::Object(BTreeMap::from([(

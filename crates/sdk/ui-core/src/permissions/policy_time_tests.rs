@@ -16,7 +16,7 @@ fn member_with(answer: Answer) -> PermissionContext {
         policy::Grant::new(
             "fixture",
             policy::Subject::person("member"),
-            TreePath::room(LOCAL_ROOM).app("fixture"),
+            TreePath::workspace(LOCAL_ROOM).app("fixture"),
             policy::KindSet::UNDOABLE,
             answer,
             policy::Subject::person("owner"),

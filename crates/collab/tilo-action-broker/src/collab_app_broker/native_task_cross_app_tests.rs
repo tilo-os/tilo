@@ -154,7 +154,7 @@ fn permission(f: &Fixture, app: &str, allow: bool) {
             // One answer per app: setting it again replaces it.
             format!("acceptance-{app}"),
             Subject::agent("scribe"),
-            TreePath::room(workspace_id().to_string()).app(app),
+            TreePath::workspace(workspace_id().to_string()).app(app),
             KindSet::UNDOABLE,
             if allow { Answer::Allow } else { Answer::Deny },
             Subject::person(hex::encode(f.native.certificate.user_public_key)),

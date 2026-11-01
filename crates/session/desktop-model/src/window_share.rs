@@ -121,7 +121,7 @@ pub fn window_of_share_id(share: &str) -> Option<(TabId, bool)> {
 /// grants on.
 #[must_use]
 pub fn window_node(room: &str, app_id: &str, tab: TabId) -> TreePath {
-    TreePath::room(room)
+    TreePath::workspace(room)
         .app(app_id)
         .kind(WINDOW_KIND)
         .resource(tab_key(tab))
@@ -137,7 +137,7 @@ pub fn window_of_node(node: &TreePath) -> Option<(String, TabId)> {
         }
     }
     let segments = node.segments();
-    if segments.len() != 4 || named(segments.first(), Level::Room).is_none() {
+    if segments.len() != 4 || named(segments.first(), Level::Workspace).is_none() {
         return None;
     }
     let app = named(segments.get(1), Level::App)?;
@@ -173,7 +173,7 @@ pub fn shows_node(
     kind: &str,
     shows: &WindowShows,
 ) -> TreePath {
-    let at = TreePath::room(room).app(app_id).kind(kind);
+    let at = TreePath::workspace(room).app(app_id).kind(kind);
     match (&shows.item, shows.record.is_empty()) {
         // An item of the app's own record: its id is unique, so any
         // record of the kind is it.
@@ -197,7 +197,7 @@ pub fn shows_of_node(node: &TreePath, app_id: &str, tab: TabId) -> Option<Window
         Some(Segment::Name(found, id)) if *found == level && !id.is_empty() => Some(id.clone()),
         _ => None,
     };
-    if named(0, Level::Room).is_none()
+    if named(0, Level::Workspace).is_none()
         || named(1, Level::App).as_deref() != Some(app_id)
         || named(2, Level::Kind)
             .as_deref()
@@ -258,7 +258,7 @@ pub fn window_shares(
         let Subject::Person(giver) = &grant.granted_by else {
             continue;
         };
-        if grant.node.room_id() != Some(policy.workspace.as_str())
+        if grant.node.workspace_id() != Some(policy.workspace.as_str())
             || !grant
                 .id
                 .as_str()
@@ -294,7 +294,7 @@ pub fn window_shares(
         if grant.answer != Answer::Allow
             || !grant.kinds.contains(ActionKind::Read)
             || !grant.is_live(&cx)
-            || grant.node.room_id() != Some(policy.workspace.as_str())
+            || grant.node.workspace_id() != Some(policy.workspace.as_str())
         {
             continue;
         }
@@ -377,7 +377,7 @@ mod tests {
         assert!(window_shares(&policy, &owners, 10).is_empty());
 
         // A share of a record is no window's.
-        let record = TreePath::room(ROOM)
+        let record = TreePath::workspace(ROOM)
             .app("so.tilo.notes")
             .kind("notes.notebook")
             .resource(tab_key(tab));
@@ -471,7 +471,7 @@ mod tests {
                 ROOM,
                 "bo",
                 &window_shows_share_id(tab),
-                &TreePath::room(ROOM)
+                &TreePath::workspace(ROOM)
                     .app(app)
                     .kind("notes.notebook")
                     .resource("r"),
@@ -483,7 +483,7 @@ mod tests {
         // Nor is a node of another app.
         assert_eq!(
             shows_of_node(
-                &TreePath::room(ROOM)
+                &TreePath::workspace(ROOM)
                     .app("so.tilo.chat")
                     .kind("k")
                     .resource("r"),
@@ -541,7 +541,7 @@ mod tests {
             (window_share_id(NOTES), window_node(ROOM, APP, NOTES)),
             (
                 window_shows_share_id(NOTES),
-                TreePath::room(ROOM)
+                TreePath::workspace(ROOM)
                     .app(APP)
                     .kind("notes.notebook")
                     .any(Level::Resource)

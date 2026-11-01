@@ -289,7 +289,7 @@ mod identity_fs_tests {
             Grant::new(
                 id,
                 PolicySubject::Person(person.to_owned()),
-                TreePath::room(room),
+                TreePath::workspace(room),
                 KindSet::READ,
                 Answer::Allow,
                 PolicySubject::Person("owner".into()),
@@ -358,7 +358,7 @@ mod identity_fs_tests {
         tree.desktop.workspaces[0].grant(Grant::new(
             "alice-denied",
             PolicySubject::Person(alice_id),
-            TreePath::room(&first_room),
+            TreePath::workspace(&first_room),
             KindSet::READ,
             Answer::Deny,
             PolicySubject::Person("owner".into()),
@@ -5711,7 +5711,7 @@ mod workspace_tree_lifecycle_tests {
             Grant::new(
                 id,
                 Subject::Person(person.to_owned()),
-                TreePath::room(&room),
+                TreePath::workspace(&room),
                 KindSet::READ,
                 Answer::Allow,
                 Subject::Person("owner".into()),

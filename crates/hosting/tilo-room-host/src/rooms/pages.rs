@@ -405,7 +405,7 @@ impl Rooms {
             .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
         let state = self.room(room).await?;
         let governed = state.lock().await;
-        if node.room_id() != Some(governed.room()) {
+        if node.workspace_id() != Some(governed.room()) {
             return Err(CollaborationError::new("the node is not in this room"));
         }
         let workspace_id = governed.workspace_id();

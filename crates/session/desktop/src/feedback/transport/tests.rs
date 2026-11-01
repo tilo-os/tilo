@@ -47,7 +47,7 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
         policy::Subject::person(hex::encode([12; 32])),
-        TreePath::room(ROOM).join(&chat_action(
+        TreePath::workspace(ROOM).join(&chat_action(
             "channels",
             "feedback",
             Some(destination::SUBMIT_FIELD),

@@ -167,7 +167,7 @@ fn bot_replica(page: &Replica) -> Replica {
     let grant = Grant::new(
         "bot:moderation",
         bot.clone(),
-        TreePath::room(ROOM),
+        TreePath::workspace(ROOM),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Subject::person(OWNER),

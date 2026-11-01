@@ -1187,7 +1187,7 @@ impl<R> Edit<R> {
         R: crate::Resource,
     {
         use tilo_action_policy::Level;
-        let mut tree = tilo_action_policy::TreePath::room(room)
+        let mut tree = tilo_action_policy::TreePath::workspace(room)
             .app(app)
             .kind(R::KIND)
             .resource(record);

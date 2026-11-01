@@ -173,7 +173,7 @@ fn local_grant(
     let grant = policy::Grant::new(
         "local-grant",
         subject,
-        TreePath::room(LOCAL_ROOM).join(relative),
+        TreePath::workspace(LOCAL_ROOM).join(relative),
         kinds,
         Answer::Allow,
         policy::Subject::person(LOCAL_USER),
@@ -402,7 +402,8 @@ impl PermissionContext {
     /// version offers whoever holds it.
     #[must_use]
     pub fn read_only(&self) -> Self {
-        let mut context = Self::member_of(self.standing.room(), self.user.0.clone(), Role::Viewer);
+        let mut context =
+            Self::member_of(self.standing.workspace(), self.user.0.clone(), Role::Viewer);
         context.actor = self.actor.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
@@ -1316,7 +1317,7 @@ mod tests {
                         .bounded_by(policy::Subject::agent("scribe"), grants),
                 )
             };
-            let room = TreePath::room(LOCAL_ROOM);
+            let room = TreePath::workspace(LOCAL_ROOM);
             let open = |page: &str, action: &str| {
                 PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
             };
@@ -1385,7 +1386,7 @@ mod tests {
             ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
         assert_eq!(action.contract.kind, ActionKind::Outside);
         let owner = PermissionContext::member("owner", Role::Owner);
-        let node = TreePath::room(LOCAL_ROOM).join(&action_node(
+        let node = TreePath::workspace(LOCAL_ROOM).join(&action_node(
             "notes",
             "notes.page",
             "notes.page:1",
@@ -1434,7 +1435,7 @@ mod tests {
             standing.policy.grants.push(policy::Grant::new(
                 "terminal-read-only",
                 policy::Subject::Role(Role::Editor),
-                TreePath::room(LOCAL_ROOM).app(AppKind::Terminal.app_id()),
+                TreePath::workspace(LOCAL_ROOM).app(AppKind::Terminal.app_id()),
                 policy::KindSet::UNDOABLE,
                 Answer::Deny,
                 policy::Subject::person("owner"),

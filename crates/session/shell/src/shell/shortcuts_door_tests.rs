@@ -1666,7 +1666,7 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     // A grant on the whole app lets the run take the step, but consents to
     // no confirmation in advance.
     tidy.grant.push(Rule::new(
-        TreePath::root().any(Level::Room).app(FIXTURE),
+        TreePath::root().any(Level::Workspace).app(FIXTURE),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
     ));

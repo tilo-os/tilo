@@ -1271,7 +1271,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
         output: None,
         grant: vec![policy::Rule::new(
             policy::TreePath::root()
-                .any(policy::Level::Room)
+                .any(policy::Level::Workspace)
                 .app("so.tilo.test"),
             policy::KindSet::ALL,
             policy::Answer::Allow,

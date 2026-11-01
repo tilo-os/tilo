@@ -765,7 +765,7 @@ fn shell_standing(
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
         Subject::app(app),
-        TreePath::room(SHELL_ROOM).app(app),
+        TreePath::workspace(SHELL_ROOM).app(app),
         KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(person),

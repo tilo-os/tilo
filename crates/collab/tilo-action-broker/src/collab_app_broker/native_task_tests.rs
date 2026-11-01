@@ -627,7 +627,7 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     let workspace_id = workspace_id().to_string();
     let append = tilo_actions::action_node(
-        &TreePath::room(&workspace_id),
+        &TreePath::workspace(&workspace_id),
         "so.tilo.notes",
         "document",
         "notes:release",
@@ -736,7 +736,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                 Grant::new(
                     "other-task-denies-append",
                     Subject::Task(other.clone()),
-                    TreePath::room(workspace_id().to_string()).app("so.tilo.notes"),
+                    TreePath::workspace(workspace_id().to_string()).app("so.tilo.notes"),
                     KindSet::UNDOABLE,
                     Answer::Deny,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
@@ -769,7 +769,7 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
             grant_notes(&f);
             let append = |resource: &str| {
                 tilo_actions::action_node(
-                    &TreePath::room(workspace_id().to_string()),
+                    &TreePath::workspace(workspace_id().to_string()),
                     "so.tilo.notes",
                     "document",
                     resource,
@@ -906,7 +906,7 @@ async fn a_native_run_is_held_to_its_issues_grants() {
                     "task-no-append",
                     Subject::Task(f.task.clone()),
                     tilo_actions::action_node(
-                        &TreePath::room(workspace_id().to_string()),
+                        &TreePath::workspace(workspace_id().to_string()),
                         "so.tilo.notes",
                         "document",
                         "notes:release",

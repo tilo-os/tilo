@@ -275,7 +275,7 @@ fn bot_replica(
     let grant = Grant::new(
         format!("bot:{MODERATION_INSTALLATION}"),
         bot.clone(),
-        TreePath::room(room),
+        TreePath::workspace(room),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         Subject::person(installer),

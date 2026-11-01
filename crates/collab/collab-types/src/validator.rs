@@ -252,7 +252,7 @@ impl Default for ChannelState {
             artifact_kinds: HashMap::new(),
             room: DEFAULT_ROOM.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
-            grants: roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
+            grants: roles::workspace_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),
@@ -492,7 +492,7 @@ pub fn validate_inbound_op(
     let grants = channel_state.grants.clone();
     let mut author = Party::new(subjects.to_vec(), &grants);
     if ra.role == Role::Owner {
-        author = author.owning(TreePath::room(&channel_state.room));
+        author = author.owning(TreePath::workspace(&channel_state.room));
     }
     validate_authorized_op(op, &Authority::person(author), channel_state)
 }
@@ -658,7 +658,7 @@ fn verify_attestation_chain(
 /// The node of a collaborative record: `room › app › resource`.
 #[must_use]
 pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
-    TreePath::room(room).app(app).resource(record)
+    TreePath::workspace(room).app(app).resource(record)
 }
 
 /// Every record `room › app › resource` one of `grants` names (at the record
@@ -679,7 +679,7 @@ pub fn named_records<'g>(
     use tilo_action_policy::{Level, Segment};
     grants.into_iter().filter_map(move |grant| {
         let [
-            Segment::Name(Level::Room, named_room),
+            Segment::Name(Level::Workspace, named_room),
             Segment::Name(Level::App, app),
             Segment::Name(Level::Resource, record),
             ..,

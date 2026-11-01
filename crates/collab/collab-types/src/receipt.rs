@@ -111,7 +111,7 @@ pub fn claim_node(
     action: &ClaimedAction,
 ) -> TreePath {
     let kind = surface.kind();
-    let resource = TreePath::room(record.room)
+    let resource = TreePath::workspace(record.room)
         .app(record.app)
         .kind(kind)
         .resource(record.record);
@@ -438,7 +438,7 @@ impl std::fmt::Debug for Surfaces {
 /// without its app's surface.
 #[must_use]
 pub fn record_node(record: &Record<'_>) -> TreePath {
-    TreePath::room(record.room)
+    TreePath::workspace(record.room)
         .app(record.app)
         .resource(record.record)
 }

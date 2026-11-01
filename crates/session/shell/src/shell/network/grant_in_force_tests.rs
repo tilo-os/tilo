@@ -126,7 +126,7 @@ fn grant(id: &str, room: RoomId, person: &str, lifetime: Lifetime) -> Grant {
     Grant::new(
         id,
         Subject::App(INVOKER.into()),
-        TreePath::room(room.to_string()).app(TARGET),
+        TreePath::workspace(room.to_string()).app(TARGET),
         KindSet::READ,
         Answer::Allow,
         Subject::Person(person.to_owned()),
@@ -302,7 +302,7 @@ fn a_grant_given_on_another_device_waits_until_the_room_brings_it_there() {
     let elsewhere = Grant::new(
         "app-action:elsewhere",
         Subject::App(INVOKER.into()),
-        TreePath::room(RoomId::new().to_string()).app(TARGET),
+        TreePath::workspace(RoomId::new().to_string()).app(TARGET),
         KindSet::READ,
         Answer::Allow,
         Subject::Person(person.clone()),

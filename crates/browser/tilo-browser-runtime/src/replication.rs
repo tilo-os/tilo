@@ -658,7 +658,7 @@ impl Room {
         };
         let held = self
             .permitted
-            .insert(path.within_room(), (node.to_owned(), may));
+            .insert(path.within_workspace(), (node.to_owned(), may));
         match held {
             Some((_, before)) => before != may,
             None => may,
