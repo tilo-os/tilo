@@ -1932,7 +1932,7 @@ impl WorkspaceNotices {
         }
     }
 
-    /// The room answered every commit published so far.
+    /// The workspace's host answered every commit published so far.
     fn settled(&mut self) {
         self.answered = true;
         let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
@@ -3682,9 +3682,10 @@ impl RecordStore {
     }
 
     /// Say `text` of what was just done to the open record `id` once the
-    /// room it is shared in keeps it (`WorkspaceNotices`): at once when no host
-    /// replicates it, never when the room refuses it. The pending action is
-    /// committed first, so the change it names is among the heads held.
+    /// workspace it is shared in keeps it (`WorkspaceNotices`): at once when no
+    /// host replicates it, never when the workspace refuses it. The pending
+    /// action is committed first, so the change it names is among the heads
+    /// held.
     ///
     /// # Errors
     /// The record is not open here or its owner is busy.
@@ -3696,7 +3697,7 @@ impl RecordStore {
         })
     }
 
-    /// The room answered every commit of record `id` its host published:
+    /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
     pub fn room_settled(&self, id: &RecordId) {
         if let Ok(mut set) = self.0.try_borrow_mut()
