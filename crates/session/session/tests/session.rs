@@ -2100,6 +2100,8 @@ mod portal_capture;
 #[path = "session/secret_captures.rs"]
 mod secret_captures;
 
+#[path = "session/idle_frames.rs"]
+mod idle_frames;
 #[path = "session/window_warmth.rs"]
 mod window_warmth;
 
