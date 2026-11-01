@@ -2768,6 +2768,7 @@ mod prepared_launch_tests {
     use crate::application_test_support::*;
     use std::cell::Cell;
     use std::rc::Rc;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     thread_local! { static PREPARES: Cell<usize> = const { Cell::new(0) }; }
     thread_local! { static CAPTURE_SCENARIOS: Cell<usize> = const { Cell::new(0) }; }
 
@@ -2874,7 +2875,7 @@ mod prepared_launch_tests {
                 .env("TILO_STARTUP_METRICS_PATH", &metrics_path)
                 .env("TILO_PACKAGE_ID", "so.tilo.metrics-fixture")
                 .env("XDG_DATA_HOME", temp.path().join("legacy-data"))
-                .output()
+                .output_locked()
                 .unwrap();
             let expected_code = i32::from(case.ends_with("failure"));
             assert_eq!(

@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// PNG magic header — first 8 bytes of every PNG file.
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -22,7 +23,7 @@ fn terminal_shots_flag_writes_png() {
     let status = Command::new(bin)
         .arg("--shots")
         .arg(&out)
-        .status()
+        .status_locked()
         .expect("spawn terminal --shots");
     assert!(status.success(), "terminal --shots exited with {status:?}");
 
@@ -56,7 +57,7 @@ fn empty_terminal_context_menu_shot_writes_png_at_narrow_high_text_scale() {
         .arg("--viewport")
         .arg("390x844")
         .env("TILO_SHOTS_TEXT_SCALE", "1.5")
-        .status()
+        .status_locked()
         .expect("spawn terminal empty-menu shot");
     assert!(status.success(), "terminal --shots exited with {status:?}");
 

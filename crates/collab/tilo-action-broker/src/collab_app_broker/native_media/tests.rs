@@ -1,6 +1,7 @@
 //! Actual kernel peer-process observation; this does not fabricate launcher admission.
 use super::*;
 use std::sync::atomic::AtomicUsize;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -23,7 +24,7 @@ os._exit(0)
     let mut child = std::process::Command::new("python3")
         .args(["-c", script])
         .arg(&socket)
-        .spawn()
+        .spawn_locked()
         .expect(
             "Linux kernel qualification requires python3 for the real socket descendant fixture",
         );
@@ -88,7 +89,7 @@ os._exit(0)
     let mut child = std::process::Command::new("python3")
         .args(["-c", script])
         .arg(&socket)
-        .spawn()
+        .spawn_locked()
         .expect("actual executing child");
     let (mut stream, _) = tilo_test_env::within("executing child accept", listener.accept())
         .await

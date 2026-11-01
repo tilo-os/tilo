@@ -8,6 +8,7 @@ use agent_provider_config::{
     protocol::Conversation,
 };
 use std::os::fd::AsFd as _;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::within;
 
 struct Grant(Caller, bool);
@@ -640,7 +641,7 @@ fn administration_end_to_end(name: &str, kind: &str) {
         .env("PATH", root.path())
         .env("XDG_CONFIG_HOME", root.path())
         .env(MARKER, kind)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

@@ -7,6 +7,11 @@ mod tests {
 
     #[test]
     fn test_bwrap_full_env() {
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the sandbox recipe starts bubblewrap with namespaces of its own"
+        );
         let mut cmd = Command::new("bwrap");
         cmd.arg("--ro-bind")
             .arg("/usr")
@@ -48,6 +53,11 @@ mod tests {
     /// `--dev-bind` recipe is exercised — this never skips.
     #[test]
     fn test_gl_check() {
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the sandbox recipe starts bubblewrap with namespaces of its own"
+        );
         // What the sandbox must do is pass a device node through. Where the
         // host has a DRM render node that claim can be made in full; where it
         // has none — a CI runner with no GPU — asserting it anyway would test

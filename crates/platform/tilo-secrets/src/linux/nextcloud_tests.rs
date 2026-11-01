@@ -1,6 +1,7 @@
 //! Exercise the typed migration reader against a private, read-only Secret Service.
 use super::*;
 use std::sync::{Arc, Mutex};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const ITEM: &str = "/org/freedesktop/secrets/item/selected";
 const SESSION: &str = "/org/freedesktop/secrets/session/selected";
@@ -196,7 +197,7 @@ fn run_scenarios() {
                 "--nocapture",
             ])
             .env(SCENARIO, scenario)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             result.status.success(),

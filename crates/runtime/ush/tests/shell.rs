@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn sh(dir: &Path, data: &Path, script: &str) -> Output {
     let shell = dir.join("ush-sh");
@@ -26,7 +27,7 @@ fn sh(dir: &Path, data: &Path, script: &str) -> Output {
         .env("XDG_DATA_HOME", data)
         // No guest here: the broker is not there.
         .env("TILO_USH_BROKER", dir.join("no-broker.sock"))
-        .output()
+        .output_locked()
         .unwrap()
 }
 

@@ -31,6 +31,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use support::{BASE_PACKAGES, Fake, Machine, RPMFUSION, repo, sha256_hex};
@@ -112,7 +113,7 @@ fn find_tilo_crypto() -> Option<PathBuf> {
 }
 
 fn run(program: &str, args: &[&str]) -> Vec<u8> {
-    let out = Command::new(program).args(args).output().unwrap();
+    let out = Command::new(program).args(args).output_locked().unwrap();
     assert!(
         out.status.success(),
         "{program} {args:?} failed:\n{}\n{}",
@@ -382,7 +383,7 @@ fn sign(data: &[u8], key: &Path, workdir: &Path) -> Vec<u8> {
         .args(["base64", "-A"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     std::io::Write::write_all(&mut child.stdin.take().unwrap(), &der).unwrap();
     let out = child.wait_with_output().unwrap();
@@ -465,7 +466,7 @@ fn base64(data: &[u8]) -> String {
         .args(["base64", "-A"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     std::io::Write::write_all(&mut child.stdin.take().unwrap(), data).unwrap();
     let out = child.wait_with_output().unwrap();

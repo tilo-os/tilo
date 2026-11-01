@@ -1,5 +1,6 @@
 #![cfg(unix)]
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[test]
 fn production_rejects_regular_file_and_caller_device_assertions() {
     for args in [
@@ -22,7 +23,7 @@ fn production_rejects_regular_file_and_caller_device_assertions() {
     ] {
         let out = Command::new(tilo_test_env::package_binary!("tilo-ntfs-probe"))
             .args(args)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(!out.status.success(), "caller asserted authority accepted");
         assert!(out.stdout.is_empty(), "refused request emitted evidence");

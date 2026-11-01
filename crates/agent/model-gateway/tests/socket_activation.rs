@@ -1,6 +1,7 @@
 //! Exercise activation through the production executable, not a listener helper.
 #![cfg(unix)]
 
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[test]
 fn production_gateway_serves_prequeued_request_without_rebinding() {
     let binary = tilo_test_env::package_binary!("tilo-model-gateway");
@@ -10,7 +11,7 @@ fn production_gateway_serves_prequeued_request_without_rebinding() {
             "/tests/socket_activation.py"
         ))
         .arg(binary)
-        .output()
+        .output_locked()
         .expect("Python must be installed to exercise production socket activation");
     assert!(
         output.status.success(),

@@ -4,6 +4,8 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
 };
 use tilo_files::native::atomic::{Privacy, StorageDirectory, provision_directory};
+#[cfg(target_os = "macos")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[cfg(target_os = "linux")]
 #[path = "support/posix_acl.rs"]
 mod posix_acl;
@@ -78,7 +80,10 @@ fn namespace_control_rejects_foreign_owned_directory_without_mutation() {
 #[test]
 fn macos_namespace_acl_profile_preserves_independent_private_creation() {
     use std::process::Command;
-    let user = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    let user = Command::new("/usr/bin/id")
+        .arg("-un")
+        .output_locked()
+        .unwrap();
     assert!(user.status.success());
     let user = String::from_utf8(user.stdout).unwrap();
     for (rule, accepted) in [
@@ -99,7 +104,7 @@ fn macos_namespace_acl_profile_preserves_independent_private_creation() {
             Command::new("/bin/chmod")
                 .args(["+a", &rule])
                 .arg(root.path())
-                .status()
+                .status_locked()
                 .unwrap()
                 .success()
         );
@@ -107,7 +112,7 @@ fn macos_namespace_acl_profile_preserves_independent_private_creation() {
             let output = Command::new("/bin/ls")
                 .args(["-lde"])
                 .arg(root.path())
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(output.status.success());
             String::from_utf8(output.stdout)

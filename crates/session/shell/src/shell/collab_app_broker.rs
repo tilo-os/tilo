@@ -1,5 +1,8 @@
 //! Shared production RPC broker. Native host adapters live in `broker_services`.
+
 pub use tilo_action_broker::collab_app_broker::*;
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 mod local_consent;
 #[cfg(test)]
@@ -64,7 +67,9 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
             .env("TILO_IDENTITY_ROOT", environment.join("identity"))
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity")
             .env("TILO_USER_ID", "environment-owner-must-not-select-identity");
-        let mut child = child.spawn().expect("spawn isolated native-consent test");
+        let mut child = child
+            .spawn_locked()
+            .expect("spawn isolated native-consent test");
         let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
             .expect("wait for isolated native-consent test")
             .unwrap_or_else(|| panic!("isolated native-consent test timed out: {test_name}"));

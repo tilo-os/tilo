@@ -25,10 +25,11 @@
 //! repository (`file://`, pinned to `HEAD`) instead of by path: the form a
 //! developer without a checkout uses. `HEAD` must be committed.
 
-#[cfg(test)]
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A throwaway publisher key file, which `tilo-app` reads from
 /// `$TILO_PUBLISHER_KEY`, so no machine secret store is touched.
@@ -130,7 +131,7 @@ fn an_unbound_control_fails_the_audit(app: &Path) {
     std::fs::write(&source, unbound).expect("write the unbound control");
     let output = tilo_app(app)
         .arg("test")
-        .output()
+        .output_locked()
         .expect("run tilo-app test");
     std::fs::write(&source, &original).expect("restore the app source");
     let text = format!(
@@ -220,7 +221,7 @@ fn verify_package(app: &Path, package: &Path) -> String {
         let executable = unpacked.join(tapp.meta.executable_path().expect("an entrypoint"));
         let audit = Command::new(&executable)
             .arg("--native-audit")
-            .output()
+            .output_locked()
             .expect("run the packaged executable");
         let report = String::from_utf8_lossy(&audit.stdout);
         assert!(
@@ -247,7 +248,7 @@ fn publish_for_review(app: &Path, package: &Path, public_key: &str) {
         publish
     };
 
-    let refused = publish().output().expect("run tilo-app publish");
+    let refused = publish().output_locked().expect("run tilo-app publish");
     assert!(
         !refused.status.success(),
         "a key with no approved namespace published"
@@ -306,7 +307,7 @@ fn tilo_app(dir: &Path) -> Command {
 #[cfg(test)]
 fn run(command: &mut Command, what: &str) {
     eprintln!("[outside-repo] {what}: {command:?}");
-    let status = command.status().expect(what);
+    let status = command.status_locked().expect(what);
     assert!(status.success(), "{what} failed with {status}");
 }
 
@@ -315,7 +316,7 @@ fn run(command: &mut Command, what: &str) {
 #[cfg(test)]
 fn json_result(command: &mut Command, what: &str) -> serde_json::Value {
     eprintln!("[outside-repo] {what}: {command:?}");
-    let output = command.output().expect(what);
+    let output = command.output_locked().expect(what);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),

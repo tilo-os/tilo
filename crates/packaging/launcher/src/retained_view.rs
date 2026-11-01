@@ -1578,6 +1578,7 @@ impl ConsumerLaunchBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn actual_current_peer() -> ExecutingPeer {
         let (mut receiver, mut sender) = UnixStream::pair().unwrap();
@@ -1850,7 +1851,7 @@ mod tests {
                 Ok(())
             });
         }
-        let mut child = ContextFixtureChild(Some(command.spawn().unwrap()));
+        let mut child = ContextFixtureChild(Some(command.spawn_locked().unwrap()));
         let status = tilo_test_env::wait_for("the unprivileged context fixture", || {
             child.0.as_mut().unwrap().try_wait().unwrap()
         });

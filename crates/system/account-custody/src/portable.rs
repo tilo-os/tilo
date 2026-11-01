@@ -583,6 +583,8 @@ impl PasswordSealedAccounts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const PASSWORD: &[u8] = b"a long transport password";
 
     fn source(root: &Path) -> AccountId {
@@ -858,7 +860,7 @@ mod tests {
                 // exec, rather than impersonating the user with only an euid.
                 child.gid(gid).uid(uid);
             }
-            let output = child.output().unwrap();
+            let output = child.output_locked().unwrap();
             assert!(
                 output.status.success(),
                 "installed adoption helper failed: {}\n{}",

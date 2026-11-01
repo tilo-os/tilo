@@ -16,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use tilo_install_helpers::bootc_copy_cache::{Host, can_reuse, current_receipt, enabled};
@@ -246,18 +247,21 @@ fn a_bare_ostree_absence_records_null() {
 #[test]
 fn record_refuses_without_the_opt_in_and_usage_is_two() {
     let binary = tilo_test_env::package_binary!("tilo-vm-bootc-copy-cache");
-    let usage = Command::new(&binary).output().unwrap();
+    let usage = Command::new(&binary).output_locked().unwrap();
     assert_eq!(usage.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&usage.stderr),
         "usage: tilo-vm-bootc-copy-cache check|record\n"
     );
-    let extra = Command::new(&binary).args(["check", "x"]).output().unwrap();
+    let extra = Command::new(&binary)
+        .args(["check", "x"])
+        .output_locked()
+        .unwrap();
     assert_eq!(extra.status.code(), Some(2));
     // Outside an opted-in VM, a check copies and a record says why it cannot.
-    let check = Command::new(&binary).arg("check").output().unwrap();
+    let check = Command::new(&binary).arg("check").output_locked().unwrap();
     assert_eq!(check.status.code(), Some(1));
-    let record = Command::new(binary).arg("record").output().unwrap();
+    let record = Command::new(binary).arg("record").output_locked().unwrap();
     assert_eq!(record.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&record.stderr),

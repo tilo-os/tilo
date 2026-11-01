@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -828,7 +829,7 @@ fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
     let install = |version: &str| {
         std::process::Command::new(tilo_test_env::package_binary!("app"))
             .args(["install", ID, "--version", version])
-            .output()
+            .output_locked()
             .unwrap()
     };
     for version in ["1.4.0", "1.5.0", "1.5.0"] {

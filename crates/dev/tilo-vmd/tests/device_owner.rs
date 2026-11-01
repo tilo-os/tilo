@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_identity_host::provisioning::{IdentityStorage, ensure_collaboration_identity};
 use tilo_user_identity::IdentityPaths;
@@ -15,7 +16,7 @@ fn owns(identity: &Path, device_root: &Path) -> Option<i32> {
         .arg(identity)
         .arg("--device-root")
         .arg(device_root)
-        .status()
+        .status_locked()
         .unwrap()
         .code()
 }

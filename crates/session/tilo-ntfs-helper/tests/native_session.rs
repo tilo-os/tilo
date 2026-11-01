@@ -2,6 +2,7 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
+use tilo_test_env::SpawnUnderEnvLock as _;
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 fn image(name: &str) -> TestResult<PathBuf> {
     Ok(
@@ -15,7 +16,7 @@ fn operation(name: &str, args: &[String]) -> TestResult<Value> {
     let output = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
         .args(args)
-        .output()?;
+        .output_locked()?;
     if before != Sha256::digest(fs::read(&path)?) {
         return Err("complete image changed".into());
     }

@@ -1499,6 +1499,7 @@ pub(super) fn unknown(invocation: InvocationId) -> InvocationUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const LEGACY_SNAPSHOT: &str = r#"{"version":1,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"legacy"}},"uncertain":false,"cancellation_requested":false}]}"#;
     const ENROLLED_SNAPSHOT: &str = r#"{"version":2,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
@@ -1849,7 +1850,7 @@ mod tests {
         let _journal = InvocationJournal::open(&root).unwrap();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
             .arg("--exact").arg("collab_app_broker::invocation_journal::tests::invocation_journal_excludes_a_second_process")
-            .env(PROBE, &root).output().unwrap();
+            .env(PROBE, &root).output_locked().unwrap();
         assert!(
             child.status.success(),
             "{}",

@@ -4,6 +4,7 @@
 )]
 use super::*;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use tilo_test_env::SpawnUnderEnvLock as _;
 fn private_root() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -14,7 +15,7 @@ fn acl(path: &std::path::Path, rule: &str) {
         Command::new("/bin/chmod")
             .args(["+a", rule])
             .arg(path)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );
@@ -54,7 +55,7 @@ fn bounded_privacy_owner_allow_does_not_change_general_owner_only() {
     let user = String::from_utf8(
         Command::new("/usr/bin/id")
             .arg("-un")
-            .output()
+            .output_locked()
             .unwrap()
             .stdout,
     )
@@ -97,7 +98,7 @@ fn bounded_privacy_fresh_child_normalizes_inherited_owner_allow_only_on_new_obje
     let user = String::from_utf8(
         Command::new("/usr/bin/id")
             .arg("-un")
-            .output()
+            .output_locked()
             .unwrap()
             .stdout,
     )
@@ -164,7 +165,7 @@ fn bounded_privacy_current_child_acl_mode_and_link_checks_cannot_be_cached() {
         Command::new("/bin/chmod")
             .arg("-N")
             .arg(&path)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );

@@ -26,6 +26,7 @@ use tilo_rollback::{
     exec,
     policy::{self, Workspace},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Tpm {
     _state: tempfile::TempDir,
@@ -39,7 +40,7 @@ impl Tpm {
             let ok = Command::new("sh")
                 .arg("-c")
                 .arg(format!("command -v {tool} >/dev/null 2>&1"))
-                .status()
+                .status_locked()
                 .is_ok_and(|status| status.success());
             assert!(ok, "the prepared TPM handoff test needs {tool} installed");
         }
@@ -69,7 +70,7 @@ impl Tpm {
                     .open(&setup_log)
                     .map_err(|error| error.to_string())?,
             ))
-            .status();
+            .status_locked();
         let log = state.path().join("swtpm.log");
         let child = Command::new("swtpm")
             .arg("socket")
@@ -88,7 +89,7 @@ impl Tpm {
                     .open(&log)
                     .map_err(|error| error.to_string())?,
             ))
-            .spawn()
+            .spawn_locked()
             .map_err(|error| error.to_string())?;
         let mut tpm = Self {
             _state: state,
@@ -105,7 +106,7 @@ impl Tpm {
             match Command::new("tpm2_getcap")
                 .arg("properties-fixed")
                 .env("TPM2TOOLS_TCTI", tpm.tcti())
-                .output()
+                .output_locked()
             {
                 Ok(output) if output.status.success() => return Ok(tpm),
                 Ok(output) => last = String::from_utf8_lossy(&output.stderr).into_owned(),

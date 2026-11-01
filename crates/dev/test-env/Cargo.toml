@@ -26,6 +26,14 @@ libc.workspace = true
 # default, so a package that only needs the environment does not link a CRDT;
 # `document` is what a package whose devices carry a document enables.
 document = ["dep:automerge", "dep:serde_json", "dep:tilo-automerge"]
+# `SpawnUnderEnvLockAsync`: `tokio::process::Command` started under the
+# environment lock, for a package whose tests start processes from Tokio.
+tokio = ["dep:tokio"]
+
+[dependencies.tokio]
+workspace = true
+optional = true
+features = ["process"]
 
 [dependencies.automerge]
 workspace = true

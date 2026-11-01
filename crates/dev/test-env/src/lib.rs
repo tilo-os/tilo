@@ -407,6 +407,60 @@ impl SpawnUnderEnvLock for std::process::Command {
     }
 }
 
+/// [`SpawnUnderEnvLock`] for `tokio::process::Command`: the child starts
+/// under [`lock`], and the wait for it runs without the lock.
+#[cfg(feature = "tokio")]
+pub trait SpawnUnderEnvLockAsync {
+    /// `tokio::process::Command::spawn`, under [`lock`].
+    ///
+    /// # Errors
+    ///
+    /// As `spawn`.
+    fn spawn_locked(&mut self) -> io::Result<tokio::process::Child>;
+    /// `tokio::process::Command::output`, under [`lock`] while the child
+    /// starts: its output and errors are captured, and its input is this
+    /// process's unless the command names one.
+    ///
+    /// # Errors
+    ///
+    /// As `output`.
+    fn output_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::Output>> + Send;
+    /// `tokio::process::Command::status`, under [`lock`] while the child starts.
+    ///
+    /// # Errors
+    ///
+    /// As `status`.
+    fn status_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::ExitStatus>> + Send;
+}
+
+#[cfg(feature = "tokio")]
+impl SpawnUnderEnvLockAsync for tokio::process::Command {
+    fn spawn_locked(&mut self) -> io::Result<tokio::process::Child> {
+        let _env = lock();
+        self.spawn()
+    }
+
+    fn output_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::Output>> + Send {
+        self.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = self.spawn_locked();
+        async move { child?.wait_with_output().await }
+    }
+
+    fn status_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::ExitStatus>> + Send {
+        let child = self.spawn_locked();
+        async move { child?.wait().await }
+    }
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "this crate is the one sanctioned writer of the process environment"

@@ -5,6 +5,9 @@
 #
 #   - LANG=C.UTF-8 with no other locale override, TZ=UTC, and the US
 #     keyboard layout (XKB_DEFAULT_LAYOUT=us);
+#   - Mesa's CPU Vulkan driver (lavapipe) as the only GPU, the renderer the
+#     visual goldens are recorded with, so no test reaches a real GPU and a
+#     picture does not depend on the machine's;
 #   - a fresh, empty HOME, TMPDIR and XDG base directories (config, data,
 #     state, cache, runtime) that are deleted afterwards, all below /tmp;
 #   - no desktop session: no display, keyring (on macOS, no login Keychain),
@@ -105,6 +108,22 @@ export TZ=UTC
 # types it), so pin it like the locale: US, no variant, no options.
 export XKB_DEFAULT_LAYOUT=us
 unset XKB_DEFAULT_VARIANT XKB_DEFAULT_MODEL XKB_DEFAULT_OPTIONS XKB_DEFAULT_RULES
+
+# The GPU is lavapipe, as tools/test-env-setup.sh runtime gives CI: the only
+# Vulkan driver the loader reads, and the adapter wgpu must pick. A run that
+# named a driver itself keeps it. Where lavapipe is missing the loader gets an
+# empty driver list rather than the machine's: tests that need a GPU then skip
+# (or fail where TILO_REQUIRE_GPU=1) instead of drawing on a real one.
+if [ "$(uname -s)" = Linux ] && [ -z "${VK_DRIVER_FILES:-}${VK_ICD_FILENAMES:-}" ]; then
+    lavapipe="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
+    export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
+    if [ -r "$lavapipe" ]; then
+        export VK_DRIVER_FILES="$lavapipe"
+        export WGPU_ADAPTER_NAME="${WGPU_ADAPTER_NAME:-llvmpipe}"
+    else
+        export VK_DRIVER_FILES="$root/no-vulkan-driver.json"
+    fi
+fi
 
 # The run's private audio endpoint (tools/test-env-setup.sh audio) is the
 # test environment's own, not a desktop's: keep its address.

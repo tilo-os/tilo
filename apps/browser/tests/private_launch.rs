@@ -1,3 +1,5 @@
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 #[test]
 fn private_window_flag_is_valid_in_the_live_launch_parser() {
     let fixture = tempfile::tempdir().unwrap();
@@ -5,7 +7,7 @@ fn private_window_flag_is_valid_in_the_live_launch_parser() {
     let result = std::process::Command::new(tilo_test_env::package_binary!("browser"))
         .args(["--private", "--scenario", "settings", "--shots"])
         .arg(&output)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         result.status.success(),

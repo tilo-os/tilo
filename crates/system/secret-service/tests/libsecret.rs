@@ -21,6 +21,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn service() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-secret-service")
@@ -92,7 +93,7 @@ impl Session {
             .args(["serve", "--identity-root"])
             .arg(self.path("identity"))
             .stdout(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("the service binary starts");
         self.service = Some(service);
         let deadline = tilo_test_env::hang_deadline();
@@ -102,7 +103,7 @@ impl Session {
                 .args(["--user", "--no-pager", "status", NAME])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
+                .status_locked()
                 .is_ok_and(|status| status.success());
             if owned {
                 return;
@@ -130,7 +131,7 @@ impl Session {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("this test needs secret-tool (libsecret)");
         child
             .stdin
@@ -208,7 +209,7 @@ fn a_gi_secret_client_works_over_both_session_algorithms_and_browses_items() {
     let output = session
         .command("python3")
         .arg(client_script())
-        .output()
+        .output_locked()
         .expect("python3 runs");
     let text = format!(
         "{}{}",

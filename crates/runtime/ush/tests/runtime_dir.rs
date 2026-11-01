@@ -5,6 +5,7 @@
 )]
 
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId};
 use ush::records::Records;
@@ -50,7 +51,7 @@ fn a_guest_has_a_private_runtime_directory() {
         .env("TILO_USH_IMAGES", &images)
         .env("SHELL", "/usr/bin/bash")
         .stdin(Stdio::null())
-        .output()
+        .output_locked()
         .expect("tilo-ush runs");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let both = format!(

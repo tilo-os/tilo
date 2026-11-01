@@ -8,6 +8,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn default_admission_activates_a_live_owner_and_retries_after_its_exit() {
@@ -251,7 +252,7 @@ fn daemon_start(profile: &std::path::Path, script: &str) -> DaemonStart {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(profile.join("daemon.log")).unwrap())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     DaemonStart::new(profile, child)
 }
@@ -348,7 +349,7 @@ fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(profile.path().join("daemon.log")).unwrap())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let steps = child.stdin.take().unwrap();
     let pid = child.id();
@@ -416,7 +417,7 @@ fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
         .args(["-c", "sh -c 'while :; do :; done' & wait"])
         .process_group(0)
         .stdin(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let pid = wrapper.id();
     let deadline = tilo_test_env::hang_deadline();
@@ -448,7 +449,7 @@ fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
 #[cfg(target_os = "linux")]
 #[test]
 fn parent_pids_find_a_spawned_child() {
-    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let mut child = Command::new("/bin/sleep").arg("30").spawn_locked().unwrap();
     let found = super::parent_pids().contains(&(child.id(), std::process::id()));
     let _ = child.kill();
     let _ = child.wait();

@@ -977,6 +977,7 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
     use crate::migration::{CopyProgress, CopyReport};
@@ -1170,7 +1171,7 @@ mod tests {
                 .env("TILO_COPY_STORE_LOCK_TEST", &root)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             let deadline = tilo_test_env::hang_deadline();
             while !root.join("owner-ready").exists() {

@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Stands in for Cargo: resolves the app with no dependencies, records its
 /// build arguments and reports one fake executable for the requested `--bin`
@@ -40,7 +41,7 @@ fn tilo_app(dir: &Path, cargo: &Path, args: &[&str]) -> std::process::Output {
         .env_remove("TILO_UI_PATH")
         .env("CARGO", cargo)
         .env("FAKE_CARGO_ARGS", dir.join("cargo-args"))
-        .output()
+        .output_locked()
         .expect("run tilo-app")
 }
 
@@ -177,7 +178,7 @@ fn this_machines_libraries_are_named_only_when_the_build_fails() {
         if fail {
             command.env("FAKE_CARGO_FAIL", "1");
         }
-        command.output().expect("run tilo-app")
+        command.output_locked().expect("run tilo-app")
     };
 
     let built = package(false);

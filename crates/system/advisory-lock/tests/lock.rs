@@ -11,6 +11,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn busy(result: Result<FileLock, TryLockError>) -> bool {
     matches!(result.err(), Some(TryLockError::WouldBlock))
@@ -40,7 +41,7 @@ fn child_holding(file: &File) -> Child {
             Ok(())
         });
     }
-    command.spawn().unwrap()
+    command.spawn_locked().unwrap()
 }
 
 fn assert_child_holds(child: &Child, path: &Path) {

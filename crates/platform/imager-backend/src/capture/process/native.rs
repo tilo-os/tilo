@@ -308,6 +308,7 @@ fn terminate(fd: &File) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     struct Owned(std::process::Child);
     impl Drop for Owned {
         fn drop(&mut self) {
@@ -321,7 +322,7 @@ mod tests {
         let mut child = Owned(
             std::process::Command::new("sleep")
                 .arg("30")
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let uid = rustix::process::getuid().as_raw();
@@ -347,7 +348,7 @@ mod tests {
         let mut child = Owned(
             std::process::Command::new("sleep")
                 .arg("30")
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let mut identity =

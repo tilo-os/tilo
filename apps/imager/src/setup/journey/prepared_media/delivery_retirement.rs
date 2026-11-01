@@ -292,6 +292,7 @@ mod tests {
     use std::{
         fs::OpenOptions, io::Write, os::unix::fs::PermissionsExt as _, sync::mpsc, time::Instant,
     };
+    use tilo_test_env::SpawnUnderEnvLock as _;
     fn target(id: String) -> crate::model::TargetDrive {
         crate::model::TargetDrive {
             name: "fixture-medium".into(),
@@ -328,7 +329,7 @@ mod tests {
             )))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("target:{id}");

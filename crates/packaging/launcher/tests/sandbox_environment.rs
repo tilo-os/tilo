@@ -25,6 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
@@ -378,7 +379,7 @@ fn native_closure(executables: &[&std::path::Path]) -> Vec<PathBuf> {
     for executable in executables {
         let report = std::process::Command::new("ldd")
             .arg(executable)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(report.status.success());
         let report = String::from_utf8(report.stdout).unwrap();
@@ -427,7 +428,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
                 .split(' '),
         )
         .arg(format!("location={}", payload.join("clip.webm").display()))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(encoded.status.success(), "{encoded:?}");
 

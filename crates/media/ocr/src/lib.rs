@@ -523,6 +523,7 @@ fn parse_tsv_bounded(
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Run `body` as the engine; its deadline only catches a hang, so every
     /// bound the result reports comes from the output limits.
@@ -657,7 +658,11 @@ mod tests {
     fn inputs_are_validated_and_errors_are_typed_and_actionable() {
         // Phase `absent_engine_is_a_typed_error_when_not_installed`.
         fn absent_engine_is_a_typed_error_when_not_installed() {
-            if Command::new("tesseract").arg("--version").output().is_ok() {
+            if Command::new("tesseract")
+                .arg("--version")
+                .output_locked()
+                .is_ok()
+            {
                 return;
             }
             let missing = recognize_path(Path::new("/definitely/not/an/image.png"), "eng");

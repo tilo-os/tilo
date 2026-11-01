@@ -2,6 +2,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_app_launch::Connects as _;
 
@@ -165,7 +166,7 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     // The app this session started, in the room it runs in, and its window.
     let mut app_process = std::process::Command::new("sleep")
         .arg("120")
-        .spawn()
+        .spawn_locked()
         .expect("a launched app's process");
     let app = "org.example.Vault";
     launches.started(app_process.id(), app, "private", false);

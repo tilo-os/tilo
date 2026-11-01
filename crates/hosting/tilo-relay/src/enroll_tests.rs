@@ -1,4 +1,5 @@
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -484,7 +485,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         // leaves its timer child holding the test's output handles.
         let mut requester = std::process::Command::new("/bin/cat")
             .stdin(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
         let payload = personal_payload(&root, &member, [9; 16]);
@@ -763,7 +764,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         paths.ensure_directories().unwrap();
         let mut requester = std::process::Command::new("/bin/cat")
             .stdin(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
         let payload = personal_payload(&root, &member, [12; 16]);
@@ -808,7 +809,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
     {
         let mut requester = std::process::Command::new("/bin/cat")
             .stdin(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
         requester.kill().unwrap();

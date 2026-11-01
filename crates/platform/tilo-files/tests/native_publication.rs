@@ -23,6 +23,7 @@ mod unix_tests {
         PublicationError, publication_state,
         test_support::{Checkpoint, with_failure, with_observer},
     };
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const UMASK_CHILD: &str = "TILO_ATOMIC_FILE_UMASK_CHILD";
     const UMASK_PATH: &str = "TILO_ATOMIC_FILE_UMASK_PATH";
@@ -191,7 +192,10 @@ mod unix_tests {
 
         let root = tempfile::tempdir().unwrap();
         let fifo = root.path().join("fifo");
-        let status = Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap();
+        let status = Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status_locked()
+            .unwrap();
         assert!(status.success(), "could not create FIFO fixture: {status}");
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -201,7 +205,7 @@ mod unix_tests {
             ])
             .env(FIFO_CHILD, "1")
             .env(FIFO_ROOT, root.path())
-            .spawn()
+            .spawn_locked()
             .unwrap();
 
         let status = wait_for_child(&mut child).unwrap_or_else(|| {
@@ -255,7 +259,7 @@ mod unix_tests {
             ])
             .env(UMASK_CHILD, "1")
             .env(UMASK_PATH, &path)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success(), "umask child failed: {status}");
     }
@@ -268,7 +272,7 @@ mod unix_tests {
             .arg("+a")
             .arg("everyone allow read,file_inherit")
             .arg(root.path())
-            .status()
+            .status_locked()
             .unwrap();
         assert!(
             status.success(),
@@ -292,7 +296,7 @@ mod unix_tests {
             .arg("+a")
             .arg("everyone allow read,file_inherit")
             .arg(root.path())
-            .status()
+            .status_locked()
             .unwrap();
         assert!(
             status.success(),
@@ -492,13 +496,14 @@ mod identity_tests {
 mod macos_acl_tests {
     use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt, process::Command};
     use tilo_files::native::atomic::{Privacy, StorageDirectory};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn held_directory_privacy_checks_native_acl() {
         let user = String::from_utf8(
             Command::new("/usr/bin/id")
                 .arg("-un")
-                .output()
+                .output_locked()
                 .unwrap()
                 .stdout,
         )
@@ -524,7 +529,7 @@ mod macos_acl_tests {
                 Command::new("/bin/chmod")
                     .args(["+a", &rule])
                     .arg(root.path())
-                    .status()
+                    .status_locked()
                     .unwrap()
                     .success()
             );
@@ -550,7 +555,7 @@ mod macos_acl_tests {
                 String::from_utf8(
                     Command::new("/usr/bin/id")
                         .arg("-un")
-                        .output()
+                        .output_locked()
                         .unwrap()
                         .stdout
                 )
@@ -564,7 +569,7 @@ mod macos_acl_tests {
                 Command::new("/bin/chmod")
                     .args(["+a", &rule])
                     .arg(root.path())
-                    .status()
+                    .status_locked()
                     .unwrap()
                     .success()
             );

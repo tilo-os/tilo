@@ -257,6 +257,7 @@ mod tests {
         DevFns, DevWindowSlot, dev_stamp_addr, publish_dev_root, reload_from_library, reload_with,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn windows() -> Vec<DevWindowSlot> {
         vec![
@@ -279,7 +280,7 @@ mod tests {
             .args(["--edition", "2024", "--crate-type", "cdylib", "-o"])
             .arg(&output)
             .arg(&source_path)
-            .status()
+            .status_locked()
             .expect("rustc runs");
         assert!(status.success(), "rustc {name} exited {status}");
         output

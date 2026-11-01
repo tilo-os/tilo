@@ -12,6 +12,7 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::Path;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use tilo_board_successor::installed_profile;
@@ -861,7 +862,7 @@ fn the_installer_command_prints_the_origin_of_the_running_image() {
     let run = |override_ref: &str| {
         std::process::Command::new(tilo_test_env::package_binary!("tilo-board-successor"))
             .args(["install-update-origin", override_ref])
-            .output()
+            .output_locked()
             .unwrap()
     };
     let output = run("");

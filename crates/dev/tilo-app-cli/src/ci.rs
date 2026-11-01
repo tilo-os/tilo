@@ -567,6 +567,7 @@ fn steps_prelude(out: &mut String, working_directory: &str, lock: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// The revision step reads the SDK pin from a lock a build resolved, from
     /// the app's manifest when the lock is still the scaffold's seed (which
@@ -611,7 +612,7 @@ mod tests {
                 .env("LOCK_FILE", &lock)
                 .env("APP_MANIFEST", &manifest)
                 .env("GITHUB_OUTPUT", &output)
-                .status()
+                .status_locked()
                 .expect("bash runs the step");
             assert!(status.success(), "the step failed: {status}");
             std::fs::read_to_string(&output).expect("step output")

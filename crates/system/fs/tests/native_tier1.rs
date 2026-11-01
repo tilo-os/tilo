@@ -27,6 +27,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_lock::MutexRecover as _;
@@ -197,7 +198,7 @@ impl Daemon {
             .arg(store)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_locked().unwrap();
         let (tx, lines) = mpsc::channel();
         let logs = Arc::new(Mutex::new(Vec::new()));
         for stream in [
@@ -319,7 +320,10 @@ impl Drop for Daemon {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        let _ = Command::new("umount").arg("-l").arg(&self.mount).status();
+        let _ = Command::new("umount")
+            .arg("-l")
+            .arg(&self.mount)
+            .status_locked();
     }
 }
 
@@ -753,7 +757,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .output()
+        .output_locked()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -767,7 +771,11 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     let Some((a, b)) = stores("native_git") else {
         return;
     };
-    if Command::new("git").arg("--version").output().is_err() {
+    if Command::new("git")
+        .arg("--version")
+        .output_locked()
+        .is_err()
+    {
         unavailable(format_args!("git is not installed"));
         return;
     }
@@ -957,7 +965,7 @@ fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
             "{link}"
         );
     }
-    let out = Command::new(m2.join("link-rel")).output().unwrap();
+    let out = Command::new(m2.join("link-rel")).output_locked().unwrap();
     assert_eq!(out.stdout, b"hi\n", "the replicated script runs");
     for path in walk(&m2) {
         let meta = std::fs::symlink_metadata(&path).unwrap();
@@ -1115,7 +1123,11 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
     let Some((a, b)) = stores("native_changeset_crash") else {
         return;
     };
-    if Command::new("git").arg("--version").output().is_err() {
+    if Command::new("git")
+        .arg("--version")
+        .output_locked()
+        .is_err()
+    {
         unavailable(format_args!("git is not installed"));
         return;
     }
@@ -1397,7 +1409,7 @@ fn sqlite(db: &Path, sql: &str) -> Result<String, String> {
     let out = Command::new("sqlite3")
         .arg(db)
         .arg(sql)
-        .output()
+        .output_locked()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
@@ -1450,7 +1462,11 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     let Some((a, b)) = stores("native_sqlite") else {
         return;
     };
-    if Command::new("sqlite3").arg("--version").output().is_err() {
+    if Command::new("sqlite3")
+        .arg("--version")
+        .output_locked()
+        .is_err()
+    {
         unavailable(format_args!("sqlite3 is not installed"));
         return;
     }

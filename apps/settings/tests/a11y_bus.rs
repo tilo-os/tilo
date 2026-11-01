@@ -24,6 +24,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use settings::SettingsShell;
 use ui::accesskit::Role;
@@ -77,7 +78,7 @@ fn accesskit_adapter_on_a_live_bus() {
                     &format!("variant:boolean:{value}"),
                 ])
                 .stdout(std::process::Stdio::null())
-                .status()
+                .status_locked()
                 .expect("dbus-send runs");
             assert!(status.success(), "the bus accepted IsEnabled={value}");
             std::thread::sleep(Duration::from_millis(300));

@@ -44,6 +44,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_lock::MutexRecover as _;
@@ -175,7 +176,7 @@ struct Link {
 
 impl Link {
     fn ip(args: &[&str]) {
-        let status = Command::new("ip").args(args).status().unwrap();
+        let status = Command::new("ip").args(args).status_locked().unwrap();
         assert!(status.success(), "ip {args:?} failed");
     }
 
@@ -184,7 +185,9 @@ impl Link {
         let names = [format!("tbench-a-{tag}"), format!("tbench-b-{tag}")];
         let (va, vb) = (format!("tba{tag}"), format!("tbb{tag}"));
         for ns in &names {
-            let _ = Command::new("ip").args(["netns", "del", ns]).status();
+            let _ = Command::new("ip")
+                .args(["netns", "del", ns])
+                .status_locked();
             Self::ip(&["netns", "add", ns]);
             Self::ip(&["netns", "exec", ns, "ip", "link", "set", "lo", "up"]);
         }
@@ -201,7 +204,7 @@ impl Link {
             let status = Command::new("ip")
                 .args(["netns", "exec", ns, "tc", "qdisc", "add", "dev", dev])
                 .args(["root", "netem", "delay", &delay, "limit", "100000"])
-                .status()
+                .status_locked()
                 .unwrap();
             assert!(status.success(), "tc netem failed");
         }
@@ -223,7 +226,7 @@ impl Link {
                 "/sys/class/net/{}/statistics/rx_bytes",
                 self.devices[i]
             ))
-            .output()
+            .output_locked()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
     }
@@ -232,7 +235,9 @@ impl Link {
 impl Drop for Link {
     fn drop(&mut self) {
         for ns in &self.names {
-            let _ = Command::new("ip").args(["netns", "del", ns]).status();
+            let _ = Command::new("ip")
+                .args(["netns", "del", ns])
+                .status_locked();
         }
     }
 }
@@ -291,7 +296,7 @@ impl Daemon {
             .arg(store)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_locked().unwrap();
         let (tx, lines) = mpsc::channel();
         let logs = Arc::new(Mutex::new(Vec::new()));
         let verbose = std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some();
@@ -395,7 +400,10 @@ impl Drop for Daemon {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        let _ = Command::new("umount").arg("-l").arg(&self.mount).status();
+        let _ = Command::new("umount")
+            .arg("-l")
+            .arg(&self.mount)
+            .status_locked();
     }
 }
 
@@ -790,7 +798,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env("GIT_COMMITTER_EMAIL", "bench@example.invalid")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .output()
+        .output_locked()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
