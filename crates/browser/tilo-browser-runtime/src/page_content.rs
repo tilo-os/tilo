@@ -2,7 +2,7 @@
 //! records reference, by hash, in the page's memory. Every window of the
 //! page shares it, so content one fetched is there for the others; the
 //! framework joins it to each window's record route, so content a record
-//! references and the page lacks is asked of the room, and its pieces are
+//! references and the page lacks is asked of the workspace, and its pieces are
 //! verified before they are kept here.
 
 use std::cell::RefCell;
@@ -66,7 +66,7 @@ fn blob(owners: &ImageOwners, loader: usize, url: &str) -> Option<(ContentStore,
 
 /// Whether the page can hand image `url` to the page's decoder now: any
 /// image but a content address is; one is once its bytes are here, and
-/// asking for it otherwise asks the window's room.
+/// asking for it otherwise asks the window's workspace.
 pub(crate) fn image_ready(owners: &ImageOwners, loader: usize, url: &str) -> bool {
     if !url.starts_with(BLOB_SCHEME) {
         return true;

@@ -300,7 +300,7 @@ pub fn storage_write_hook(
 /// Where page-side values (`profile_value`) live. Changing it orphans them.
 const PAGE_VALUES_PACKAGE: &str = "so.tilo.browser-page";
 
-/// The workspace under which a profile keeps state that belongs to no room.
+/// The workspace under which a profile keeps state that belongs to no workspace.
 pub(crate) const PROFILE_WORKSPACE: &str = "profile";
 
 /// A small page-side value kept in the profile (for example a peer's public

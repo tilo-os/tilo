@@ -21,7 +21,7 @@ use tilo_user_identity::DeviceCert;
 
 /// How long the owner's admission of this reporter stands: long enough to
 /// write and send a report after reviewing it, short enough that a person
-/// the room removes cannot file for long after. While the page is admitted
+/// the workspace removes cannot file for long after. While the page is admitted
 /// it asks again before then ([`ADMISSION_RENEW`]), so a Send never meets a
 /// lapsed admission.
 const ADMISSION_FRESH: Duration = Duration::from_secs(60);
@@ -68,7 +68,7 @@ pub(crate) fn configure(
     destination: FeedbackDestination,
 ) -> Result<(), String> {
     let workspace = tilo_relay_protocol::room_workspace_id(&destination.room)
-        .map_err(|_| "feedback room must be a uuid")?;
+        .map_err(|_| "feedback workspace must be a uuid")?;
     Destination {
         room: destination.room.clone(),
         provider: destination.provider.clone(),
@@ -433,7 +433,7 @@ fn renew_admission(connection: &mut Connection) {
 }
 
 /// Keeps a report's masked picture in the page's content store, as a file
-/// posted in Chat is kept: the room's host asks the room for the pictures of
+/// posted in Chat is kept: the workspace's host asks the workspace for the pictures of
 /// the reports filed in its Chat and keeps its own copy, which its receipt
 /// waits for. The page captures nothing itself; the picker's masked crops
 /// are the only picture a report carries.
@@ -454,9 +454,9 @@ impl Capture for PageContent {
 }
 
 /// Records the window a report is about from the record committed in the
-/// room of the desktop whose reports peer `id` carries, through the one recorder every desktop uses; the recording's
+/// workspace of the desktop whose reports peer `id` carries, through the one recorder every desktop uses; the recording's
 /// bytes are kept in the page's content store beside the report's picture,
-/// and reach the room's host the same way.
+/// and reach the workspace's host the same way.
 fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
     tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
@@ -481,7 +481,7 @@ fn keep_picture(
 ) -> Result<(), Error> {
     let hash = content
         .put(image.png())
-        .map_err(|_| Error::Invalid("the page has no room for the picture"))?;
+        .map_err(|_| Error::Invalid("the page has no workspace for the picture"))?;
     if hash != image.reference().hash || content.read(&hash).as_deref() != Some(image.png()) {
         return Err(Error::NotDurable);
     }

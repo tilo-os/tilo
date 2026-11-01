@@ -1,4 +1,4 @@
-//! The model a room's host lends its reporters to look over their reports.
+//! The model a workspace's host lends its reporters to look over their reports.
 //!
 //! The page never holds the host's key: the report's review prompt, written
 //! from the model view (personal values only as placeholders), goes to the

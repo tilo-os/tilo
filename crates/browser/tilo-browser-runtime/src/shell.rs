@@ -71,9 +71,9 @@ pub(crate) enum HostRequest {
     /// page's naming action, already answered (`onHostAction('set-name',
     /// name)`).
     Named(String),
-    /// Have the room's host run an action of a room record for the person
+    /// Have the workspace's host run an action of a workspace record for the person
     /// (`peer.actions`), and answer it with `desktop_room_action_answer`.
-    RoomAction(crate::desktop::RoomActionRequest),
+    RecordAction(crate::desktop::RecordActionRequest),
     /// Open Chat's direct conversation with this person, through Chat's own
     /// action, as following a link to it does (`desktop_run_own_ask`).
     Message(people::OwnAsk),
@@ -85,9 +85,9 @@ pub(crate) enum HostRequest {
     /// (`desktop_set_own_status`): set here, it shows there too.
     Status { status: String, sharing: String },
     /// Go to this address, leaving the page: a service's consent page,
-    /// which comes back to the room's host and from there to this entry.
+    /// which comes back to the workspace's host and from there to this entry.
     Open(String),
-    /// The person's linked accounts, as the room's host answered: their
+    /// The person's linked accounts, as the workspace's host answered: their
     /// profile names them, and wears an account's picture until the person
     /// uploads their own (`onHostAction('set-linked', {accounts})`).
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
@@ -124,7 +124,7 @@ pub(crate) struct HostOffers {
     pub invite: bool,
     /// The page runs on macOS: its command key is Cmd.
     pub mac: bool,
-    /// The host of the room shown (`example.org`), named beside the
+    /// The host of the workspace shown (`example.org`), named beside the
     /// workspace; `None` on the person's own desktop.
     pub host: Option<String>,
     /// The deployment's links the About sheet offers.
@@ -136,10 +136,10 @@ pub(crate) struct HostOffers {
     pub link_offer: Option<String>,
 }
 
-/// Who this desktop's person is when they make something in the room,
+/// Who this desktop's person is when they make something in the workspace,
 /// and who made what there.
 #[derive(Clone, Default)]
-pub(crate) struct Room {
+pub(crate) struct Authorship {
     /// Who made each strip and opened each window.
     pub authors: crate::desktop::Authors,
     /// The person this desktop acts for.
@@ -152,7 +152,7 @@ struct PageChrome {
     handle: DesktopHandle,
     shared: crate::desktop::Shared,
     here: tilo_desktop::here::Here,
-    room: Room,
+    authorship: Authorship,
     notifications: tilo_desktop_surface::DesktopNotifications,
     intents: RefCell<Vec<ChromeIntent>>,
     /// `(tree revision, minute, who-is-here revision, notifications
@@ -223,8 +223,8 @@ impl DesktopChromeSource for PageChrome {
 
 impl PageChrome {
     /// Whether the bar offers its invite button: the page takes invitations
-    /// and the room lets this person write in it. Someone it lets only look,
-    /// a spectator among them, brings nobody in; until the room answered,
+    /// and the workspace lets this person write in it. Someone it lets only look,
+    /// a spectator among them, brings nobody in; until the workspace answered,
     /// the button stands, as for everyone it lets in.
     fn may_invite(&self) -> bool {
         self.invite
@@ -237,8 +237,10 @@ impl PageChrome {
 
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
         let members = self.shared.members.borrow();
-        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
-        let authors = self.room.authors.borrow();
+        let standing = self
+            .shared
+            .standing_of(&self.authorship.author, members.as_ref());
+        let authors = self.authorship.authors.borrow();
         self.handle.read(|tree| {
             let workspace = tree
                 .active_workspace()
@@ -248,11 +250,13 @@ impl PageChrome {
         })
     }
 
-    /// Whether this desktop's person may add a workspace to the room, by the
+    /// Whether this desktop's person may add a workspace to the workspace, by the
     /// desktop's one policy.
     fn may_create_workspace(&self) -> Result<(), String> {
         let members = self.shared.members.borrow();
-        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
+        let standing = self
+            .shared
+            .standing_of(&self.authorship.author, members.as_ref());
         tilo_desktop_model::commands::may_create_workspace(&standing)
             .map_err(|refusal| refusal.to_string())
     }
@@ -293,7 +297,7 @@ impl PageChrome {
     }
 }
 
-/// The page's answers to the desktop's layers: the room's policy for this
+/// The page's answers to the desktop's layers: the workspace's policy for this
 /// page's person, and who is here.
 struct PageRules(Rc<PageChrome>, Option<String>);
 
@@ -307,7 +311,7 @@ impl DesktopRules for PageRules {
     }
 
     fn author(&self) -> String {
-        self.0.room.author.clone()
+        self.0.authorship.author.clone()
     }
 
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
@@ -320,10 +324,10 @@ impl DesktopRules for PageRules {
 
     fn made_strip(&self, strip: StripId) {
         self.0
-            .room
+            .authorship
             .authors
             .borrow_mut()
-            .insert(strip.0, self.0.room.author.clone());
+            .insert(strip.0, self.0.authorship.author.clone());
     }
 
     fn workspace_host(&self) -> Option<String> {
@@ -457,7 +461,7 @@ pub(crate) struct BrowserShell {
     linking: tilo_app::linked_accounts::LinkingRecheck,
     /// The linked accounts last handed to the page for the person's profile.
     profile_links: Option<Vec<tilo_app::linked_accounts::ProfileLink>>,
-    /// How often, and when last, the room was asked for them unopened.
+    /// How often, and when last, the workspace was asked for them unopened.
     links_asked: (u32, Option<ui::time::Instant>),
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
@@ -484,7 +488,7 @@ pub(crate) struct BrowserShell {
 pub struct ChromeSources {
     pub here: tilo_desktop::here::Here,
     pub shared: crate::desktop::Shared,
-    pub room: Room,
+    pub authorship: Authorship,
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     pub wake: Arc<dyn Fn() + Send + Sync>,
@@ -547,7 +551,7 @@ impl BrowserShell {
         let ChromeSources {
             here,
             shared,
-            room,
+            authorship,
             notifications,
             wake,
         } = sources;
@@ -555,7 +559,7 @@ impl BrowserShell {
             handle: handle.clone(),
             shared,
             here,
-            room,
+            authorship,
             notifications,
             intents: RefCell::default(),
             seen: Cell::new((u64::MAX, 0, 0, 0, u8::MAX)),
@@ -837,7 +841,7 @@ impl BrowserShell {
                 self.expanded = if self.expanded == id { None } else { id };
             }
             CollaboratorsHit::Wave(index) => {
-                // Through the room's live presence: the person waved at
+                // Through the workspace's live presence: the person waved at
                 // sees it, and the row shows it sent.
                 if let Some(target) = self.people.wave_target(index).map(str::to_owned)
                     && self.chrome.here.borrow_mut().wave_at(&target, now_ms())
@@ -1395,9 +1399,9 @@ impl BrowserShell {
         self.requests.borrow_mut().push(request);
     }
 
-    /// Ask the room's host to link (or unlink) the person's account with
+    /// Ask the workspace's host to link (or unlink) the person's account with
     /// `app`'s service; the open card shows what came of it once the host
-    /// answered ([`Self::follow_room_actions`]).
+    /// answered ([`Self::follow_record_actions`]).
     fn link_account(&self, app: &str, link: bool) {
         let linked = &self.chrome.shared.linked;
         if link {
@@ -1412,7 +1416,7 @@ impl BrowserShell {
         self.close_bar_popovers_except(BarPopover::Profile);
         if !self.profile.is_open() {
             // Where the person stands with each connected service is asked
-            // of the room's host; the card shows it once answered.
+            // of the workspace's host; the card shows it once answered.
             self.chrome.shared.linked.refresh();
         }
         if self.profile_of.take().is_some() {
@@ -1430,7 +1434,7 @@ impl BrowserShell {
     /// confirm. Whether it opened.
     fn take_link_offer(&mut self) -> bool {
         // The card opens under the own avatar, which the bar knows once it
-        // drew it, and asks in the person's name, once the room knows it.
+        // drew it, and asks in the person's name, once the workspace knows it.
         if !link_offer_ready(
             self.rect,
             self.top.bar().own_avatar_rect(),
@@ -1449,11 +1453,11 @@ impl BrowserShell {
     }
 
     /// The person's profile names their linked accounts and wears their
-    /// picture, so the room's host is asked where they stand once the room
+    /// picture, so the workspace's host is asked where they stand once the workspace
     /// is known, without the card open; what it answers goes to the page
     /// whenever it changed.
     fn follow_profile_links(&mut self) {
-        /// How many times, and how far apart, the room is asked unopened:
+        /// How many times, and how far apart, the workspace is asked unopened:
         /// its records arrive a moment after the page.
         const TRIES: u32 = 6;
         const APART: std::time::Duration = std::time::Duration::from_secs(5);
@@ -1476,10 +1480,10 @@ impl BrowserShell {
         }
     }
 
-    /// Hand the room actions the chrome asked for to the page, which has the
-    /// room's host run them, and show the linked accounts again when an
+    /// Hand the workspace actions the chrome asked for to the page, which has the
+    /// workspace's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
-    fn follow_room_actions(&mut self) -> bool {
+    fn follow_record_actions(&mut self) -> bool {
         // A waiting offer draws again until the bar is there to open it.
         let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
         if self.profile_of.is_none() {
@@ -1495,12 +1499,12 @@ impl BrowserShell {
             ui::time::now(),
         );
         self.follow_profile_links();
-        let asked = self.chrome.shared.room_actions.take_requests();
-        let opens = self.chrome.shared.room_actions.take_opens();
+        let asked = self.chrome.shared.record_actions.take_requests();
+        let opens = self.chrome.shared.record_actions.take_opens();
         let changed = offered || !asked.is_empty() || !opens.is_empty();
         self.requests
             .borrow_mut()
-            .extend(asked.into_iter().map(HostRequest::RoomAction));
+            .extend(asked.into_iter().map(HostRequest::RecordAction));
         self.requests
             .borrow_mut()
             .extend(opens.into_iter().map(HostRequest::Open));
@@ -1559,7 +1563,7 @@ impl Widget for BrowserShell {
             self.apply_profile_choice(choice);
             changed = true;
         }
-        changed |= self.follow_room_actions();
+        changed |= self.follow_record_actions();
         changed |= self.take_person_card_ask();
         // What a reader pressed on the pinned roster or the bar's people
         // panel, as a press is.
@@ -1833,7 +1837,7 @@ impl Widget for BrowserShell {
 }
 
 /// Whether a link offer the page arrived with can open the card: the bar
-/// is drawn (the card opens under the own avatar) and the room named the
+/// is drawn (the card opens under the own avatar) and the workspace named the
 /// person, since the card asks "Link Discord @name to <you>?" in their own
 /// name and must never ask it of "Guest".
 fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> bool {
@@ -1880,7 +1884,7 @@ mod tests {
     const GUEST: &str = "guest";
     const OTHER_GUEST: &str = "other-guest";
 
-    /// The public Lounge as a page holds it: one strip the room lists, a
+    /// The public Lounge as a page holds it: one strip the workspace lists, a
     /// window the guest opened and one another guest opened.
     fn lounge() -> (DesktopTree, BTreeMap<u64, String>) {
         let mut minter = IdMinter::new(3);
@@ -1948,7 +1952,7 @@ mod tests {
     }
 
     /// The confirm a `/link` button opens asks in the person's own name:
-    /// it waits for the room to name them rather than ask it of "Guest".
+    /// it waits for the workspace to name them rather than ask it of "Guest".
     #[test]
     fn a_link_offer_waits_for_the_persons_own_name() {
         let page = Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -1981,7 +1985,7 @@ mod tests {
         assert_eq!(offers("member", Some(Role::Editor)), none);
         assert_eq!(offers("moderator", Some(Role::Moderator)), all);
         assert_eq!(offers("owner", Some(Role::Owner)), all);
-        // Until the room has answered, nothing is offered to take back.
+        // Until the workspace has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
         let own = crate::desktop::Standing::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
@@ -2012,8 +2016,8 @@ mod tests {
         }
     }
 
-    /// A window whose opener has left the room holds nobody: once the
-    /// room's members are heard without them, it offers its close.
+    /// A window whose opener has left the workspace holds nobody: once the
+    /// workspace's members are heard without them, it offers its close.
     #[test]
     fn a_window_of_someone_who_left_offers_its_close() {
         let (tree, authors) = lounge();
@@ -2038,11 +2042,11 @@ mod tests {
         );
     }
 
-    /// A public room shares no member's layout: once it said so, every
+    /// A public workspace shares no member's layout: once it said so, every
     /// window on the visitor's desktop is theirs to close (nothing is ever
     /// undone), and the workspace's name and desks are offered to nobody.
     #[test]
-    fn in_a_public_room_the_desktop_is_the_visitors_own() {
+    fn in_a_public_workspace_the_desktop_is_the_visitors_own() {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
         shared.authors.borrow_mut().clone_from(&authors);

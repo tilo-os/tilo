@@ -1,4 +1,4 @@
-//! The records every app of the room opens beside its own (the workspace's
+//! The records every app of the workspace opens beside its own (the workspace's
 //! emoji), as a page hands them to the windows it mounts.
 
 use std::cell::RefCell;
@@ -8,19 +8,19 @@ use ui::permissions::UserId;
 use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordOwners, RecordStore};
 
-/// Each record in its owner's store of `room`: the one a window of the owner
+/// Each record in its owner's store of `workspace`: the one a window of the owner
 /// opened, or opened now and kept among `stores`, the stores the page flushes
-/// and replicates, so the record reaches every window of the room and every
+/// and replicates, so the record reaches every window of the workspace and every
 /// peer.
 pub(crate) fn in_page(
     owners: &RecordOwners,
     stores: &Rc<RefCell<Vec<RecordStore>>>,
-    room: &str,
+    workspace: &str,
     author: String,
 ) -> WorkspaceRecords {
-    let (owners, stores, room) = (owners.clone(), Rc::clone(stores), room.to_owned());
+    let (owners, stores, workspace) = (owners.clone(), Rc::clone(stores), workspace.to_owned());
     WorkspaceRecords::new(UserId(author), move |owner| {
-        let home = (owner.to_owned(), room.clone());
+        let home = (owner.to_owned(), workspace.clone());
         if let Some(store) = stores
             .borrow()
             .iter()
@@ -28,7 +28,7 @@ pub(crate) fn in_page(
         {
             return Ok(store.clone());
         }
-        let store = owners.clone().open_beside(owner, &room)?;
+        let store = owners.clone().open_beside(owner, &workspace)?;
         stores.borrow_mut().push(store.clone());
         Ok(store)
     })
