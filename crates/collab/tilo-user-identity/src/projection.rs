@@ -23,7 +23,7 @@ pub const MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS: usize = 256;
 /// Maximum certified devices across all humans in one projection.
 pub const MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES: usize = 1024;
 /// Maximum UTF-8 byte length of a person's display name: the one bound
-/// every host, room and browser keeps a name to (see [`display_name`]).
+/// every host, workspace and browser keeps a name to (see [`display_name`]).
 pub const MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES: usize = 128;
 
 /// Why a name a person gave themself is refused.
@@ -57,7 +57,7 @@ impl std::fmt::Display for DisplayNameError {
 
 impl std::error::Error for DisplayNameError {}
 
-/// `name` trimmed, if it is a display name every host and room keeps: not
+/// `name` trimmed, if it is a display name every host and workspace keeps: not
 /// empty, at most [`MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES`] of UTF-8, no
 /// control characters. Self-asserted text, never authority.
 pub fn display_name(name: &str) -> Result<&str, DisplayNameError> {
@@ -231,7 +231,7 @@ pub struct GovernedHumanIdentityV2 {
     /// Ed25519 human root authority.
     pub root_public_key: [u8; 32],
     pub display_name: String,
-    /// Root-signed devices currently known to room governance.
+    /// Root-signed devices currently known to workspace governance.
     pub devices: Vec<GovernedDeviceIdentityV2>,
 }
 
@@ -286,7 +286,7 @@ fn validate_name(name: &str) -> Result<(), TrustedIdentityProjectionError> {
     Ok(())
 }
 
-/// One human root key whose display name came from room governance.
+/// One human root key whose display name came from workspace governance.
 ///
 /// The root key is the authority handed to sharing APIs. `display_name` is
 /// presentation metadata and must never be converted back into authority.

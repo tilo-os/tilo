@@ -559,7 +559,7 @@ impl Personal {
             let hosts: Vec<[u8; 32]> = entry.host.into_iter().collect();
             let written = self
                 .directory
-                .add_room_workspace(id, &room.to_string(), &entry.name)
+                .add_workspace_with_topic(id, &room.to_string(), &entry.name)
                 .and_then(|()| self.directory.set_host_devices(id, &hosts))
                 .and_then(|()| {
                     if fresh {

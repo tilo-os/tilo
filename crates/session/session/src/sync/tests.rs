@@ -62,7 +62,7 @@ fn list_of(
     );
     let workspace = RoomId::parse(workspace).expect("a workspace id");
     directory
-        .add_room_workspace(
+        .add_workspace_with_topic(
             workspace_topic_id(workspace),
             &workspace.to_string(),
             "Desk",
