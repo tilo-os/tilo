@@ -103,7 +103,7 @@ pub fn room_document(
     package: &str,
     room: &str,
 ) -> Result<DocStore, StoreError> {
-    app_state::validate_room_identity(package, room)?;
+    app_state::validate_workspace_identity(package, room)?;
     DocStore::shared(
         Rc::clone(documents),
         StorageKey::workspace_index(package, room),

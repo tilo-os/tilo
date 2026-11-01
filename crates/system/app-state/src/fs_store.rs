@@ -334,19 +334,22 @@ fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError>
     packages.sort();
     let mut indexes = Vec::new();
     for package in packages {
-        let rooms = root.join(&package).join(WORKSPACES_DIR);
-        let entries = match fs::read_dir(&rooms) {
+        let workspaces = root.join(&package).join(WORKSPACES_DIR);
+        let entries = match fs::read_dir(&workspaces) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(io_err(format!("listing {}", rooms.display()), error).into()),
+            Err(error) => {
+                return Err(io_err(format!("listing {}", workspaces.display()), error).into());
+            }
         };
         for entry in entries {
-            let entry = entry.map_err(|e| io_err(format!("listing {}", rooms.display()), e))?;
-            if let Some(room) = entry.file_name().to_str().map(str::to_owned)
-                && validate_record_key(&room).is_ok()
+            let entry =
+                entry.map_err(|e| io_err(format!("listing {}", workspaces.display()), e))?;
+            if let Some(workspace) = entry.file_name().to_str().map(str::to_owned)
+                && validate_record_key(&workspace).is_ok()
                 && entry.path().is_dir()
             {
-                indexes.push((package.clone(), room));
+                indexes.push((package.clone(), workspace));
             }
         }
     }
@@ -987,7 +990,7 @@ impl DurableStore for FsStore {
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
         validate_record_key(claimant)?;
         let marker = match key {
-            // A room record adopted under a new identity (see
+            // A workspace record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
             StorageKey::Record { .. } => match self.target(key)? {
                 Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
@@ -1001,7 +1004,7 @@ impl DurableStore for FsStore {
             _ => {
                 return Err(SeamError::InvalidKey {
                     key: key.to_string(),
-                    reason: "only room records are claimed".into(),
+                    reason: "only workspace records are claimed".into(),
                 });
             }
         };
@@ -2195,17 +2198,17 @@ mod tests {
     }
 
     #[test]
-    fn records_lists_one_rooms_committed_documents_sorted() {
+    fn records_lists_one_workspaces_committed_documents_sorted() {
         let tmp = TempDir::new().unwrap();
         let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         assert!(store.records("so.tilo.test", "room-a").unwrap().is_empty());
-        for (room, name, bytes) in [
+        for (workspace, name, bytes) in [
             ("room-a", "b-rec", b"doc".as_slice()),
             ("room-a", "a-rec", b"doc"),
             ("room-a", "empty", b""),
             ("room-b", "elsewhere", b"doc"),
         ] {
-            let key = StorageKey::record("so.tilo.test", room, name);
+            let key = StorageKey::record("so.tilo.test", workspace, name);
             let _lease = store.lease(&key).unwrap();
             store
                 .write(&key, WriteOp::Replace(bytes.to_vec()), None)
@@ -2289,7 +2292,8 @@ mod tests {
                 .unwrap();
             store.flush(None).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
             assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
             assert!(directory.join(CANONICAL_GATE).is_file());
@@ -2494,7 +2498,8 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
             let revision = store
                 .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
@@ -2518,7 +2523,8 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
             fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
             store

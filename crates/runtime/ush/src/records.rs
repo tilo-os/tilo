@@ -75,7 +75,7 @@ impl Records {
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
     pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
         check_key(key)?;
-        DocStore::room_record_dir_at(&self.root, OWNER_APP_ID, ROOM, key)
+        DocStore::workspace_record_dir_at(&self.root, OWNER_APP_ID, ROOM, key)
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 

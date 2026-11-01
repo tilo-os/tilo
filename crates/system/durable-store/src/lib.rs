@@ -350,8 +350,8 @@ pub trait DurableStore {
 
     /// Grant custody of `key` to exactly one `claimant`, durably: the first
     /// claim wins, and the same claimant may claim again (to resume after a
-    /// crash). Used to let exactly one successor adopt a room record under a
-    /// new identity.
+    /// crash). Used to let exactly one successor adopt a workspace record
+    /// under a new identity.
     /// `true` when `claimant` holds custody.
     ///
     /// # Errors
@@ -361,7 +361,7 @@ pub trait DurableStore {
     /// The `record` component of every [`StorageKey::Record`] of `package`
     /// in `workspace` that holds stored bytes, sorted. Lets a host find
     /// records it can no longer name: an app that used to keep a record per
-    /// window and now keeps one per room adopts its windows' records. A
+    /// window and now keeps one per workspace adopts its windows' records. A
     /// store that cannot enumerate its keys answers with none.
     ///
     /// # Errors

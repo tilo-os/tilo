@@ -609,7 +609,7 @@ impl Default for RoomRecords {
 
 /// Open (and merge in) the stored index for `room`, returning its writer.
 fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
-    let mut store = match app_state::DocStore::open_room(SHELL_PACKAGE_ID, &room.to_string()) {
+    let mut store = match app_state::DocStore::open_workspace(SHELL_PACKAGE_ID, &room.to_string()) {
         Ok(store) => store,
         Err(e) => {
             tracing::error!(

@@ -521,7 +521,7 @@ fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: 
 /// The records `package`'s index of `room` names, read the way the workspace's
 /// apps read them: the record set's own discovery over the index document.
 fn known_in(package: &str, room: &str) -> Vec<String> {
-    let Ok(mut store) = app_state::DocStore::open_room(package, room) else {
+    let Ok(mut store) = app_state::DocStore::open_workspace(package, room) else {
         return Vec::new();
     };
     let Some(index) = store.load().ok().flatten() else {

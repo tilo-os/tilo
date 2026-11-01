@@ -397,7 +397,7 @@ fn assert_saved_body(
     expected: &str,
 ) {
     wait_for_saved_record(host, binding);
-    let path = app_state::DocStore::room_record_dir_at(
+    let path = app_state::DocStore::workspace_record_dir_at(
         &host.root(),
         APP,
         ROOM,
@@ -748,7 +748,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         let mut results = Vec::new();
         for mode in 0..3 {
             let host = ProbeHost::new();
-            let path = app_state::DocStore::room_record_dir_at(
+            let path = app_state::DocStore::workspace_record_dir_at(
                 &host.root(),
                 APP,
                 ROOM,

@@ -58,7 +58,8 @@ fn native_primary_directory_matches_existing_room_document() {
     let root = tempfile::tempdir().unwrap();
     let package = "so.tilo.chat";
     let room_id = "room-a";
-    let path = app_state::DocStore::room_primary_dir_at(root.path(), package, room_id).unwrap();
+    let path =
+        app_state::DocStore::workspace_primary_dir_at(root.path(), package, room_id).unwrap();
     assert_eq!(path, root.path().join(package).join("rooms").join(room_id));
     let mut owner = app_state::DocStore::open_canonical_at(package, &path).unwrap();
     let mut doc = owner.new_document();

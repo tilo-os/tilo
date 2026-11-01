@@ -257,7 +257,7 @@ fn collect(packages: &mut Vec<String>, root: &Path) {
 /// Where record `record` of `package` in `room` keeps its document.
 fn record_document(data_home: &Path, package: &str, room: &str, record: &str) -> Option<PathBuf> {
     let directory =
-        app_state::DocStore::room_record_dir_at(data_home, package, room, record).ok()?;
+        app_state::DocStore::workspace_record_dir_at(data_home, package, room, record).ok()?;
     Some(directory.join(DOCUMENT_FILE))
 }
 

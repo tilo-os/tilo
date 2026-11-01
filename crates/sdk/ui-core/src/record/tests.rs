@@ -637,7 +637,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         );
         assert!(matches!(failure, Err(RecordOpenError::Store(_))));
         assert!(store.open_records().is_empty());
-        let directory = app_state::DocStore::room_record_dir_at(
+        let directory = app_state::DocStore::workspace_record_dir_at(
             &tmp.path().join("state"),
             "so.tilo.test",
             "workspace-a",

@@ -2668,7 +2668,7 @@ mod tests {
         let records = owners
             .open("so.tilo.launch-fixture", &room.to_string())
             .unwrap();
-        let directory = app_state::DocStore::room_record_dir_at(
+        let directory = app_state::DocStore::workspace_record_dir_at(
             &root,
             "so.tilo.launch-fixture",
             &room.to_string(),
@@ -3345,7 +3345,7 @@ mod prepared_launch_tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
-            let path = app_state::DocStore::room_record_dir_at(
+            let path = app_state::DocStore::workspace_record_dir_at(
                 &root,
                 APP,
                 ROOM,

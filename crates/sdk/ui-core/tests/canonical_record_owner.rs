@@ -14,7 +14,7 @@ fn directory(
     room: &str,
     want: &RecordCheckout,
 ) -> std::path::PathBuf {
-    app_state::DocStore::room_record_dir_at(
+    app_state::DocStore::workspace_record_dir_at(
         state_root,
         "so.tilo.test",
         room,
