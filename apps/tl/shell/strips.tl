@@ -150,11 +150,20 @@ view place_window(a: Arrangement, p: ArrangementPlace, in_front: Bool) {
     }
 }
 
-/// A place's content: the well the app's window shows in. The shell never draws a place's
-/// content (shell.md §8); the pin, close and move controls are the frame's chrome, outside it.
+/// A place's content: the view of its resource it names, composed inline as its own app's code
+/// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when that
+/// view doesn't run here (a terminal, a legacy window). The shell never draws a place's content
+/// itself; the pin, close and move controls are the frame's chrome, outside it.
 view place_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related) {
         place_controls(a, p)
+        place_view(p)
+    }
+}
+
+/// What stands where a place's content goes: its app's view of its record, or that app's window.
+view place_view(p: ArrangementPlace) {
+    compose(p.shows, record: p.record, view: p.shown_as) {
         ui.WindowWell(place: p.key, min: 12rem)
     }
 }

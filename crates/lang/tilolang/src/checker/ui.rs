@@ -771,6 +771,11 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
             return;
         }
+        if p.name == "compose" && matches!(name.as_str(), "app" | "record" | "view") {
+            let v = self.expr_as(&a.value, &Ty::Text);
+            self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
+            return;
+        }
         if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {
             let want = match name.as_str() {
                 "source" => Ty::Text,

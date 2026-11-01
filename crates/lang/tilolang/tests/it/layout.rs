@@ -166,3 +166,22 @@ fn embed_takes_text_source_a_principal_author_and_emits_one_node() {
         "text is not a principal"
     );
 }
+
+#[test]
+fn compose_takes_an_app_a_record_and_a_view_as_text_and_its_block_as_what_stands_instead() {
+    let head = "type P {\n    shows: Text\n    record: Text\n    shown_as: Text\n    n: Int\n}\n";
+    let c = compile_body(&format!(
+        "{head}view v(p: P) {{\n    compose(p.shows, record: p.record, view: p.shown_as) {{\n        text(\"a window\")\n    }}\n}}"
+    ));
+    validate(&c.wasm);
+    for want in ["compose", "record", "view"] {
+        assert!(contains(&c.wasm, want), "{want} is not in the module");
+    }
+    assert_eq!(
+        codes(&format!(
+            "{head}view v(p: P) {{\n    compose(p.n, record: p.record, view: p.shown_as)\n}}"
+        )),
+        vec!["E020"],
+        "an app is named by text"
+    );
+}

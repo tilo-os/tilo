@@ -78,6 +78,11 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
+    // Another package's view of one of its resources, drawn inline as that package's code
+    // (`tilolang_runtime::compose`): `app`, `record` (the resource's id) and `view` (its id or
+    // name) are `Text`, as an arrangement keeps them. The block stands there instead when the
+    // view can't be composed here (nothing of the app runs here, or no view or record named).
+    prim_of("compose", &["app"], &["record", "view"]),
 ];
 
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it

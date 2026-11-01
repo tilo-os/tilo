@@ -65,9 +65,12 @@ pub struct Package {
     pub hash: ModuleHash,
     pub meta: Meta,
     pub types: Vec<Rc<TypeInfo>>,
-    /// The description of an app this runtime does not run: its types, actions and views, and
-    /// no code to run them (`Runtime::load_foreign`).
+    /// A package of an app this runtime does not run: its records are that app's, read from the
+    /// readings it publishes, and its actions are invoked at its own door (`crate::delegate`).
     pub foreign: bool,
+    /// Whether its module is loaded: its views run here. Only a description of another app
+    /// (`Runtime::load_foreign`) has none.
+    pub code: bool,
 }
 
 impl Package {
@@ -85,6 +88,7 @@ impl Package {
             meta,
             types,
             foreign: false,
+            code: true,
         })
     }
 
@@ -96,6 +100,21 @@ impl Package {
     ///
     /// As [`Package::new`].
     pub fn foreign(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
+        Ok(Self {
+            foreign: true,
+            code: false,
+            ..Self::new(hash, meta)?
+        })
+    }
+
+    /// A package of an app this runtime does not run, with its module: its views run here, as
+    /// that package's own code, over the readings its app publishes; its records and actions
+    /// stay that app's (`Runtime::load_foreign_package`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn foreign_with_code(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
         Ok(Self {
             foreign: true,
             ..Self::new(hash, meta)?

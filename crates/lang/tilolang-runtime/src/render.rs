@@ -404,6 +404,8 @@ impl Core {
             self.resolve_foreign(cx, target, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
+        } else if n.kind == crate::compose::COMPOSE {
+            self.resolve_compose(cx, &mut node, acc);
         } else {
             // The collection a loop of the node lists, whose removed items it may stand in for.
             let listed = n.children.iter().find_map(|c| {

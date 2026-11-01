@@ -196,14 +196,34 @@ seams:
   - *Theme:* an entry names a resource and a view id, never a look. An arrangement, or an
     agent's summary made of views, renders in each viewer's own theme.
 
-  The mechanism to build: the shell's runtime runs another tilolang package's views inline,
-  under that package's authority, reading that package's records. Today
-  `tilolang_runtime::foreign` does this only for platform-published resources (sound,
-  displays). `ArrangementPlace` already names `record` and `shown_as`. An entry made from a
-  resource fills those and stops starting from `shows`, an app id. The resource's views are its
-  published `ResourceSpec::views`, primary when none is named. `ui.WindowWell` stays only for
-  surfaces that can't be composed (Xwayland, legacy native apps). `OpenEffect::Open` on every
-  resource goes away once nothing needs it.
+  The mechanism: the shell's runtime runs another tilolang package's views inline, under that
+  package's authority, reading that app's live readings. The host loads the other app's
+  package with its module (`Runtime::load_foreign_package`): its views run in the shell's
+  runtime as that package's code, so what they invoke carries its module as the author; its
+  records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
+  `tilolang_runtime::foreign`), and its actions are child invocations at its door. A view that
+  `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
+  can't `use` every app, names the view as the arrangement keeps it:
+
+  ```
+  view place_view(p: ArrangementPlace) {
+      compose(p.shows, record: p.record, view: p.shown_as) {
+          ui.WindowWell(place: p.key, min: 12rem)   // when nothing of the app runs here
+      }
+  }
+  ```
+
+  `compose` finds the app's package among those whose code the runtime holds, the view among
+  its offered views (by id or name) and the resource's type from the view's first parameter;
+  its block stands there when no package of the app runs here, or no view or record is named.
+  A named view that doesn't fit is an error the place shows. An entry made from a resource
+  fills `record` and `shown_as`. `ui.WindowWell` stays only for surfaces that can't be composed
+  (Xwayland, legacy native apps). `OpenEffect::Open` on every resource goes away once nothing
+  needs it.
+
+  Still to build: the surface host loading each installed tilolang package this way and
+  following the readings of the resources its places name; an empty `shown_as` taking the
+  resource's primary view.
 - **Finding what to place.** Text typed on the canvas ("my mails", "videos of the Rust
   conference") is a `find` over the system index and the apps' search providers, the same
   one the palette and the `tilo` tool use. The top result's primary view is placed at the

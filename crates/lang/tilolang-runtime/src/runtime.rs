@@ -233,6 +233,29 @@ impl Runtime {
             .map_err(RuntimeError::Package)
     }
 
+    /// Load another app's package with its module: its views run here, inline in the views
+    /// that call them (`mail.inbox(m)`, or `compose(...)` by name), as that package's own code,
+    /// so what they create and invoke carries its module as the author, never the caller's.
+    /// Its records stay its app's: a view of it reads a resource from the reading its app
+    /// publishes ([`Runtime::set_reading`]), named by app and type (`mail#Inbox`), and its
+    /// actions are child invocations at that app's door ([`Runtime::set_invoker`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::load_package`].
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        let hash = self.core.engine.compile(wasm)?;
+        self.check_exports(&hash, &meta)?;
+        let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
+            .map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(hash)
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
