@@ -4,7 +4,7 @@
 //! The reporter's device writes the prompt from the model view
 //! ([`crate::report::model_prompt`]), so a model that is not local sees
 //! declared personal values only as placeholders. A host that lends its own
-//! model to reporters (a room's host, whose key the reporter's page never
+//! model to reporters (a workspace's host, whose key the reporter's page never
 //! holds) asks only a prompt that is exactly this contract
 //! ([`texts_of`]) and answers only quotes from the texts it was asked about
 //! ([`confine`]): it reviews reports, and is no general model for its
