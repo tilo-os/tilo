@@ -1813,6 +1813,8 @@ pub(super) mod tests {
         time::Instant,
     };
     use tempfile::TempDir;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn assert_publication(error: &FsError, expected: tilo_files::native::atomic::PublicationState) {
         let source = std::error::Error::source(error).expect("owned publication source");
@@ -2873,7 +2875,7 @@ pub(super) mod tests {
                     .env("TILO_NATIVE_REPLACEMENT_PERMISSION_ROOT", outer.path())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
-                    .spawn()
+                    .spawn_locked()
                     .unwrap();
             let mut child = OwnedPermissionChild {
                 child,

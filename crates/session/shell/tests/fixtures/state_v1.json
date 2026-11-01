@@ -69,7 +69,7 @@
       "ownership_transfer_audit": [],
       "ownership_transfer_cancellations": [],
       "policy": {
-        "room": "00000000-0000-4000-8000-000000000001",
+        "workspace": "00000000-0000-4000-8000-000000000001",
         "owner": "owner-key",
         "members": {},
         "grants": [
@@ -404,6 +404,21 @@
             "granted_by": {
               "role": "owner"
             }
+          },
+          {
+            "id": "device-panel",
+            "subject": {
+              "app": "so.tilo.quick-settings"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001/app:shell/kind:session",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
           }
         ]
       },
@@ -467,7 +482,7 @@
       "ownership_transfer_audit": [],
       "ownership_transfer_cancellations": [],
       "policy": {
-        "room": "00000000-0000-4000-8000-000000000002",
+        "workspace": "00000000-0000-4000-8000-000000000002",
         "owner": null,
         "members": {},
         "grants": [
@@ -796,6 +811,21 @@
               "read",
               "undoable",
               "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "device-panel",
+            "subject": {
+              "app": "so.tilo.quick-settings"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002/app:shell/kind:session",
+            "kinds": [
+              "read"
             ],
             "answer": "allow",
             "lifetime": "until_revoked",

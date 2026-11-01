@@ -23,6 +23,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
 use std::time::Instant;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::app_cgroup::{self, AppKind};
 use launcher::spawner::{DelegatedChild, Request, SpawnError, Spawner};
@@ -276,7 +277,7 @@ fn a_job_is_born_in_a_leaf_of_its_own_beside_its_app() {
         .args(["-c", "cat /proc/self/cgroup /proc/self/oom_score_adj"])
         .stdout(std::process::Stdio::piped());
     slot.place(&mut command);
-    let out = command.output().unwrap();
+    let out = command.output_locked().unwrap();
     let out = String::from_utf8(out.stdout).unwrap();
     let mut lines = out.lines();
     let own = lines.next().unwrap();
@@ -476,7 +477,7 @@ try own-freeze "$4/cgroup.freeze" 1
             }
         });
     }
-    match command.status() {
+    match command.status_locked() {
         Ok(status) => assert!(status.success(), "{status:?}"),
         Err(error) => println!("probe unshare {error}"),
     }

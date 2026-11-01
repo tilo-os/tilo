@@ -536,3 +536,43 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         }),
     );
 }
+
+/// A part told its display only after it settled (the session's first frames can run before
+/// its output is known) lays its bar out at the display's width: the strip, which a narrow bar
+/// gives way, stands on a wide one though nothing of the desk changed since.
+#[test]
+fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
+    let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+    let app = packages.last().unwrap().meta.app.clone();
+    let link = Rc::new(SessionLink::default());
+    link.publish(reading());
+    let mut part = ShellPart::new(
+        ShellIdentity {
+            app: &app,
+            packages,
+            person: "Pat",
+            link: Rc::clone(&link),
+            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+            seed: true,
+        },
+        32,
+        1.0,
+        std::sync::Arc::new(|| {}),
+        None,
+    );
+    // It settles with no display: nothing more is due.
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    assert!(!part.due(), "the part settled");
+    part.outputs_changed(&[(0, 0, 1280, 800)]);
+    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.control_bounds("Main").is_some(),
+        "a wide bar names the strip: {:?}",
+        crate::Published::accessible_labels(&mut part)
+    );
+}

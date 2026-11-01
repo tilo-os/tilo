@@ -6,6 +6,7 @@ use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt, fs::PermissionsExt, proce
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const MODE: &str = "TILO_ORIGINAL_DAC_RESTORATION_MODE";
 const MARKER: &str = "TILO_ORIGINAL_DAC_RESTORATION_MARKER";
@@ -109,7 +110,7 @@ impl Drop for OwnedChild {
     }
 }
 fn wait_owned(command: &mut Command) {
-    let mut owned = OwnedChild(Some(command.spawn().unwrap()));
+    let mut owned = OwnedChild(Some(command.spawn_locked().unwrap()));
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = owned.0.as_mut().unwrap().try_wait().unwrap() {

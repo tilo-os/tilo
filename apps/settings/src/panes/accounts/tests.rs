@@ -3,6 +3,7 @@ use crate::accounts::sample_directory;
 use crate::effects::page_of;
 use crate::resource::SettingsShell;
 use crate::testing::actions_of;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::framework::testing::TestApp;
 
 struct RejectCandidate;
@@ -491,7 +492,7 @@ fn vault_save_failure_preserves_existing_account_metadata() {
             ])
             .env(CHILD, "1")
             .env("PATH", "")
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success());
         return;

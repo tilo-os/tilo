@@ -1,11 +1,14 @@
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[path = "native_test_artifact.rs"]
 mod native_test_artifact;
 use std::os::unix::fs::MetadataExt as _;
 use std::process::Command;
 const TEST: &str = "home_transfer::promotion::seeds_native_tests::actual_firstboot_seeds_are_retained_only_while_unchanged";
 fn command(command: &mut Command) -> std::process::Output {
-    let result = command.output().expect("native fixture command starts");
+    let result = command
+        .output_locked()
+        .expect("native fixture command starts");
     assert!(
         result.status.success(),
         "{}",
@@ -39,7 +42,7 @@ fn production_labels(synthetic: &Path) -> Vec<(PathBuf, String)> {
         let result = Command::new("/usr/bin/matchpathcon")
             .args(["-n", "-m", if info.is_dir() { "dir" } else { "file" }])
             .arg(&target)
-            .output()
+            .output_locked()
             .expect("native SELinux public-policy query required");
         assert!(
             result.status.success(),
@@ -212,7 +215,7 @@ fn actual_firstboot_seeds_are_retained_only_while_unchanged() {
     mount(&homes, "/var/home");
     let firstboot = Command::new("bash")
         .arg("/etc/tilo/firstboot-user")
-        .output()
+        .output_locked()
         .expect("actual firstboot producer starts");
     if !firstboot.status.success() {
         // Only namespace/lock custody metadata is diagnostic. Never include
@@ -261,7 +264,7 @@ if result == 0:
     print('fixture actual glibc ulckpwdf', libc.ulckpwdf())
 "#,
             ])
-            .output()
+            .output_locked()
             .expect("private namespace lock diagnosis starts");
         eprintln!("{}", String::from_utf8_lossy(&diagnosis.stdout));
         eprintln!("{}", String::from_utf8_lossy(&diagnosis.stderr));

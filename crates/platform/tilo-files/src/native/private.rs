@@ -430,6 +430,8 @@ pub unsafe fn activated_socket(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    #[cfg(windows)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn private_files_are_created_and_replaced_atomically_without_substitution() {
@@ -497,7 +499,7 @@ mod tests {
             .args(["/d", "/c", "mklink", "/J"])
             .arg(&link)
             .arg(&target)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(result.status.success(), "{:?}", result);
         assert_eq!(
@@ -526,7 +528,7 @@ mod tests {
         let result = std::process::Command::new("icacls.exe")
             .arg(&path)
             .args(["/grant", "*S-1-1-0:(R)"])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(result.status.success(), "{:?}", result);
         assert_eq!(

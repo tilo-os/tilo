@@ -1,4 +1,5 @@
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn channel_selection_is_explicit_and_persisted() {
@@ -11,7 +12,7 @@ fn channel_selection_is_explicit_and_persisted() {
         let result = Command::new(tilo_test_env::package_binary!("app"))
             .args(["repo", "channel", "team", channel])
             .env("TILO_STORE_CONFIG_DIR", dir.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(result.status.success(), "{result:?}");
         let config: app_cli::RegistriesFile =
@@ -26,7 +27,7 @@ fn channel_selection_is_explicit_and_persisted() {
     let result = Command::new(tilo_test_env::package_binary!("app"))
         .args(["repo", "channel", "team", "typo"])
         .env("TILO_STORE_CONFIG_DIR", dir.path())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!result.status.success());
     assert_eq!(std::fs::read(&path).unwrap(), before);

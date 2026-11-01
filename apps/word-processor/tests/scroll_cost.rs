@@ -10,6 +10,7 @@
 )]
 
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_document::action::{RegionKind, RichTextAction};
 use tilo_document::{ClipAttr, ClipBlock};
@@ -357,7 +358,7 @@ fn two_cores() {
             &format!("{},{}", cpus[0], cpus[1]),
             &std::process::id().to_string(),
         ])
-        .status();
+        .status_locked();
     eprintln!("pinned to cpus {},{}: {status:?}", cpus[0], cpus[1]);
 }
 

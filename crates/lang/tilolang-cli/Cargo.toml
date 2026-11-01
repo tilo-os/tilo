@@ -40,6 +40,7 @@ tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 collab-types = { path = "../../collab/collab-types" }
 launcher = { path = "../../packaging/launcher" }
 

@@ -7,6 +7,8 @@
 
 use std::io::Read;
 use std::sync::Arc;
+#[cfg(feature = "rystic-contract-tests")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use cloud_source::{CloudSource, Credential, Error, ItemId, ItemKind, StaticCredential};
 use cloud_source_gdrive::{DriveConfig, GDrive, Url};
@@ -232,7 +234,7 @@ fn native_document_exports_a_genuine_docx_package() {
             "/tests/validate_docx.py"
         ))
         .stdin(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("the strict Office export contract requires Python 3");
     validator.stdin.take().unwrap().write_all(&body).unwrap();
     assert!(

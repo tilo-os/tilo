@@ -24,6 +24,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::process::Command;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_egress::{EgressError, EgressOptions, EgressPolicy, Netns, dns, spawn_egress};
 
@@ -105,7 +106,7 @@ fn probe(netns: &Netns, steps: &[String]) -> Vec<String> {
     cmd.args(["--exact", "probe_inside_the_namespace", "--nocapture"])
         .env(PROBE_ENV, steps.join(";"));
     netns.enter(&mut cmd);
-    let out = cmd.output().expect("the probe runs");
+    let out = cmd.output_locked().expect("the probe runs");
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines()
         .filter_map(|l| l.strip_prefix("PROBE "))
@@ -324,7 +325,7 @@ fn pasta_does_not_outlive_a_killed_supervisor() {
         .args(["--exact", "probe_inside_the_namespace", "--nocapture"])
         .env(PROBE_ENV, "supervise")
         .stdout(std::process::Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
     let pid: u32 = lines

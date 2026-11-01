@@ -234,6 +234,7 @@ mod tests {
         os::unix::fs::PermissionsExt,
         time::{Duration, Instant},
     };
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const SELECTOR: &str = "owned_service::capture::inventory_scratch::coordinate::tests::actual_bind_alias_coordinates_refuse_scratch_overlap_and_preserve_siblings";
     struct Binding(CString);
     impl Binding {
@@ -278,7 +279,7 @@ mod tests {
                 .arg(std::env::current_exe().unwrap())
                 .args(["--exact", SELECTOR, "--nocapture"])
                 .env(CHILD, &marker)
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             let deadline = tilo_test_env::hang_deadline();
             loop {
@@ -458,7 +459,7 @@ mod tests {
                     .arg(executable_path)
                     .args(["--exact", EXACT, "--nocapture"])
                     .env(CHILD, &marker)
-                    .spawn()
+                    .spawn_locked()
                     .unwrap(),
             ));
             let deadline = tilo_test_env::hang_deadline();

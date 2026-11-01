@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -198,7 +199,7 @@ fn serve(routes: &Routes, published: &Published) {
 fn app(args: &[&str]) -> std::process::Output {
     Command::new(tilo_test_env::package_binary!("app"))
         .args(args)
-        .output()
+        .output_locked()
         .unwrap()
 }
 

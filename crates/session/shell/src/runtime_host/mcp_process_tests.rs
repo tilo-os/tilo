@@ -6,6 +6,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The merged test whose phases each need a fresh process; libtest selects it
 /// by this exact path, so a phase's own (nested) name would select nothing.
@@ -38,7 +39,7 @@ fn isolated_root(phase: &str) -> Option<PathBuf> {
         // A file, not a pipe: an owned app process that outlives a failing
         // phase cannot block the parent's read.
         .stdout(std::fs::File::create(&log).unwrap())
-        .status()
+        .status_locked()
         .unwrap();
     let stdout = std::fs::read_to_string(&log).unwrap();
     assert!(status.success(), "{phase}: {stdout}");

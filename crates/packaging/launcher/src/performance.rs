@@ -138,6 +138,7 @@ pub fn apply_game_performance_hints() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const EXEC_PROBE_ENV: &str = "TILO_GAME_HINT_EXEC_PROBE";
 
@@ -222,7 +223,7 @@ mod tests {
                 if ioprio_applied {
                     child.env("TILO_GAME_HINT_EXPECT_IOPRIO", "1");
                 }
-                let output = child.output().expect("execute game-hint probe");
+                let output = child.output_locked().expect("execute game-hint probe");
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 assert!(
                     output.status.success(),

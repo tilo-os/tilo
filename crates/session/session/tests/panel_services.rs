@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
 use serde_json::{Value, json};
@@ -259,7 +260,7 @@ fn a_process_the_session_did_not_start_reaches_no_service() {
         .env("TILO_SURFACE_APP_ID", "so.tilo.probe")
         .env("TILO_SURFACE_WORKSPACE", &launched_in)
         .env("TILO_SURFACE_COLLAB_SOCKET", &socket)
-        .spawn()
+        .spawn_locked()
         .expect("a panel outside the session");
     let said = until_reported(&mut session, &report);
     let _ = panel.wait();

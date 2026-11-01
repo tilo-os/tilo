@@ -15,6 +15,7 @@
     reason = "test support: failing the calling test is the point"
 )]
 
+use crate::SpawnUnderEnvLock as _;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
@@ -79,11 +80,8 @@ fn run_child(binary: &Path, name: &str, proof: &Path) -> std::process::ExitStatu
         .env(CHILD_PROOF, proof);
     // The child copies the environment as it starts: start it while no
     // other test's scope has the environment changed.
-    let started = {
-        let _environment = crate::lock();
-        command.spawn()
-    };
-    started
+    command
+        .spawn_locked()
         .and_then(|mut child| child.wait())
         .unwrap_or_else(|error| panic!("run {name} in a process of its own: {error}"))
 }

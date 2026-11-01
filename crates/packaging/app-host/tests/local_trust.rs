@@ -2,6 +2,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[path = "../src/local_package/fixture.rs"]
 mod fixture;
@@ -61,7 +62,7 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
         .env("TILO_INSTALL_BIN", installer())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let _host = Host(command.spawn().unwrap());
+    let _host = Host(command.spawn_locked().unwrap());
     let client = common::store_client(&socket);
     let checked = client.review_local(&full).unwrap();
     assert_eq!(checked.manifest.package.id, "so.tilo.unlisted-local");
@@ -81,7 +82,7 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
     let mut pin = isolated_command(&installer(), root.path());
     assert!(
         pin.args(["pin", "so.tilo.unlisted-local"])
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()

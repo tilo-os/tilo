@@ -16,6 +16,7 @@ use std::fs::{self, DirBuilder, Permissions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_install_helpers::handoff_copy::copy_tree;
 
@@ -125,7 +126,7 @@ fn new_structural_directories_are_traversable_and_files_private() {
         .arg(tilo_test_env::package_binary!("tilo-install-handoff-copy"))
         .arg(&source)
         .arg(&target)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success());
     assert_eq!(mode(&target.join("tilo")), 0o755);
@@ -222,12 +223,12 @@ fn the_command_line_and_exit_statuses_are_the_scripts() {
     let status = Command::new(&binary)
         .arg(&source)
         .arg(&target)
-        .status()
+        .status_locked()
         .unwrap();
     assert_eq!(status.code(), Some(0));
     assert_eq!(fs::read_to_string(target.join("file")).unwrap(), "x");
 
-    let usage = Command::new(&binary).arg(&source).output().unwrap();
+    let usage = Command::new(&binary).arg(&source).output_locked().unwrap();
     assert_eq!(usage.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&usage.stderr)
@@ -237,7 +238,7 @@ fn the_command_line_and_exit_statuses_are_the_scripts() {
     let refused = Command::new(binary)
         .arg(root.join("missing"))
         .arg(&target)
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(refused.status.code(), Some(1));
     assert_eq!(

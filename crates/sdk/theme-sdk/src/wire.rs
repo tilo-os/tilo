@@ -406,12 +406,21 @@ impl Writer {
                 fallback,
                 glaze,
             } => {
-                self.u8(4);
+                // A lens with a band or a dispersion of its own travels as
+                // tag 6, the same fields and those two after the cell; one
+                // with neither keeps tag 4's bytes, which a host from before
+                // the two existed reads.
+                let bent = lens.band != 0.0 || lens.dispersion != 0.0;
+                self.u8(if bent { 6 } else { 4 });
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
                 self.u8(u8::from(lens.sampling == Sampling::Blocky));
                 self.f32(lens.cell);
+                if bent {
+                    self.f32(lens.band);
+                    self.f32(lens.dispersion);
+                }
                 self.ops(glaze);
             }
             Brush::Shader { source, fallback } => {
@@ -606,7 +615,7 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 if !glazed => {
+            tag @ (4 | 6) if !glazed => {
                 let blur = self.f32()?;
                 let refraction = self.f32()?;
                 let fallback = self.color()?;
@@ -616,10 +625,17 @@ impl Reader<'_> {
                     _ => return None,
                 };
                 let cell = self.f32()?;
+                let (band, dispersion) = if tag == 6 {
+                    (self.f32()?, self.f32()?)
+                } else {
+                    (0.0, 0.0)
+                };
                 let lens = Lens {
                     refraction,
                     sampling,
                     cell,
+                    band,
+                    dispersion,
                 };
                 Brush::Backdrop {
                     blur,
@@ -786,6 +802,7 @@ mod tests {
                     refraction: 3.0,
                     sampling: Sampling::Blocky,
                     cell: 8.0,
+                    ..Lens::default()
                 },
                 fallback: Color::WHITE,
                 glaze: vec![Op::Fill {
@@ -794,7 +811,59 @@ mod tests {
                     brush_transform: Affine::IDENTITY,
                 }],
             },
+            // A lens with a band and a fringe of its own (tag 6).
+            Brush::Backdrop {
+                blur: 2.0,
+                lens: Lens {
+                    refraction: 12.0,
+                    band: 18.0,
+                    dispersion: 0.2,
+                    ..Lens::default()
+                },
+                fallback: Color::BLACK,
+                glaze: Vec::new(),
+            },
         ]
+    }
+
+    /// A lens's band and dispersion travel; one with neither is written as
+    /// the bytes a host from before them reads (tag 4), and those bytes
+    /// read back as a lens with neither.
+    #[test]
+    fn a_lens_band_and_dispersion_round_trip_and_a_plain_lens_keeps_the_old_bytes() {
+        let encode = |lens: Lens| {
+            let mut scene = PartScene::new();
+            scene.fill(
+                Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.1),
+                Brush::Backdrop {
+                    blur: 0.0,
+                    lens,
+                    fallback: Color::WHITE,
+                    glaze: Vec::new(),
+                },
+            );
+            let painted = PaintedPart::new(scene);
+            (paint_answer(Some(&painted)), painted)
+        };
+        let bent = Lens {
+            refraction: 10.0,
+            band: 20.0,
+            dispersion: 0.25,
+            ..Lens::default()
+        };
+        let (bytes, painted) = encode(bent);
+        assert_eq!(paint(&bytes), Some(Some(painted)));
+        let plain = Lens {
+            refraction: 10.0,
+            ..Lens::default()
+        };
+        let (plain_bytes, plain_painted) = encode(plain);
+        assert_eq!(paint(&plain_bytes), Some(Some(plain_painted)));
+        assert_eq!(
+            bytes.len(),
+            plain_bytes.len() + 8,
+            "the band and the dispersion are the only extra bytes"
+        );
     }
 
     #[test]

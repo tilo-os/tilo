@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
@@ -184,7 +185,7 @@ pub(crate) fn baseline_path(case: Case) -> PathBuf {
         .arg(root.join("../../../tools/test-assets.py"))
         .arg(fixtures.join("artifacts.json"))
         .args(["--file", &filename])
-        .output()
+        .output_locked()
         .expect("run pinned typography asset resolver");
     assert!(
         result.status.success(),

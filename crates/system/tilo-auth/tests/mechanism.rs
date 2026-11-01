@@ -29,6 +29,7 @@ use tilo_rollback::exec::Real;
 use tilo_rollback::lockout;
 use tilo_rollback::policy::Workspace;
 use tilo_seal::envelope::PasswordParams;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::require_capability;
 use tilo_test_env::swtpm::{Swtpm, contains};
 
@@ -102,7 +103,7 @@ impl Fixture {
             ])
             .arg(&pass)
             .arg(&img)
-            .status()
+            .status_locked()
             .expect("cryptsetup luksFormat")
             .success();
         assert!(ok, "luksFormat failed");
@@ -188,7 +189,7 @@ fn slots_in_use(device: &Path) -> Vec<String> {
     let out = Command::new("cryptsetup")
         .args(["luksDump", "--dump-json-metadata"])
         .arg(device)
-        .output()
+        .output_locked()
         .unwrap();
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let mut slots: Vec<String> = meta["keyslots"]
@@ -208,7 +209,7 @@ fn opens_any_slot(device: &Path, passphrase: &[u8], dir: &Path) -> bool {
         .args(["open", "--test-passphrase", "--key-file"])
         .arg(&file)
         .arg(device)
-        .status()
+        .status_locked()
         .unwrap()
         .success();
     std::fs::remove_file(&file).unwrap();
@@ -247,7 +248,7 @@ fn the_tpm_wrapper_opens_with_the_secret_and_its_auth_value_is_the_contract_dige
             .args(&args[1..])
             .env("TPM2TOOLS_TCTI", f.tpm.tcti())
             .current_dir(&f.work)
-            .output()
+            .output_locked()
             .unwrap()
     };
     let loaded = tool(&[
@@ -533,7 +534,7 @@ fn a_keyslot_can_be_added_with_the_volume_key_alone() {
         .arg("--volume-key-file")
         .arg(&vk_file)
         .arg(&device)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         dumped.status.success(),
@@ -667,7 +668,7 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
             .arg(&keys_dir)
             .arg("--handoff")
             .arg(&handoff)
-            .output()
+            .output_locked()
             .unwrap()
     };
 
@@ -700,7 +701,7 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
         .arg("boot-people")
         .arg("--device")
         .arg(&device)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(people.status.success());
     let people: serde_json::Value = serde_json::from_slice(&people.stdout).unwrap();
@@ -807,7 +808,7 @@ mod keyring {
                 "--nocapture",
             ])
             .env(CHILD, &description)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             child.status.success(),

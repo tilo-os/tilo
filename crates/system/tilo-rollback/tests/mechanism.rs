@@ -29,6 +29,7 @@ use tilo_rollback::{
     tpm_policy,
 };
 use tilo_test_env::Capability;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::swtpm::Swtpm;
 
 // Harness
@@ -341,7 +342,7 @@ fn luks_image(dir: &Path, recovery: &[u8]) -> PathBuf {
         ])
         .arg(&rec)
         .arg(&img)
-        .status()
+        .status_locked()
         .expect("cryptsetup luksFormat")
         .success();
     assert!(ok, "luksFormat failed");

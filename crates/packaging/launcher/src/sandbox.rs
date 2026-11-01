@@ -1068,6 +1068,7 @@ mod tests {
     use crate::manifest::Entrypoint;
     use crate::manifest::PortalPolicy;
     use std::collections::BTreeMap;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn workspace_roots_cross_only_where_granted() {
@@ -1218,7 +1219,7 @@ mod tests {
             ]);
             let output = std::process::Command::new("bwrap")
                 .args(&argv)
-                .output()
+                .output_locked()
                 .expect("execute actual private runtime mount");
             assert!(
                 output.status.success(),
@@ -1236,7 +1237,7 @@ mod tests {
             ]);
             let write = std::process::Command::new("bwrap")
                 .args(write_argv)
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(!write.status.success(), "SDK fonts must remain read-only");
             assert!(!fonts.join("new-file").exists());

@@ -2,6 +2,7 @@
 //! it even though buffa-build itself is an excluded build-only dependency.
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use buffa_build::Config;
 
@@ -117,7 +118,7 @@ fn descriptor_tracking_distinguishes_generated_outputs_from_external_inputs() {
                 command.env_remove("OUT_DIR");
             }
         }
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(
             output.status.success(),

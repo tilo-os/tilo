@@ -308,7 +308,10 @@ pub fn run(args: &[String]) {
         let _pixels = renderer.render(&scene, base);
         let first = started.elapsed();
         renderer.render_png(&scene, base, format!("{out}/material-{slug}.png"));
-        // The timing: every frame built and rendered from scratch.
+        // The timing: every frame built and rendered from scratch. The parts
+        // are settled, so after the shot each one is replayed from the
+        // toolkit's cache: `drawn anew` counts any that were not.
+        let held = tilo_ui::part_paint::cached_parts();
         let mut samples = Vec::with_capacity(frames);
         for _ in 0..frames {
             let started = Instant::now();
@@ -318,8 +321,9 @@ pub fn run(args: &[String]) {
             samples.push(started.elapsed());
         }
         samples.sort_unstable();
+        let drawn_anew = tilo_ui::part_paint::cached_parts().saturating_sub(held);
         println!(
-            "{name:<12} regions {regions}  first {:>6.2} ms  median {:>6.2} ms  p95 {:>6.2} ms  ({frames} frames, {WIDTH}x{HEIGHT})",
+            "{name:<12} regions {regions}  first {:>6.2} ms  median {:>6.2} ms  p95 {:>6.2} ms  drawn anew {drawn_anew}  ({frames} frames, {WIDTH}x{HEIGHT})",
             first.as_secs_f64() * 1000.0,
             percentile(&samples, 0.5).as_secs_f64() * 1000.0,
             percentile(&samples, 0.95).as_secs_f64() * 1000.0,

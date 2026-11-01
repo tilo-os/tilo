@@ -13,6 +13,7 @@ use std::fs;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_test_env::require_capability;
 
@@ -47,12 +48,52 @@ fn the_promised_audio_endpoint_and_renderer_reach_the_test() {
     assert!(Path::new(&driver).is_file(), "{driver} is readable");
 }
 
+/// Any run, not only CI's profile, draws on lavapipe: a test binary started
+/// with no driver named gets Mesa's CPU driver as the only Vulkan driver, or
+/// none at all where it is missing, and never the machine's GPU.
+#[test]
+fn a_test_draws_on_lavapipe_and_never_on_the_machines_gpu() {
+    let output = Command::new("bash")
+        .arg(repo().join("tools/with-test-environment.sh"))
+        .args([
+            "sh",
+            "-c",
+            "printf '%s\\n%s\\n%s\\n' \"$VK_DRIVER_FILES\" \"${WGPU_ADAPTER_NAME:-}\" \"${WGPU_BACKEND:-}\"",
+        ])
+        // Outside every enclosing test environment, as a plain `cargo test`.
+        .env_remove("TILO_TEST_ENVIRONMENT")
+        .env_remove("VK_DRIVER_FILES")
+        .env_remove("VK_ICD_FILENAMES")
+        .env_remove("WGPU_ADAPTER_NAME")
+        .env_remove("WGPU_BACKEND")
+        .output_locked()
+        .expect("run the test environment");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    let lavapipe = format!(
+        "/usr/share/vulkan/icd.d/lvp_icd.{}.json",
+        std::env::consts::ARCH
+    );
+    assert_eq!(lines.get(2).copied(), Some("vulkan"), "{stdout}");
+    if Path::new(&lavapipe).is_file() {
+        assert_eq!(lines.first().copied(), Some(lavapipe.as_str()), "{stdout}");
+        assert_eq!(lines.get(1).copied(), Some("llvmpipe"), "{stdout}");
+    } else {
+        let driver = lines.first().copied().unwrap_or_default();
+        assert!(
+            !driver.is_empty() && !Path::new(driver).exists(),
+            "with no lavapipe the loader reads no driver at all, not the machine's: {stdout}"
+        );
+    }
+}
+
 #[test]
 fn the_setup_audio_endpoint_ends_with_its_owner() {
     tilo_test_env::require_isolated_desktop();
     let found = Command::new("sh")
         .args(["-c", "command -v pulseaudio >/dev/null"])
-        .status()
+        .status_locked()
         .is_ok_and(|status| status.success());
     require_capability!(Audio, found, "pulseaudio is not installed");
 
@@ -60,7 +101,7 @@ fn the_setup_audio_endpoint_ends_with_its_owner() {
     let env_file = scratch.path().join("env");
     let mut owner = Command::new("sleep")
         .arg("600")
-        .spawn()
+        .spawn_locked()
         .expect("start the owner");
     let output = Command::new("bash")
         .arg(repo().join("tools/test-env-setup.sh"))
@@ -71,7 +112,7 @@ fn the_setup_audio_endpoint_ends_with_its_owner() {
         .env_remove("PULSE_SERVER")
         .env_remove("PULSE_RUNTIME_PATH")
         .env_remove("TILO_REQUIRE_AUDIO")
-        .output()
+        .output_locked()
         .expect("run the audio setup");
     assert!(
         output.status.success(),

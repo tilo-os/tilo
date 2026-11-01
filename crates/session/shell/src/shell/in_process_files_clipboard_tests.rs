@@ -922,7 +922,7 @@ mod files_clipboard_tests {
                 .args(["--exact", TEST, "--nocapture"])
                 .env("TILO_IN_PROCESS_TEST_ROOT", &root)
                 .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
-                .status()
+                .status_locked()
                 .unwrap();
             assert_eq!(
                 status.signal(),
@@ -1034,7 +1034,7 @@ mod files_clipboard_tests {
                     .env("TILO_IN_PROCESS_TEST_ROOT", &root)
                     .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
                     .env("TILO_CLIPBOARD_TEST_ACTION", action)
-                    .status()
+                    .status_locked()
                     .unwrap();
                 assert_eq!(
                     status.signal(),
@@ -1345,7 +1345,7 @@ mod files_clipboard_tests {
             .args(["--exact", TEST, "--nocapture"])
             .env("TILO_IN_PROCESS_TEST_ROOT", &root)
             .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
-            .status()
+            .status_locked()
             .unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         assert_eq!(
@@ -1434,7 +1434,7 @@ mod files_clipboard_tests {
             .env("TILO_CLIPBOARD_TEST_KILL_AT", "compensation-after-publish")
             .env("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE", "1")
             .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
-            .status()
+            .status_locked()
             .unwrap();
         assert_eq!(
             status.signal(),
@@ -2027,7 +2027,7 @@ mod files_clipboard_tests {
             .env("TILO_IN_PROCESS_TEST_ROOT", root)
             .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", receiving)
             .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
-            .status()
+            .status_locked()
             .unwrap();
         assert_eq!(status.signal(), Some(libc::SIGKILL));
         let trash = PathBuf::from(std::ffi::OsString::from_vec(

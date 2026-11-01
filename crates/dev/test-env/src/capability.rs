@@ -11,6 +11,8 @@
 //! with a message naming the capability, unless `TILO_REQUIRE_<CAP>=1` is set,
 //! in which case it fails the test instead.
 
+#[cfg(unix)]
+use crate::SpawnUnderEnvLock as _;
 use std::fmt;
 
 /// A host capability that some tests cannot run without.
@@ -152,7 +154,7 @@ pub fn switch_identity(uid: u32) -> std::io::Result<()> {
     let status = std::process::Command::new("true")
         .uid(uid)
         .gid(uid)
-        .status()?;
+        .status_locked()?;
     if status.success() {
         Ok(())
     } else {
@@ -354,7 +356,9 @@ pub const PROBES: &[NamedProbe] = &[
 
 #[cfg(target_os = "linux")]
 fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
-    let mut child = std::process::Command::new(program).args(args).spawn()?;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn_locked()?;
     let started = std::time::Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {

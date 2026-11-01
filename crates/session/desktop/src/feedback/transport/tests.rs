@@ -2,6 +2,7 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};
 use tilo_app::feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -256,7 +257,7 @@ fn run_child(root: &Path, phase: &str) {
         ])
         .env("TILO_FEEDBACK_PROCESS_FIXTURE", root)
         .env("TILO_FEEDBACK_PROCESS_PHASE", phase)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "canonical owner child failed");
 }

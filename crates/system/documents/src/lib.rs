@@ -547,6 +547,8 @@ pub fn split_sandbox_path(path: &Path) -> Option<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn key() -> AppKey {
         AppKey::new("5ba25f73-87c5-447f-a5a6-880dc4249a81", "so.tilo.totp").unwrap()
@@ -633,7 +635,7 @@ mod tests {
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(&slow)
-                .status()
+                .status_locked()
                 .unwrap()
                 .success()
         );

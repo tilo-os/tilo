@@ -340,6 +340,7 @@ mod imp {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Runs `script` with the memory handed to it as its last argument,
     /// `--memory=N`, and gives back its exit status.
@@ -351,7 +352,7 @@ mod tests {
             "child",
         ]);
         memory.hand_to(&mut command, "--memory=");
-        let mut child = command.spawn()?;
+        let mut child = command.spawn_locked()?;
         memory.handed_over();
         child.wait()
     }

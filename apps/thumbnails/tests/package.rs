@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
 use tilo_app_package::blobs::BlobHash;
@@ -148,7 +149,7 @@ fn run_job(package: &Unpacked, inputs: &[Vec<u8>]) -> (Output, BTreeMap<String, 
         .arg("--tilo-compute-output")
         .arg(&output_dir)
         .env_clear()
-        .output()
+        .output_locked()
         .expect("the packaged entrypoint starts");
     let written = std::fs::read_dir(&output_dir)
         .unwrap()

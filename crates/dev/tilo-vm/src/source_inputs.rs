@@ -178,6 +178,7 @@ pub(crate) fn verify(root: &Path, inventory: &Path) -> Result<String, CliError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn remote_app_source_inventory_detects_dirty_sdk_and_cleans_owned_file() {
@@ -187,7 +188,7 @@ mod tests {
                 Command::new("git")
                     .current_dir(root.path())
                     .args(args)
-                    .status()
+                    .status_locked()
                     .unwrap()
                     .success()
             );

@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent, VERSION};
 use tilo_relay_protocol::rooms::RoomRole;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Room {
     child: Child,
@@ -52,7 +53,7 @@ fn start_with(
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()?;
+        .spawn_locked()?;
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let (sender, events) = mpsc::channel();

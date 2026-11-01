@@ -36,6 +36,7 @@ workspace-hack = { version = "0.1" }
 tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # The tests serve the session's service themselves.
 tilo-system-stats = { path = "../../crates/system/system-stats" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

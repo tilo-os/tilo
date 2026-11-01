@@ -17,6 +17,7 @@ use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_boot_order::{EFI_GLOBAL, Host, LOADER_VENDOR, Refusal, enlist, ids, main};
 
@@ -417,7 +418,7 @@ fn only_root_may_enlist() {
 #[test]
 fn the_binary_answers_usage_and_help_without_firmware() {
     let binary = tilo_test_env::package_binary!("tilo-boot-order");
-    let usage = Command::new(&binary).arg("enlist").output().unwrap();
+    let usage = Command::new(&binary).arg("enlist").output_locked().unwrap();
     assert_eq!(usage.status.code(), Some(2));
     let stderr = String::from_utf8(usage.stderr).unwrap();
     assert!(
@@ -427,7 +428,7 @@ fn the_binary_answers_usage_and_help_without_firmware() {
     assert!(stderr.ends_with(
         "error: the following arguments are required: --esp-partuuid, --boot-id, --loader\n"
     ));
-    let help = Command::new(binary).arg("--help").output().unwrap();
+    let help = Command::new(binary).arg("--help").output_locked().unwrap();
     assert_eq!(help.status.code(), Some(0));
     assert!(
         String::from_utf8(help.stdout)

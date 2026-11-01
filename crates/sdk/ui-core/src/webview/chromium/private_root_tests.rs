@@ -9,6 +9,7 @@
 )]
 
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 #[cfg(unix)]
@@ -103,7 +104,7 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             .env_remove(runtime::HOST_OVERRIDE_ENV)
             .env(runtime::RUNTIME_DIR_ENV, fixture.path())
             .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(result.success());
         assert!(!root.exists());
@@ -135,7 +136,7 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             ])
             .env("TILO_TEST_PRIVATE_HOST", &host)
             .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(result.success());
         assert!(!root.exists(), "root must be absent when the child exits");

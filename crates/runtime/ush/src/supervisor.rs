@@ -1968,6 +1968,7 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 mod tests {
     use super::*;
     use tilo_environment::{DEFAULT_RECORD, PackageId};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A Host session's marked `bash` is the person's interactive login
     /// shell on a real pty: it reads their `~/.bash_profile`, and Tab
@@ -2242,7 +2243,7 @@ mod tests {
         {
             let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
             let mut child = std::process::Command::new("true")
-                .spawn()
+                .spawn_locked()
                 .expect("spawn guest");
             assert_eq!(
                 wait_for_guest_or_terminal(&supervisor_end, &child),
@@ -2256,7 +2257,7 @@ mod tests {
             let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
             let mut child = std::process::Command::new("sleep")
                 .arg("30")
-                .spawn()
+                .spawn_locked()
                 .expect("spawn guest");
             drop(terminal_end);
             assert_eq!(
@@ -2312,7 +2313,7 @@ mod tests {
         ] {
             let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
             let child = std::process::Command::new("true")
-                .spawn()
+                .spawn_locked()
                 .expect("spawn the bridge");
             let watch = EndWatch {
                 ended: std::thread::spawn(move || end),
@@ -2340,7 +2341,7 @@ mod tests {
         let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
         let child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("spawn guest");
         let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
         terminal
@@ -2373,7 +2374,7 @@ mod tests {
         let (master, _slave) = open_pty(80, 24).expect("PTY");
         let child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("spawn guest or bridge");
         let pid = libc::pid_t::try_from(child.id()).expect("child pid");
         let handed = reply(

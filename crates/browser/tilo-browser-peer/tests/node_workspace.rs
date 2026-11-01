@@ -32,6 +32,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
@@ -153,7 +154,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut lines = BufReader::new(browser.stdout.take().unwrap()).lines();
     let first = tilo_test_env::within("the page to create the identity", lines.next_line())

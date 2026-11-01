@@ -9,6 +9,7 @@ use std::io::Read;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_sandbox::job::helper::{self, Helper};
 use tilo_sandbox::job::vm::{self, Guest, Prepared, Share, ShareMount, VmRoot, VmSpec};
@@ -246,7 +247,7 @@ fn a_step_runs_as_root_in_its_vm_and_brings_back_its_outputs() {
     let made = std::process::Command::new("mkfs.ext4")
         .args(["-q", "-F"])
         .arg(src.join("disk.img"))
-        .status()
+        .status_locked()
         .unwrap();
     assert!(made.success());
     let (share, _) = rig.share("inputs", &[("root", &root), ("src", &src)], true);

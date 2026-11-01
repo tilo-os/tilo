@@ -199,6 +199,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::net::UnixDatagram;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use std::path::Path;
 
@@ -236,7 +237,7 @@ esac
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
             fs::write(dir.path().join("entries"), entries).unwrap();
             fs::create_dir(dir.path().join("ask")).unwrap();
-            let attach = Command::new("sleep").arg("30").spawn().unwrap();
+            let attach = Command::new("sleep").arg("30").spawn_locked().unwrap();
             Self {
                 dir,
                 plymouth: Plymouth { program },
