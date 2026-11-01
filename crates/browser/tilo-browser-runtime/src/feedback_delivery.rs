@@ -67,10 +67,10 @@ pub(crate) fn configure(
     owner: DeviceCert,
     destination: FeedbackDestination,
 ) -> Result<(), String> {
-    let workspace = tilo_relay_protocol::room_workspace_id(&destination.room)
+    let workspace = tilo_relay_protocol::room_workspace_id(&destination.workspace)
         .map_err(|_| "feedback workspace must be a uuid")?;
     Destination {
-        room: destination.room.clone(),
+        room: destination.workspace.clone(),
         provider: destination.provider.clone(),
         channel: destination.channel.clone(),
     }
