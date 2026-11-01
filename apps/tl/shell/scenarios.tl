@@ -495,6 +495,76 @@ scenario "the traditional desktop" {
     v.focused = desk
 }
 
+/// The traditional desktop with a terminal in front: a window the shell has no record for, so
+/// the top bar offers the shell's own commands on it — its name, moving it to another row and
+/// closing it — where an app's window would offer the app's.
+scenario "the traditional desktop, a terminal in front" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.workspace = "Studio"
+    d.strip = "Desk"
+    d.here = "none"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.windows.insert(Win(key: "w1", title: "A terminal", origin_app: "Terminal", icon: "terminal", strip: "Desk", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .windows_desktop)
+    let v = viewing
+    v.showing = .desktop
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    a_workspace(a, "Errands")
+    let desk = a_strip(a, row, "Desk", 667)
+    if let held = a.strips.find(st -> st.key == desk) {
+        held.canvas_x = 120
+        held.canvas_y = 80
+        held.canvas_width = 640
+        held.canvas_height = 420
+        held.placed = true
+    }
+    a_foreign_place(a, desk, 1, "A terminal")
+    v.focused = desk
+}
+
+/// The agent at work in the conversation: the person's ask, its first step done, and the words
+/// it is saying now as the model streams them, before its turn ends.
+scenario "a conversation, the agent answering" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:44 AM"
+    d.workspace = "Studio"
+    d.here = "conversation"
+    d.runs.insert(Run(key: "r2", title: "Find the launch date", agent: "claude", phase: "executing", active: true, live: "The checklist names the 14th, but Mia's note from Tuesday moves it to"))
+    d.run_entries.insert(RunEntry(key: "r2/1", run: "r2", seq: 1, author: "ada", text: "When is the launch now? Mia moved it, I think."))
+    d.run_entries.insert(RunEntry(key: "r2/2", run: "r2", seq: 2, author: "agent:claude", by_agent: true, step: true, text: "find(notes.Note, \"launch\")", outcome: "done", answer: "n1 \"Launch checklist\"\nn3 \"Notes from Tuesday\""))
+    d.entry_refs.insert(EntryRef(key: "r2/2/0", entry: "r2/2", resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist"))
+    d.entry_refs.insert(EntryRef(key: "r2/2/1", entry: "r2/2", resource: "tl:so.tilo.lang.notes:n3", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Notes from Tuesday"))
+}
+
+/// The default shell with the agents on the bar: the person showed the Agents part, and the
+/// two agents working for them stand there, each a chip that opens its menu.
+scenario "the agents on the bar" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "none"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
+    d.agents.insert(Agent(key: "claude", name: "Claude", state: "done", doing: "Tidied the launch notes"))
+    seed(shell)
+    let s = shell
+    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) {
+        show_part(s, part, true)
+    }
+}
+
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.
 fn channel_named(name: Text) -> Option<chat.TextChannel> {
     for x in chat.channels {

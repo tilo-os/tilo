@@ -47,19 +47,6 @@ view agent_chip(a: Agent) {
     }
 }
 
-/// Someone here with what they are on: their face, their name, and the resource they are
-/// looking at, which opens there.
-view person_line(p: Person, doing: Text) {
-    ui.ListRow(p.name, secondary: .some(doing), icon: .user) {
-        trailing: {
-            ui.Button("Follow", icon: .eye, icon_only: true) {
-                on press: follow(p.key)
-            }
-        }
-        on activate: follow(p.key)
-    }
-}
-
 /// An agent here with what it is doing and what it last changed: its face, its activity line
 /// and the mark of what it did, which opens the run's log.
 view agent_line(a: Agent) {
