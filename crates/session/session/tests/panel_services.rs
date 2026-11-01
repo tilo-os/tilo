@@ -114,17 +114,9 @@ fn sound(wake: &LoopWake) -> Vec<Box<dyn Service>> {
     vec![Box::new(sound)]
 }
 
-/// The panel's binary: the probe is the session package's own, built beside
-/// it.
+/// The panel's binary: the probe this package's own tests run as a panel.
 fn panel_binary() -> PathBuf {
-    let binary =
-        tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-surface-probe");
-    assert!(
-        binary.exists(),
-        "expected the panel at {}; build the workspace first",
-        binary.display()
-    );
-    binary
+    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
 /// A directory for the plane's socket that only this user reaches: the

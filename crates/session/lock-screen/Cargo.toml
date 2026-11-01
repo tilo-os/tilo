@@ -13,9 +13,7 @@ path = "src/main.rs"
 [dependencies]
 tracing.workspace = true
 tilo-sheets = { path = "../sheets" }
-# Named `tilo-app` rather than `ui`: the session compiles this crate's source
-# as its own test binary, where `ui` is the toolkit and this is the app.
-tilo-app = { path = "../../sdk/tilo-app" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
