@@ -613,15 +613,15 @@ struct CheckpointReaderAuthority {
     room: uuid::Uuid,
     member: tilo_user_identity::DeviceCert,
 }
-impl tilo_action_broker::peer_actions::CertificateAuthority for CheckpointReaderAuthority {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for CheckpointReaderAuthority {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.native.policy_time()
     }
     fn authorize_with_policy_time(
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if room == self.room && certificate == &self.member {
             tilo_user_identity::verify_device_cert_at(

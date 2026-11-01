@@ -93,7 +93,7 @@ pub(super) fn verify_task_agent_join(
     presentation: &runtime_collab::TaskAgentJoinIdentity,
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn crate::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
     if presentation.workspace_id != route.cluster_id {
         return Err("task agent join is scoped to a different workspace".into());
@@ -111,7 +111,7 @@ pub(super) fn verify_task_agent_join(
     }
     let registered = authority.map_or(
         Ok(None),
-        crate::peer_actions::CertificateAuthority::policy_time,
+        crate::certificate_authority::CertificateAuthority::policy_time,
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let task = TaskDelegation::decode(&presentation.delegation)

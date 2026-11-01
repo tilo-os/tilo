@@ -1823,20 +1823,20 @@ impl ContinuationServices for NativeContinuations {
 /// The native identity selector and fleet remain native service dependencies.
 pub struct NativeCertificates {
     origin: Result<
-        tilo_action_broker::peer_actions::PolicyOrigin,
-        tilo_action_broker::peer_actions::PolicyClockError,
+        tilo_action_broker::policy_clock::PolicyOrigin,
+        tilo_action_broker::policy_clock::PolicyClockError,
     >,
 }
 impl Default for NativeCertificates {
     fn default() -> Self {
         Self {
-            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            origin: tilo_action_broker::policy_clock::OwnerPolicyClock::new()
                 .map(|clock| clock.new_origin()),
         }
     }
 }
-impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for NativeCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.origin
             .as_ref()
             .map_err(ToString::to_string)?
@@ -1848,7 +1848,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         let origin = self.origin.as_ref().map_err(ToString::to_string)?;
         if !origin.owns(time) {
@@ -2544,7 +2544,7 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_time_is_retained_and_retires_with_its_service() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates::default();
         let first = authority.policy_time().unwrap().unwrap();
@@ -2562,17 +2562,17 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_clock_failure_never_falls_back_to_wall_time() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates {
-            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+            origin: Err(tilo_action_broker::policy_clock::PolicyClockError),
         };
         assert!(authority.policy_time().is_err());
     }
 
     #[test]
     fn native_certificate_policy_refuses_another_services_retained_origin() {
-        use tilo_action_broker::peer_actions::CertificateAuthority;
+        use tilo_action_broker::certificate_authority::CertificateAuthority;
 
         let authority = NativeCertificates::default();
         let other = NativeCertificates::default();
@@ -2600,13 +2600,13 @@ mod tests {
 
     #[test]
     fn native_certificate_policy_time_never_replaces_an_unavailable_origin() {
-        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
         let certificates = NativeCertificates {
-            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+            origin: Err(tilo_action_broker::policy_clock::PolicyClockError),
         };
         for _ in 0..2 {
             assert!(matches!(certificates.policy_time(), Err(error)
-                if error == tilo_action_broker::peer_actions::PolicyClockError.to_string()));
+                if error == tilo_action_broker::policy_clock::PolicyClockError.to_string()));
         }
         let certificates = NativeCertificates::default();
         let captured = certificates.policy_time().unwrap().unwrap();

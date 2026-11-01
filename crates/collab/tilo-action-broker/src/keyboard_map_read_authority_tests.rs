@@ -66,7 +66,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 private.join("keyboard-worker.sock"),
                 env.membership.authority(),
                 env.publisher.clone(),
-                crate::peer_actions::NativePeerBrokerConfig {
+                crate::NativePeerBrokerConfig {
                     journal_root: private.join("keyboard-journal"),
                     certificate_authority: env.authority.clone(),
                 },

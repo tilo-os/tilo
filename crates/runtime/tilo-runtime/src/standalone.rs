@@ -77,7 +77,7 @@ const HOST_STORE: &str = "room-host";
 pub struct Standalone {
     // Retired before broker fields: retained original custody cannot survive
     // replacement of the runtime that supplied its policy time.
-    policy_origin: tilo_action_broker::peer_actions::PolicyOrigin,
+    policy_origin: tilo_action_broker::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     joined: Arc<Joined>,
     _channels: channels::Channels,
@@ -239,7 +239,7 @@ fn start_broker(
     workspaces: Arc<Workspaces>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-) -> io::Result<(tilo_action_broker::peer_actions::PolicyOrigin, BrokerHandle)> {
+) -> io::Result<(tilo_action_broker::policy_clock::PolicyOrigin, BrokerHandle)> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_action_broker::collab_broker::spawn_with_services(
         parts.root.join(COLLAB_SOCKET),
@@ -261,7 +261,7 @@ fn start_broker(
 /// so their other devices have them.
 fn broker_services(
     parts: BrokerParts<'_>,
-    policy_time: tilo_action_broker::peer_actions::PolicyTime,
+    policy_time: tilo_action_broker::policy_clock::PolicyTime,
 ) -> io::Result<HostServices> {
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
@@ -295,10 +295,10 @@ fn broker_services(
 }
 
 fn execution_policy_clock() -> io::Result<(
-    tilo_action_broker::peer_actions::PolicyOrigin,
-    tilo_action_broker::peer_actions::PolicyTime,
+    tilo_action_broker::policy_clock::PolicyOrigin,
+    tilo_action_broker::policy_clock::PolicyTime,
 )> {
-    let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+    let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
         .map_err(io::Error::other)?
         .new_origin();
     let time = origin.capture().map_err(io::Error::other)?;
@@ -422,7 +422,7 @@ pub struct RuntimeActionHost {
 }
 
 struct AdmittedRuntimeSession {
-    policy_time: tilo_action_broker::peer_actions::PolicyTime,
+    policy_time: tilo_action_broker::policy_clock::PolicyTime,
     host: Arc<dyn ActionHost + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
     /// The agent the person's device handed this run to.
@@ -509,7 +509,7 @@ impl RuntimeActionHost {
         self,
         workspace: String,
         actor: String,
-        policy_time: tilo_action_broker::peer_actions::PolicyTime,
+        policy_time: tilo_action_broker::policy_clock::PolicyTime,
     ) -> crate::mcp::SessionFactory<Self> {
         let host = self;
         Arc::new(move || {
@@ -721,7 +721,7 @@ impl ActionHost for RuntimeActionHost {
 struct Certificates {
     workspace: String,
     device: [u8; 32],
-    policy_time: tilo_action_broker::peer_actions::PolicyTime,
+    policy_time: tilo_action_broker::policy_clock::PolicyTime,
     joined: std::sync::Weak<Joined>,
 }
 
@@ -736,8 +736,8 @@ impl Certificates {
     }
 }
 
-impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for Certificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.policy_time
             .now_ns()
             .map_err(|error| error.to_string())?;
@@ -748,7 +748,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
         &self,
         workspace: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if !time.same_origin(&self.policy_time) {
             return Err("original runtime policy origin changed".into());

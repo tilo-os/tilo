@@ -25,7 +25,7 @@ impl ShortcutLibraryServices for Library {
 
 struct Person {
     certificate: tilo_user_identity::DeviceCert,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
 }
 
 impl LocalPersonServices for Person {
@@ -39,8 +39,8 @@ impl LocalPersonServices for Person {
     }
 }
 
-impl crate::peer_actions::CertificateAuthority for Person {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for Person {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(Some(self.time.clone()))
     }
     fn authorize(
@@ -62,7 +62,7 @@ struct Fixture {
     origin: InvocationCaller,
     request: InvokeRequest,
     key: InvocationKey,
-    _clock_origin: crate::peer_actions::PolicyOrigin,
+    _clock_origin: crate::policy_clock::PolicyOrigin,
     _root: tempfile::TempDir,
     _environment: tilo_test_env::ScopedEnv,
 }
@@ -98,7 +98,7 @@ impl Fixture {
         let owner =
             crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
         let certificate = owner.device();
-        let (clock, _control) = crate::peer_actions::OwnerPolicyClock::for_test(
+        let (clock, _control) = crate::policy_clock::OwnerPolicyClock::for_test(
             certificate.issued_at_ns.saturating_add(1_000_000_000),
         );
         let clock_origin = clock.new_origin();

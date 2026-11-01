@@ -65,8 +65,7 @@ pub(super) fn is_local_host_caller(
     else {
         return false;
     };
-    original.network.is_none()
-        && !original.presentation.is_empty()
+    !original.presentation.is_empty()
         && caller.room() == Some(original.workspace.as_str())
         && original
             .admitted
@@ -370,22 +369,22 @@ pub(crate) mod signed_test_support {
         certificate: tilo_user_identity::DeviceCert,
         pub revoked: AtomicBool,
         pub device_governs: AtomicBool,
-        time: Mutex<crate::peer_actions::PolicyTime>,
-        replace_time_on_authorize: Mutex<Option<crate::peer_actions::PolicyTime>>,
+        time: Mutex<crate::policy_clock::PolicyTime>,
+        replace_time_on_authorize: Mutex<Option<crate::policy_clock::PolicyTime>>,
     }
 
     impl Authority {
-        pub fn replace_time_on_authorize(&self, time: crate::peer_actions::PolicyTime) {
+        pub fn replace_time_on_authorize(&self, time: crate::policy_clock::PolicyTime) {
             *self.replace_time_on_authorize.lock().unwrap() = Some(time);
         }
     }
 
-    impl crate::peer_actions::CertificateAuthority for Authority {
+    impl crate::certificate_authority::CertificateAuthority for Authority {
         fn governs(&self, _: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
             device.is_none() || self.device_governs.load(Ordering::SeqCst)
         }
 
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+        fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
             Ok(Some(self.time.lock().unwrap().clone()))
         }
 
@@ -416,12 +415,12 @@ pub(crate) mod signed_test_support {
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         directory: tempfile::TempDir,
-        clock: crate::peer_actions::OwnerPolicyClock,
-        policy_origin: crate::peer_actions::PolicyOrigin,
+        clock: crate::policy_clock::OwnerPolicyClock,
+        policy_origin: crate::policy_clock::PolicyOrigin,
     }
 
     impl Fixture {
-        pub fn new_policy_origin(&self) -> crate::peer_actions::PolicyOrigin {
+        pub fn new_policy_origin(&self) -> crate::policy_clock::PolicyOrigin {
             self.clock.new_origin()
         }
 
@@ -472,7 +471,7 @@ pub(crate) mod signed_test_support {
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let tree = tree.shared();
-            let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+            let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
             let policy_origin = clock.new_origin();
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
@@ -481,7 +480,7 @@ pub(crate) mod signed_test_support {
                 time: Mutex::new(policy_origin.capture().unwrap()),
                 replace_time_on_authorize: Mutex::new(None),
             });
-            let config = crate::peer_actions::NativePeerBrokerConfig {
+            let config = crate::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
                 certificate_authority: authority.clone(),
             };

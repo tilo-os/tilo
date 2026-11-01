@@ -1851,7 +1851,7 @@ pub struct HostServices {
     /// runs. Without it agents run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     pub person_chat: Option<person_chat::PersonChatService>,
-    pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+    pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,

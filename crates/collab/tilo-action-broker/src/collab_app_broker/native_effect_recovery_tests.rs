@@ -42,7 +42,7 @@ impl OwnerCommitService for NativeEffects {
     }
 }
 struct NativeAuthority(Arc<tilo_peer_state::owner::NativeWorkspaceOwner>);
-impl crate::peer_actions::CertificateAuthority for NativeAuthority {
+impl crate::certificate_authority::CertificateAuthority for NativeAuthority {
     fn authorize(
         &self,
         workspace: uuid::Uuid,
@@ -104,7 +104,7 @@ fn fixture() -> Fixture {
             submitted: submitted.clone(),
         }),
     );
-    let config = crate::peer_actions::NativePeerBrokerConfig {
+    let config = crate::NativePeerBrokerConfig {
         journal_root: directory.path().join("journal"),
         certificate_authority: Arc::new(NativeAuthority(owner.clone())),
     };

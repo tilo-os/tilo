@@ -6,7 +6,7 @@ pub struct CertifiedPersonFixture {
     pub context: CertifiedPersonContext,
     pub caller: tilo_actions::remote::Caller,
     pub host: tilo_identity_host::custody::HostIdentity,
-    pub origin: crate::peer_actions::PolicyOrigin,
+    pub origin: crate::policy_clock::PolicyOrigin,
     pub current: Arc<std::sync::atomic::AtomicBool>,
     _evidence_env: tilo_test_env::ScopedEnv,
     _evidence_home: tilo_test_env::TestHome,
@@ -14,11 +14,11 @@ pub struct CertifiedPersonFixture {
 struct FixturePersonAuthority {
     certificate: tilo_user_identity::DeviceCert,
     workspace: uuid::Uuid,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
     current: Arc<std::sync::atomic::AtomicBool>,
 }
-impl crate::peer_actions::CertificateAuthority for FixturePersonAuthority {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for FixturePersonAuthority {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(Some(self.time.clone()))
     }
     fn authorize(
@@ -62,7 +62,7 @@ pub fn certified_person_fixture_for_seeds(
     .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[root_seed; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
-    let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+    let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
     let origin = clock.new_origin();
     let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),

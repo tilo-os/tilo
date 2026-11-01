@@ -3,7 +3,8 @@
     reason = "the broker's Rc-backed channel handles stay on the test LocalSet"
 )]
 use super::super::*;
-use crate::peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyOrigin};
+use crate::certificate_authority::CertificateAuthority;
+use crate::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::services::{
     NativeTaskActionRequirement, TrackerDirection, TrackerRun, TrackerRuns, WorkspaceAuthority,
     WorkspaceMemberships,
@@ -94,7 +95,7 @@ impl WorkspaceAuthority for Native {
     }
 }
 impl CertificateAuthority for Native {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         self.origin
             .capture()
             .map(Some)
@@ -351,7 +352,7 @@ impl Fixture {
             .unwrap();
         let task = ISSUE.to_owned();
         let fanout = Arc::new(FanoutState::new());
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("journal"),
             certificate_authority: native.clone(),
         };

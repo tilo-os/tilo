@@ -214,7 +214,7 @@ fn prove_store_directory(mut env: Environment) {
         private.join("store-worker.sock"),
         env.membership.authority(),
         env.publisher.clone(),
-        crate::peer_actions::NativePeerBrokerConfig {
+        crate::NativePeerBrokerConfig {
             journal_root: private.join("store-journal"),
             certificate_authority: env.authority.clone(),
         },

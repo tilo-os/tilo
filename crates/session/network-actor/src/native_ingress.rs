@@ -548,7 +548,6 @@ impl ActorState {
             (ws, host),
             HostRuntime {
                 replaying,
-                actions: None,
                 session,
                 pump,
                 native_scope: Some(scope),

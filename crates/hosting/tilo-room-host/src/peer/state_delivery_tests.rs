@@ -64,7 +64,6 @@ async fn writer_boundary(
     let (source_disconnect, _source_disconnected) = mpsc::channel(1);
     let (disconnect, mut disconnected) = mpsc::channel(1);
     let (state_tx, mut state_rx) = mpsc::channel(8);
-    let (private, _private_rx) = mpsc::channel(8);
     let live = Arc::new(AtomicBool::new(true));
     for (peer, tx, disconnect) in [
         (&source_peer, &source_tx, &source_disconnect),
@@ -110,13 +109,11 @@ async fn writer_boundary(
         own_user_public_key: &user.public_key,
         own_device_cert: &source_peer.cert,
         own_device_public_key: &source_peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
         presence: None,
-        private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -358,7 +355,6 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     let (source_disconnect, _source_disconnected) = mpsc::channel(1);
     let (disconnect, _disconnected) = mpsc::channel(1);
     let (state_tx, mut state_rx) = mpsc::channel(8);
-    let (private, mut private_rx) = mpsc::channel(8);
     for (peer, tx, disconnect) in [
         (&source_peer, &source_tx, &source_disconnect),
         (&recipient, &outbound, &disconnect),
@@ -403,13 +399,11 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         own_user_public_key: &user.public_key,
         own_device_cert: &source_peer.cert,
         own_device_public_key: &source_peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
         presence: None,
-        private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -481,7 +475,6 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         &recipient,
         &session,
         &std::sync::atomic::AtomicUsize::new(1),
-        &mut private_rx,
         &mut wire,
     ))
     .await
@@ -602,7 +595,6 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
     let (outbound, _outbound_rx) = mpsc::channel(8);
     let (disconnect, _disconnected) = mpsc::channel(1);
     let (state_tx, _state_rx) = mpsc::channel(8);
-    let (private, _private_rx) = mpsc::channel(8);
     let live = Arc::new(AtomicBool::new(true));
     runtime.admit_device(recipient.device_public_key).unwrap();
     runtime.add_subscriber(Subscriber {
@@ -650,13 +642,11 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         own_user_public_key: &user.public_key,
         own_device_cert: &recipient.cert,
         own_device_public_key: &recipient.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
         presence: None,
-        private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),

@@ -478,6 +478,7 @@ impl ShellNetwork {
                 });
             }
         }
+        drop(all);
         viewers
     }
 

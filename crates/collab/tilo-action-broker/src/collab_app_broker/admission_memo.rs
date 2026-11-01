@@ -82,9 +82,6 @@ pub(super) fn with_admitted_now<T>(
             ADMITTED_NOW.with(|slot| *slot.borrow_mut() = previous);
         }
     }
-    if caller.network.is_some() {
-        return run();
-    }
     let previous = ADMITTED_NOW.with(|slot| {
         slot.replace(Some(AdmittedNow {
             workspace: caller.workspace.clone(),
@@ -99,9 +96,6 @@ pub(super) fn with_admitted_now<T>(
 /// The admission [`with_admitted_now`] lends for exactly `caller`, if this
 /// thread is inside such a call.
 pub(super) fn admitted_now(caller: &VerifiedActionCaller) -> Option<AdmittedJoinIdentity> {
-    if caller.network.is_some() {
-        return None;
-    }
     ADMITTED_NOW.with(|slot| {
         slot.borrow()
             .as_ref()

@@ -238,93 +238,7 @@ impl RelayCoeditSession {
         std::time::Duration::from_nanos(tilo_clock::unix_now_ns().saturating_sub(heard))
     }
 
-    /// Enable the private v2 lane on this same co-edit connection. Await its
-    /// `ActionsReady` with `recv_action`; v1 sessions explicitly return an error.
-    ///
-    /// # Errors
-    /// Returns an error for a different room, v1, or a full/disconnected queue.
-    pub fn enable_actions(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
-        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) {
-            return Err(crate::client::ClientError::Codec(
-                "action room differs from co-edit room".into(),
-            ));
-        }
-        self.client.send_action(
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions { workspace: room },
-        )
-    }
-
-    /// Negotiate client access to an attached durable broker on this same lane.
-    /// Call after `enable_actions`, which preserves subscribe-before-enable ordering.
-    ///
-    /// # Errors
-    ///
-    /// Returns `crate::client::ClientError` if the inputs violate this operation's bounds or invariants.
-    pub fn enable_broker_client(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
-        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) {
-            return Err(crate::client::ClientError::Codec(
-                "action room differs from co-edit room".into(),
-            ));
-        }
-        self.client.send_action(
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableBrokerClient {
-                workspace: room,
-            },
-        )
-    }
-
-    /// Sign `action` as this device and send it through the co-edit session's
-    /// existing demultiplexer.
-    ///
-    /// # Errors
-    /// Returns an error for a different room, a session without a device key,
-    /// or a full/disconnected queue.
-    pub fn send_action(
-        &self,
-        action: &tilo_delivery_protocol::peer_actions::DirectedAction,
-    ) -> Result<(), crate::client::ClientError> {
-        if !crate::room_workspace_id_matches(&action.workspace.to_string(), self.workspace_id) {
-            return Err(crate::client::ClientError::Codec(
-                "action room differs from co-edit room".into(),
-            ));
-        }
-        self.client.send_directed(action)
-    }
-
-    /// Receive only private events; this never consumes shared co-edit state.
-    pub async fn recv_action(&self) -> Option<tilo_delivery_protocol::transport_v2::EnvelopeV2> {
-        self.client.recv_action().await
-    }
-
-    /// Attach an already healthy durable broker to this private lane.
-    ///
-    /// # Errors
-    ///
-    /// Returns `crate::client::ClientError` if the inputs violate this operation's bounds or invariants.
-    pub fn register_action_broker(
-        &self,
-        room: uuid::Uuid,
-        host: uuid::Uuid,
-    ) -> Result<(), crate::client::ClientError> {
-        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) || host.is_nil()
-        {
-            return Err(crate::client::ClientError::Codec(
-                "invalid broker room or host".into(),
-            ));
-        }
-        self.client.send_action(
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::RegisterBroker {
-                workspace: room,
-                host,
-            },
-        )
-    }
-    /// Receive opaque source evidence using this connection's authenticated demultiplexer.
-    pub async fn recv_certified_action(&self) -> Option<crate::client::CertifiedActionEvent> {
-        self.client.recv_certified_action().await
-    }
-
-    /// Close both lanes when an attached native broker loses its bounded path.
+    /// Close the session.
     pub async fn close(&self) {
         self.client.disconnect().await;
     }
@@ -925,16 +839,9 @@ mod tests {
         for frame in bad {
             let (outbound, _outgoing) = tokio::sync::mpsc::channel(4);
             let (incoming, inbound) = tokio::sync::mpsc::channel(4);
-            let (_action_incoming, action_inbound) = tokio::sync::mpsc::channel(1);
             let client = RelayClient::from_authenticated_session(
                 peer.clone(),
-                [9; 32],
-                SessionChannels {
-                    outbound,
-                    inbound,
-                    action_outbound: None,
-                    action_inbound,
-                },
+                SessionChannels { outbound, inbound },
                 Box::new(Carrier),
             );
             let session = RelayCoeditSession::join(client, 41, [9; 32]).unwrap();

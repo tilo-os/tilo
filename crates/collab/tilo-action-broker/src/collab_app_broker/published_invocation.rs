@@ -15,7 +15,7 @@ pub(super) enum InvocationCaller {
         invocation: tilo_actions::InvocationId,
         workspace: String,
         certificate: tilo_user_identity::DeviceCert,
-        time: crate::peer_actions::PolicyTime,
+        time: crate::policy_clock::PolicyTime,
     },
     Certified {
         caller: Box<VerifiedActionCaller>,
@@ -27,7 +27,7 @@ pub(super) enum InvocationCaller {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
         // Captured at request custody, never rebound at admission or effect.
-        time: Option<crate::peer_actions::PolicyTime>,
+        time: Option<crate::policy_clock::PolicyTime>,
     },
 }
 #[derive(Clone)]
@@ -40,7 +40,7 @@ pub(super) struct OriginalInvocationData {
     /// in the tree the grants decide over.
     resource_kind: String,
     caller: InvocationCaller,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
@@ -708,7 +708,7 @@ impl OriginalInvocationData {
         offered: &PublishedAction,
         revision: Option<&str>,
         caller: Option<InvocationCaller>,
-        time: Option<crate::peer_actions::PolicyTime>,
+        time: Option<crate::policy_clock::PolicyTime>,
         execution: Option<tilo_actions::remote::ExecutionLease>,
     ) -> Option<Arc<Self>> {
         let spec = PublishedInvocationSpec {
@@ -795,21 +795,12 @@ impl OriginalInvocation {
     pub fn dispatch_spec(&self) -> &PublishedInvocationSpec {
         &self.data.spec
     }
-    pub fn policy_time(&self) -> &crate::peer_actions::PolicyTime {
+    pub fn policy_time(&self) -> &crate::policy_clock::PolicyTime {
         &self.data.time
     }
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
-            // A network caller's verified device certificate is its signed
-            // evidence; workspace admission alone carries only the key identity.
-            InvocationCaller::Certified { caller, .. } => {
-                caller.admitted.certificate.as_ref().or_else(|| {
-                    caller
-                        .network
-                        .as_ref()
-                        .map(tilo_relay_session::client::CertifiedAction::certificate)
-                })
-            }
+            InvocationCaller::Certified { caller, .. } => caller.admitted.certificate.as_ref(),
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
             InvocationCaller::NativePerson { certificate, .. } => Some(certificate),
         }
@@ -922,10 +913,12 @@ impl OriginalInvocation {
             if matches.next().is_some() {
                 return Err("ambiguous external moderation invocation identity".into());
             }
-            selected
+            let original = selected
                 .original
                 .clone()
-                .ok_or("original invocation authority unavailable")?
+                .ok_or("original invocation authority unavailable")?;
+            drop(pending);
+            original
         };
         if route.app_id != "so.tilo.store"
             || data.route != route

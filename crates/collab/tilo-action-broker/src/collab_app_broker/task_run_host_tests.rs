@@ -334,7 +334,7 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
             let actor = admitted.broker_actor();
             let catalogue: serde_json::Value = serde_json::from_str(
                 &f.state
-                    .action_catalogue_json_for(&workspace_id().to_string(), &actor, None)
+                    .action_catalogue_json_for(&workspace_id().to_string(), &actor)
                     .unwrap(),
             )
             .unwrap();

@@ -5,8 +5,9 @@ use super::*;
 use crate::standalone::RuntimeActionHost;
 use serde_json::json;
 use tilo_action_broker::{
+    certificate_authority::CertificateAuthority,
     collab_app_broker::AppBrokerState,
-    peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyTime},
+    policy_clock::{OwnerPolicyClock, PolicyTime},
     services::{LaunchableApplication, LauncherServices},
     test_support::{Workspace as TestWorkspace, WorkspaceId as TestWorkspaceId, WorkspaceTree},
 };

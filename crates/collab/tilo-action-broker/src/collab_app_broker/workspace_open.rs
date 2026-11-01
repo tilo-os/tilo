@@ -384,9 +384,9 @@ mod tests {
         }
     }
 
-    struct NativeClock(crate::peer_actions::PolicyTime);
-    impl crate::peer_actions::CertificateAuthority for NativeClock {
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+    struct NativeClock(crate::policy_clock::PolicyTime);
+    impl crate::certificate_authority::CertificateAuthority for NativeClock {
+        fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
             Ok(Some(self.0.clone()))
         }
         fn authorize(
@@ -441,7 +441,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
+        let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
         let origin = clock.new_origin();
         assert!(
             state

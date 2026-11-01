@@ -220,7 +220,7 @@ impl VerifiedJoinIdentity {
 /// Whether a device is held to the foreign-device cap in `workspace`, as far as
 /// `authority` knows who governs it; `device` `None` is this host's own.
 fn cap_applies_in(
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
     workspace: &str,
     foreign: bool,
     device: Option<&[u8; 32]>,
@@ -234,7 +234,7 @@ fn cap_applies_in(
 
 /// [`cap_applies_in`] for `cert`'s device.
 fn cert_capped_in(
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
     workspace: &str,
     cert: &tilo_user_identity::DeviceCert,
 ) -> bool {
@@ -1078,7 +1078,7 @@ fn verify_join_identity(
     identity_bytes: &[u8],
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
     verify_join_identity_with_host_scope(
         route,
@@ -1095,7 +1095,7 @@ fn verify_join_identity_with_host_scope(
     identity_bytes: &[u8],
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
     host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<AdmittedJoinIdentity, String> {
     if let Some(presentation) = runtime_collab::TaskAgentJoinIdentity::decode(identity_bytes)
@@ -1136,7 +1136,7 @@ fn admit_join_presentation(
     presentation: &runtime_collab::CertifiedJoinIdentity,
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
     host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let cert: tilo_user_identity::DeviceCert =
@@ -1146,7 +1146,7 @@ fn admit_join_presentation(
         authorize_join_certificate(route, &cert, trusted_devices, authority, host_scope)?;
     let registered = authority.map_or(
         Ok(None),
-        super::peer_actions::CertificateAuthority::policy_time,
+        super::certificate_authority::CertificateAuthority::policy_time,
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let verified = VerifiedJoinIdentity {
@@ -1177,7 +1177,7 @@ fn authorize_join_certificate(
     route: &CrdtRoute,
     cert: &tilo_user_identity::DeviceCert,
     trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
     host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<([u8; 32], bool, bool), String> {
     Ok(if let Some(scope) = host_scope {
@@ -1566,9 +1566,8 @@ struct PendingInvocation {
     reach: tilo_action_policy::Reach,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
-    network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
-    policy_time: Option<crate::peer_actions::PolicyTime>,
+    policy_time: Option<crate::policy_clock::PolicyTime>,
     journal_key: Option<InvocationKey>,
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
@@ -1604,8 +1603,7 @@ struct PreparedEffectCommit {
 pub(crate) struct VerifiedActionCaller {
     workspace: String,
     presentation: Vec<u8>,
-    network: Option<tilo_relay_session::client::CertifiedAction>,
-    policy_time: Option<crate::peer_actions::PolicyTime>,
+    policy_time: Option<crate::policy_clock::PolicyTime>,
     admitted: AdmittedJoinIdentity,
     /// The agent this person's own device handed the session to, kept
     /// across every re-verification of the person's admission.
@@ -1811,7 +1809,7 @@ enum ContinuingCaller {
     NativePerson {
         workspace: String,
         certificate: Box<tilo_user_identity::DeviceCert>,
-        time: crate::peer_actions::PolicyTime,
+        time: crate::policy_clock::PolicyTime,
         direct: tilo_actions::remote::Caller,
     },
     /// A caller the door knew directly.
@@ -2002,8 +2000,6 @@ pub(crate) fn device_host(
 }
 
 pub use launchable::launchable_provider;
-#[path = "peer_action_broker.rs"]
-pub(crate) mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
 #[path = "published_service.rs"]
@@ -2014,7 +2010,7 @@ impl AppBrokerState {
     /// has one; a broker takes one authority, from wherever it comes.
     fn attach_certificate_authority(
         &self,
-        authority: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+        authority: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     ) -> std::io::Result<()> {
         let Some(authority) = authority else {
             return Ok(());
@@ -2023,15 +2019,15 @@ impl AppBrokerState {
             .set(authority)
             .map_err(|_| std::io::Error::other("a broker takes one certificate authority"))
     }
-    fn registered_policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+    fn registered_policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         self.certificate_authority
             .get()
             .map_or(Ok(None), |authority| authority.policy_time())
     }
     fn checked_policy_time(
         &self,
-        submitted: Option<&crate::peer_actions::PolicyTime>,
-    ) -> Result<(Option<crate::peer_actions::PolicyTime>, u64), String> {
+        submitted: Option<&crate::policy_clock::PolicyTime>,
+    ) -> Result<(Option<crate::policy_clock::PolicyTime>, u64), String> {
         policy_context::sample(self.registered_policy_time()?, submitted)
     }
     fn policy_now_ns(&self) -> Result<u64, String> {
@@ -2078,7 +2074,6 @@ impl AppBrokerState {
             workspace: workspace.into(),
             presentation: presentation.into(),
             native_projection_verified: false,
-            network: None,
             policy_time: self.registered_policy_time()?,
             admitted,
             delegated: None,
@@ -2137,14 +2132,7 @@ impl AppBrokerState {
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
         self.checked_policy_time(caller.policy_time.as_ref())?;
-        let current = if let Some(evidence) = &caller.network {
-            self.verify_network_action_caller_with_policy_time(
-                evidence,
-                caller.policy_time.as_ref(),
-            )?
-        } else {
-            self.verify_action_caller(&caller.workspace, &caller.presentation)?
-        };
+        let current = self.verify_action_caller(&caller.workspace, &caller.presentation)?;
         // The fresh verification re-establishes the person and device; the
         // session delegation this caller carries is the one the person's own
         // device handed over, here re-applied exactly as the dispatch does.
@@ -2160,6 +2148,7 @@ impl AppBrokerState {
         private_interfaces,
         reason = "the journal key is the broker's own handle, reachable crate-wide only for tests"
     )]
+    #[cfg(test)]
     pub(crate) fn caller_key(
         &self,
         caller: &VerifiedActionCaller,
@@ -2173,6 +2162,7 @@ impl AppBrokerState {
         })
     }
 
+    #[cfg(test)]
     fn authorize_durable_result(
         &self,
         caller: &VerifiedActionCaller,
@@ -2223,6 +2213,7 @@ impl AppBrokerState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn verified_invocation_status(
         &self,
         caller: &VerifiedActionCaller,
@@ -2324,6 +2315,7 @@ impl AppBrokerState {
             .ok_or_else(|| "admitted invocation missing".into())
     }
 
+    #[cfg(test)]
     pub(crate) async fn cancel_verified_invocation(
         &self,
         caller: &VerifiedActionCaller,
@@ -2416,7 +2408,6 @@ impl AppBrokerState {
                 state: self,
                 id: None,
                 durable: invocation_journal::Durable::settled(),
-                heard: None,
             });
         };
         let durable = self
@@ -2441,10 +2432,6 @@ impl AppBrokerState {
             state: self,
             id,
             durable,
-            heard: pending
-                .network_evidence
-                .clone()
-                .map(|evidence| (evidence, update.clone())),
         })
     }
 
@@ -2454,7 +2441,7 @@ impl AppBrokerState {
     fn persist_uncertain_outcome(
         &self,
         pending: &PendingInvocation,
-        update: tilo_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
     ) -> Result<(), String> {
         if let Some(key) = &pending.journal_key {
             // Not waited for: see above. The write still finishes in order.
@@ -2468,9 +2455,6 @@ impl AppBrokerState {
                     .ok_or("durable admission unavailable")?
                     .record_update(key, update.clone(), true)?,
             );
-            if let Some(evidence) = &pending.network_evidence {
-                self.peer_action_queue.publish(evidence.clone(), update);
-            }
         }
         Ok(())
     }
@@ -3365,7 +3349,7 @@ struct AdmissionProvenance<'a> {
     durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
     origin: Option<InvocationCaller>,
-    retained_time: Option<&'a crate::peer_actions::PolicyTime>,
+    retained_time: Option<&'a crate::policy_clock::PolicyTime>,
 }
 /// What an admission's intent records besides the surface it resolves to:
 /// which invocation, for whom, and the exact request the caller asked for.
@@ -3416,7 +3400,8 @@ pub struct AppBrokerState {
     /// certified join fails closed when they have no authority to consult.
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    certificate_authority: std::sync::OnceLock<Arc<dyn super::peer_actions::CertificateAuthority>>,
+    certificate_authority:
+        std::sync::OnceLock<Arc<dyn super::certificate_authority::CertificateAuthority>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Per-connection incarnations, independent of unrelated discovery churn.
@@ -3444,8 +3429,6 @@ pub struct AppBrokerState {
     /// capability after disconnect would make a stale live-only row look
     /// executable.
     action_directory_bridge: ActionDirectoryRequestQueue,
-    peer_action_queue: super::peer_actions::PeerActionQueue,
-    peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
@@ -3645,14 +3628,6 @@ impl AppBrokerState {
         self.invocation_streams_changed();
         #[cfg(test)]
         clear!(self.thread_callbacks);
-        match self.peer_action_rx.lock() {
-            Ok(mut receiver) => {
-                receiver.take();
-            }
-            Err(poisoned) => {
-                poisoned.into_inner().take();
-            }
-        }
         self.refresh_action_directory_root_snapshot();
 
         let journal = {
@@ -3892,10 +3867,7 @@ impl AppBrokerState {
             } else {
                 (update, completion)
             };
-            if self
-                .persist_uncertain_outcome(&pending, update.clone())
-                .is_err()
-            {
+            if self.persist_uncertain_outcome(&pending, &update).is_err() {
                 self.execution_activity
                     .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
@@ -4067,6 +4039,7 @@ impl AppBrokerState {
     }
 
     /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
+    #[cfg(test)]
     async fn reconcile_prepared_effect(
         &self,
         record: DurableInvocation,
@@ -4161,7 +4134,7 @@ impl AppBrokerState {
     }
 
     fn configured_journal(
-        config: Option<&super::peer_actions::NativePeerBrokerConfig>,
+        config: Option<&super::NativePeerBrokerConfig>,
         membership: Option<&WorkspaceTreeHandle>,
     ) -> Result<Option<InvocationJournal>, String> {
         config
@@ -4181,7 +4154,7 @@ impl AppBrokerState {
         publisher: Arc<PeerPublisher>,
         membership: Option<WorkspaceTreeHandle>,
         trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-        config: Option<&super::peer_actions::NativePeerBrokerConfig>,
+        config: Option<&super::NativePeerBrokerConfig>,
         services: HostServices,
     ) -> (
         Arc<Self>,
@@ -4190,7 +4163,6 @@ impl AppBrokerState {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
         let local_turn = std::sync::Arc::new(tokio::sync::Notify::new());
-        let (peer_action_queue, peer_action_rx) = super::peer_actions::PeerActionQueue::channel();
         let journal = Self::configured_journal(config, membership.as_ref());
         let next_invocation = journal
             .as_ref()
@@ -4230,8 +4202,6 @@ impl AppBrokerState {
                     sender: bridge_tx,
                     turn: std::sync::Arc::clone(&local_turn),
                 },
-                peer_action_queue,
-                peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
                 native_checkouts: Mutex::new(HashMap::new()),
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
@@ -4520,40 +4490,6 @@ impl AppBrokerState {
                     })
             })
         })
-    }
-
-    fn published_surfaces_for_scope(
-        &self,
-        scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
-    ) -> Vec<PublishedSurface> {
-        let Some(scope) = scope else {
-            return self.published_surfaces();
-        };
-        self.surfaces
-            .lock()
-            .map(|surfaces| {
-                surfaces
-                    .values()
-                    .filter(|surface| {
-                        surface.app_id == scope.app_id && surface.route.record_id == scope.record_id
-                    })
-                    .map(|surface| PublishedSurface {
-                        peer_id: surface.peer_id,
-                        app_id: surface.app_id.clone(),
-                        route: surface.route.clone(),
-                        actions: surface
-                            .actions
-                            .iter()
-                            .filter(|action| {
-                                action.resource == scope.resource && action.action == scope.action
-                            })
-                            .cloned()
-                            .collect(),
-                        live: surface.live,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Generation of the eager action-surface source. Reading this never
@@ -5227,7 +5163,7 @@ impl AppBrokerState {
     )]
     #[cfg(test)]
     fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor), None)
+        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor))
     }
 
     #[allow(
@@ -5238,7 +5174,6 @@ impl AppBrokerState {
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
-        scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
     ) -> Result<String, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let membership = self
@@ -5249,7 +5184,7 @@ impl AppBrokerState {
         // task custody can activate an inert retained route; its catalogue
         // keeps stable providers discoverable without inventing a publisher.
         let live = self
-            .published_surfaces_for_scope(scope)
+            .published_surfaces()
             .into_iter()
             .filter(|surface| surface.live)
             .collect::<Vec<_>>();
@@ -5258,22 +5193,12 @@ impl AppBrokerState {
             .map(|surface| surface.route.clone())
             .collect::<Vec<_>>();
         let retained = self.launchable.surfaces().into_iter().filter(|surface| {
-            scope.is_none()
-                && self.task_admitted_workspace(cluster_id)
-                && !routes.contains(&surface.route)
+            self.task_admitted_workspace(cluster_id) && !routes.contains(&surface.route)
         });
         let published = live
             .into_iter()
             .chain(retained)
             .filter(|surface| surface.route.cluster_id == cluster_id)
-            .map(|mut surface| {
-                surface.actions.retain(|action| {
-                    scope.is_none_or(|scope| {
-                        action.resource == scope.resource && action.action == scope.action
-                    })
-                });
-                surface
-            })
             .collect::<Vec<_>>();
         let live_apps = self
             .surfaces
@@ -5293,14 +5218,6 @@ impl AppBrokerState {
             .map(|service| service.applications())
             .unwrap_or_default()
             .into_iter()
-            .filter(|app| {
-                scope.is_none_or(|scope| {
-                    app.package_id == scope.app_id
-                        && scope.record_id.is_empty()
-                        && scope.resource == format!("app.{}", app.package_id)
-                        && scope.action == "open"
-                })
-            })
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
         // A task agent's run takes the host's task steps (a task's programs)
@@ -5312,17 +5229,7 @@ impl AppBrokerState {
             .iter()
             .filter(|steps| actor.issue().is_some() && steps.for_tasks())
             .map(|steps| {
-                let actions = steps
-                    .descriptors()
-                    .into_iter()
-                    .filter(|descriptor| {
-                        scope.is_none_or(|scope| {
-                            scope.app_id == steps.app_id()
-                                && descriptor.address.resource == scope.resource
-                                && descriptor.address.action == scope.action
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                let actions = steps.descriptors().into_iter().collect::<Vec<_>>();
                 (steps.provider(), steps.app_id().to_owned(), actions)
             })
             .collect::<Vec<_>>();
@@ -5485,7 +5392,7 @@ impl AppBrokerState {
             let snapshot = audiences
                 .entry((cluster.clone(), actor.clone()))
                 .or_insert_with(|| {
-                    self.action_catalogue_json_for(&cluster, &actor, None)
+                    self.action_catalogue_json_for(&cluster, &actor)
                         .ok()
                         .map(Arc::<str>::from)
                 })
@@ -5731,6 +5638,7 @@ impl AppBrokerState {
         )
     }
 
+    #[cfg(test)]
     fn dispatch_invocation_from_offered(
         &self,
         peer_id: u64,
@@ -6236,7 +6144,6 @@ impl AppBrokerState {
                 &offered.1,
             ),
             owner,
-            network_evidence: durable.and_then(DurableContext::network),
             original: OriginalInvocationData::capture(
                 ui::invocation_scope::PublishedInvocationRequest {
                     wire_id: id,
@@ -7194,10 +7101,7 @@ impl AppBrokerState {
                 },
             )
         };
-        if self
-            .persist_uncertain_outcome(invocation, update.clone())
-            .is_err()
-        {
+        if self.persist_uncertain_outcome(invocation, &update).is_err() {
             // Its uncertainty is not durable either: its asker still hears
             // that no outcome comes, rather than waiting on nobody.
             self.execution_activity.publish_status(
@@ -10262,9 +10166,10 @@ pub(super) struct BrokerWiring<'a> {
     pub(super) trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     /// The authority a harness admits its enrolled devices under, when
     /// neither a peer configuration nor the host's services supply one.
-    pub(super) certificate_authority: Option<Arc<dyn super::peer_actions::CertificateAuthority>>,
+    pub(super) certificate_authority:
+        Option<Arc<dyn super::certificate_authority::CertificateAuthority>>,
     pub(super) services: HostServices,
-    pub(super) config: Option<&'a super::peer_actions::NativePeerBrokerConfig>,
+    pub(super) config: Option<&'a super::NativePeerBrokerConfig>,
 }
 
 impl Drop for BrokerThreadShutdown {
@@ -10496,7 +10401,6 @@ async fn serve_broker_thread(
     socket_path_for_thread: PathBuf,
     quit: Arc<AtomicBool>,
 ) {
-    state.start_peer_action_bridge(Rc::clone(&directories));
     let listener = match tokio::net::UnixListener::from_std(std_listener) {
         Ok(l) => l,
         Err(e) => {
@@ -11168,7 +11072,7 @@ pub mod tests {
     struct LifecycleAuthority;
 
     #[cfg(test)]
-    impl crate::peer_actions::CertificateAuthority for LifecycleAuthority {
+    impl crate::certificate_authority::CertificateAuthority for LifecycleAuthority {
         fn authorize(
             &self,
             _: uuid::Uuid,
@@ -11224,7 +11128,7 @@ pub mod tests {
     fn stopped_state_releases_journal_and_makes_surviving_facade_inert() {
         let directory = tempfile::tempdir().expect("temporary journal directory");
         let fanout = Arc::new(FanoutState::new());
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("invocations"),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11239,7 +11143,7 @@ pub mod tests {
         );
         let facade = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
         assert!(
-            facade.peer_action_attachment().is_ok(),
+            facade.invocation_host().is_ok(),
             "live facade sees the opened invocation journal"
         );
         let state_for_poison = Arc::clone(&state);
@@ -11255,7 +11159,7 @@ pub mod tests {
         state.stop();
 
         assert!(state.is_stopped());
-        assert!(facade.peer_action_attachment().is_err());
+        assert!(facade.invocation_host().is_err());
         assert!(facade.surfaces().is_empty());
         assert!(facade.statuses("owner").is_empty());
         let reopened = InvocationJournal::open(&config.journal_root)
@@ -11321,7 +11225,7 @@ pub mod tests {
         }
         let directory = tempfile::tempdir().expect("temporary socket directory");
         let socket = lifecycle_socket(&directory, "unattested");
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("unattested-invocations"),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11573,7 +11477,7 @@ pub mod tests {
         let directory = tempfile::tempdir().expect("temporary socket directory");
         let socket = lifecycle_socket(&directory, "self-drop");
         let fanout = Arc::new(FanoutState::new());
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("self-drop-invocations"),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11631,7 +11535,7 @@ pub mod tests {
 
         tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(
-            surviving_facade.peer_action_attachment().is_err(),
+            surviving_facade.invocation_host().is_err(),
             "facade retained across thread exit is inert"
         );
         let reopened_journal = InvocationJournal::open(&config.journal_root)
@@ -11751,7 +11655,7 @@ pub mod tests {
             }),
         );
         let membership = WorkspaceTree::default().shared();
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: journal_root.clone(),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11771,7 +11675,7 @@ pub mod tests {
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             result_tx
-                .send(facade.peer_action_attachment())
+                .send(facade.invocation_host())
                 .expect("send facade result");
         });
         let result = tilo_test_env::recv(
@@ -11834,7 +11738,7 @@ pub mod tests {
         let directory = tempfile::tempdir().expect("temporary broker directory");
         let other_socket = lifecycle_socket(&directory, "other");
         let other_journal = directory.path().join("other-invocations");
-        let other_config = crate::peer_actions::NativePeerBrokerConfig {
+        let other_config = crate::NativePeerBrokerConfig {
             journal_root: other_journal.clone(),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11853,7 +11757,7 @@ pub mod tests {
         let proof = Arc::new(Mutex::new(None));
 
         let broker_socket = lifecycle_socket(&directory, "guarded");
-        let broker_config = crate::peer_actions::NativePeerBrokerConfig {
+        let broker_config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("guarded-invocations"),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11879,7 +11783,7 @@ pub mod tests {
         let facade = broker.app_action_broker().expect("guarded broker facade");
 
         facade
-            .peer_action_attachment()
+            .invocation_host()
             .expect("unrelated broker drop does not fence this broker");
         proof
             .lock()
@@ -11894,7 +11798,7 @@ pub mod tests {
     fn broker_thread_unwind_releases_journal_and_owned_socket() {
         let directory = tempfile::tempdir().expect("temporary broker directory");
         let socket = lifecycle_socket(&directory, "unwind");
-        let config = crate::peer_actions::NativePeerBrokerConfig {
+        let config = crate::NativePeerBrokerConfig {
             journal_root: directory.path().join("unwind-invocations"),
             certificate_authority: Arc::new(LifecycleAuthority),
         };
@@ -11954,7 +11858,7 @@ pub mod tests {
         tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists(), "unwind releases owned socket custody");
         assert!(
-            facade.peer_action_attachment().is_err(),
+            facade.invocation_host().is_err(),
             "unwind makes surviving broker facades inert"
         );
         let reopened = InvocationJournal::open(&config.journal_root)
@@ -13550,7 +13454,7 @@ pub mod tests {
     struct GovernedBy([u8; 32]);
 
     #[cfg(test)]
-    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+    impl crate::certificate_authority::CertificateAuthority for GovernedBy {
         fn authorize(
             &self,
             _workspace: uuid::Uuid,
@@ -13580,7 +13484,7 @@ pub mod tests {
             None,
         );
         let governor = [7; 32];
-        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+        let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
             Arc::new(GovernedBy(governor));
         assert!(state.certificate_authority.set(authority).is_ok());
         let foreign_cert = |device| tilo_user_identity::DeviceCert {
@@ -15047,198 +14951,6 @@ pub mod tests {
         reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
     )]
     #[test]
-    fn exact_catalogue_scope_avoids_unrelated_oversized_descriptors() {
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(30),
-            "Scoped action workspace",
-        );
-        workspace.set_owner("owner");
-        let cluster = workspace.room().to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let membership = tree.shared();
-        struct Launcher;
-        impl crate::services::LauncherServices for Launcher {
-            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
-                vec![crate::services::LaunchableApplication {
-                    capabilities: Vec::new(),
-                    package_id: "so.tilo.word-processor".into(),
-                    display_name: "Writer".into(),
-                    unconfined: false,
-                    offers: Vec::new(),
-                }]
-            }
-            fn launch(
-                &self,
-                _: &str,
-                _: &tilo_desktop_model::Workspace,
-                _: Option<&str>,
-                _: &crate::services::LaunchPlace,
-            ) -> Result<(), String> {
-                unreachable!("catalogue projection never launches")
-            }
-            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
-                false
-            }
-        }
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = AppBrokerState::new_configured(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(membership.authority()),
-            None,
-            None,
-            crate::services::HostServices {
-                launcher: Some(Arc::new(Launcher)),
-                ..Default::default()
-            },
-        );
-        let action =
-            |resource: String, action: &str, description: Option<String>| PublishedAction {
-                state: tilo_actions::ActionState::default(),
-                semantic_identity: None,
-                resource,
-                action: action.into(),
-                resource_kind: "document".into(),
-                resource_label: "Document".into(),
-                action_label: "Command".into(),
-                keywords: Vec::new(),
-                icon: None,
-                description,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                params: Vec::new(),
-                contract: tilo_actions::ActionContract {
-                    kind: tilo_actions::ActionKind::Undoable,
-                    ..Default::default()
-                },
-                view: None,
-                input: PublishedInput::None,
-            };
-        let desktop = PublishedSurface {
-            peer_id: 1,
-            app_id: tilo_peer_state::owner_commit::desktop_command::APP_ID.into(),
-            route: CrdtRoute::record(
-                tilo_peer_state::owner_commit::desktop_command::APP_ID,
-                &cluster,
-                "",
-            ),
-            actions: vec![action(
-                tilo_peer_state::owner_commit::desktop_command::RESOURCE.into(),
-                tilo_peer_state::owner_commit::desktop_command::ACTION,
-                None,
-            )],
-            live: true,
-        };
-        let mut surfaces = state.surfaces.lock().unwrap();
-        surfaces.insert(desktop.peer_id, desktop);
-        for index in 0..24u64 {
-            surfaces.insert(
-                index + 2,
-                PublishedSurface {
-                    peer_id: index + 2,
-                    app_id: "so.tilo.word-processor".into(),
-                    route: CrdtRoute::record(
-                        "so.tilo.word-processor",
-                        &cluster,
-                        format!("record-{index}"),
-                    ),
-                    actions: vec![action(
-                        format!("document:{index}"),
-                        "edit",
-                        Some("x".repeat(64 * 1024)),
-                    )],
-                    live: true,
-                },
-            );
-        }
-        drop(surfaces);
-        let actor = BrokerActor::person("owner");
-        let full: serde_json::Value = serde_json::from_str(
-            &state
-                .action_catalogue_json_for(&cluster, &actor, None)
-                .unwrap(),
-        )
-        .unwrap();
-        let full_message = tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
-            host: uuid::Uuid::new_v4(),
-            catalogue: full,
-        };
-        assert!(
-            full_message.validate(),
-            "the full shape remains structurally valid"
-        );
-        assert!(
-            serde_json::to_vec(&full_message).unwrap().len()
-                > tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES
-        );
-        let scope = tilo_delivery_protocol::peer_actions::ExactActionRoute {
-            app_id: tilo_peer_state::owner_commit::desktop_command::APP_ID.into(),
-            record_id: String::new(),
-            resource: tilo_peer_state::owner_commit::desktop_command::RESOURCE.into(),
-            action: tilo_peer_state::owner_commit::desktop_command::ACTION.into(),
-        };
-        let scoped: serde_json::Value = serde_json::from_str(
-            &state
-                .action_catalogue_json_for(&cluster, &actor, Some(&scope))
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(scoped["surfaces"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            scoped["surfaces"][0]["actions"].as_array().unwrap().len(),
-            1
-        );
-        let denied = BrokerActor::person("stranger");
-        let denied: serde_json::Value = serde_json::from_str(
-            &state
-                .action_catalogue_json_for(&cluster, &denied, Some(&scope))
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            denied["surfaces"].as_array().unwrap().is_empty(),
-            "scope narrows discovery but never grants authorization"
-        );
-        let launcher_scope = tilo_delivery_protocol::peer_actions::ExactActionRoute {
-            app_id: "so.tilo.word-processor".into(),
-            record_id: String::new(),
-            resource: "app.so.tilo.word-processor".into(),
-            action: "open".into(),
-        };
-        let launcher: serde_json::Value = serde_json::from_str(
-            &state
-                .action_catalogue_json_for(&cluster, &actor, Some(&launcher_scope))
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            launcher["surfaces"].as_array().unwrap().is_empty(),
-            "scope cannot add a launcher hidden by another live record of that app"
-        );
-        let directed = tilo_delivery_protocol::peer_actions::DirectedAction {
-            workspace: uuid::Uuid::parse_str(&cluster).unwrap(),
-            request_id: uuid::Uuid::new_v4(),
-            source: [1; 32],
-            target: [2; 32],
-            message: tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
-                host: uuid::Uuid::new_v4(),
-                catalogue: scoped,
-            },
-        };
-        assert!(
-            directed.validate(),
-            "the exact desktop reply fits transport bounds"
-        );
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        clippy::arithmetic_side_effects,
-        clippy::unchecked_time_subtraction,
-        reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
-    )]
-    #[test]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(31),
@@ -15709,7 +15421,6 @@ pub mod tests {
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
             },
-            network_evidence: None,
             original: None,
             policy_time: None,
             journal_key: None,

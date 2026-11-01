@@ -1612,7 +1612,7 @@ impl JoinedChannel {
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
+        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor);
         let initial = match snapshot {
             Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Err(BrokerError::failed(error)),

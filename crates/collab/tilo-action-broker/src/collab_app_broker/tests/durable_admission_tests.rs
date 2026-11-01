@@ -795,52 +795,6 @@ fn invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely() {
         assert!(cancelled.cancellation_requested);
         // A durable cancellation request acknowledges receipt only; it
         // does not assert that the running external effect stopped.
-        use tilo_delivery_protocol::{
-            peer_actions::{ActionMessage, DirectedAction},
-            transport_v2,
-        };
-        let host = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let cancel = DirectedAction {
-            workspace: uuid::Uuid::parse_str(&caller.workspace).unwrap(),
-            request_id: uuid::Uuid::new_v4(),
-            source: [52; 32],
-            target: host.verifying_key().to_bytes(),
-            message: ActionMessage::Cancel {
-                invocation: request.invocation,
-            },
-        };
-        // The broker's reply path answers exactly this cancel: same
-        // workspace and request, reversed direction, the same invocation.
-        let acknowledgement = crate::peer_actions::bounded_reply(
-            &cancel,
-            ActionMessage::CancellationRequested {
-                invocation: request.invocation,
-            },
-        );
-        assert_eq!(
-            acknowledgement,
-            DirectedAction {
-                workspace: cancel.workspace,
-                request_id: cancel.request_id,
-                source: cancel.target,
-                target: cancel.source,
-                message: ActionMessage::CancellationRequested {
-                    invocation: request.invocation,
-                },
-            }
-        );
-        // And it survives the private lane the relay carries, signed.
-        assert!(cancel.validate() && acknowledgement.validate());
-        let reply = transport_v2::EnvelopeV2::SignedDirected(
-            tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-                &acknowledgement,
-                tilo_clock::unix_now_ns(),
-                &host,
-            )
-            .unwrap(),
-        );
-        let encoded = transport_v2::encode(&reply).unwrap();
-        assert_eq!(transport_v2::decode(&encoded[4..]).unwrap(), reply);
         if disconnected {
             fixture.state.remove_connection(71);
         } else {

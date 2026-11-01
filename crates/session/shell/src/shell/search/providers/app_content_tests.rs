@@ -93,7 +93,7 @@ fn state(generation: u64, secrets_unlocked: Option<bool>) -> IndexState {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
@@ -142,7 +142,7 @@ fn a_closed_apps_content_is_found_and_follows_its_updates_and_removals() {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
@@ -207,7 +207,7 @@ fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
@@ -281,7 +281,7 @@ fn one_entry_published_from_two_rooms_is_one_row() {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
@@ -465,7 +465,7 @@ fn a_text_is_found_by_what_it_refers_to_as_that_is_called_now() {
 }
 
 #[test]
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]

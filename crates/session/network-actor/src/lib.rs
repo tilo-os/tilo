@@ -526,11 +526,6 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
-    AttachActionBroker {
-        queue: tilo_action_broker::peer_actions::PeerActionQueue,
-        host: uuid::Uuid,
-        rooms: Vec<uuid::Uuid>,
-    },
 }
 
 /// A piece of a record's content on its way to the device of the room that
@@ -736,11 +731,6 @@ enum InternalEvent {
         governor: bool,
         error: tilo_peer_state::owner::session::DialError,
     },
-    ActionClosed {
-        ws: WorkspaceId,
-        peer: EndpointId,
-        session: std::sync::Weak<RelayCoeditSession>,
-    },
     Host {
         ws: WorkspaceId,
         session: std::sync::Weak<RelayCoeditSession>,
@@ -939,7 +929,6 @@ struct HostRuntime {
     /// The session goes to this device's own host, in this process: no
     /// remote party, nothing to keep up.
     local: bool,
-    actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
     /// Set while the host writes a replay, until its `Ready`.
@@ -1383,11 +1372,6 @@ struct ActorState {
     /// The on-demand records this device asked its rooms' hosts for
     /// ([`NetCmd::OpenRecord`]), by room.
     opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
-    action_broker: Option<(
-        tilo_action_broker::peer_actions::PeerActionQueue,
-        uuid::Uuid,
-        HashMap<WorkspaceId, uuid::Uuid>,
-    )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
@@ -1521,9 +1505,6 @@ impl Drop for HostRuntime {
         // The room's hold dials again once its session is let go.
         drop(self.native_held.take());
         self.pump.abort();
-        if let Some(task) = &self.actions {
-            task.abort();
-        }
     }
 }
 
@@ -1628,33 +1609,6 @@ impl ActorState {
             Some(NetCmd::WatchHostSessions { ws, ended }) => {
                 let now = self.sessions_of(ws);
                 self.room_governance.watch_sessions(ws, now, ended);
-            }
-            Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
-                let rooms: HashMap<_, _> = rooms
-                    .into_iter()
-                    .filter_map(|room| {
-                        tilo_relay_protocol::room_workspace_id(&room.to_string())
-                            .ok()
-                            .map(|ws| (ws, room))
-                    })
-                    .collect();
-                self.action_broker = Some((queue, host, rooms));
-                // The sessions already up take the broker's private channel
-                // as they are: a session does not depend on the broker, so
-                // none is ended and dialled again for it.
-                let live: Vec<_> = self
-                    .host_sessions
-                    .iter()
-                    .map(|(&(ws, peer), runtime)| (ws, peer, runtime.session.clone()))
-                    .collect();
-                for (ws, peer, session) in live {
-                    let actions = self.serve_actions(ws, peer, &session);
-                    if let Some(runtime) = self.host_sessions.get_mut(&(ws, peer))
-                        && let Some(previous) = std::mem::replace(&mut runtime.actions, actions)
-                    {
-                        previous.abort();
-                    }
-                }
             }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
@@ -2779,13 +2733,6 @@ impl ActorState {
             self.reachability.wake(why);
         }
         match internal {
-            Some(InternalEvent::ActionClosed { ws, peer, session }) => {
-                if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
-                    std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) {
-                    self.handle_host_event(ws, peer, HostEvent::Closed).await;
-                }
-            }
             Some(InternalEvent::DirectSent { ws, outcome }) => self.direct_sent(ws, *outcome),
             Some(InternalEvent::SiblingConnected(connection)) => {
                 self.sibling_connected(connection);
@@ -3140,7 +3087,6 @@ impl ActorState {
                     None,
                     true,
                 );
-                let actions = self.serve_actions(ws, peer, &session);
                 self.host_sessions.insert(
                     (ws, peer),
                     HostRuntime {
@@ -3148,7 +3094,6 @@ impl ActorState {
                         native_scope: None,
                         native_held: None,
                         local: false,
-                        actions,
                         session,
                         pump,
                     },
@@ -3158,51 +3103,6 @@ impl ActorState {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
             }
         }
-    }
-
-    /// Serve the attached action broker's private channel for `ws` on the
-    /// session with the workspace host `peer`, when the room is one of the
-    /// broker's and the host is an enrolled home peer. A state-only or
-    /// pinned host, a room's own native session and a certificate that can
-    /// act as host never carry it.
-    fn serve_actions(
-        &self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        session: &Arc<RelayCoeditSession>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let (queue, host, rooms) = self.action_broker.as_ref()?;
-        if self.native_routes.contains(ws)
-            || self
-                .hosts
-                .get(&peer)
-                .and_then(|(_, expected)| expected.as_ref())
-                .is_none()
-            || self
-                .host_identity
-                .as_ref()
-                .is_none_or(|identity| identity.material_for(ws).0.capabilities.can_act_as_host)
-        {
-            return None;
-        }
-        let room = *rooms.get(&ws)?;
-        let (queue, host, session, tx) = (
-            queue.clone(),
-            *host,
-            session.clone(),
-            self.internal_tx.clone(),
-        );
-        Some(tokio::spawn(async move {
-            let generation = Arc::downgrade(&session);
-            let _ = queue.serve(session, room, host).await;
-            let _ = tx
-                .send(InternalEvent::ActionClosed {
-                    ws,
-                    peer,
-                    session: generation,
-                })
-                .await;
-        }))
     }
 
     /// The host `host` of `ws` reports another member device joined
@@ -4026,7 +3926,6 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         opened_records: HashMap::new(),
-        action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
@@ -4526,10 +4425,9 @@ impl HostRouteScheduler<'_> {
         let endpoint = endpoint.clone();
         let identity = identity.clone();
         let (device_cert, revocation_entries) = identity.material_for(ws);
-        // A member's device signs the private actions it sends, whether or
-        // not the action broker is attached yet: the broker takes the
-        // session as it is when it attaches.
-        let action_v2 = !device_cert.capabilities.can_act_as_host;
+        // A member's device reaches a workspace host over the v2 stream; a
+        // device that can act as a host itself uses the v1 stream.
+        let connect_v2 = !device_cert.capabilities.can_act_as_host;
         let mut revocations = RevocationList::new();
         for entry in revocation_entries {
             if revocations.insert(entry).is_err() {
@@ -4578,7 +4476,7 @@ impl HostRouteScheduler<'_> {
         let tx = internal_tx.clone();
         tokio::spawn(async move {
             let result = tokio::time::timeout(Duration::from_secs(10), async {
-                if action_v2 {
+                if connect_v2 {
                     RelayClient::connect_v2_to_enrolled_home_peer(
                         endpoint,
                         addr.clone(),

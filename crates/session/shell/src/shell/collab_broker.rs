@@ -312,7 +312,7 @@ pub fn spawn_native_peer(
     app_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     publisher: &Arc<PeerPublisher>,
-    config: &tilo_action_broker::peer_actions::NativePeerBrokerConfig,
+    config: &tilo_action_broker::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {
         return Err(std::io::Error::other(
@@ -356,8 +356,8 @@ impl CertificateProvisioning {
 struct HarnessCertificates {
     devices: Arc<Vec<[u8; 32]>>,
     origin: Result<
-        tilo_action_broker::peer_actions::PolicyOrigin,
-        tilo_action_broker::peer_actions::PolicyClockError,
+        tilo_action_broker::policy_clock::PolicyOrigin,
+        tilo_action_broker::policy_clock::PolicyClockError,
     >,
 }
 
@@ -366,15 +366,15 @@ impl HarnessCertificates {
     fn new(devices: Arc<Vec<[u8; 32]>>) -> Self {
         Self {
             devices,
-            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            origin: tilo_action_broker::policy_clock::OwnerPolicyClock::new()
                 .map(|clock| clock.new_origin()),
         }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertificates {
-    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+impl tilo_action_broker::certificate_authority::CertificateAuthority for HarnessCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::policy_clock::PolicyTime>, String> {
         self.origin
             .as_ref()
             .map_err(ToString::to_string)?
@@ -387,7 +387,7 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertifica
         &self,
         room: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
-        time: &tilo_action_broker::peer_actions::PolicyTime,
+        time: &tilo_action_broker::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         let origin = self.origin.as_ref().map_err(ToString::to_string)?;
         if !origin.owns(time) {
@@ -896,7 +896,7 @@ fn spawn_inner(
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     certificate_provisioning: CertificateProvisioning,
-    config: Option<&tilo_action_broker::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&tilo_action_broker::NativePeerBrokerConfig>,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
     channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1104,22 +1104,6 @@ fn spawn_inner(
             )?
         }
     };
-    if let (Some(network), Some(tree), Some(broker)) =
-        (peer_sync, membership, inner.app_action_broker())
-        && let Ok((queue, host)) = broker.peer_action_attachment()
-    {
-        let rooms = tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .filter_map(|w| uuid::Uuid::parse_str(&w.room().to_string()).ok())
-            .collect();
-        network
-            .cmd_tx
-            .try_send(tilo_network_actor::NetCmd::AttachActionBroker { queue, host, rooms })
-            .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
-    }
     let personal_source = inner
         .app_action_broker()
         .zip(peer_sync.and_then(|network| network.messaging_host_identity()))

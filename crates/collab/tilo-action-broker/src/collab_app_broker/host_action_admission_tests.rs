@@ -101,7 +101,7 @@ fn configured_native_seat_never_admits_an_unsigned_actor_label() {
 }
 
 struct ClosedCertificates;
-impl crate::peer_actions::CertificateAuthority for ClosedCertificates {
+impl crate::certificate_authority::CertificateAuthority for ClosedCertificates {
     fn authorize(&self, _: uuid::Uuid, _: &tilo_user_identity::DeviceCert) -> Result<(), String> {
         Err("certificate authority closed".into())
     }

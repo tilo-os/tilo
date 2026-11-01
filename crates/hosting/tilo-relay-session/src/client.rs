@@ -33,45 +33,7 @@ mod handshake;
 use crate::session_carrier::StreamCarrier;
 use crate::session_carrier::{CarrierHandle, HttpsCarrier, IrohCarrier, SessionChannels};
 use handshake::authenticate_server;
-use tilo_delivery_protocol::peer_actions::SignedDirectedAction;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
-
-/// Authenticated relay delivery, never constructible from application payloads.
-#[derive(Clone, Debug)]
-pub struct CertifiedAction {
-    action: tilo_delivery_protocol::peer_actions::DirectedAction,
-    certificate: DeviceCert,
-    // Boxed: the signed bytes would otherwise make every delivery event as
-    // large as the largest one.
-    signed: Option<Box<SignedDirectedAction>>,
-}
-impl CertifiedAction {
-    /// Exact source-bound private request.
-    pub fn action(&self) -> &tilo_delivery_protocol::peer_actions::DirectedAction {
-        &self.action
-    }
-    /// Certificate the relay attached for the session's authenticated source.
-    /// The relay can attach any certificate it has seen; only [`Self::signed`]
-    /// proves the certificate's device sent this action.
-    pub fn certificate(&self) -> &DeviceCert {
-        &self.certificate
-    }
-    /// The source device's signature over exactly [`Self::action`], already
-    /// verified against [`Self::certificate`]'s device key on receipt. `None`
-    /// never reaches a target: no frame carries an unsigned action, and a
-    /// broker refuses a delivery without one.
-    pub fn signed(&self) -> Option<&SignedDirectedAction> {
-        self.signed.as_deref()
-    }
-}
-/// Private session control or opaque authenticated delivery.
-#[derive(Debug)]
-pub enum CertifiedActionEvent {
-    /// Verified source and recipient from the authenticated session.
-    Delivered(CertifiedAction),
-    /// Relay control response.
-    Control(EnvelopeV2),
-}
 
 /// A live authenticated session with a relay. Handles are cheap;
 /// dropping the client tears down the connection.
@@ -88,22 +50,14 @@ pub struct RelayClient {
     subscriptions: Mutex<HashSet<u64>>,
     /// Present only for the opaque signed interactive-owner trust path.
     workspace_scope: Option<InteractiveWorkspaceScope>,
-    own_device: [u8; 32],
-    action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
-    action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
-    /// This device's key, present for a session that sends private actions:
-    /// every private action this device sends as its own source is signed
-    /// with it.
-    action_key: Option<ed25519_dalek::SigningKey>,
     /// Owns the authenticated pump's transport lifetime, independently of the
-    /// canonical state/private channels and their certification rules.
+    /// state channel and its certification rules.
     carrier: CarrierHandle,
 }
 
 #[derive(Clone, Debug)]
 struct InteractiveWorkspaceScope {
     workspace_id: u64,
-    room: uuid::Uuid,
     authority: DeviceCert,
 }
 
@@ -121,13 +75,11 @@ struct ExpectedServer {
 
 /// This device's own relay credential: its certificate, the signer holding
 /// its device key (a key in memory, or a browser's non-extractable one) and
-/// the revocation list it checks the server against. A private-action
-/// session also holds the key itself, to sign each action it sends.
+/// the revocation list it checks the server against.
 struct ClientCredentials<'a> {
     cert: DeviceCert,
     signer: &'a dyn DeviceSigner,
     revocations: RevocationList,
-    action_key: Option<ed25519_dalek::SigningKey>,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
@@ -169,37 +121,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::RoomBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } | Envelope::HostAction { .. } => false,
-    }
-}
-
-fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> bool {
-    match envelope {
-        EnvelopeV2::State(state) => state_in_scope(scope, state),
-        EnvelopeV2::UnsignedDelta { workspace_id, .. }
-        | EnvelopeV2::PresenceBatch { workspace_id, .. } => *workspace_id == scope.workspace_id,
-        EnvelopeV2::EnableActions { workspace: room }
-        | EnvelopeV2::ActionsReady {
-            workspace: room, ..
-        }
-        | EnvelopeV2::Unavailable {
-            workspace: room, ..
-        }
-        | EnvelopeV2::EnableBrokerClient { workspace: room }
-        | EnvelopeV2::RegisterBroker {
-            workspace: room, ..
-        } => *room == scope.room,
-        EnvelopeV2::SignedDirected(signed)
-        | EnvelopeV2::CertifiedSignedDelivered { action: signed, .. } => {
-            signed.action().workspace == scope.room
-        }
-        // Nothing sends a retired unsigned delivery; naming its room keeps
-        // the check total without treating one as deliverable.
-        EnvelopeV2::RetiredDirected(action)
-        | EnvelopeV2::RetiredDelivered { action, .. }
-        | EnvelopeV2::RetiredCertifiedDelivered { action, .. } => action.workspace == scope.room,
-        // The session reader rebuilds a coded delta into `State`; one that
-        // reached this check whole names no scope.
-        EnvelopeV2::CodedDelta { .. } => false,
     }
 }
 
@@ -247,9 +168,6 @@ pub enum ClientError {
     /// I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// The private v2 sender has closed with its shared relay transport.
-    #[error("private transport closed")]
-    PrivateTransportClosed,
     /// The device signer refused or failed.
     #[error("signer: {0}")]
     Sign(String),
@@ -732,7 +650,6 @@ impl RelayClient {
                 cert: own_cert,
                 signer,
                 revocations,
-                action_key: None,
             },
         )
         .await
@@ -773,7 +690,6 @@ impl RelayClient {
         let (carrier, channels) = HttpsCarrier::start(link);
         Ok(Self::from_authenticated_session(
             relay_peer,
-            own_cert.device_public_key,
             channels,
             Box::new(carrier),
         ))
@@ -801,16 +717,13 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
-                action_key: None,
             },
         )
         .await
     }
 
     /// Dial with the same certificate and endpoint pinning as an enrolled
-    /// home peer, signing the private actions this device sends. Durable
-    /// action execution remains unavailable; private routing is opt-in per
-    /// subscribed room via `EnableActions`.
+    /// home peer.
     pub async fn connect_v2_to_enrolled_home_peer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -833,18 +746,16 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
-                action_key: Some(own_sk.clone()),
             },
         )
         .await
     }
 
     /// Connect to `expected_device`, one of this person's own devices
-    /// (`own_user`) that hosts rooms itself, signing the private actions
-    /// this device sends. The host proves exactly that device under the
-    /// person's root; neither side needs host capability. The session is
-    /// the person's own: the host answers its rooms' listing and entry on
-    /// it.
+    /// (`own_user`) that hosts rooms itself. The host proves exactly that
+    /// device under the person's root; neither side needs host capability.
+    /// The session is the person's own: the host answers its rooms' listing
+    /// and entry on it.
     ///
     /// # Errors
     ///
@@ -875,17 +786,15 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
-                action_key: Some(own_sk.clone()),
             },
         )
         .await
     }
 
     /// A session over `read`/`write`, a byte stream pair to a host in the
-    /// same process, through the same handshake and session as over Iroh,
-    /// private action channel included. The host must prove
-    /// `expected_device` of this device's own person; it needs no host
-    /// capability.
+    /// same process, through the same handshake and session as over Iroh.
+    /// The host must prove `expected_device` of this device's own person; it
+    /// needs no host capability.
     ///
     /// # Errors
     ///
@@ -919,44 +828,27 @@ impl RelayClient {
         .await?;
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
-        let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
-        let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
         let carrier = StreamCarrier::start(async move {
             let mut reader = SessionReader::new(read);
-            if run_v2_pump(
-                &mut write,
-                &mut reader,
-                &mut outbound_rx,
-                &mut action_rx,
-                &inbound_tx,
-                &action_inbound_tx,
-                None,
-            )
-            .await
-            {
+            if run_v2_pump(&mut write, &mut reader, &mut outbound_rx, &inbound_tx, None).await {
                 use tokio::io::AsyncWriteExt as _;
                 let _ = write.shutdown().await;
             }
         });
-        let mut client = Self::from_authenticated_session(
+        Ok(Self::from_authenticated_session(
             relay_peer,
-            own_cert.device_public_key,
             SessionChannels {
                 outbound: outbound_tx,
                 inbound: inbound_rx,
-                action_outbound: Some(action_tx),
-                action_inbound: action_inbound_rx,
             },
             Box::new(carrier),
-        );
-        client.action_key = Some(own_sk);
-        Ok(client)
+        ))
     }
 
     /// Connect to the exact primary device authorized by a verified signed
     /// interactive-owner hint. The opaque trust token binds the service key,
     /// governing certificate, room, and workspace; the resulting client
-    /// rejects every state or action frame outside that scope.
+    /// rejects every state frame outside that scope.
     pub async fn connect_v2_to_interactive_workspace_owner(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -968,11 +860,8 @@ impl RelayClient {
         if *relay_addr.id.as_bytes() != trust.service_public_key() {
             return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
         }
-        let room = uuid::Uuid::parse_str(trust.room())
-            .map_err(|_| ClientError::Auth(crate::auth::AuthError::PolicyReject))?;
         let scope = InteractiveWorkspaceScope {
             workspace_id: trust.workspace_id(),
-            room,
             authority: trust.host().clone(),
         };
         Self::connect_version(
@@ -988,7 +877,6 @@ impl RelayClient {
                 cert: own_cert,
                 signer: &own_sk,
                 revocations,
-                action_key: Some(own_sk.clone()),
             },
         )
         .await
@@ -1005,7 +893,6 @@ impl RelayClient {
             cert: own_cert,
             signer,
             revocations,
-            action_key,
         } = credentials;
         if signer.device_public_key() != own_cert.device_public_key {
             return Err(ClientError::Sign(
@@ -1030,8 +917,6 @@ impl RelayClient {
 
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
-        let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
-        let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
         let mut reader = SessionReader::new(recv);
         let pump_connection = conn.clone();
         let pump_scope = interactive_scope.clone();
@@ -1043,9 +928,7 @@ impl RelayClient {
                 &mut send,
                 &mut reader,
                 &mut outbound_rx,
-                &mut action_rx,
                 &inbound_tx,
-                &action_inbound_tx,
                 pump_scope.as_ref(),
             )
             .await
@@ -1059,19 +942,15 @@ impl RelayClient {
 
         let mut client = Self::from_authenticated_session(
             relay_peer,
-            own_cert.device_public_key,
             SessionChannels {
                 outbound: outbound_tx,
                 inbound: inbound_rx,
-                action_outbound: Some(action_tx),
-                action_inbound: action_inbound_rx,
             },
             Box::new(IrohCarrier::new(conn, endpoint, pump)),
         );
         // Install the verified interactive scope before exposing the client.
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
-        client.action_key = action_key;
         Ok(client)
     }
 
@@ -1083,7 +962,6 @@ impl RelayClient {
     /// transport. A future v3 verifier must satisfy the same trust boundary.
     pub(crate) fn from_authenticated_session(
         relay_peer: AuthenticatedPeer,
-        own_device: [u8; 32],
         channels: SessionChannels,
         carrier: CarrierHandle,
     ) -> Self {
@@ -1093,10 +971,6 @@ impl RelayClient {
             inbound: Arc::new(AsyncMutex::new(channels.inbound)),
             subscriptions: Mutex::new(HashSet::new()),
             workspace_scope: None,
-            own_device,
-            action_outbound: channels.action_outbound,
-            action_inbound: Arc::new(AsyncMutex::new(channels.action_inbound)),
-            action_key: None,
             carrier,
         }
     }
@@ -1140,101 +1014,6 @@ impl RelayClient {
         Ok(())
     }
 
-    /// Queue one private frame. A session without a private channel (the
-    /// HTTPS carrier) reports unavailable explicitly. State continues to use
-    /// `send` and `recv`, sharing a single wire reader.
-    pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
-        let tx = self
-            .action_outbound
-            .as_ref()
-            .ok_or_else(|| ClientError::Codec("this session has no private channel".into()))?;
-        if matches!(frame, EnvelopeV2::State(_)) {
-            return Err(ClientError::Codec("state uses send".into()));
-        }
-        if self
-            .workspace_scope
-            .as_ref()
-            .is_some_and(|scope| !action_in_scope(scope, &frame))
-        {
-            return Err(ClientError::Codec(
-                "interactive owner trust does not cover this action room".into(),
-            ));
-        }
-        tilo_delivery_protocol::transport_v2::encode(&frame)
-            .map_err(|e| ClientError::Codec(e.to_string()))?;
-        tx.try_send(frame)
-            .map_err(|error| private_send_error(&error))
-    }
-
-    /// Sign `action` as this session's own device and queue it on the private
-    /// lane. A session without a device key sends no action at all: nothing
-    /// forwards an action no device signed.
-    pub fn send_directed(
-        &self,
-        action: &tilo_delivery_protocol::peer_actions::DirectedAction,
-    ) -> Result<(), ClientError> {
-        let key = self.action_key.as_ref().ok_or_else(|| {
-            ClientError::Codec("this session has no device key to sign an action with".into())
-        })?;
-        let signed = SignedDirectedAction::sign(action, tilo_clock::unix_now_ns(), key)
-            .map_err(|error| ClientError::Codec(error.to_string()))?;
-        self.send_action(EnvelopeV2::SignedDirected(signed))
-    }
-
-    /// Receive authenticated source evidence from this exact relay session.
-    /// Only this method can construct the evidence; peer control frames cannot.
-    ///
-    /// A signed delivery is accepted only if the attached certificate's device
-    /// signed exactly this action; the relay cannot author or alter one. No
-    /// other frame carries an action, so the relay's word is never evidence;
-    /// a delivery in one of the retired unsigned shapes is refused outright.
-    pub async fn recv_certified_action(&self) -> Option<CertifiedActionEvent> {
-        let (action, source_certificate, signed) = match self.recv_action().await? {
-            EnvelopeV2::CertifiedSignedDelivered {
-                action,
-                source_certificate,
-            } => (
-                action.action().clone(),
-                source_certificate,
-                Some(Box::new(action)),
-            ),
-            // A retired unsigned delivery is refused as if it had arrived
-            // with no signature at all: nothing here can attribute it.
-            frame if frame.retired_unsigned_action().is_some() => return None,
-            other => return Some(CertifiedActionEvent::Control(other)),
-        };
-        let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
-        if action.target != self.own_device
-            || action.source != cert.device_public_key
-            || !action.validate()
-            // A host may ask a device's action host (a placement, a
-            // governance answer) but never stands in for a broker's caller.
-            || (cert.capabilities.can_act_as_host
-                && !matches!(
-                    action.message,
-                    tilo_delivery_protocol::peer_actions::ActionMessage::Remote { .. }
-                ))
-            || tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).is_err()
-            || signed
-                .as_ref()
-                .is_some_and(|signed| signed.verify(&cert.device_public_key).is_err())
-        {
-            return None;
-        }
-        Some(CertifiedActionEvent::Delivered(CertifiedAction {
-            action,
-            certificate: cert,
-            signed,
-        }))
-    }
-
-    /// Receive private frames; None means disconnected, or a session without
-    /// a private channel.
-    pub async fn recv_action(&self) -> Option<EnvelopeV2> {
-        self.action_outbound.as_ref()?;
-        self.action_inbound.lock().await.recv().await
-    }
-
     /// Convenience: recv the next envelope.
     pub async fn recv(&self) -> Option<Envelope> {
         self.inbound.lock().await.recv().await
@@ -1274,32 +1053,21 @@ impl RelayClient {
     }
 }
 
-fn private_send_error<T>(error: &tokio::sync::mpsc::error::TrySendError<T>) -> ClientError {
-    match error {
-        tokio::sync::mpsc::error::TrySendError::Full(_) => {
-            ClientError::Codec("private queue full".into())
-        }
-        tokio::sync::mpsc::error::TrySendError::Closed(_) => ClientError::PrivateTransportClosed,
-    }
-}
-
 /// Drive the v2 wire until either half ends. `true` requests a graceful send
 /// finish because the state producer closed; all other exits close the session.
 async fn run_v2_pump<R, W>(
     send: &mut W,
     reader: &mut SessionReader<R>,
     states: &mut mpsc::Receiver<Envelope>,
-    actions: &mut mpsc::Receiver<EnvelopeV2>,
     state_sink: &mpsc::Sender<Envelope>,
-    action_sink: &mpsc::Sender<EnvelopeV2>,
     scope: Option<&InteractiveWorkspaceScope>,
 ) -> bool
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let writing = run_v2_writer(send, states, actions, scope);
-    let reading = run_v2_reader(reader, state_sink, action_sink, scope);
+    let writing = run_v2_writer(send, states, scope);
+    let reading = run_v2_reader(reader, state_sink, scope);
     tokio::pin!(writing);
     tokio::pin!(reading);
     tokio::select! {
@@ -1308,13 +1076,12 @@ where
     }
 }
 
-/// Write a session's outbound state and private frames. Pointer presence is
-/// paced per slot ([`crate::pointer_pacing`]); each wake writes what it took,
-/// and every held pointer that fell due, in one `write_all`.
+/// Write a session's outbound state frames. Pointer presence is paced per
+/// slot ([`crate::pointer_pacing`]); each wake writes what it took, and every
+/// held pointer that fell due, in one `write_all`.
 async fn run_v2_writer<W>(
     send: &mut W,
     states: &mut mpsc::Receiver<Envelope>,
-    actions: &mut mpsc::Receiver<EnvelopeV2>,
     scope: Option<&InteractiveWorkspaceScope>,
 ) -> bool
 where
@@ -1331,7 +1098,7 @@ where
         // already waiting replaces it before the gap's end writes it.
         let event = tokio::select! {
             biased;
-            event = next_v2_outbound_event(states, actions, &mut schedule) => Some(event),
+            event = next_v2_outbound_event(states, &mut schedule) => Some(event),
             () = pointer_due(due) => None,
         };
         let now = Instant::now();
@@ -1339,7 +1106,7 @@ where
         let mut written = None;
         let mut closing = false;
         match event {
-            Some(ClientEvent::State(Some(env))) => {
+            Some(Some(env)) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::trace_native_publication("client_write_started", &env, None);
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
@@ -1364,24 +1131,13 @@ where
                     written = Some(envelope);
                 }
             }
-            Some(ClientEvent::State(None)) => {
+            Some(None) => {
                 // The producer is gone; the resting positions still go.
                 if !encode_states(&pointers.take_all(now), &mut out) {
                     return false;
                 }
                 closing = true;
             }
-            Some(ClientEvent::Action(Some(action))) => {
-                if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
-                    return false;
-                }
-                let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&action) else {
-                    return false;
-                };
-                out.extend_from_slice(&bytes);
-            }
-            // The private producer is gone: fail closed.
-            Some(ClientEvent::Action(None)) => return false,
             None => {}
         }
         // Whatever fell due goes in the same write.
@@ -1428,7 +1184,6 @@ async fn pointer_due(due: Option<n0_future::time::Instant>) {
 async fn run_v2_reader<R>(
     reader: &mut SessionReader<R>,
     state_sink: &mpsc::Sender<Envelope>,
-    action_sink: &mpsc::Sender<EnvelopeV2>,
     scope: Option<&InteractiveWorkspaceScope>,
 ) where
     R: tokio::io::AsyncRead + Unpin,
@@ -1458,26 +1213,13 @@ async fn run_v2_reader<R>(
                     return;
                 }
             }
-            Ok(Some(action)) => {
-                if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
-                    return;
-                }
-                // Closing on bounded receiver overflow makes loss explicit;
-                // the future journal owner can recover status on reconnect.
-                if let Err(error) = action_sink.try_send(action) {
-                    let (reason, frame) = match error {
-                        mpsc::error::TrySendError::Full(frame) => ("its reader is behind", frame),
-                        mpsc::error::TrySendError::Closed(frame) => ("nobody reads it", frame),
-                    };
-                    let frame: String = format!("{frame:?}").chars().take(120).collect();
-                    tracing::warn!(
-                        reason,
-                        frame,
-                        capacity = action_sink.max_capacity(),
-                        "relay session closed: a private frame found its queue full or closed"
-                    );
-                    return;
-                }
+            // Actions reach another device on its own connection now; a peer
+            // that still sends one of their frames speaks a protocol this
+            // build does not serve, so the session ends rather than dropping
+            // what it cannot route.
+            Ok(Some(_)) => {
+                tracing::warn!("relay session closed: a peer sent a retired action frame");
+                return;
             }
             Ok(None) | Err(_) => return,
         }
@@ -1507,68 +1249,19 @@ async fn cooperative_yield(events_since_yield: &mut usize) {
 
 #[derive(Default)]
 struct V2WriteSchedule {
-    next_lane: usize,
     events_since_yield: usize,
-    pending_action: Option<EnvelopeV2>,
-    state_prefix: usize,
-    actions_closed: bool,
 }
 
+/// The writer's next outbound envelope: one queued state frame, or `None`
+/// once the producer is gone.
 async fn next_v2_outbound_event(
     states: &mut mpsc::Receiver<Envelope>,
-    actions: &mut mpsc::Receiver<EnvelopeV2>,
     schedule: &mut V2WriteSchedule,
-) -> ClientEvent {
+) -> Option<Envelope> {
     use std::future::poll_fn;
-    use std::task::Poll;
 
     cooperative_yield(&mut schedule.events_since_yield).await;
-    poll_fn(|cx| {
-        for offset in 0..2 {
-            let lane = schedule.next_lane.wrapping_add(offset) % 2;
-            if lane == 0 {
-                if let Poll::Ready(state) = poll_queued(states, cx) {
-                    schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
-                    schedule.next_lane = 1;
-                    return Poll::Ready(ClientEvent::State(state));
-                }
-            } else {
-                if schedule.pending_action.is_none() && !schedule.actions_closed {
-                    match poll_queued(actions, cx) {
-                        Poll::Ready(Some(action)) => {
-                            // Snapshot only the already-queued state prefix.
-                            // Later refills cannot extend this barrier.
-                            schedule.state_prefix =
-                                if matches!(action, EnvelopeV2::EnableActions { .. }) {
-                                    states.len()
-                                } else {
-                                    0
-                                };
-                            schedule.pending_action = Some(action);
-                        }
-                        Poll::Ready(None) => schedule.actions_closed = true,
-                        Poll::Pending => {}
-                    }
-                }
-                if schedule.state_prefix == 0
-                    && let Some(action) = schedule.pending_action.take()
-                {
-                    schedule.next_lane = 0;
-                    return Poll::Ready(ClientEvent::Action(Some(Box::new(action))));
-                }
-            }
-        }
-        Poll::Pending
-    })
-    .await
-}
-
-/// The writer's next outbound frame. A private frame is boxed: the largest
-/// `EnvelopeV2` is several times any state envelope, and private frames are
-/// the rare lane.
-enum ClientEvent {
-    State(Option<Envelope>),
-    Action(Option<Box<EnvelopeV2>>),
+    poll_fn(|cx| poll_queued(states, cx)).await
 }
 
 // Poll buffered data before the receiver's cooperative-budget check. A Tokio
@@ -1647,23 +1340,16 @@ mod scheduling_tests {
 
     struct RefillingWrite {
         states: mpsc::Sender<Envelope>,
-        expected_enable: Vec<u8>,
-        enable_seen: Option<tokio::sync::oneshot::Sender<()>>,
         frames: Arc<Mutex<Vec<Vec<u8>>>>,
     }
 
     impl tokio::io::AsyncWrite for RefillingWrite {
         fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
+            self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
             bytes: &[u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
             self.frames.lock().unwrap().push(bytes.to_vec());
-            if bytes == self.expected_enable
-                && let Some(seen) = self.enable_seen.take()
-            {
-                let _ = seen.send(());
-            }
             match self.states.try_send(Envelope::Ping) {
                 Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -1710,13 +1396,11 @@ mod scheduling_tests {
     }
 
     #[tokio::test]
-    async fn blocked_state_write_does_not_delay_inbound_private_response() {
+    async fn blocked_state_write_does_not_delay_inbound_state() {
         use tokio::io::AsyncWriteExt as _;
 
         let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        let (state_sink, _state_inbound) = mpsc::channel(256);
-        let (action_sink, mut action_inbound) = mpsc::channel(32);
+        let (state_sink, mut state_inbound) = mpsc::channel(256);
         state_tx.send(Envelope::Ping).await.unwrap();
 
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -1732,34 +1416,24 @@ mod scheduling_tests {
         let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(
-                &mut writer,
-                &mut reader,
-                &mut states,
-                &mut actions,
-                &state_sink,
-                &action_sink,
-                None,
-            )
-            .await
+            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
         });
 
         started_rx.await.unwrap();
         assert_eq!(written.lock().unwrap().len(), 1);
-        let response = EnvelopeV2::ActionsReady {
-            workspace: uuid::Uuid::from_u128(7),
-            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
-        };
+        let response = Envelope::Subscribe { workspace_id: 7 };
         relay_write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
+            .write_all(
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(response.clone()))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let observed =
-            tokio::time::timeout(tilo_test_env::hang_bound(), action_inbound.recv()).await;
+            tokio::time::timeout(tilo_test_env::hang_bound(), state_inbound.recv()).await;
 
         let _ = release_tx.send(());
         drop(state_tx);
-        drop(action_tx);
         let finished = tilo_test_env::within("released v2 pump did not finish", pump)
             .await
             .unwrap();
@@ -1775,97 +1449,57 @@ mod scheduling_tests {
         );
         assert_eq!(written_reader.read_next().await.unwrap(), None);
         assert_eq!(
-            observed.expect("inbound private response stalled behind outbound state write"),
+            observed.expect("inbound state stalled behind outbound state write"),
             Some(response)
         );
     }
 
     #[tokio::test]
-    async fn continuously_ready_writer_preserves_inbound_and_enable_prefix_progress() {
+    async fn continuously_ready_writer_preserves_inbound_progress() {
         use tokio::io::AsyncWriteExt as _;
 
         let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        let (state_sink, _state_inbound) = mpsc::channel(256);
-        let (action_sink, mut action_inbound) = mpsc::channel(32);
-        let room = Uuid::from_u128(9);
-        let workspace_id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let (state_sink, mut state_inbound) = mpsc::channel(256);
+        let workspace_id = crate::room_workspace_id(&uuid::Uuid::from_u128(9).to_string()).unwrap();
         for _ in 0..255 {
             state_tx.try_send(Envelope::Ping).unwrap();
         }
         state_tx
             .try_send(Envelope::Subscribe { workspace_id })
             .unwrap();
-        let enable = EnvelopeV2::EnableActions { workspace: room };
-        action_tx.try_send(enable.clone()).unwrap();
 
-        let (enable_seen_tx, enable_seen_rx) = tokio::sync::oneshot::channel();
         let frames = Arc::new(Mutex::new(Vec::new()));
         let writer = RefillingWrite {
             states: state_tx,
-            expected_enable: tilo_delivery_protocol::transport_v2::encode(&enable).unwrap(),
-            enable_seen: Some(enable_seen_tx),
             frames: frames.clone(),
         };
         let (mut relay_write, client_read) = tokio::io::duplex(4096);
         let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(
-                &mut writer,
-                &mut reader,
-                &mut states,
-                &mut actions,
-                &state_sink,
-                &action_sink,
-                None,
-            )
-            .await
+            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
         });
 
-        let response = EnvelopeV2::ActionsReady {
-            workspace: room,
-            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
-        };
+        let response = Envelope::Subscribe { workspace_id };
         relay_write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
+            .write_all(
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(response.clone()))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(
             tilo_test_env::within(
-                "continuously ready writer starved the inbound response",
-                action_inbound.recv()
+                "continuously ready writer starved the inbound frame",
+                state_inbound.recv()
             )
             .await,
             Some(response)
         );
-        tilo_test_env::within(
-            "continuous state refills extended the finite enable prefix",
-            enable_seen_rx,
-        )
-        .await
-        .unwrap();
-
-        let encoded_subscribe =
-            tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
-                workspace_id,
-            })
-            .unwrap();
-        let encoded_enable = tilo_delivery_protocol::transport_v2::encode(&enable).unwrap();
-        let (subscribe_position, enable_position) = {
-            let frames = frames.lock().unwrap();
-            (
-                frames
-                    .iter()
-                    .position(|frame| frame == &encoded_subscribe)
-                    .unwrap(),
-                frames
-                    .iter()
-                    .position(|frame| frame == &encoded_enable)
-                    .unwrap(),
-            )
-        };
-        assert!(subscribe_position < enable_position);
+        assert!(
+            !frames.lock().unwrap().is_empty(),
+            "the writer wrote while the reader made progress"
+        );
 
         drop(relay_write);
         assert!(
@@ -1878,9 +1512,7 @@ mod scheduling_tests {
     #[tokio::test]
     async fn reader_end_cancels_a_blocked_writer_without_detaching_it() {
         let (state_tx, mut states) = mpsc::channel(256);
-        let (_action_tx, mut actions) = mpsc::channel(32);
         let (state_sink, _state_inbound) = mpsc::channel(256);
-        let (action_sink, _action_inbound) = mpsc::channel(32);
         state_tx.send(Envelope::Ping).await.unwrap();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -1894,16 +1526,7 @@ mod scheduling_tests {
         let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(
-                &mut writer,
-                &mut reader,
-                &mut states,
-                &mut actions,
-                &state_sink,
-                &action_sink,
-                None,
-            )
-            .await
+            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
         });
 
         started_rx.await.unwrap();
@@ -1922,9 +1545,7 @@ mod scheduling_tests {
     #[tokio::test]
     async fn writer_end_cancels_a_blocked_reader_without_detaching_it() {
         let (state_tx, mut states) = mpsc::channel(256);
-        let (_action_tx, mut actions) = mpsc::channel(32);
         let (state_sink, _state_inbound) = mpsc::channel(256);
-        let (action_sink, _action_inbound) = mpsc::channel(32);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let waker = Arc::new(Mutex::new(None));
@@ -1936,16 +1557,7 @@ mod scheduling_tests {
         let pump = tokio::spawn(async move {
             let mut reader = SessionReader::new(reader);
             let mut writer = tokio::io::sink();
-            run_v2_pump(
-                &mut writer,
-                &mut reader,
-                &mut states,
-                &mut actions,
-                &state_sink,
-                &action_sink,
-                None,
-            )
-            .await
+            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
         });
 
         started_rx.await.unwrap();
@@ -1986,43 +1598,6 @@ mod scheduling_tests {
         assert!(!matches!(
             super::classify_connect_error(&error),
             super::ClientError::UnsupportedProtocol
-        ));
-    }
-
-    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
-    use uuid::Uuid;
-
-    fn action() -> EnvelopeV2 {
-        EnvelopeV2::SignedDirected(
-            tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-                &DirectedAction {
-                    workspace: Uuid::from_u128(1),
-                    request_id: Uuid::from_u128(2),
-                    source: ed25519_dalek::SigningKey::from_bytes(&[1; 32])
-                        .verifying_key()
-                        .to_bytes(),
-                    target: [2; 32],
-                    message: ActionMessage::CatalogueRefresh { scope: None },
-                },
-                1,
-                &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
-            )
-            .unwrap(),
-        )
-    }
-
-    #[test]
-    fn private_queue_full_and_closed_have_distinct_errors() {
-        let (sender, receiver) = mpsc::channel(1);
-        sender.try_send(action()).unwrap();
-        assert!(matches!(
-            private_send_error(&sender.try_send(action()).unwrap_err()),
-            ClientError::Codec(message) if message == "private queue full"
-        ));
-        drop(receiver);
-        assert!(matches!(
-            private_send_error(&sender.try_send(action()).unwrap_err()),
-            ClientError::PrivateTransportClosed
         ));
     }
 
@@ -2067,13 +1642,12 @@ mod scheduling_tests {
             count: bytes_read.clone(),
         };
         let (incoming, mut sink) = mpsc::channel(256);
-        let (actions, _action_sink) = mpsc::channel(32);
         for id in 0..256 {
             incoming.try_send(frame(id)).unwrap();
         }
         let task = tokio::spawn(async move {
             let mut reader = SessionReader::new(reader);
-            run_v2_reader(&mut reader, &incoming, &actions, None).await;
+            run_v2_reader(&mut reader, &incoming, None).await;
         });
 
         tilo_test_env::within("reader never reached the full state sink", async {
@@ -2101,7 +1675,6 @@ mod scheduling_tests {
     #[tokio::test]
     async fn always_ready_wire_yields_to_the_actual_bounded_state_consumer() {
         let (incoming, mut consumed) = mpsc::channel(256);
-        let (actions, _action_sink) = mpsc::channel(32);
         let consumer = tokio::spawn(async move {
             let mut count = 0;
             while consumed.recv().await.is_some() {
@@ -2114,116 +1687,9 @@ mod scheduling_tests {
                 .unwrap()
                 .repeat(1024);
         let mut reader = SessionReader::new(std::io::Cursor::new(bytes));
-        run_v2_reader(&mut reader, &incoming, &actions, None).await;
+        run_v2_reader(&mut reader, &incoming, None).await;
         drop(incoming);
         assert_eq!(consumer.await.unwrap(), 1024);
-    }
-
-    #[tokio::test]
-    async fn sustained_ready_state_and_private_traffic_both_progress() {
-        let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        for _ in 0..256 {
-            state_tx.try_send(Envelope::Ping).unwrap();
-        }
-        for _ in 0..32 {
-            action_tx.try_send(action()).unwrap();
-        }
-        let mut schedule = V2WriteSchedule::default();
-        // Both lanes remain ready for 1024 selections. Assert observable
-        // progress per short window, not a probabilistic wall-clock timeout.
-        for window in 0..128 {
-            let mut counts = [0; 2];
-            for _ in 0..8 {
-                match next_v2_outbound_event(&mut states, &mut actions, &mut schedule).await {
-                    ClientEvent::State(Some(Envelope::Ping)) => {
-                        counts[0] += 1;
-                        state_tx.try_send(Envelope::Ping).unwrap();
-                    }
-                    ClientEvent::Action(Some(value)) => {
-                        assert_eq!(*value, action());
-                        counts[1] += 1;
-                        action_tx.try_send(action()).unwrap();
-                    }
-                    _ => panic!("live lane ended"),
-                }
-            }
-            assert!(
-                counts.iter().all(|count| *count > 0),
-                "ready lanes must each progress under sustained traffic, window {window}: {counts:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn action_enable_waits_for_queued_subscribe_but_not_an_unbounded_flood() {
-        let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        let room = Uuid::from_u128(1);
-        let workspace_id = crate::room_workspace_id(&room.to_string()).unwrap();
-        for _ in 0..255 {
-            state_tx.try_send(Envelope::Ping).unwrap();
-        }
-        state_tx
-            .try_send(Envelope::Subscribe { workspace_id })
-            .unwrap();
-        action_tx
-            .try_send(EnvelopeV2::EnableActions { workspace: room })
-            .unwrap();
-        let mut schedule = V2WriteSchedule::default();
-        let mut subscribed = false;
-        let mut enabled = false;
-        for _ in 0..1024 {
-            match next_v2_outbound_event(&mut states, &mut actions, &mut schedule).await {
-                ClientEvent::State(Some(env)) => {
-                    if matches!(env, Envelope::Subscribe { .. }) {
-                        subscribed = true;
-                    }
-                    state_tx.try_send(Envelope::Ping).unwrap();
-                }
-                ClientEvent::Action(Some(action)) => {
-                    let EnvelopeV2::EnableActions { workspace: got } = *action else {
-                        panic!("an unexpected private frame");
-                    };
-                    assert!(subscribed, "private enable overtook its state subscription");
-                    assert_eq!(got, room);
-                    enabled = true;
-                    break;
-                }
-                _ => panic!("live lane ended"),
-            }
-        }
-        assert!(enabled, "continuous state refills starved private enable");
-    }
-
-    #[tokio::test]
-    async fn private_inbound_overflow_ends_the_shared_v2_pump() {
-        let frame = tilo_delivery_protocol::transport_v2::encode(&action()).unwrap();
-        let mut reader = SessionReader::new(std::io::Cursor::new(frame));
-        let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        let (state_sink, _state_inbound) = mpsc::channel(256);
-        let (action_sink, _action_inbound) = mpsc::channel(32);
-        for _ in 0..32 {
-            action_sink.try_send(action()).unwrap();
-        }
-        let mut writer = tokio::io::sink();
-        assert!(
-            !run_v2_pump(
-                &mut writer,
-                &mut reader,
-                &mut states,
-                &mut actions,
-                &state_sink,
-                &action_sink,
-                None,
-            )
-            .await,
-            "private overflow must close instead of dropping a response"
-        );
-        assert_eq!(action_sink.capacity(), 0);
-        drop(state_tx);
-        drop(action_tx);
     }
 }
 
@@ -2294,23 +1760,17 @@ mod pointer_pacing_writer_tests {
 
     struct Writer {
         states: mpsc::Sender<Envelope>,
-        _actions: mpsc::Sender<EnvelopeV2>,
         wire: Wire,
         task: tokio::task::JoinHandle<bool>,
     }
 
     fn writer() -> Writer {
         let (states_tx, mut states) = mpsc::channel(256);
-        let (actions_tx, mut actions) = mpsc::channel(32);
         let wire = Wire::default();
         let mut send = wire.clone();
-        let task =
-            tokio::spawn(
-                async move { run_v2_writer(&mut send, &mut states, &mut actions, None).await },
-            );
+        let task = tokio::spawn(async move { run_v2_writer(&mut send, &mut states, None).await });
         Writer {
             states: states_tx,
-            _actions: actions_tx,
             wire,
             task,
         }
@@ -2519,8 +1979,6 @@ mod session_carrier_tests {
     struct Fixture {
         client: RelayClient,
         states: mpsc::Receiver<Envelope>,
-        actions: mpsc::Receiver<EnvelopeV2>,
-        incoming: mpsc::Sender<EnvelopeV2>,
         events: Arc<Mutex<Vec<&'static str>>>,
         finished: Arc<tokio::sync::Notify>,
     }
@@ -2541,7 +1999,7 @@ mod session_carrier_tests {
         cert
     }
 
-    fn fixture(private: bool) -> Fixture {
+    fn fixture() -> Fixture {
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[20; 32]);
         let host_cert = certificate(20, DeviceCapabilities::host());
         let ack = auth::build_hello_ack(host_cert.clone(), &host_key, [2; 32], &[1; 32]);
@@ -2555,8 +2013,6 @@ mod session_carrier_tests {
         .unwrap();
         let (outbound, states) = mpsc::channel(1);
         let (_state_incoming, inbound) = mpsc::channel(1);
-        let (action_outbound, actions) = mpsc::channel(1);
-        let (incoming, action_inbound) = mpsc::channel(1);
         let events = Arc::new(Mutex::new(vec![]));
         let finished = Arc::new(tokio::sync::Notify::new());
         let carrier = Box::new(TestCarrier {
@@ -2565,20 +2021,12 @@ mod session_carrier_tests {
         });
         let client = RelayClient::from_authenticated_session(
             peer,
-            [30; 32],
-            SessionChannels {
-                outbound,
-                inbound,
-                action_outbound: private.then_some(action_outbound),
-                action_inbound,
-            },
+            SessionChannels { outbound, inbound },
             carrier,
         );
         Fixture {
             client,
             states,
-            actions,
-            incoming,
             events,
             finished,
         }
@@ -2591,7 +2039,7 @@ mod session_carrier_tests {
             mut states,
             events,
             ..
-        } = fixture(true);
+        } = fixture();
         client
             .send(Envelope::Subscribe { workspace_id: 7 })
             .unwrap();
@@ -2615,7 +2063,7 @@ mod session_carrier_tests {
             mut states,
             events,
             ..
-        } = fixture(true);
+        } = fixture();
         client
             .send(Envelope::Subscribe { workspace_id: 7 })
             .unwrap();
@@ -2634,7 +2082,7 @@ mod session_carrier_tests {
             mut states,
             events,
             ..
-        } = fixture(true);
+        } = fixture();
         client.send(Envelope::Ping).unwrap();
         assert!(matches!(
             *client
@@ -2655,7 +2103,7 @@ mod session_carrier_tests {
             events,
             finished,
             ..
-        } = fixture(true);
+        } = fixture();
         let closing = client.disconnect();
         tokio::pin!(closing);
         assert!(
@@ -2676,7 +2124,7 @@ mod session_carrier_tests {
             events,
             finished,
             ..
-        } = fixture(true);
+        } = fixture();
         let closing = client.close();
         tokio::pin!(closing);
         assert!(
@@ -2687,225 +2135,6 @@ mod session_carrier_tests {
         assert_eq!(*events.lock().unwrap(), ["close-owned"]);
         finished.notify_one();
         tilo_test_env::within("closing to complete", &mut closing).await;
-    }
-
-    #[tokio::test]
-    async fn private_backpressure_and_state_only_unavailability_remain_explicit() {
-        let Fixture {
-            client, actions, ..
-        } = fixture(true);
-        let room = uuid::Uuid::from_u128(1);
-        client
-            .send_action(EnvelopeV2::EnableActions { workspace: room })
-            .unwrap();
-        assert!(matches!(
-            client.send_action(EnvelopeV2::EnableActions { workspace: room }),
-            Err(ClientError::Codec(_))
-        ));
-        drop(actions);
-        assert!(matches!(
-            client.send_action(EnvelopeV2::EnableActions { workspace: room }),
-            Err(ClientError::PrivateTransportClosed)
-        ));
-        let state_only = fixture(false);
-        assert!(matches!(
-            state_only
-                .client
-                .send_action(EnvelopeV2::EnableActions { workspace: room }),
-            Err(ClientError::Codec(_))
-        ));
-        assert!(state_only.client.recv_action().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_retired_unsigned_delivery_is_refused() {
-        let fixture = fixture(true);
-        let action = signed_request(30, [30; 32]).action().clone();
-        for frame in [
-            EnvelopeV2::RetiredDirected(action.clone()),
-            EnvelopeV2::RetiredDelivered {
-                action: action.clone(),
-                source_user: [31; 32],
-            },
-            EnvelopeV2::RetiredCertifiedDelivered {
-                action,
-                source_certificate: Vec::new(),
-            },
-        ] {
-            fixture.incoming.send(frame).await.unwrap();
-            assert!(
-                fixture.client.recv_certified_action().await.is_none(),
-                "a retired unsigned delivery yields no evidence"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn private_evidence_still_binds_source_certificate_and_recipient() {
-        let fixture = fixture(true);
-        let cert = certificate(40, DeviceCapabilities::primary());
-        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
-            workspace: uuid::Uuid::from_u128(1),
-            request_id: uuid::Uuid::from_u128(2),
-            source: cert.device_public_key,
-            target: [30; 32],
-            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
-                scope: None,
-            },
-        };
-        let frame = |action| EnvelopeV2::CertifiedSignedDelivered {
-            action,
-            source_certificate: serde_json::to_vec(&cert).unwrap(),
-        };
-        fixture
-            .incoming
-            .send(frame(signed_request(40, cert.device_public_key)))
-            .await
-            .unwrap();
-        let Some(CertifiedActionEvent::Delivered(evidence)) =
-            fixture.client.recv_certified_action().await
-        else {
-            panic!("verified delivery missing");
-        };
-        assert_eq!(evidence.action(), &action);
-        assert_eq!(
-            evidence.certificate().device_public_key,
-            cert.device_public_key
-        );
-        // The certificate names the source; a signature under it for any
-        // other claimed source is refused.
-        let stranger = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-        let mut wrong_source = action.clone();
-        wrong_source.source = stranger.verifying_key().to_bytes();
-        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-            &wrong_source,
-            tilo_clock::unix_now_ns(),
-            &stranger,
-        )
-        .unwrap();
-        fixture.incoming.send(frame(signed)).await.unwrap();
-        assert!(fixture.client.recv_certified_action().await.is_none());
-        let mut wrong_target = action;
-        wrong_target.target = [31; 32];
-        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-            &wrong_target,
-            tilo_clock::unix_now_ns(),
-            &ed25519_dalek::SigningKey::from_bytes(&[40; 32]),
-        )
-        .unwrap();
-        fixture.incoming.send(frame(signed)).await.unwrap();
-        assert!(fixture.client.recv_certified_action().await.is_none());
-    }
-
-    fn signed_request(
-        by: u8,
-        source: [u8; 32],
-    ) -> tilo_delivery_protocol::peer_actions::SignedDirectedAction {
-        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
-            workspace: uuid::Uuid::from_u128(1),
-            request_id: uuid::Uuid::from_u128(2),
-            source: ed25519_dalek::SigningKey::from_bytes(&[by; 32])
-                .verifying_key()
-                .to_bytes(),
-            target: [30; 32],
-            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
-                scope: None,
-            },
-        };
-        let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-            &action,
-            tilo_clock::unix_now_ns(),
-            &ed25519_dalek::SigningKey::from_bytes(&[by; 32]),
-        )
-        .unwrap();
-        if source == action.source {
-            return signed;
-        }
-        // Re-encode the claimed source as a host would, keeping device A's signature.
-        let mut wire = postcard::to_allocvec(&signed).unwrap();
-        let at = wire
-            .windows(32)
-            .position(|window| window == action.source)
-            .unwrap();
-        wire.get_mut(at..at.saturating_add(32))
-            .unwrap()
-            .copy_from_slice(&source);
-        postcard::from_bytes(&wire).unwrap()
-    }
-
-    #[tokio::test]
-    async fn signed_delivery_is_evidence_only_under_its_source_certificate() {
-        let fixture = fixture(true);
-        let cert = certificate(40, DeviceCapabilities::primary());
-        let frame = |action| EnvelopeV2::CertifiedSignedDelivered {
-            action,
-            source_certificate: serde_json::to_vec(&cert).unwrap(),
-        };
-        let signed = signed_request(40, cert.device_public_key);
-        fixture.incoming.send(frame(signed.clone())).await.unwrap();
-        let Some(CertifiedActionEvent::Delivered(evidence)) =
-            fixture.client.recv_certified_action().await
-        else {
-            panic!("verified signed delivery missing");
-        };
-        assert_eq!(evidence.action(), signed.action());
-        assert_eq!(evidence.signed(), Some(&signed));
-        // Device 41 signs an action the host then attributes to device 40.
-        fixture
-            .incoming
-            .send(frame(signed_request(41, cert.device_public_key)))
-            .await
-            .unwrap();
-        assert!(fixture.client.recv_certified_action().await.is_none());
-        // A frame that carries an action without a signature is no delivery
-        // at all: the relay cannot vouch for a caller.
-        fixture
-            .incoming
-            .send(EnvelopeV2::Unavailable {
-                workspace: uuid::Uuid::from_u128(1),
-                request_id: uuid::Uuid::from_u128(2),
-                target: [30; 32],
-                invocation: None,
-                reason: tilo_delivery_protocol::peer_actions::UnavailableReason::NotAuthorised,
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            fixture.client.recv_certified_action().await,
-            Some(CertifiedActionEvent::Control(
-                EnvelopeV2::Unavailable { .. }
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_session_sends_actions_only_signed_with_its_own_device_key() {
-        let mut fixture = fixture(true);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[30; 32]);
-        let own = signed_request(30, key.verifying_key().to_bytes())
-            .action()
-            .clone();
-        fixture.client.action_key = Some(key.clone());
-        fixture.client.send_directed(&own).unwrap();
-        let Some(EnvelopeV2::SignedDirected(signed)) = fixture.actions.recv().await else {
-            panic!("an action never leaves unsigned");
-        };
-        assert_eq!(signed.action(), &own);
-        signed.verify(&own.source).unwrap();
-        // An action naming another source is not this device's to sign.
-        let mut foreign = own;
-        foreign.source = [41; 32];
-        assert!(matches!(
-            fixture.client.send_directed(&foreign),
-            Err(ClientError::Codec(_))
-        ));
-        assert!(fixture.actions.try_recv().is_err());
-        // Nor does a session without a device key send one at all.
-        fixture.client.action_key = None;
-        assert!(matches!(
-            fixture.client.send_directed(signed.action()),
-            Err(ClientError::Codec(message)) if message.contains("no device key")
-        ));
     }
 
     #[test]
@@ -2935,7 +2164,7 @@ mod peer_version_tests {
                 .peer_version(),
             Some(behind)
         );
-        assert_eq!(ClientError::PrivateTransportClosed.peer_version(), None);
+        assert_eq!(ClientError::UnsupportedProtocol.peer_version(), None);
         assert_eq!(
             ClientError::Https(tilo_relay_client::LinkError::Malformed("x".into())).peer_version(),
             None

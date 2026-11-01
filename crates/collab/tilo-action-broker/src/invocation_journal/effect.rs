@@ -202,6 +202,7 @@ impl InvocationJournal {
 
     /// The prepared effect's terminal, durable once the returned write
     /// resolves; the record as that write makes it.
+    #[cfg(test)]
     pub(crate) fn stage_finished_effect(
         &mut self,
         key: &InvocationKey,

@@ -12,7 +12,7 @@ pub struct CurrentHost {
     pub certificate: Mutex<Option<DeviceCert>>,
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
-    pub time: Option<crate::peer_actions::PolicyTime>,
+    pub time: Option<crate::policy_clock::PolicyTime>,
     /// Whether this host governs its workspace, as a standalone runtime governs its
     /// own: then only its own device (or this host itself) escapes the
     /// foreign-device cap there.
@@ -23,7 +23,7 @@ impl CurrentHost {
     pub fn new(
         route: &CrdtRoute,
         cert: &DeviceCert,
-        time: Option<crate::peer_actions::PolicyTime>,
+        time: Option<crate::policy_clock::PolicyTime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             route: route.clone(),
@@ -36,8 +36,8 @@ impl CurrentHost {
     }
 }
 
-impl crate::peer_actions::CertificateAuthority for CurrentHost {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for CurrentHost {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(self.time.clone())
     }
     fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
@@ -327,14 +327,14 @@ pub fn signed_device(
 pub struct OriginalWorkspace {
     pub key: SigningKey,
     pub cert: DeviceCert,
-    pub origin: crate::peer_actions::PolicyOrigin,
-    pub time_control: crate::peer_actions::PolicyClockTestControl,
+    pub origin: crate::policy_clock::PolicyOrigin,
+    pub time_control: crate::policy_clock::PolicyClockTestControl,
     pub route: CrdtRoute,
     pub membership: WorkspaceTreeHandle,
     pub state: Arc<AppBrokerState>,
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
-    _clock: crate::peer_actions::OwnerPolicyClock,
+    _clock: crate::policy_clock::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
     // Restore the environment before removing the identity and journal files.
     _identity_env: tilo_test_env::ScopedEnv,
@@ -412,7 +412,7 @@ impl OriginalWorkspace {
                 50_000_000_000,
             )
         };
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
+        let (clock, time_control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = match workspace.flatten() {
             Some(workspace) => crate::test_support::Workspace::in_room(

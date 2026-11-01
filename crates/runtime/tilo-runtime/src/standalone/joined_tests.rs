@@ -397,7 +397,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, act
     };
     tree.desktop.workspaces.push(placed);
     let membership = tree.shared();
-    let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+    let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
     let admission = joined.admit_mcp_execution(&workspace_id, actor).unwrap();
@@ -602,8 +602,8 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         .unwrap();
     let retained_caller = execution.caller().clone();
     {
-        use tilo_action_broker::peer_actions::CertificateAuthority as _;
-        let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         let authority = super::super::Certificates {

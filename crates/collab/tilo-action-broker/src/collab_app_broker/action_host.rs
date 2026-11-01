@@ -2230,15 +2230,9 @@ impl AppBrokerState {
                 // earlier admission, even on the same dispatch thread.
                 self.checked_policy_time(original.policy_time.as_ref())
                     .map_err(refusal)?;
-                let current = if let Some(evidence) = &original.network {
-                    self.verify_network_action_caller_with_policy_time(
-                        evidence,
-                        original.policy_time.as_ref(),
-                    )
-                } else {
-                    self.verify_action_caller(&original.workspace, &original.presentation)
-                }
-                .map_err(refusal)?;
+                let current = self
+                    .verify_action_caller(&original.workspace, &original.presentation)
+                    .map_err(refusal)?;
                 // The barrier re-verifies the original person and device, and
                 // refuses a delegated caller whose admission can no longer
                 // name its owner instead of dropping the delegation.
@@ -3375,7 +3369,7 @@ mod foreign_caller_tests {
     /// Every workspace is governed by one device.
     struct GovernedBy([u8; 32]);
 
-    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+    impl crate::certificate_authority::CertificateAuthority for GovernedBy {
         fn authorize(
             &self,
             _workspace: uuid::Uuid,
@@ -3403,7 +3397,7 @@ mod foreign_caller_tests {
             None,
         );
         let governor = [7; 32];
-        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+        let authority: Arc<dyn crate::certificate_authority::CertificateAuthority> =
             Arc::new(GovernedBy(governor));
         assert!(state.certificate_authority.set(authority).is_ok());
         let may_administer = |caller: &Caller| {

@@ -118,10 +118,6 @@ where
     clippy::significant_drop_tightening,
     reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one connection's lifetime in order: the session context every handler borrows, the reader and writer it runs, and the teardown that must follow both; splitting it means threading that borrowed context through more signatures"
-)]
 pub(super) async fn run_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
@@ -141,7 +137,6 @@ where
         trust_policy,
         own_user_public_key,
         own_device_cert,
-        own_device_signing_key,
         metrics,
         own_device_public_key,
         app_serving,
@@ -164,7 +159,6 @@ where
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
     let mut reader = SessionReader::new(read);
-    let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
     let mut authority = crate::authority_epoch::subscribe();
@@ -185,13 +179,11 @@ where
         connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
         own_device_cert: &own_device_cert,
-        own_device_signing_key: Some(&own_device_signing_key),
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
-        private_tx: &private_tx,
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),
         agents: &agents,
@@ -223,7 +215,7 @@ where
             ReaderQueues::new(&tx, &state_tx, &reply_tx),
         )
         .run(cx);
-        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx, &mut private_rx);
+        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx);
         let (end_writer, ending) = tokio::sync::watch::channel(false);
         let writing = SessionWriter::new(queues, &mut write, &presence).run(cx, ending);
         until_ended(
@@ -349,44 +341,6 @@ impl Drop for ConnectionLease {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
-fn control_room(frame: &EnvelopeV2) -> Option<u64> {
-    match frame {
-        EnvelopeV2::State(
-            Envelope::Subscribe { workspace_id }
-            | Envelope::SubscribeFrom { workspace_id, .. }
-            | Envelope::Unsubscribe { workspace_id },
-        ) => Some(*workspace_id),
-        EnvelopeV2::EnableActions { workspace: room }
-        | EnvelopeV2::EnableBrokerClient { workspace: room }
-        | EnvelopeV2::RegisterBroker {
-            workspace: room, ..
-        } => crate::room_workspace_id(&room.to_string()).ok(),
-        _ => None,
-    }
-}
-
-pub(super) fn private_may_overtake<'a>(
-    frame: &EnvelopeV2,
-    active_control: Option<u64>,
-    mut queued: impl Iterator<Item = &'a EnvelopeV2>,
-) -> bool {
-    // A heartbeat proves this session's reader and writer are alive, and
-    // nothing more: no client takes a Pong as an acknowledgement of what it
-    // sent before. Answered at once, a slow disk under a control, a replay
-    // or a state admission never looks like a host that stopped answering.
-    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
-        return true;
-    }
-    let EnvelopeV2::SignedDirected(signed) = frame else {
-        return false;
-    };
-    let action = signed.action();
-    let Ok(room) = crate::room_workspace_id(&action.workspace.to_string()) else {
-        return false;
-    };
-    active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
-}
-
 pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
         EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),

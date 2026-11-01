@@ -157,7 +157,7 @@ impl AppBrokerState {
             self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self
-                    .persist_uncertain_outcome(&pending, invocation_journal::unknown(invocation));
+                    .persist_uncertain_outcome(&pending, &invocation_journal::unknown(invocation));
             }
             if let Ok(mut here) = self.offloaded_here.lock() {
                 here.remove(&id);

@@ -1,18 +1,16 @@
-//! The two inbound dispatchers: [`handle_envelope`] for the v1 state lane
-//! ([`Envelope`]) and [`handle_private`] for the v2 private lane
-//! ([`EnvelopeV2`]). Each arm hands one envelope to its concern's handler.
+//! The inbound dispatcher: [`handle_envelope`] for the state lane
+//! ([`Envelope`]), and [`unserved_private`] for the frames a v2 peer sends
+//! that this build does not serve.
 
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, UNSIGNED_DELIVERY_REFUSAL,
-    enable_actions, enable_broker_client, handle_commit, handle_compaction, handle_delta,
-    handle_host_action, handle_host_hello, handle_live, handle_live_join, handle_live_leave,
-    handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
-    handle_sync_request, handle_unsubscribe, handle_voice, register_broker, route_record_content,
-    route_signed_directed,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
+    handle_delta, handle_host_action, handle_host_hello, handle_live, handle_live_join,
+    handle_live_leave, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
+    handle_sync_request, handle_unsubscribe, handle_voice, route_record_content,
 };
 #[cfg(test)]
-use super::{ReplayWrite, finish_replay_write, mpsc};
+use super::{ReplayWrite, finish_replay_write};
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —
@@ -37,7 +35,6 @@ where
     let mut ticket = None;
     let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
-    let (_tx, mut private_rx) = mpsc::channel(1);
     Box::pin(finish_replay_write(
         ReplayWrite {
             ticket,
@@ -47,7 +44,6 @@ where
         peer,
         session,
         &pending,
-        &mut private_rx,
         write,
     ))
     .await
@@ -171,34 +167,14 @@ pub(super) async fn handle_envelope(
     }
 }
 
-/// The v2 private lane: negotiating a room's action capability and routing
-/// directed actions. State frames travel on the v1 lane, except `Ping`.
-pub(super) async fn handle_private(
-    frame: EnvelopeV2,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-) -> Result<Option<EnvelopeV2>, PeerError> {
-    match frame {
-        EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
-        EnvelopeV2::EnableActions { workspace: room } => enable_actions(room, peer, session).await,
-        EnvelopeV2::EnableBrokerClient { workspace: room } => {
-            enable_broker_client(room, peer, session).await
-        }
-        EnvelopeV2::RegisterBroker {
-            workspace: room,
-            host,
-        } => register_broker(room, host, peer, session).await,
-        EnvelopeV2::SignedDirected(signed) => route_signed_directed(&signed, peer, session).await,
-        // An unsigned delivery, in its retired shape or any other, is
-        // refused rather than routed: the host has no device signature to
-        // attribute the action to.
-        frame if frame.retired_unsigned_action().is_some() => {
-            Err(PeerError::Protocol(UNSIGNED_DELIVERY_REFUSAL.into()))
-        }
-        // Peers may send private results only inside an action their device
-        // signed. Relay control responses can never be forged by a peer.
-        _ => Err(PeerError::Protocol(
-            "unexpected private control frame".into(),
-        )),
-    }
+/// The v2 lane carries state frames and heartbeats only. Actions reach
+/// another device on its own connection now, so a peer that sends one of
+/// their frames speaks a protocol this build does not serve: the session
+/// ends rather than dropping what it cannot route.
+pub(super) fn unserved_private(frame: &EnvelopeV2) -> PeerError {
+    tracing::warn!(
+        retired = frame.is_retired(),
+        "peer session closed: a peer sent an action frame this build does not serve"
+    );
+    PeerError::Protocol("action frames are not served on this connection".into())
 }

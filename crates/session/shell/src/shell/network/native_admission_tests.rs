@@ -145,6 +145,10 @@ fn frame_tick_cost(net: &ShellNetwork) -> Duration {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived locks by design"
+)]
 fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     let mut fixture = queued_write_then_departure();
     // The worker stops inside the admission's first data sync until the

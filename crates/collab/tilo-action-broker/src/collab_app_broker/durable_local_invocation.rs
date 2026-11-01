@@ -14,7 +14,7 @@ pub(super) struct LocalCaller {
     admitted: AdmittedJoinIdentity,
     /// Validated from `admitted` once, at capture.
     owner: InvocationOwner,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
 }
 impl LocalCaller {
     /// The workspace it acts in and who the host admitted on it.
@@ -227,6 +227,12 @@ impl LocalCaller {
 /// Borrowed, genuine caller evidence; never constructed from an actor string.
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
+    /// Only the durable admission tests build this caller kind: the action
+    /// door admits a device's request on its own path.
+    #[allow(
+        dead_code,
+        reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"
+    )]
     Peer(&'a VerifiedActionCaller, &'a CallerInvocation),
     Task {
         caller: &'a LocalCaller,
@@ -246,7 +252,7 @@ impl<'a> DurableContext<'a> {
             }),
         }
     }
-    pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {
+    pub(super) fn time(self) -> Option<&'a crate::policy_clock::PolicyTime> {
         match self {
             Self::Peer(c, _) => c.policy_time.as_ref(),
             Self::Task { caller, .. } => Some(&caller.time),
@@ -272,12 +278,6 @@ impl<'a> DurableContext<'a> {
                 foreign_restriction: false,
             },
             Self::Task { caller, .. } => caller.origin(),
-        }
-    }
-    pub(super) fn network(self) -> Option<tilo_relay_session::client::CertifiedAction> {
-        match self {
-            Self::Peer(c, _) => c.network.clone(),
-            Self::Task { .. } => None,
         }
     }
     pub(super) fn before_admission(

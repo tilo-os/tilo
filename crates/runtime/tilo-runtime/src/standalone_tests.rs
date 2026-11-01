@@ -901,10 +901,10 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
 
 #[test]
 fn the_runtime_governs_only_its_own_workspace_from_its_own_device() {
-    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
     let workspace = uuid::Uuid::from_u128(7);
     let origin = Arc::new(
-        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin(),
     );
@@ -923,9 +923,9 @@ fn the_runtime_governs_only_its_own_workspace_from_its_own_device() {
 
 #[test]
 fn runtime_original_policy_time_cannot_survive_origin_retirement() {
-    use tilo_action_broker::peer_actions::CertificateAuthority as _;
+    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
     let origin = Arc::new(
-        tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin(),
     );
@@ -940,7 +940,7 @@ fn runtime_original_policy_time_cannot_survive_origin_retirement() {
     assert!(certificates.policy_time().is_err());
     drop(certificates);
     assert!(retained.now_ns().is_err());
-    let replacement = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+    let replacement = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
     assert!(!retained.same_origin(&replacement.capture().unwrap()));

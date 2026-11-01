@@ -853,3 +853,139 @@ async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
         })
         .await;
 }
+
+/// Hand the rig's application an invocation it was delivered, as the
+/// application's own effect, under a caller that holds no host-run lease.
+async fn delivered_effect(rig: &Rig, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
+    let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+    assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
+    let path = env.root.path().join("effect-count");
+    let prior = std::fs::read_to_string(&path).map_or(0, |n| n.parse::<usize>().unwrap());
+    std::fs::write(path, (prior + 1).to_string()).unwrap();
+    delivered.id
+}
+
+/// The broker's device door, as the engine's action plane reaches it.
+async fn door_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
+    tilo_test_env::within("the broker door answers", async {
+        loop {
+            match pending.poll_ready() {
+                tilo_actions::remote::PendingPoll::Ready(value) => return Some(value),
+                tilo_actions::remote::PendingPoll::Waiting => tokio::task::yield_now().await,
+                tilo_actions::remote::PendingPoll::Abandoned => return None,
+            }
+        }
+    })
+    .await
+    .expect("the broker door keeps answering")
+}
+
+/// One journal answers every way a person reaches their own device's actions:
+/// an application's own connection and another of their devices share one
+/// record per invocation id, so neither admits the other's effect a second
+/// time, and a restart answers both.
+#[tokio::test(flavor = "current_thread")]
+async fn one_journal_answers_a_local_caller_and_the_persons_other_device() {
+    use tilo_actions::remote::{Caller, ReceiptStatus};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let handle = &rig.worker.handle;
+            let door = crate::collab_app_broker::device_host(Arc::clone(&rig.state));
+            let device =
+                Caller::authenticated(env.cert.user_public_key, env.cert.device_public_key)
+                    .in_room(env.route.cluster_id.clone());
+            let completed = |invocation| tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            };
+            // The application's own caller admits its id.
+            let local = id(0x1ed9_0000_0000_0000_0000_0000_0000_0001);
+            assert!(matches!(
+                invoke(handle, local).await.unwrap().status,
+                ReceiptStatus::Accepted
+            ));
+            let local_wire = delivered_effect(&rig, &env, local).await;
+            // The person's other device asking under that id is refused: the
+            // journal keeps one record per id, whoever reached it first.
+            assert!(
+                door_answer(door.invoke(&device, durable_request(local)))
+                    .await
+                    .is_err(),
+                "an id the local caller admitted is the same record here"
+            );
+            no_delivery(&rig).await;
+            // A fresh id through the device door lands in that same journal,
+            // and the application's own caller cannot claim it afterwards.
+            let remote = id(0x1ed9_0000_0000_0000_0000_0000_0000_0002);
+            let receipt = door_answer(door.invoke(&device, durable_request(remote)))
+                .await
+                .unwrap();
+            assert_eq!(receipt.invocation, remote);
+            assert!(matches!(receipt.status, ReceiptStatus::Accepted));
+            let remote_wire = delivered_effect(&rig, &env, remote).await;
+            no_delivery(&rig).await;
+            assert!(invoke(handle, remote).await.is_err());
+            no_delivery(&rig).await;
+            // Neither caller sees the other's record.
+            assert!(observe(handle, remote).await.unwrap().is_none());
+            assert!(door.observe(&device, &local).is_none());
+            handle
+                .update_invocation(
+                    local_wire,
+                    &serde_json::to_string(&completed(local)).unwrap(),
+                )
+                .await
+                .unwrap();
+            handle
+                .update_invocation(
+                    remote_wire,
+                    &serde_json::to_string(&completed(remote)).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(effect_count(&env).as_deref(), Some("2"));
+            // A restart answers both from the journal that admitted them, each
+            // to the caller that owns it and to nobody else.
+            drop(door);
+            let restarted = rig.restarted(&env).await;
+            let handle = &restarted.worker.handle;
+            let door = crate::collab_app_broker::device_host(Arc::clone(&restarted.state));
+            assert_eq!(
+                observe(handle, local).await.unwrap().unwrap().update,
+                completed(local)
+            );
+            assert!(observe(handle, remote).await.unwrap().is_none());
+            assert!(
+                door.observe(&device, &remote).is_none(),
+                "a restarted host follows a device's next ask, not its old ones"
+            );
+            assert!(door.observe(&device, &local).is_none());
+            assert_eq!(
+                invoke(handle, local).await.unwrap().status,
+                ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default()
+                }
+            );
+            assert_eq!(
+                door_answer(door.invoke(&device, durable_request(remote)))
+                    .await
+                    .unwrap()
+                    .status,
+                ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default()
+                }
+            );
+            assert_eq!(
+                door.observe(&device, &remote).unwrap().update,
+                completed(remote)
+            );
+            assert!(invoke(handle, remote).await.is_err());
+            no_delivery(&restarted).await;
+            assert_eq!(effect_count(&env).as_deref(), Some("2"));
+            drop(door);
+            restarted.stop().await;
+        })
+        .await;
+}

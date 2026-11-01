@@ -17,6 +17,16 @@ use std::thread::JoinHandle;
 /// API other modules call.
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
 
+/// Explicit inputs for an ordinary native broker host. The owner supplies its
+/// real publisher and current room tree separately.
+#[derive(Clone)]
+pub struct NativePeerBrokerConfig {
+    /// Where the durable invocation journal lives.
+    pub journal_root: PathBuf,
+    /// The owner's current certificate and revocation authority.
+    pub certificate_authority: Arc<dyn crate::certificate_authority::CertificateAuthority>,
+}
+
 thread_local! {
     static BROKER_FACADE_CALLS: std::cell::RefCell<Vec<usize>> = const {
         std::cell::RefCell::new(Vec::new())
@@ -662,12 +672,14 @@ impl AppActionBroker {
         self.state.certified_person_context(caller, presentation)
     }
 
-    /// Reusable native broker attachment for an ordinary standalone peer.
-    pub fn peer_action_attachment(
-        &self,
-    ) -> Result<(crate::peer_actions::PeerActionQueue, uuid::Uuid), String> {
+    /// The durable invocation host this broker serves, while it is live.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a stopped broker, or one whose journal does not admit work.
+    pub fn invocation_host(&self) -> Result<uuid::Uuid, String> {
         self.state
-            .while_live_fenced(|state| Ok((state.peer_action_queue(), state.invocation_host()?)))
+            .while_live_fenced(AppBrokerState::invocation_host)
     }
 
     pub fn surfaces(&self) -> Vec<crate::collab_app_broker::PublishedSurface> {
@@ -1246,7 +1258,7 @@ pub fn spawn_with_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    config: Option<&crate::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&crate::NativePeerBrokerConfig>,
     services: crate::services::HostServices,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -1268,7 +1280,7 @@ pub fn spawn_with_services(
 #[derive(Default)]
 struct HarnessAdmission {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    certificate_authority: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+    certificate_authority: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
 }
 
 /// Native compatibility fixtures only; production callers inject current authority.
@@ -1281,7 +1293,7 @@ pub fn spawn_with_test_services(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    config: Option<&crate::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&crate::NativePeerBrokerConfig>,
     services: crate::services::HostServices,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1318,7 +1330,7 @@ pub fn spawn_with_harness_authority(
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
     services: crate::services::HostServices,
     trusted_devices: Arc<Vec<[u8; 32]>>,
-    certificate_authority: Arc<dyn crate::peer_actions::CertificateAuthority>,
+    certificate_authority: Arc<dyn crate::certificate_authority::CertificateAuthority>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 ) -> std::io::Result<BrokerHandle> {
@@ -1341,7 +1353,7 @@ fn spawn_inner(
     socket: PathBuf,
     membership: Option<crate::services::WorkspaceAuthorityHandle>,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    config: Option<&crate::peer_actions::NativePeerBrokerConfig>,
+    config: Option<&crate::NativePeerBrokerConfig>,
     services: crate::services::HostServices,
     harness: HarnessAdmission,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1386,7 +1398,7 @@ pub fn spawn_native_peer(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    config: crate::peer_actions::NativePeerBrokerConfig,
+    config: crate::NativePeerBrokerConfig,
 ) -> std::io::Result<BrokerHandle> {
     spawn_native_peer_with_services(
         socket,
@@ -1409,7 +1421,7 @@ pub fn spawn_native_peer_with_services(
     socket: PathBuf,
     membership: crate::services::WorkspaceAuthorityHandle,
     publisher: Arc<crate::collab_outbound::PeerPublisher>,
-    config: crate::peer_actions::NativePeerBrokerConfig,
+    config: crate::NativePeerBrokerConfig,
     services: crate::services::HostServices,
 ) -> std::io::Result<BrokerHandle> {
     if !publisher.is_wired() {

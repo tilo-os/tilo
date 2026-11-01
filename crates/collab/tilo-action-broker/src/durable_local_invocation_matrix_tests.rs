@@ -13,8 +13,8 @@ mod durable_local_matrix {
         membership: WorkspaceTreeHandle,
         publisher: Arc<PeerPublisher>,
         authority: Arc<CurrentHost>,
-        origin: crate::peer_actions::PolicyOrigin,
-        control: crate::peer_actions::PolicyClockTestControl,
+        origin: crate::policy_clock::PolicyOrigin,
+        control: crate::policy_clock::PolicyClockTestControl,
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
     }
     struct ProvisionedEnvironment {
@@ -60,7 +60,7 @@ mod durable_local_matrix {
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
             let start = cert.issued_at_ns + 1_000_000_000;
-            let (clock, control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
+            let (clock, control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
             let mut workspace = crate::test_support::Workspace::in_room(
                 crate::test_support::WorkspaceId(84),

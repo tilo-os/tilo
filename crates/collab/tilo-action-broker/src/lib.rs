@@ -3,6 +3,7 @@ pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
 mod broker_error;
+pub mod certificate_authority;
 pub mod channel_encryption;
 pub mod collab_app_broker;
 pub mod collab_broker;
@@ -14,7 +15,7 @@ pub mod collab_presence;
 pub mod collaboration_admin;
 mod evidence_signer;
 pub mod local_document_action;
-pub mod peer_actions;
+pub mod policy_clock;
 pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;
@@ -23,6 +24,11 @@ pub mod services;
 pub mod task_runs;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};
+pub use certificate_authority::CertificateAuthority;
+pub use collab_broker::NativePeerBrokerConfig;
+#[cfg(any(test, feature = "test-support"))]
+pub use policy_clock::PolicyClockTestControl;
+pub use policy_clock::{OwnerPolicyClock, PolicyClockError, PolicyOrigin, PolicyTime};
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]

@@ -11,7 +11,7 @@ mod owner_commit_tests {
     }
 
     struct ExplicitAuthority;
-    impl crate::peer_actions::CertificateAuthority for ExplicitAuthority {
+    impl crate::certificate_authority::CertificateAuthority for ExplicitAuthority {
         fn authorize(
             &self,
             _: uuid::Uuid,
@@ -43,7 +43,7 @@ mod owner_commit_tests {
             let fanout = Arc::new(FanoutState::new());
             let sink = Arc::new(RecordingSink::default());
             let publisher = PeerPublisher::new(sink.clone());
-            let config = crate::peer_actions::NativePeerBrokerConfig {
+            let config = crate::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
                 certificate_authority: Arc::new(ExplicitAuthority),
             };
@@ -128,7 +128,7 @@ mod owner_commit_tests {
                     )
                     .unwrap();
                     let fanout = Arc::new(FanoutState::new());
-                    let config = crate::peer_actions::NativePeerBrokerConfig {
+                    let config = crate::NativePeerBrokerConfig {
                         journal_root: directory.path().join(if native {
                             "native"
                         } else {
@@ -382,7 +382,7 @@ mod owner_commit_tests {
     }
 
     struct OwnerAuthority(tilo_peer_state::StatePeer);
-    impl crate::peer_actions::CertificateAuthority for OwnerAuthority {
+    impl crate::certificate_authority::CertificateAuthority for OwnerAuthority {
         fn authorize(
             &self,
             workspace: uuid::Uuid,
@@ -415,8 +415,8 @@ mod owner_commit_tests {
     fn owner_config(
         root: &std::path::Path,
         owner: &crate::test_owner::SessionOwner,
-    ) -> crate::peer_actions::NativePeerBrokerConfig {
-        crate::peer_actions::NativePeerBrokerConfig {
+    ) -> crate::NativePeerBrokerConfig {
+        crate::NativePeerBrokerConfig {
             journal_root: root.join("journal"),
             certificate_authority: Arc::new(OwnerAuthority(owner.peer().clone())),
         }
@@ -718,9 +718,8 @@ mod owner_commit_tests {
             !broker
                 .app_action_broker()
                 .unwrap()
-                .peer_action_attachment()
+                .invocation_host()
                 .unwrap()
-                .1
                 .is_nil()
         );
         assert!(root.path().join("journal/records.json").is_file());
@@ -776,7 +775,6 @@ mod owner_commit_tests {
                 caller: None,
                 activity: None,
                 owner: key.owner.clone(),
-                network_evidence: None,
                 original: None,
                 policy_time: None,
                 journal_key: Some(key.clone()),
@@ -957,7 +955,7 @@ mod owner_commit_tests {
         use ui::portable_storage::{PortableStorage, StorageKey};
         use ui::record::{RecordCheckout, RecordId, RecordOwners};
         struct CurrentOwner(Arc<Mutex<Option<tilo_peer_state::StatePeer>>>);
-        impl crate::peer_actions::CertificateAuthority for CurrentOwner {
+        impl crate::certificate_authority::CertificateAuthority for CurrentOwner {
             fn authorize(
                 &self,
                 workspace: uuid::Uuid,
@@ -1034,7 +1032,7 @@ mod owner_commit_tests {
                 Arc::new(Published(published.clone())),
                 Arc::new(handle),
             ),
-            crate::peer_actions::NativePeerBrokerConfig {
+            crate::NativePeerBrokerConfig {
                 journal_root: root.path().join("journal"),
                 certificate_authority: authority,
             },
@@ -1299,7 +1297,7 @@ mod owner_commit_tests {
                 )
                 .is_err()
         );
-        assert!(actions.peer_action_attachment().is_err());
+        assert!(actions.invocation_host().is_err());
         app.close_components();
         drop(app);
         drop(broker);
@@ -1373,7 +1371,7 @@ mod owner_commit_tests {
                 None,
             );
             assert!(
-                crate::peer_actions::CertificateAuthority::authorize_host_worker(
+                crate::certificate_authority::CertificateAuthority::authorize_host_worker(
                     &ExplicitAuthority,
                     &route,
                     &cert
@@ -1765,7 +1763,6 @@ mod owner_commit_tests {
                         root: f.owner.peer().owner(),
                         device: f.owner.device().device_public_key,
                     },
-                    network_evidence: None,
                     original: None,
                     policy_time: None,
                     journal_key: None,

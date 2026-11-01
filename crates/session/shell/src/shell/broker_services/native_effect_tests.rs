@@ -7,7 +7,7 @@ use crate::shell::{
     collab_broker, native_workspace_owner, state::WorkspaceTree,
 };
 use std::time::{Duration, Instant};
-use tilo_action_broker::peer_actions::CertificateAuthority;
+use tilo_action_broker::certificate_authority::CertificateAuthority;
 use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
