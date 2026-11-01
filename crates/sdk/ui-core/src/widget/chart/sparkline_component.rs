@@ -48,7 +48,7 @@ impl Described for Sparkline {
             tone,
         } = props;
         let data: Vec<f32> = samples.iter().map(|sample| *sample as f32).collect();
-        let mut spark = Self::new(data, Sparkline::ACCENT);
+        let mut spark = Self::accented(data);
         spark.set_look(filled.unwrap_or(true), smooth, leading_dot);
         if let Some(max) = max {
             spark = spark.with_max(max as f32);

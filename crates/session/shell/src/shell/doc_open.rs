@@ -1134,22 +1134,20 @@ mod tests {
     /// A stand-in `tilo-launcher` that records its argv, wired in via
     /// `TILO_LAUNCHER_BIN` so the log holds what production really ran.
     fn install_recording_launcher(dir: &Path, env: &mut tilo_test_env::ScopedEnv) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let log = dir.join("launched.log");
         let bin = dir.join("tilo-launcher");
         // Like the real launcher, it waits on its registration gate (stdin)
         // before any work. A stand-in that exits at once races the host's
         // release: the release then fails, and the launch, and with it the
         // document's open note, is given up before its window arrives.
-        std::fs::write(
+        tilo_test_env::stand_in(
             &bin,
-            format!(
-                "#!/bin/sh\nhead -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            &format!(
+                "head -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
                 log.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         env.set("TILO_LAUNCHER_BIN", &bin)
             .set("XDG_RUNTIME_DIR", dir);
         launcher::set_test_execution_program(Some(bin));
@@ -2130,7 +2128,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env, launch_events)]
     fn a_launch_that_fails_before_its_window_does_not_block_the_next_open() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
@@ -2141,17 +2138,15 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_APPS_DATA_DIR", tmp.path());
         let log = install_recording_launcher(tmp.path(), &mut env);
-        let launcher_bin = tmp.path().join("tilo-launcher");
-        std::fs::write(
-            &launcher_bin,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+        tilo_test_env::stand_in(
+            tmp.path().join("tilo-launcher"),
+            &format!(
+                "printf '%s\\n' \"$*\" >> '{}'\n\
                  echo 'error: unknown argument' >&2\nexit 2\n",
                 log.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&launcher_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         reset_session_state();
         let doc = tmp.path().join("report.odt");
         std::fs::write(&doc, b"x").unwrap();

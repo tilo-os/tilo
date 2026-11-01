@@ -1839,7 +1839,7 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // Search reads that index through its production source: a word that appears only inside a
     // message's body (not its subject, its sender or its conversation's snippet) finds the
     // message, with no window running a search of its own.
-    let content = IndexedContent::new(std::sync::Arc::clone(&index), |app| app.to_owned());
+    let content = IndexedContent::new(std::sync::Arc::clone(&index), ToOwned::to_owned);
     let found = content.query("widths");
     assert_eq!(
         found.len(),

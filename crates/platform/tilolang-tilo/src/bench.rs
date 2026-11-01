@@ -64,7 +64,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
 use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{Meta, Ty};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{
     EngineConfig, EngineKind, EngineProfile, Principal, Translation, UiNode, ViewInstance,
@@ -475,10 +475,30 @@ fn texts_of(schema: &crate::schema::TypeSchema) -> Vec<String> {
         .collect()
 }
 
+/// A record of the type `ty` as the bench starts it: empty, but for a value in every register
+/// that has no default (a time, a date, a person), as the type's constructor would have
+/// written one. Every record the bench seeds starts here, so none holds a field a view reads
+/// as a trap.
+///
+/// # Errors
+///
+/// The type is not registered, or has a register the bench cannot seed.
+pub(crate) fn unwritten(ty: &str, meta: &Meta) -> Result<DynRecord, String> {
+    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
+    let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+    fill_registers(&mut record, &register_fields(meta, ty)?)?;
+    Ok(record)
+}
+
 /// Give every register of `record`'s type that holds no value and has no default one a value
-/// of its type: a time, a date, an identifier. A view that reads it then reads a value, as it
-/// does in a workspace the app filled.
-pub(crate) fn fill_registers(record: &mut DynRecord, registers: &[(String, String)]) {
+/// of its type: a time, a date, an identifier, a person. A view that reads it then reads a
+/// value, as it does in a workspace the app filled, where the type's constructor wrote every field.
+///
+/// # Errors
+///
+/// A register whose type has no value to start from and none here to seed: a view reading it
+/// would trap, so the seed names the field it cannot fill instead.
+fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<(), String> {
     for (field, ty) in registers {
         let Some(DynValue::Register(slot)) = record.get_mut(field) else {
             continue;
@@ -486,30 +506,49 @@ pub(crate) fn fill_registers(record: &mut DynRecord, registers: &[(String, Strin
         if !slot.is_null() {
             continue;
         }
-        *slot = match ty.as_str() {
-            "Time" => json!(BENCH_TIME),
-            "Date" => json!("2026-06-29"),
-            "Identifier" => json!("mailto:bench@example.org"),
-            "Int" => json!(0),
-            "Float" => json!(0.0),
-            "Bool" => json!(false),
-            "Text" => json!("bench"),
-            _ => continue,
+        let seeded = match ty {
+            Ty::Time => json!(BENCH_TIME),
+            Ty::Date => json!("2026-06-29"),
+            Ty::Identifier => json!("mailto:bench@example.org"),
+            Ty::Int => json!(0),
+            Ty::Float => json!(0.0),
+            Ty::Bool => json!(false),
+            Ty::Text => json!("bench"),
+            Ty::Principal => {
+                tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?
+            }
+            // What reads as a value unwritten (an option reads as none) is left unwritten.
+            other if tilolang_runtime::meta::unwritten_value(other, None).is_ok() => continue,
+            other => {
+                return Err(format!(
+                    "the bench cannot seed `{field}`, a {other:?} with no default, and a view \
+                     reading it unwritten traps: give the field a default, or seed it here"
+                ));
+            }
         };
+        *slot = seeded;
     }
+    Ok(())
 }
 
 /// The registers of the type `ty` that hold no value until one is written, with the type each
-/// holds: a `Time`, a `Date`, an identifier.
-pub(crate) fn register_fields(meta: &Meta, ty: &str) -> Vec<(String, String)> {
+/// holds.
+///
+/// # Errors
+///
+/// A field's type that does not read.
+fn register_fields(meta: &Meta, ty: &str) -> Result<Vec<(String, Ty)>, String> {
     let Some(declared) = crate::meta::MetaExt::type_named(meta, ty) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     declared
         .fields
         .iter()
         .filter(|f| f.merge == tilolang::types::MergeKind::Register && f.default.is_none())
-        .map(|f| (f.id.clone(), f.ty.trim().to_owned()))
+        .map(|f| {
+            let ty = tilolang_runtime::meta::parse_ty(f.ty.trim(), &meta.app)?;
+            Ok((f.id.clone(), ty))
+        })
         .collect()
 }
 
@@ -550,11 +589,9 @@ fn item_id(i: usize) -> String {
 /// workspace's mail accounts; a workspace has a few), and what grows is the collection in it.
 fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
     let n = if list.places { n.min(PLACES) } else { n };
-    let item_schema = lookup(&list.item_ty).ok_or("unregistered item type")?;
-    let registers = register_fields(meta, &list.item_ty);
     let mut items = Collection::default();
     for i in 0..n {
-        let mut item = DynRecord::empty(item_schema).map_err(|e| e.to_string())?;
+        let mut item = unwritten(&list.item_ty, meta)?;
         for (k, field) in list.texts.iter().enumerate() {
             if let Some(DynValue::Text(text)) = item.get_mut(field) {
                 *text = if k == 0 {
@@ -574,12 +611,9 @@ fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<Dy
                 slot.insert(json!("inbox"));
             }
         }
-        // A register of a type with no default (a time, a date, an identifier) reads as an
-        // error until it has a value: the seed gives it one, so what a view reads of it reads.
-        fill_registers(&mut item, &registers);
         items.push(Id::from_raw(item_id(i)), item);
     }
-    with_holders(list, items)
+    with_holders(list, items, meta)
 }
 
 /// `items` of the list's collection, wrapped in the records the collection is inside: each
@@ -587,13 +621,13 @@ fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<Dy
 pub(crate) fn with_holders(
     list: &List,
     items: Collection<DynRecord>,
+    meta: &Meta,
 ) -> Result<Collection<DynRecord>, String> {
     let mut items = items;
     // Each holder's own collection holds the one below it, its own id naming it: a mail
     // account's conversations.
     for (level, holder) in list.holders.iter().enumerate().rev() {
-        let schema = lookup(&holder.ty).ok_or("unregistered holder type")?;
-        let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+        let mut record = unwritten(&holder.ty, meta)?;
         for (k, field) in holder.texts.iter().enumerate() {
             if let Some(DynValue::Text(text)) = record.get_mut(field) {
                 *text = if k == 0 {
@@ -655,8 +689,7 @@ fn holder_id(level: usize) -> String {
 /// The root record with `n` items in its collection (a sidebar of places, its [`PLACES`]),
 /// each with its number in every text field, and referring to the roots it links.
 fn seeded_root(shape: &Shape, n: usize, meta: &Meta) -> Result<DynRecord, String> {
-    let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
-    let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
+    let mut root = unwritten(&shape.root_ty, meta)?;
     if let Some(list) = &shape.list {
         let items = seeded_collection(list, n, meta)?;
         // The topmost collection is the root's own field: the holder chain's first field, or
@@ -2539,4 +2572,65 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         }
     }
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{FieldRole, FieldSchema, TypeSchema};
+
+    fn record_of(field: &str) -> DynRecord {
+        let schema: &'static TypeSchema = Box::leak(Box::new(TypeSchema {
+            id: "bench.Place".to_owned(),
+            app: "bench".to_owned(),
+            name: "Place".to_owned(),
+            fields: vec![FieldSchema {
+                id: field.to_owned(),
+                kind: MergeKind::Register,
+                record: None,
+                default: Json::Null,
+                composite: true,
+                role: FieldRole::Plain,
+            }],
+            columns: Vec::new(),
+            origin: None,
+        }));
+        DynRecord::empty(schema).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A field a person is named in (a direct conversation's `person`) has no default: the seed
+    /// writes one, so a view reading it reads a person rather than trapping.
+    #[test]
+    fn a_seeded_record_names_a_person_where_its_type_holds_one() {
+        let mut record = record_of("person");
+        fill_registers(&mut record, &[("person".to_owned(), Ty::Principal)])
+            .unwrap_or_else(|e| panic!("{e}"));
+        let Some(DynValue::Register(person)) = record.get("person") else {
+            panic!("the person is a register");
+        };
+        let read = tilolang_runtime::value::from_json(person).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(read, Value::Principal(Principal::new("bench")));
+    }
+
+    /// A field of a type the seed has no value for, which a view would read as a trap, is named
+    /// when the workspace is seeded instead.
+    #[test]
+    fn a_field_the_seed_cannot_fill_is_named_when_seeding() {
+        let mut record = record_of("place");
+        let place = Ty::Record(tilolang::types::TypeKey {
+            app: "bench".to_owned(),
+            name: "Place".to_owned(),
+        });
+        let refused = fill_registers(&mut record, &[("place".to_owned(), place)]);
+        assert!(
+            refused.as_ref().is_err_and(|why| why.contains("`place`")),
+            "{refused:?}"
+        );
+        // What reads as a value unwritten is left so.
+        let mut record = record_of("when");
+        let optional = Ty::Option(Box::new(Ty::Date));
+        fill_registers(&mut record, &[("when".to_owned(), optional)])
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(matches!(record.get("when"), Some(DynValue::Register(slot)) if slot.is_null()));
+    }
 }

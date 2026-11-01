@@ -290,6 +290,13 @@ impl Staged {
         out
     }
 
+    /// The tree the window composed from what the app sent, as sent: every view that ran is in
+    /// it, keyed by its view, even one that drew nothing (a bare `if let` whose value is
+    /// absent leaves an empty fragment), where the laid-out widgets keep no trace of it.
+    pub fn composed(&mut self) -> Option<tilo_ui_host::UiNode> {
+        self.window()?.composed().cloned()
+    }
+
     /// The trees of the rows the window's lists show, by row key: a list draws each row as one
     /// widget keyed by the row, from the row view's nodes.
     pub fn rows(&mut self) -> std::collections::HashMap<String, tilo_ui_host::UiNode> {
