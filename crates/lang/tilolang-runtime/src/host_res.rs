@@ -869,7 +869,7 @@ impl Core {
                 author,
             }));
         }
-        let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+        let Some(target) = ResourceRef::parse_id(&id, ty) else {
             return trap(format!("`{id}` is not a reference id"));
         };
         // A root nobody opened yet is still the root: it reads as it would start.
