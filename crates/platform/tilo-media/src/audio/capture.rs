@@ -361,7 +361,7 @@ mod tests {
                 client_id: 7,
                 pid: 4242,
                 app_id: "local-process:/app/bin/chat".into(),
-                label: "Chat".into(),
+                label: "Local process · Chat".into(),
                 binary: PathBuf::from("/app/bin/chat"),
                 kind: MediaKind::Camera,
             }],

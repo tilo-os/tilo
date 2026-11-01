@@ -1241,7 +1241,7 @@ mod tests {
             public(0xf0),
             OwnPresence {
                 label: "Quinten".to_owned(),
-                user: Some(hex::encode([0xf0; 32])),
+                user: Some(person(0xf0)),
                 ..OwnPresence::default()
             },
         ));
@@ -1316,7 +1316,7 @@ mod tests {
                 .iter()
                 .map(|caller| (caller.user.clone(), caller.label.clone()))
                 .collect::<Vec<_>>(),
-            [(Some(hex::encode([0xf0; 32])), "Quinten".to_owned())],
+            [(Some(person(0xf0)), "Quinten".to_owned())],
             "the person in the call is this session's person"
         );
         // The session keeps a runtime of its own, which blocking drop ends.
