@@ -1236,6 +1236,43 @@ fn a_standing_carries_the_person_and_every_bound() {
     assert_eq!(serde_json::from_str::<Standing>(&json).unwrap(), owner);
 }
 
+/// Leaving is the one membership change no grant gates: whoever removes
+/// themselves does it by being who they are, even while restricted, and they
+/// reach nobody else by it.
+#[test]
+fn a_member_leaves_their_workspace_without_being_able_to_remove_anyone() {
+    let mut room = room_with(&[(BOB, Role::Viewer), (CAROL, Role::Editor)]);
+    room.grants.push(roles::restriction_grant(
+        "r",
+        BOB,
+        NOW + 1_000,
+        Subject::person(ALICE),
+    ));
+    let bob = Authority::person(room.party(BOB).clone());
+    let leave = Change::RemoveMember { person: BOB.into() };
+    assert_eq!(room.check(BOB, &bob, &leave, &cx(), false), Ok(()));
+    assert!(room.is_member(BOB), "check writes nothing");
+    let mut left = room.clone();
+    left.apply(BOB, &bob, leave, &cx(), false)
+        .expect("a restricted viewer leaves");
+    assert!(!left.is_member(BOB));
+    assert!(
+        matches!(
+            left.apply(
+                BOB,
+                &bob,
+                Change::RemoveMember {
+                    person: CAROL.into()
+                },
+                &cx(),
+                false
+            ),
+            Err(Refusal::NotPermitted(_))
+        ),
+        "leaving reaches no one else"
+    );
+}
+
 #[test]
 fn removing_a_member_drops_their_grants() {
     let mut room = room_with(&[(BOB, Role::Viewer)]);

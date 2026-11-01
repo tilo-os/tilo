@@ -61,6 +61,7 @@ impl App {
             self.actions.action_directory_snapshot = None;
             self.actions.action_directory_stamp = None;
             self.actions.action_directory_cursors.clear();
+            self.actions.action_directory_retired = None;
             for entry in binding_coverage
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)

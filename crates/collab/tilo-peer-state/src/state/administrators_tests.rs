@@ -241,6 +241,40 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
 
 /// An administrator's own device lets an app author the workspace, as a grant
 /// of their own; an editor's cannot, and letting it again changes nothing.
+/// A member leaves the workspace on their own device: leaving is nobody's
+/// grant, and the workspace they leave takes their device rows with them.
+#[test]
+fn a_members_own_device_leaves_the_workspace() {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    let leave = WorkspaceMembershipCommand::Member {
+        change: tilo_action_policy::Change::RemoveMember {
+            person: hex::encode(user),
+        },
+    };
+    assert!(peer.permissions(editor.device_public_key, now).is_ok());
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&editor, &leave, &editor_key, now)
+            .unwrap(),
+        "the editor left"
+    );
+    assert!(
+        peer.permissions(editor.device_public_key, now).is_err(),
+        "a device whose person left is no member's"
+    );
+    assert!(
+        peer.governance()
+            .governed_members(now)
+            .unwrap()
+            .iter()
+            .all(|member| member.user_public_key != user),
+        "the member and their device rows are off the roster"
+    );
+}
+
 #[test]
 fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
     use crate::workspace_membership::WorkspaceMembershipCommand;

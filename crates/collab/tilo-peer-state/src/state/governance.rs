@@ -793,7 +793,8 @@ impl PeerGovernanceMut<'_> {
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)
     }
-    /// Remove a governed collaborator and revoke their devices.
+    /// Remove a governed collaborator and their grants; someone removing
+    /// themselves also takes their own devices' rows.
     ///
     /// # Errors
     ///
@@ -837,6 +838,30 @@ impl PeerGovernanceMut<'_> {
         }
         for id in personal {
             doc.delete(&grants, id.as_str()).map_err(err)?;
+        }
+        // Someone who leaves takes their own devices off the workspace with
+        // them: the rows that admit a device go, so no key of theirs stays
+        // named here. Another person's devices stay until whoever may remove
+        // them takes them.
+        if self
+            .peer
+            .certificate(&key.verifying_key().to_bytes(), now)
+            .is_ok_and(|cert| cert.user_public_key == user_public_key)
+        {
+            let identities = governed_map(&doc, "peer_identities_v1")?;
+            let own: Vec<String> = crate::workspace::governance_of(Some(&doc))
+                .identities
+                .into_iter()
+                .filter(|(_, bytes)| {
+                    serde_json::from_slice::<super::GovernedIdentity>(bytes).is_ok_and(|identity| {
+                        identity.device_cert.user_public_key == user_public_key
+                    })
+                })
+                .map(|(device, _)| device)
+                .collect();
+            for device in own {
+                doc.delete(&identities, device.as_str()).map_err(err)?;
+            }
         }
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)

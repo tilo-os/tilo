@@ -121,6 +121,12 @@ impl Change {
     }
 }
 
+/// Whether `change` is `actor_person` removing themselves: leaving, which the
+/// workspace's grants never gate.
+fn is_leaving(actor_person: &str, change: &Change) -> bool {
+    matches!(change, Change::RemoveMember { person } if person == actor_person)
+}
+
 /// Why a governance action was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -574,11 +580,17 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        self.admit_action(actor, change.action(), cx, approved)?;
+        if !is_leaving(actor_person, change) {
+            self.admit_action(actor, change.action(), cx, approved)?;
+        }
         self.check_change(actor_person, actor, change, cx)
     }
 
     /// Applies a governance change made by `actor_person` through `actor`.
+    ///
+    /// Leaving needs no grant: whoever removes themselves from a workspace does
+    /// it by being who they are, and a ban or a restriction stops it no more
+    /// than the `remove` action would (`check_reach`).
     ///
     /// # Errors
     /// When the action is not granted, or the change breaks a structural rule:
@@ -591,7 +603,11 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        let spent = self.admit_action(actor, change.action(), cx, approved)?;
+        let spent = if is_leaving(actor_person, &change) {
+            Vec::new()
+        } else {
+            self.admit_action(actor, change.action(), cx, approved)?
+        };
         self.check_change(actor_person, actor, &change, cx)?;
         self.spend(&spent);
         match change {
