@@ -393,6 +393,48 @@ impl Strips {
         Some(place)
     }
 
+    /// Put the place `place` into the row `row` of `workspace` at the canvas
+    /// point `canvas`, as a place made from a resource is made (shell.md §8):
+    /// one entry of its own, in a strip that holds nothing else. The strip
+    /// `strip` is its, and the row is made when the workspace has none.
+    /// Returns whether it was placed: `false` when the place's id or the
+    /// strip's is taken.
+    pub fn place_at_canvas(
+        &mut self,
+        workspace: WorkspaceId,
+        row: StripId,
+        strip: GroupId,
+        place: Place,
+        canvas: CanvasPlace,
+    ) -> bool {
+        if self.place(place.id).is_some() || self.strip(strip).is_some() {
+            return false;
+        }
+        if !self.workspaces.iter().any(|held| held.id == workspace) {
+            return false;
+        }
+        if self.row(workspace, row).is_none() {
+            self.rows.push(Row {
+                id: row,
+                workspace,
+                name: String::new(),
+                shell: SHELL.to_owned(),
+            });
+        }
+        self.strips.push(Strip {
+            id: strip,
+            workspace,
+            row,
+            width: WindowWidth::Normal,
+            maximized: false,
+            active: Some(place.id),
+            canvas: Some(canvas),
+            shell: SHELL.to_owned(),
+            places: vec![place],
+        });
+        true
+    }
+
     /// Put `place` into the strip `strip`, after the place `after` or last,
     /// as opening a resource into it does. `false` when this shell shows no
     /// such strip, or the place's id is taken.

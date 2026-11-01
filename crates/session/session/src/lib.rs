@@ -477,7 +477,15 @@ impl Shared {
         });
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        self.search.observe(&self.doors.resources(), open_tabs);
+        let resources = self.doors.resources();
+        // What a place made from a resource reads its app and views from:
+        // the same tree search and the palette read.
+        self.arrangement
+            .borrow()
+            .targets()
+            .borrow_mut()
+            .take(&resources);
+        self.search.observe(&resources, open_tabs);
         self.keep_history();
     }
 
@@ -1186,9 +1194,20 @@ impl Session {
         // reads before it moves anything.
         let busy = Rc::new(Cell::new(arrangement::Busy::default()));
         let underway = Rc::clone(&busy);
+        // The one search text typed on the canvas places through: the
+        // session search's own, the same `find` the palette and an agent's
+        // `tilo` tool run.
+        let find: arrangement::Find = {
+            let search = Rc::new(SessionSearch::new(
+                options.search.clone(),
+                options.apps.clone(),
+            ));
+            Rc::new(move |needle: &str| search.find(needle))
+        };
         doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
             Rc::clone(&arrangement),
             Rc::new(move || underway.get()),
+            find.clone(),
         ))));
         arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
