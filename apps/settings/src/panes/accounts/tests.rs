@@ -1002,7 +1002,7 @@ fn said(app: &mut TestApp<SettingsShell>) -> Vec<String> {
 }
 
 #[test]
-fn linked_accounts_show_where_the_room_is_connected_to_a_service() {
+fn linked_accounts_show_where_the_workspace_is_connected_to_a_service() {
     let (_scratch, root) = scratch_root();
     let mut app = window_showing(AccountsPane::from_dir_in(
         root.clone(),
