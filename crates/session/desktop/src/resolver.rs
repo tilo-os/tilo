@@ -9,7 +9,7 @@ use ui::record::RecordCheckout;
 use ui::widget::{AppWidget, TileHost};
 
 pub struct TileRequest<'a> {
-    pub room: RoomId,
+    pub workspace: RoomId,
     pub tab: &'a Tab,
 }
 #[expect(

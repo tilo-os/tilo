@@ -76,8 +76,8 @@ fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)
 
 /// Alice's strip holds her notes and Bob's terminal, side by side.
 fn workspace() -> (AutoCommit, Workspace) {
-    let room = RoomId::new();
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Team");
+    let identity = RoomId::new();
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Team");
     let mut strip = Strip::new(StripId(compose_id(ALICE, 1)), "Main");
     strip.window_groups.push(group(
         compose_id(ALICE, 2),

@@ -202,9 +202,9 @@ impl DesktopCommandSink for Recorder {
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.tree)
     }
-    fn source(&mut self, room: RoomId) -> Result<CommandSource, String> {
+    fn source(&mut self, workspace: RoomId) -> Result<CommandSource, String> {
         Ok(CommandSource {
-            workspace: room.to_string(),
+            workspace: workspace.to_string(),
             heads: self.heads.clone(),
         })
     }

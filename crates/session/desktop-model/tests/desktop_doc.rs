@@ -251,18 +251,18 @@ fn the_view_of_the_desk_round_trips_with_it() {
 #[test]
 fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     let id = WorkspaceId(37);
-    let room = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
+    let identity = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
     let mut doc = AutoCommit::new();
     assert!(desktop_doc::append_workspace(
-        &mut doc, id, "Research", room
+        &mut doc, id, "Research", identity
     ));
     assert!(desktop_doc::set_owner(&mut doc, id, "ada"));
 
     let rebuilt = read_back(&doc);
     let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
-    let mut expected = Workspace::in_workspace(id, room, "Research");
+    let mut expected = Workspace::in_workspace(id, identity, "Research");
     expected.set_owner("ada");
-    assert_eq!(actual.room(), room);
+    assert_eq!(actual.room(), identity);
     assert_eq!(actual.policy, expected.policy);
 
     let revoked = expected.policy.grants[0].id.clone();

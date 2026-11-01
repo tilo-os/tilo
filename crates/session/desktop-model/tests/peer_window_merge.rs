@@ -45,8 +45,8 @@ fn group_with(tab: Tab) -> WindowGroup {
     }
 }
 
-fn workspace(room: RoomId, tab: Tab) -> Workspace {
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Home");
+fn workspace(identity: RoomId, tab: Tab) -> Workspace {
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Home");
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(group_with(tab));
     workspace.strips.push(strip);
@@ -54,8 +54,8 @@ fn workspace(room: RoomId, tab: Tab) -> Workspace {
 }
 
 /// The record of `workspace` holding `tab`, as a peer wrote it.
-fn record(room: RoomId, tab: Tab) -> AutoCommit {
-    let workspace = workspace(room, tab);
+fn record(identity: RoomId, tab: Tab) -> AutoCommit {
+    let workspace = workspace(identity, tab);
     let mut doc = AutoCommit::new();
     shared_record::write(
         &mut doc,
@@ -74,23 +74,23 @@ fn record(room: RoomId, tab: Tab) -> AutoCommit {
 
 /// Fold `doc` into a local workspace holding `local`; the tab it shows, and
 /// whether the fold changed anything.
-fn fold(room: RoomId, doc: &AutoCommit, local: Tab) -> (Tab, bool) {
-    let mut here = workspace(room, local);
+fn fold(identity: RoomId, doc: &AutoCommit, local: Tab) -> (Tab, bool) {
+    let mut here = workspace(identity, local);
     let changed = device::fold(doc, &mut here, "here", &device::Kept::NOTHING);
     (here.strips[0].window_groups[0].tabs[0].clone(), changed)
 }
 
 #[test]
 fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
-    let room = RoomId::new();
-    let doc = record(room, remote_tab("Word Processor", APP));
+    let identity = RoomId::new();
+    let doc = record(identity, remote_tab("Word Processor", APP));
     // Phase `a_peers_window_arrives_as_the_app_it_names`.
     // A peer's `Foreign` names a surface on *their* compositor. What
     // survives is the app id, which means the same thing on both machines
     // and is what a local instance can be started from.
     {
         let (tab, _) = fold(
-            room,
+            identity,
             &doc,
             Tab {
                 id: 7,
@@ -121,7 +121,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
     // fold would take the window away again on every merge.
     {
         let (tab, changed) = fold(
-            room,
+            identity,
             &doc,
             Tab {
                 id: 7,
@@ -149,9 +149,9 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
     // Phase `a_different_app_in_the_tab_still_replaces_what_is_here`.
     // A different app taking the tab over *is* news, and is taken.
     {
-        let doc = record(room, remote_tab("Terminal", "so.tilo.terminal"));
+        let doc = record(identity, remote_tab("Terminal", "so.tilo.terminal"));
         let (tab, changed) = fold(
-            room,
+            identity,
             &doc,
             Tab {
                 id: 7,

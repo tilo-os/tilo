@@ -28,10 +28,10 @@ use crate::shared_surfaces::SharedSurfaces;
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration workspace: the same
-    /// value on every device. Given once, when the workspace is made
-    /// ([`Self::new`] mints one, [`Self::in_workspace`] takes the workspace created or
-    /// joined), and never changed: read it with [`Self::workspace`]. Joining the
+    /// Durable identity of this workspace: the same value on every device.
+    /// Given once, when the workspace is made ([`Self::new`] mints one,
+    /// [`Self::in_workspace`] takes the identity of the workspace created or
+    /// joined), and never changed: read it with [`Self::room`]. Joining the
     /// same workspace again lands in the same workspace.
     room: RoomId,
     pub name: String,
@@ -159,7 +159,7 @@ struct StoredWorkspace {
 
 impl From<StoredWorkspace> for Workspace {
     fn from(stored: StoredWorkspace) -> Self {
-        let room = stored.room;
+        let identity = stored.room;
         // What this workspace writes but never reads back is its own, not
         // retired.
         let mut retired_fields = stored.retired_fields;
@@ -167,14 +167,14 @@ impl From<StoredWorkspace> for Workspace {
         retired_fields.remove("bots");
         let policy = match stored.policy {
             Some(mut policy) => {
-                policy.rehome(room.to_string());
+                policy.rehome(identity.to_string());
                 policy
             }
-            None => WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            None => WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
         };
         Self {
             id: stored.id,
-            room,
+            room: identity,
             name: stored.name,
             strips: stored.strips,
             arrangement: stored.arrangement,
@@ -243,11 +243,11 @@ pub fn governance_of(action: &str) -> Option<&'static str> {
     }
 }
 
-/// The resource the workspace publishes its governance actions on, for the
-/// workspace `workspace`: the workspace itself (resource kind [`roles::ROOM_KIND`]).
+/// The resource a workspace publishes its governance actions on: the
+/// workspace itself (resource kind [`roles::ROOM_KIND`]).
 #[must_use]
-pub fn governance_resource_id(room: &RoomId) -> String {
-    tilo_actions::remote::workspace_governance_resource(&room.to_string())
+pub fn governance_resource_id(identity: &RoomId) -> String {
+    tilo_actions::remote::workspace_governance_resource(&identity.to_string())
 }
 
 /// A role's stable name, as a collaborator row records it
@@ -739,7 +739,7 @@ impl Workspace {
     ///
     /// Stricter than ordinary governance: only the current owner transfers,
     /// and the recipient must already be a member, so transfer is an
-    /// explicit ceremony and never hands the room to a mistyped identity.
+    /// explicit ceremony and never hands the workspace to a mistyped identity.
     pub fn transfer_owner_as_at(
         &mut self,
         current_owner: &UserId,
@@ -1123,26 +1123,26 @@ pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
 }
 
 impl Workspace {
-    /// A workspace in a workspace minted for it here: the workspace exists from the
-    /// moment the workspace does, minted when it is made rather than lazily.
+    /// A workspace whose durable identity is minted here: it exists from the
+    /// moment it is made, not lazily.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self::in_workspace(id, RoomId::new(), name)
     }
 
-    /// A new workspace, named `name`, in a workspace minted for it, under the
-    /// id every device derives from that workspace ([`WorkspaceId::of_room`]).
+    /// A new workspace named `name`, whose durable identity is minted here, under
+    /// the id every device derives from that identity ([`WorkspaceId::of_room`]).
     pub fn create(name: impl Into<String>) -> Self {
-        let room = RoomId::new();
-        Self::in_workspace(WorkspaceId::of_room(room), room, name)
+        let identity = RoomId::new();
+        Self::in_workspace(WorkspaceId::of_room(identity), identity, name)
     }
 
-    /// The workspace that is `workspace`, created or joined, under the local id
+    /// The workspace that is `identity`, created or joined, under the local id
     /// `id`: new workspaces take [`WorkspaceId::of_room`], an existing one
     /// keeps the id it was stored under.
-    pub fn in_workspace(id: WorkspaceId, room: RoomId, name: impl Into<String>) -> Self {
+    pub fn in_workspace(id: WorkspaceId, identity: RoomId, name: impl Into<String>) -> Self {
         Self {
             id,
-            room,
+            room: identity,
             name: name.into(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
@@ -1150,7 +1150,7 @@ impl Workspace {
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
-            policy: WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -1219,8 +1219,8 @@ impl Workspace {
         }
     }
 
-    /// This workspace's collaboration cluster id — [`Self::workspace`], not
-    /// the local [`Self::id`]. Unminted returns the nil uuid, which
+    /// This workspace's collaboration cluster id — [`Self::room`], not the
+    /// local [`Self::id`]. Unminted returns the nil uuid, which
     /// `CrdtRoute::delivers_to` refuses to deliver to.
     pub fn collab_cluster_id(&self) -> uuid::Uuid {
         self.room.as_uuid()
@@ -1258,10 +1258,10 @@ impl Default for Workspace {
     /// Workspace is minted, not left at [`RoomId::nil`] — two workspaces
     /// built this way must not silently become the same workspace.
     fn default() -> Self {
-        let room = RoomId::new();
+        let identity = RoomId::new();
         Self {
             id: WorkspaceId::default(),
-            room,
+            room: identity,
             name: String::new(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
@@ -1269,7 +1269,7 @@ impl Default for Workspace {
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
-            policy: WorkspacePolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),

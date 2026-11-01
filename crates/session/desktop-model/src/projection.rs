@@ -627,15 +627,15 @@ pub fn declared_workspace(candidate: &AutoCommit) -> Option<RoomId> {
 ///
 /// # Errors
 ///
-/// A description when the document does not declare exactly `workspace`, or
+/// A description when the document does not declare exactly `identity`, or
 /// another workspace already holds the id derived from it.
 pub fn apply_admitted_workspace(
     tree: &mut DesktopTree,
-    room: RoomId,
+    identity: RoomId,
     doc: &AutoCommit,
 ) -> Result<bool, String> {
     use automerge::ROOT;
-    if declared_workspace(doc) != Some(room) {
+    if declared_workspace(doc) != Some(identity) {
         return Err("admitted workspace identity mismatch".into());
     }
     let text = |key: &str| -> Result<Option<String>, String> {
@@ -645,12 +645,12 @@ pub fn apply_admitted_workspace(
             .and_then(|(v, _)| v.as_str().map(str::to_owned)))
     };
     let name = text(WORKSPACE_NAME_KEY)?.unwrap_or_default();
-    if !tree.workspaces.iter().any(|w| w.room() == room) {
-        let id = WorkspaceId::of_room(room);
+    if !tree.workspaces.iter().any(|w| w.room() == identity) {
+        let id = WorkspaceId::of_room(identity);
         if tree.workspaces.iter().any(|w| w.id == id) {
             return Err("another workspace holds that workspace id".into());
         }
-        let workspace = Workspace::in_workspace(id, room, &name);
+        let workspace = Workspace::in_workspace(id, identity, &name);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
@@ -660,7 +660,7 @@ pub fn apply_admitted_workspace(
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|w| w.room() == room)
+        .find(|w| w.room() == identity)
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
@@ -778,18 +778,18 @@ pub fn workspace_layout(doc: &AutoCommit) -> WorkspaceLayout {
     workspace_layout_choice(doc).unwrap_or_default()
 }
 
-/// In the workspace addressing `workspace`, remove every window `foreign` names
+/// In the workspace with `identity`, remove every window `foreign` names
 /// (someone else's, mirrored here while the workspace shared its layout), then
 /// the window groups left with none, and the strips left with none that this
 /// machine (`local_salt`) did not make. Every window of this machine's own
 /// stays where it is. Reports whether anything changed.
 pub fn drop_windows_of_others(
     desktop: &mut DesktopTree,
-    room: RoomId,
+    identity: RoomId,
     local_salt: u16,
     foreign: &impl Fn(&Tab) -> bool,
 ) -> bool {
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == identity) else {
         return false;
     };
     let mut changed = false;
@@ -1013,15 +1013,16 @@ mod tests {
         }
     }
 
-    /// A desktop with one workspace in `workspace` holding `strips`.
+    /// A desktop with one workspace under local id `workspace`, holding `strips`
+    /// in the workspace with `identity`.
     fn workspace_desktop(
-        room: RoomId,
+        identity: RoomId,
         workspace: u64,
         strips: Vec<Strip>,
     ) -> crate::tree::DesktopTree {
         let mut w = crate::workspace::Workspace::in_workspace(
             crate::ids::WorkspaceId(workspace),
-            room,
+            identity,
             "Team",
         );
         w.strips = strips;
@@ -1062,7 +1063,7 @@ mod tests {
     fn dropping_others_windows_keeps_every_window_of_ones_own() {
         const MINE: u16 = 0x1111;
         const THEIRS: u16 = 0x2222;
-        let room = RoomId::new();
+        let identity = RoomId::new();
         // My strip, holding my window and one of theirs side by side; their
         // strip, holding only theirs; their strip I moved a window of mine
         // into.
@@ -1076,12 +1077,12 @@ mod tests {
             .push(canvas_group(THEIRS, 5, "~/private"));
         let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
         shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
-        let mut tree = workspace_desktop(room, 1, vec![mine, theirs, shared]);
+        let mut tree = workspace_desktop(identity, 1, vec![mine, theirs, shared]);
         let ws = tree.workspaces[0].id;
         tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
 
         let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
-        assert!(drop_windows_of_others(&mut tree, room, MINE, &foreign));
+        assert!(drop_windows_of_others(&mut tree, identity, MINE, &foreign));
         let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
             .strips
             .iter()
@@ -1106,7 +1107,7 @@ mod tests {
             "no pointer at a strip that went"
         );
         assert!(
-            !drop_windows_of_others(&mut tree, room, MINE, &foreign),
+            !drop_windows_of_others(&mut tree, identity, MINE, &foreign),
             "nothing more to drop"
         );
     }

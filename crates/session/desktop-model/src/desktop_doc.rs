@@ -789,7 +789,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
                 existing
             }
             None => match identity {
-                Some(room) => Workspace::in_workspace(ws_id, room, name),
+                Some(identity) => Workspace::in_workspace(ws_id, identity, name),
                 None => Workspace::new(ws_id, name),
             },
         };
@@ -1010,7 +1010,7 @@ pub fn append_workspace(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
     name: &str,
-    room: RoomId,
+    identity: RoomId,
 ) -> bool {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
         .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())
@@ -1023,8 +1023,8 @@ pub fn append_workspace(
     };
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
-    let _ = doc.put(&entry, "room", room.to_string());
-    let workspace = Workspace::in_workspace(workspace_id, room, name);
+    let _ = doc.put(&entry, "room", identity.to_string());
+    let workspace = Workspace::in_workspace(workspace_id, identity, name);
     sync_blob_map(
         doc,
         &entry,

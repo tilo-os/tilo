@@ -1591,13 +1591,13 @@ impl DesktopChrome {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
         let mut workspace = if let Some(id) = join {
-            let Some(room) = RoomId::parse(id) else {
+            let Some(joined) = RoomId::parse(id) else {
                 self.handle.acknowledge(tilo_desktop_surface::i18n::t(
                     "desktop-joined-workspace-unknown",
                 ));
                 return;
             };
-            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
+            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == joined) {
                 // Already held, here or from another device: go there rather
                 // than make a second workspace of one workspace.
                 let held = held.id;
@@ -1605,7 +1605,7 @@ impl DesktopChrome {
                 self.handle.replace_tree(tree);
                 return;
             }
-            Workspace::in_workspace(WorkspaceId::of_room(room), room, name)
+            Workspace::in_workspace(WorkspaceId::of_room(joined), joined, name)
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {
                 self.handle.acknowledge(refusal);

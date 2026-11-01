@@ -42,7 +42,7 @@ pub const CONVERSATION_SHELL: &str = "so.tilo.shell.conversation";
 pub const KIND: &str = "tilolang.room";
 
 /// The id of `person`'s own record of their arrangement: only their devices
-/// read and change it ([`tilo_action_policy::member_record`]), the room's
+/// read and change it ([`tilo_action_policy::member_record`]), the workspace's
 /// owner included. `person` is the lowercase hex of their user root key.
 #[must_use]
 pub fn record_id(person: &str) -> String {

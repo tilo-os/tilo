@@ -23,11 +23,11 @@ struct Device {
 }
 
 impl Device {
-    fn new(key: &'static str, room: RoomId, actor: u8) -> Self {
+    fn new(key: &'static str, identity: RoomId, actor: u8) -> Self {
         Self {
             key,
             actor: u64::from(actor),
-            workspace: Workspace::in_workspace(WorkspaceId::of_room(room), room, "Home"),
+            workspace: Workspace::in_workspace(WorkspaceId::of_room(identity), identity, "Home"),
             doc: AutoCommit::new().with_actor(automerge::ActorId::from(vec![actor; 16])),
         }
     }
@@ -197,9 +197,9 @@ const LATER_NOTES: u64 = minted(1, 102);
 /// The laptop opens a notes window and a legacy editor on its main strip,
 /// and notes on a second strip; both devices hold that.
 fn two_devices() -> (Device, Device) {
-    let room = RoomId::new();
-    let mut laptop = Device::new(LAPTOP, room, 1);
-    let mut desk = Device::new(DESK, room, 2);
+    let identity = RoomId::new();
+    let mut laptop = Device::new(LAPTOP, identity, 1);
+    let mut desk = Device::new(DESK, identity, 2);
     laptop.change(|w| {
         let mut main = Strip::new(StripId(MAIN), "Main");
         main.window_groups
@@ -448,8 +448,8 @@ fn withdrawing_takes_out_only_what_the_device_made() {
 #[test]
 fn a_workspace_laid_out_before_the_record_brings_its_windows_over() {
     use automerge::transaction::Transactable as _;
-    let room = RoomId::new();
-    let mut desk = Device::new(DESK, room, 2);
+    let identity = RoomId::new();
+    let mut desk = Device::new(DESK, identity, 2);
     // The laptop's windows, as the old layout kept them.
     let contents = desk.doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
     let strip = desk

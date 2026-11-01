@@ -22,8 +22,8 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 
-fn room() -> RoomId {
-    RoomId::parse("00000000-0000-4000-8000-000000000042").expect("a room id")
+fn identity() -> RoomId {
+    RoomId::parse("00000000-0000-4000-8000-000000000042").expect("a workspace identity")
 }
 
 fn tab(id: u64, title: &str) -> Tab {
@@ -55,7 +55,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 
 /// One workspace with strip 1 holding group 10 [100, 101].
 fn desk() -> DesktopTree {
-    let mut workspace = Workspace::in_workspace(WorkspaceId(1), room(), "Studio");
+    let mut workspace = Workspace::in_workspace(WorkspaceId(1), identity(), "Studio");
     workspace.set_owner("ada");
     let mut strip = Strip::new(StripId(1), "A");
     strip.window_groups = vec![group(10, &[100, 101])];
