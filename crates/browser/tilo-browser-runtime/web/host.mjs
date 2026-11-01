@@ -23,7 +23,7 @@ import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
-import {createNativeCatalogueBridge, invokeRoomMembership, runRoomAction} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeMembershipAction, runRecordAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
 import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
@@ -32,7 +32,7 @@ import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
 // desktop model) unless `app` names one application. A certified peer's
 // `mountDesktop` passes itself as `peer`: edits are then attributed to its
-// user, and its room's live layer shows members' pointers over the surface.
+// user, and its workspace's live layer shows members' pointers over the surface.
 /** Application ids accepted by `mountDesktop({app})`; omit `app` for the desktop. */
 export const APPLICATIONS=Object.freeze({desktop:'desktop',scratch:'so.tilo.browser-scratch'});
 let registry=new MountRegistry();
@@ -141,7 +141,7 @@ export async function mountDesktop(target,options={}) {
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
-  const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
+  const config={profile:'tilo-browser',device:'tilo-browser-device',workspace:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
   // Model credentials are mount-scoped bootstrap input, never a page global.
   // The WASM host binds the authenticated transport before each app factory.
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
@@ -154,11 +154,11 @@ export async function mountDesktop(target,options={}) {
   delete config.hostActions;delete config.onHostAction;
   let unsubscribeDesktopCommits;
   let liveOverlay,liveCursors,liveCarets,here,legacyWindows,nodeApps,livePlace=null;
-  // The room's live layer as this mount publishes through it (a certified
+  // The workspace's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
   const semanticPresentation=createSemanticPresentation({request:(target,observe)=>{if(active())runtime.request_component_locus(id,JSON.stringify(target),observe);},valid:()=>fontMountValid(),surfaceSize:()=>[canvas.width,canvas.height]});
-  const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.room]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
+  const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.workspace]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
   let media,semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
@@ -224,7 +224,7 @@ export async function mountDesktop(target,options={}) {
     return shown.active.tab;
   }
   // Run what the person asked of Chat on its conversation with `ask.to`
-  // (root key, hex), as their own act: Chat offers it once the room's list
+  // (root key, hex), as their own act: Chat offers it once the workspace's list
   // of people has them.
   async function runOwnAsk(ask){
     const window=await chatWindow();
@@ -288,7 +288,7 @@ export async function mountDesktop(target,options={}) {
     }
     nativeCatalogue.pump();
     nodeApps?.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['record-action']){const asked=request['record-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.
@@ -307,7 +307,7 @@ export async function mountDesktop(target,options={}) {
     // IME box both use it, and a change it reports has already run.
     const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
     if(runtimeReady)data.pump(report);
-    if(runtimeReady&&options.peer?.voice){media??=createMediaPump({runtime,id,voice:options.peer.voice,room:config.room,active,report});queueMicrotask(()=>{if(active())media.pump();});}
+    if(runtimeReady&&options.peer?.voice){media??=createMediaPump({runtime,id,voice:options.peer.voice,workspace:config.workspace,active,report});queueMicrotask(()=>{if(active())media.pump();});}
     // Shaping asks for an optional font rarely, and the take is a wasm call
     // and a decode: ask whether there is anything first.
     if(runtimeReady&&runtime.font_demands&&(!runtime.font_demands_pending||runtime.font_demands_pending(id))){
@@ -324,7 +324,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],pending:()=>Boolean(active()&&runtime.desktop_node_app_requests_pending?.(id)),onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({workspace:config.workspace,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],pending:()=>Boolean(active()&&runtime.desktop_node_app_requests_pending?.(id)),onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -425,7 +425,7 @@ export async function mountDesktop(target,options={}) {
   function onCrash(crash){
     // The module is stopped: nothing on this page may call into it again.
     crashed=true;surface.inert=true;capture.close();semanticPresentation.close();
-    const action=crashAction(crash,crash.tab!=null&&crashes.record(config.room,crash));
+    const action=crashAction(crash,crash.tab!=null&&crashes.record(config.workspace,crash));
     report({phase:'crashed',crashedWindow:crash.tab??null,error:crash.message,restarting:action==='restart'&&options.restartOnCrash!==false});
     if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
   }
@@ -482,10 +482,10 @@ export async function mountDesktop(target,options={}) {
     // it on demand; the session desktop fetches each app as its window opens.
     if(config.app&&!await runtime.load_application(config.app))throw Error(`${config.app} could not be loaded`);
     if(!registry.current(token))throw Error('mount disposed');
-    runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
+    runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.workspace)));
     // A crashed window the person reopens leaves the record, so the next
     // load runs its app too.
-    forgetCrashed=tab=>crashes.forget(config.room,tab);
+    forgetCrashed=tab=>crashes.forget(config.workspace,tab);
     globalThis.__tiloForgetCrashedWindow=forgetCrashed;
     crashListeners.add(onCrash);
     // Each startup font goes in with the digest the loader computed natively,
@@ -636,23 +636,23 @@ export async function mountDesktop(target,options={}) {
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
       // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
       setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
-      // On a desktop with no room (the person's own), who it shows as its person (`{user, label}`): a room's peer names its own.
+      // On a desktop with no workspace (the person's own), who it shows as its person (`{user, label}`): a workspace's peer names its own.
       setOwnPerson:({user,label})=>{if(active()&&!options.peer&&runtime.desktop_set_people)runtime.desktop_set_people(id,JSON.stringify({own:{publisher:'own',kind:'person',label:String(label??''),user},members:null}));},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
       people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
-      // The room's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
+      // The workspace's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
       pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
-      // Name the room's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
+      // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),
       publications:()=>JSON.parse(runtime.component_publications(id)),
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(id,resource??undefined,window)),
-      // The room's own membership actions are the host's, not an app's: a promise of the host's answer.
-      invokeAction:(resource,action,args={},{confirm=false,window}={})=>invokeRoomMembership({membership:options.peer?.membership,room:options.peer?.room,resource,action,args,confirm})
+      // The workspace's own membership actions are the host's, not an app's: a promise of the host's answer.
+      invokeAction:(resource,action,args={},{confirm=false,window}={})=>invokeMembershipAction({membership:options.peer?.membership,workspace:options.peer?.workspace,resource,action,args,confirm})
         ??JSON.parse(runtime.invoke_component_action(id,resource,action,JSON.stringify(args),confirm,window)),};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }

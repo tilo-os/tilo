@@ -27,7 +27,7 @@ function adasRoom({owner = true, letsIn = owner} = {}) {
   const calls = [];
   let waiting = [{requestId: '02'.repeat(32), name: 'Bo', role: 'editor', userPublicKey: 'bb'.repeat(32)}];
   return {calls, peer: {
-    origin: 'https://node.example:8443', room: ROOM, userPublicKey: ADA, host: {hostCert: {user_public_key: bytes(ADA)}},
+    origin: 'https://node.example:8443', workspace: ROOM, userPublicKey: ADA, host: {hostCert: {user_public_key: bytes(ADA)}},
     createInvitation: async options => { calls.push(['invite', options]); return 'SIGNED-invitation'; },
     membership: {
       list: async () => {
@@ -69,7 +69,7 @@ test('the owner invites with a link, hears once who asks, and lets them in from 
   assert.equal(banners.at(-1).title, 'Bo joined');
 });
 
-test('a member the room lets invite hears who asks to join and lets them in', async () => {
+test('a member the workspace lets invite hears who asks to join and lets them in', async () => {
   const {peer, calls} = adasRoom({owner: false, letsIn: true});
   const {mount, shown, banners} = desktop();
   const polls = [];
@@ -149,7 +149,7 @@ test('a member who just invited someone hears who asks to join, though the host 
   assert.equal(banners.at(-1)?.title, 'Cy asks to join');
 });
 
-test('someone the room does not let invite is never asked to let anyone in', async () => {
+test('someone the workspace does not let invite is never asked to let anyone in', async () => {
   const {peer} = adasRoom({owner: false});
   const {mount, shown, banners} = desktop();
   let polled = false;
@@ -162,7 +162,7 @@ test('someone the room does not let invite is never asked to let anyone in', asy
   assert.deepEqual(banners, []);
 });
 
-/** A page in the public Lounge: the room refuses guests' invitations, as
+/** A page in the public Lounge: the workspace refuses guests' invitations, as
  * the reviewer saw (`grant role:editor`), so inviting must never ask it. */
 function lounge({owner = false} = {}) {
   const {peer, calls} = adasRoom({owner});
@@ -245,7 +245,7 @@ test('a new workspace is made on a machine the person set up, and opened', async
   assert.deepEqual(opened, [{origin, room: ROOM, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
 });
 
-test('in someone else’s room a person with a machine can still make a workspace on it', async () => {
+test('in someone else’s workspace a person with a machine can still make a workspace on it', async () => {
   const origin = 'https://node.example:8443';
   const calls = [];
   const lobby = {
@@ -256,7 +256,7 @@ test('in someone else’s room a person with a machine can still make a workspac
     },
     dispose: async () => { calls.push(['dispose']); },
   };
-  // The Lounge: a room on a host that is not Ada's.
+  // The Lounge: a workspace on a host that is not Ada's.
   const lounge = {origin: 'https://lounge.example', room: 'lounge', userPublicKey: ADA,
     host: {hostCert: {user_public_key: bytes('bb'.repeat(32))}}};
   const opened = [];

@@ -350,7 +350,7 @@ test('peer.voice lists, governs and signals through the wasm peer', async () => 
   };
   let signalling;
   const voice = createPeerVoice({
-    peer: () => wasm, room: 'room-1', random: bytes => bytes.fill(7),
+    peer: () => wasm, workspace: 'room-1', random: bytes => bytes.fill(7),
     createCall: options => { signalling = options.signalling; return {dispose() {}}; },
   });
   const listing = voice.list();
@@ -434,7 +434,7 @@ test('a terminal audio failure cannot leave a live carrier or microphone status'
 
 test('resetting the certified identity clears cached calls and rejects old pending controls', async () => {
   let left = 0;
-  const voice = createPeerVoice({peer: () => ({voiceCalls() {}, voiceCall() {}}), room: 'room-1', random: bytes => bytes.fill(7),
+  const voice = createPeerVoice({peer: () => ({voiceCalls() {}, voiceCall() {}}), workspace: 'room-1', random: bytes => bytes.fill(7),
     createCall: () => ({leave() {left++;}, dispose() {}})});
   voice.pump(JSON.stringify([{kind: 'calls', room: 'room-1', calls: [{call: CALL}]}]));
   assert.equal(voice.calls.length, 1);

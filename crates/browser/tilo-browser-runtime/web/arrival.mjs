@@ -337,8 +337,8 @@ function failure(kind, workspace, messages) {
 }
 
 /** Whether `error` is a host's door turning this visitor away for a while
- * (`cooling-down`: the address someone removed from the room joined from;
- * `removed`: the person themselves; `invitation-only`: a room that takes
+ * (`cooling-down`: the address someone removed from the workspace joined from;
+ * `removed`: the person themselves; `invitation-only`: a workspace that takes
  * people by invitation, and this visitor came without one),
  * which trying again does not change. */
 export function refusedByHost(error) {
@@ -422,11 +422,11 @@ function unreachable(error) {
  * general, its cause left to the console.
  */
 export function failureMessage(error, {workspace = null, loaded = true, admitted = false, messages = null} = {}) {
-  // Taken out of the room by its people: said in the person's words.
+  // Taken out of the workspace by its people: said in the person's words.
   if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'removed') {
     return failure('removed', workspace, messages);
   }
-  // A room taking people by invitation, opened without one.
+  // A workspace taking people by invitation, opened without one.
   if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'invitation-only') {
     return failure('invitation-only', workspace, messages);
   }
@@ -444,7 +444,7 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
 }
 
 /**
- * What a page watching a room through its door says about joining, so it
+ * What a page watching a workspace through its door says about joining, so it
  * never promises a join the door will not give. `entered`: `watching` (an
  * embed, until a gesture) or `seatless` (the door had no seat, `because`
  * its code); `presence`: the door's answer (`admission`: `open` or

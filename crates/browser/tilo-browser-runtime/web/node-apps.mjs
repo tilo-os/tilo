@@ -3,13 +3,13 @@
  * desktop: its legacy applications (Chromium, LibreOffice, …) and the Tilo
  * applications that need a host (Terminal, …).
  *
- * The node's session, a device of the person, answers the room's
- * `workspace:<room>` catalogue with an `app.<id>/open` row per application
+ * The node's session, a device of the person, answers the workspace's
+ * `workspace:<workspace>` catalogue with an `app.<id>/open` row per application
  * it can launch: `applications.host-app` for an unconfined legacy one,
  * `applications.app` for a Tilo package (`app` is its package id). They are
  * listed with the desktop's own (`desktop_set_node_apps`), which leaves out
  * the packages the page runs itself; opening one asks the session to launch
- * it in the room, and its window arrives as any member's legacy window does
+ * it in the workspace, and its window arrives as any member's legacy window does
  * (`legacy-windows.mjs`).
  *
  * - `nodeSession()`: resolves to the session's device (hex) or a falsy value.
@@ -55,7 +55,7 @@ export function nodeApplications(rows) {
 const listed = ({id, title, app}) => (app ? {id, title, app} : {id, title});
 
 export function createNodeApps({
-  room, nodeSession, actions, setApps, takeRequests, pending = () => true,
+  workspace, nodeSession, actions, setApps, takeRequests, pending = () => true,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
   clearInterval: stopEvery = handle => globalThis.clearInterval(handle),
   onError = () => {},
@@ -70,7 +70,7 @@ export function createNodeApps({
     const rows = [];
     let cursor;
     for (let page = 0; page < MAX_PAGES; page += 1) {
-      const answer = await on.catalogue({provider: `workspace:${room}`, max_results: 200, ...(cursor ? {cursor} : {})});
+      const answer = await on.catalogue({provider: `workspace:${workspace}`, max_results: 200, ...(cursor ? {cursor} : {})});
       rows.push(...(answer?.rows ?? []));
       if (answer?.exhausted || !answer?.next_cursor?.length) break;
       cursor = answer.next_cursor;

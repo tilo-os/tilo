@@ -14,7 +14,7 @@ export type Application = 'desktop' | (string & {});
 export interface RuntimeStatus {
   /**
    * `crashed`: an application panicked and the runtime stopped. With
-   * `crashedWindow` (its tab id) the window is kept out of the room's next
+   * `crashedWindow` (its tab id) the window is kept out of the workspace's next
    * load, which shows `error` in it; `restarting` says the page reloads.
    */
   phase?: 'gpu-pending' | 'presented' | 'failed' | 'closed' | 'crashed';
@@ -31,7 +31,7 @@ export interface RuntimeStatus {
   /** Private caller observation; never a claim of replicated document completion. */
   action?: Pick<PrivateInvocation,'invocation'|'state'|'terminal'|'cancellationRequested'>;
   actionError?: string;
-  /** Native semantic command receipt lifecycle; signed room state owns rendering. */
+  /** Native semantic command receipt lifecycle; signed workspace state owns rendering. */
   desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
   desktopErrors?: string[];
   /** A desktop mount's active workspace, as its top bar names it. */
@@ -70,7 +70,7 @@ export interface MountOptions {
   actionsV1?: CertifiedActionsV1;
   profile?: string;
   device?: string;
-  room?: string;
+  workspace?: string;
   /** Who the mount's edits and actions are attributed to. */
   author?: string;
   instance?: number;
@@ -102,7 +102,7 @@ export interface MountOptions {
   /** The workspace name a desktop this mount seeds starts with. */
   workspaceName?: string;
   /**
-   * The host of the room shown (`example.org`), which the top bar names in
+   * The host of the workspace shown (`example.org`), which the top bar names in
    * a quiet pill beside the workspace; leave it out on the person's own
    * desktop.
    */
@@ -183,7 +183,7 @@ export interface DesktopMount {
    * own person. `null` for a single application.
    */
   people(): {id: string; label: string; agent: boolean}[] | null;
-  /** Name the room's people by the id their actions record (what an app's
+  /** Name the workspace's people by the id their actions record (what an app's
    * `cx.me()` answers), for a page that knows who it admitted. */
   setPeople(people: {id: string; name: string}[]): void;
   /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
@@ -199,11 +199,11 @@ export interface DesktopMount {
    * window's app, as `actions` does. Through a certified peer the action
    * claims the mount's live presence only if it moved the mount's caret.
    *
-   * Through a certified peer in a room, the room's own membership actions
+   * Through a certified peer in a workspace, the workspace's own membership actions
    * are the host's, not an app's: `remove-member`, `ban` and `unban` on the
-   * room's governance resource (`workspace.permissions:<room>`), each
+   * workspace's governance resource (`workspace.permissions:<workspace>`), each
    * `{person}` (a root key, hex). They return a promise, settled once the
-   * host decided by the room's policy and rejected `code: reason` when it
+   * host decided by the workspace's policy and rejected `code: reason` when it
    * refused; removing and banning need `confirm`.
    */
   invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult | Promise<ActionResult>;

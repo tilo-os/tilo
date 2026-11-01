@@ -11,7 +11,7 @@ const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
 const row = {provider, app_id: 'so.tilo.chat', resource, action: view};
 
 // Two endpoints exchange the actual remote action frames. Authentication and
-// room admission remain the existing CertifiedPeer's job, not this resolver's.
+// workspace admission remain the existing CertifiedPeer's job, not this resolver's.
 function endpoints(reply) {
   const received = [], sent = [];
   const peer = {
@@ -26,7 +26,7 @@ function endpoints(reply) {
     },
     takeRemoteActionEvents: () => JSON.stringify(received.splice(0)),
   };
-  const actions = createActions({peer, room, hostDevice: host});
+  const actions = createActions({peer, workspace: room, hostDevice: host});
   return {actions, sent};
 }
 
@@ -67,7 +67,7 @@ test('disconnect and replacement session fence replies; consent is never implici
   const {actions, sent} = endpoints(() => { admitted = false; return {revision: 'r1', rows: [row]}; });
   try {
     const resolve = () => resolveResourceReference({reference, provider, actions, current: () => admitted});
-    await assert.rejects(resolve(), /current admitted room/);
+    await assert.rejects(resolve(), /current admitted workspace/);
     assert.equal(sent.length, 0);
     admitted = true;
     await assert.rejects(resolve(), /connection changed/);

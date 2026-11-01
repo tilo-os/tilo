@@ -4,7 +4,7 @@
  * (the typed handshake refusal, `SessionRefusal`), never a count.
  *
  * - `not-admitted`: the host no longer has the person (its state was reset,
- *   it pruned them after an absence, or a room took them out), and
+ *   it pruned them after an absence, or a workspace took them out), and
  *   `host-changed`: another host answers at the origin now. A page that came
  *   in through the host's door (`canRejoin`) joins again through it, exactly
  *   as it does on arrival (`rejoin`, which loads the bare entry): the person

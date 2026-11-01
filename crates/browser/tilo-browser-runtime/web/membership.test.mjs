@@ -9,7 +9,7 @@ function fakeHost(replies) {
   const sent = [];
   return {
     sent,
-    rooms: async json => {
+    workspaces: async json => {
       const request = JSON.parse(json);
       sent.push(request);
       const kind = typeof request === 'string' ? request : Object.keys(request)[0];
@@ -25,7 +25,7 @@ const room = {room: ROOM, workspace_id: 7, name: 'Acme', generation: 3, members:
 
 test('an invitation names the inviter and comes back as base64url text', async () => {
   const host = fakeHost({Invite: () => ({Invitation: {invite_id: key(1), signed_invitation: [0xfb, 0xff, 0x01]}})});
-  const membership = createMembership({rooms: host.rooms, room: ROOM, displayName: ' Ada Lovelace ', now: () => 1_000});
+  const membership = createMembership({workspaces: host.workspaces, workspace: ROOM, displayName: ' Ada Lovelace ', now: () => 1_000});
   assert.equal(await membership.createInvitation({role: 'commenter', expiresIn: 60}), encodeInvitation([0xfb, 0xff, 0x01]));
   assert.equal(encodeInvitation([0xfb, 0xff, 0x01]), '-_8B');
   const {Invite: invite} = host.sent[0];
@@ -59,7 +59,7 @@ test('the owner lists, admits, declines and removes people', async () => {
       member.user_public_key.every((byte, index) => byte === request.Remove.user_public_key[index]) ? {...member, removed: true} : member)}}),
     Cancel: () => ({Refused: 'invitation was already redeemed'}),
   });
-  const membership = createMembership({rooms: host.rooms, room: ROOM});
+  const membership = createMembership({workspaces: host.workspaces, workspace: ROOM});
   const listed = await membership.list();
   assert.equal(listed.name, 'Acme');
   assert.deepEqual(listed.members[0], {userPublicKey: 'aa'.repeat(32), name: 'Ada', role: 'editor', owner: true, removed: false});
@@ -85,18 +85,18 @@ test('the owner lists, admits, declines and removes people', async () => {
   await assert.rejects(membership.admit('not hex'), TypeError);
 });
 
-test('a peer without a room administers nothing', async () => {
-  const membership = createMembership({rooms: async () => { throw new Error('unreachable'); }});
-  await assert.rejects(membership.list(), /no room/);
+test('a peer without a workspace administers nothing', async () => {
+  const membership = createMembership({workspaces: async () => { throw new Error('unreachable'); }});
+  await assert.rejects(membership.list(), /no workspace/);
 });
 
-test('the host\'s workspaces are listed, created and entered without a room', async () => {
+test('the host\'s workspaces are listed, created and entered without a workspace', async () => {
   const host = fakeHost({
     List: () => ({Rooms: [room]}),
     Create: request => ({Room: {...room, name: request.Create.name}}),
     Enter: () => ({Refused: 'room administration requires a device of the relay\'s user'}),
   });
-  const workspaces = createWorkspaces({rooms: host.rooms});
+  const workspaces = createWorkspaces({workspaces: host.workspaces});
   assert.deepEqual((await workspaces.list()).map(value => [value.room, value.name]), [[ROOM, 'Acme']]);
   assert.equal((await workspaces.create(' Acme Inc ')).name, 'Acme Inc');
   await assert.rejects(workspaces.create(' '), TypeError);
@@ -106,12 +106,12 @@ test('the host\'s workspaces are listed, created and entered without a room', as
 test('the owner pre-admits a person by their token\'s digest', async () => {
   const signed = [];
   const membership = createMembership({
-    rooms: async () => { throw new Error('unused'); }, room: ROOM, displayName: 'Ada',
+    workspaces: async () => { throw new Error('unused'); }, workspace: ROOM, displayName: 'Ada',
     preAdmit: async json => { signed.push(JSON.parse(json)); return JSON.stringify({Invitation: {invite_id: key(1), signed_invitation: [1, 2, 3]}}); },
   });
   const digest = 'ab'.repeat(32);
   assert.equal(await membership.preAdmit({tokenSha256: digest, label: ' cy@example.com ', expiresIn: 3600}), encodeInvitation([1, 2, 3]));
-  assert.equal(signed[0].room, ROOM);
+  assert.equal(signed[0].workspace, ROOM);
   assert.equal(signed[0].role, 'Editor');
   assert.equal(signed[0].tokenSha256, digest);
   assert.equal(signed[0].label, 'cy@example.com');
@@ -120,5 +120,5 @@ test('the owner pre-admits a person by their token\'s digest', async () => {
   assert.match(signed[0].requestId, /^[0-9a-f]{64}$/);
   await assert.rejects(membership.preAdmit({tokenSha256: 'nope', label: 'x'}), TypeError);
   await assert.rejects(membership.preAdmit({tokenSha256: digest, label: ' '}), TypeError);
-  await assert.rejects(createMembership({rooms: async () => '{}', room: ROOM}).preAdmit({tokenSha256: digest, label: 'x'}), /unlocked identity/);
+  await assert.rejects(createMembership({workspaces: async () => '{}', workspace: ROOM}).preAdmit({tokenSha256: digest, label: 'x'}), /unlocked identity/);
 });

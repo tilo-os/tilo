@@ -106,7 +106,7 @@ test('an unbound desktop entry without a route is the person’s own desktop', (
   assert.throws(() => initialRoute({link, location: {hash: '', href: 'https://tilo.so/app/'}, mode: 'app'}), {code: 'no-route'});
 });
 
-test('a bare entry opens the web host’s home workspace, its room learned on admission', () => {
+test('a bare entry opens the web host’s home workspace, its workspace learned on admission', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
   const home = {name: 'Commons', host: {origin: 'https://rooms.example/'}, admission: 'https://rooms.example/'};
   const scope = {kind: 'room', host: 'https://rooms.example', room: null};
@@ -181,7 +181,7 @@ test('the home workspace opens through its host door under its listed name, and 
   };
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
-  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async (element, options) => {
+  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async (element, options) => {
     mounts.push(options);
     options.onNavigation?.(navigation);
     return {navigation};
@@ -221,14 +221,14 @@ test('the home workspace opens through its host door under its listed name, and 
   page.router.stop?.();
 });
 
-test('the page hears the peer the host let in before its desktop mounts, so a failed mount can name the room', async () => {
+test('the page hears the peer the host let in before its desktop mounts, so a failed mount can name the workspace', async () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const runtime = {
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
     formatLink: () => 'https://rooms.example/#/@rooms.example/w/ROOM',
   };
   const heard = [];
-  const peer = {room: 'ROOM', workspaceName: 'Kaffeeküche', whenReady: async () => {},
+  const peer = {workspace: 'ROOM', workspaceName: 'Kaffeeküche', whenReady: async () => {},
     mountDesktop: async () => { heard.push('mount'); throw new Error('the desktop did not start'); }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
@@ -247,14 +247,14 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
   assert.deepEqual(heard, ['Kaffeeküche', 'mount']);
 });
 
-test('a room on the site the page came from, or on its machines, is hosted by that site', () => {
+test('a workspace on the site the page came from, or on its machines, is hosted by that site', () => {
   const room = host => ({kind: 'room', host, room: 'R'});
   assert.equal(scopeHost(room('https://eu1.tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
   assert.equal(scopeHost(room('https://tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
   assert.equal(scopeHost(room('https://rooms.example'), 'tilo.coffee'), 'rooms.example');
   assert.equal(scopeHost(room('https://notilo.coffee'), 'tilo.coffee'), 'notilo.coffee');
   assert.equal(scopeHost({kind: 'own'}, 'tilo.coffee'), null);
-  // A room on another port of the page's machine is the site, by its name.
+  // A workspace on another port of the page's machine is the site, by its name.
   assert.equal(scopeHost(room('http://localhost:9764'), 'localhost:8411'), 'localhost');
   assert.equal(scopeHost(room('https://rooms.example:8443'), 'tilo.coffee'), 'rooms.example:8443');
 });
@@ -301,13 +301,13 @@ test('the desktop gets the entry’s About links, no host pill on the person’s
   page.router.stop?.();
 });
 
-test('a room mount keeps Invite alongside host, About, presence and title forwarding', async () => {
+test('a workspace mount keeps Invite alongside host, About, presence and title forwarding', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const about = {source: 'https://example.org/source'};
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let mounted;
   let invited = 0;
-  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -339,7 +339,7 @@ test('a bare entry under a home workspace asks the host’s door while the runti
     formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/ROOM',
   };
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
-  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
+  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -406,7 +406,7 @@ test('the home workspace’s app in front is fetched once admitted, never before
     await new Promise(resolve => setTimeout(resolve, 10));
     return order;
   };
-  assert.deepEqual(await run(async () => ({room: 'r1'})), ['door', 'prefetch so.tilo.chat']);
+  assert.deepEqual(await run(async () => ({workspace: 'r1'})), ['door', 'prefetch so.tilo.chat']);
   assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
 });
 
@@ -441,11 +441,11 @@ function roomPage({href, hash, parse}) {
   return {window, listeners, calls, runtime, navigation};
 }
 
-test('a returning person’s bare entry opens the chosen room through their membership, not the home’s door', async () => {
+test('a returning person’s bare entry opens the chosen workspace through their membership, not the home’s door', async () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
   const connected = [];
-  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
+  const peer = {workspace: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
   const deps = {
     loadRuntime: async () => page.runtime,
     fetch: async () => ({ok: true, json: async () => ({home})}),
@@ -462,20 +462,20 @@ test('a returning person’s bare entry opens the chosen room through their memb
   shown.router.stop();
 });
 
-test('Back or Forward to another room loads it anew, never inside the room in front', async () => {
+test('Back or Forward to another workspace loads it anew, never inside the workspace in front', async () => {
   const scopes = {
     '#/@acme.example/w/A': {kind: 'room', host: 'https://acme.example', room: 'A'},
     '#/@globex.example/w/G': {kind: 'room', host: 'https://globex.example', room: 'G'},
   };
   const page = roomPage({href: 'https://tilo.example/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
     parse: url => ({mode: 'desktop', target: {scope: scopes[new URL(url).hash]}})});
-  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
+  const peer = {workspace: 'A', whenReady: async () => {}, mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
   const deps = {
     loadRuntime: async () => page.runtime, fetch: async () => ({ok: false}),
     readAccounts: async () => [{userPublicKey: 'ab'}], connectMember: async () => peer,
   };
   const shown = await boot({mode: 'desktop', window: page.window, deps});
-  // The same room: shown in this desktop, no reload.
+  // The same workspace: shown in this desktop, no reload.
   await page.listeners.popstate();
   assert.equal(page.calls.reloads, 0);
   page.window.location.href = 'https://tilo.example/#/@globex.example/w/G';
@@ -523,7 +523,7 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
 test('the home workspace sends reports to the channel its entry names, without holding the page', async () => {
   const asked = [];
   let settle;
-  const peer = {origin: 'https://lounge.example', room: 'r1', configureFeedback: destination => {
+  const peer = {origin: 'https://lounge.example', workspace: 'r1', configureFeedback: destination => {
     asked.push(destination);
     return new Promise((_, reject) => { settle = reject; });
   }};
@@ -538,13 +538,13 @@ test('the home workspace sends reports to the channel its entry names, without h
   configureFeedback(peer, {});
   configureFeedback({configureFeedback: peer.configureFeedback}, home);
   assert.equal(asked.length, 1, 'no channel, or no room, asks nothing');
-  // Another room on the home's host, or a room elsewhere, has no such channel.
-  configureFeedback({...peer, room: 'second'}, home, null);
+  // Another workspace on the home's host, or a workspace elsewhere, has no such channel.
+  configureFeedback({...peer, workspace: 'second'}, home, null);
   configureFeedback({...peer, origin: 'https://team.example'}, home, 'r1');
   assert.equal(asked.length, 1, 'only the home workspace asks');
 });
 
-test('reports from another room reach the home workspace’s channel through its peer there', async () => {
+test('reports from another workspace reach the home workspace’s channel through its peer there', async () => {
   const home = {name: 'Lounge', room: 'LOUNGE', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/',
     feedback: {channel: 'c_feedback'}};
   const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
@@ -552,11 +552,11 @@ test('reports from another room reach the home workspace’s channel through its
   const asked = [];
   let configured;
   const done = new Promise(resolve => { configured = resolve; });
-  const lounge = {origin: 'https://rooms.example', room: 'LOUNGE', configureFeedback: async destination => {
+  const lounge = {origin: 'https://rooms.example', workspace: 'LOUNGE', configureFeedback: async destination => {
     asked.push(destination);
     configured();
   }};
-  const peer = {origin: 'https://acme.example', room: 'A', whenReady: async () => {},
+  const peer = {origin: 'https://acme.example', workspace: 'A', whenReady: async () => {},
     configureFeedback: async () => { throw new Error('the room in front has no such channel'); },
     sendFeedbackThrough: carrier => through.push(carrier),
     mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
@@ -578,13 +578,13 @@ test('reports from another room reach the home workspace’s channel through its
   shown.router.stop();
 });
 
-test('without a peer in the home workspace, another room sends no reports anywhere', async () => {
+test('without a peer in the home workspace, another workspace sends no reports anywhere', async () => {
   const home = {host: {origin: 'https://lounge.example'}, feedback: {channel: 'c_feedback'}};
   const asked = [];
-  const peer = {origin: 'https://lounge.example', room: 'own', configureFeedback: async destination => { asked.push(destination); },
+  const peer = {origin: 'https://lounge.example', workspace: 'own', configureFeedback: async destination => { asked.push(destination); },
     sendFeedbackThrough: () => asked.push('through')};
   let disposed = 0;
-  const watching = {origin: 'https://lounge.example', room: null, dispose: async () => { disposed++; }};
+  const watching = {origin: 'https://lounge.example', workspace: null, dispose: async () => { disposed++; }};
   configureFeedback(peer, home, null, {homePeer: async () => null});
   configureFeedback(peer, home, null, {homePeer: async () => watching});
   configureFeedback({...peer, sendFeedbackThrough: undefined}, home, null, {homePeer: async () => { throw new Error('not asked'); }});
@@ -593,7 +593,7 @@ test('without a peer in the home workspace, another room sends no reports anywhe
   assert.equal(disposed, 1, 'a peer that cannot carry reports is let go');
 });
 
-test('a second room on the home’s host goes by no name or count of the home’s', async () => {
+test('a second workspace on the home’s host goes by no name or count of the home’s', async () => {
   const {listedAt} = await import('./workspaces.mjs');
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
   const none = {getItem: () => null};
@@ -632,7 +632,7 @@ test('a link opened inside the desktop names its view in the address, and focus 
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     dispatch: async () => {},
   };
-  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (_element, options) => {
+  const peer = {workspace: 'A', whenReady: async () => {}, mountDesktop: async (_element, options) => {
     options.onNavigation?.(navigation); return {navigation};
   }};
   const view = {kind: 'read', address: {resource: message.id, action: 'reveal'}, addressKey: 'k', view: {id: 'message', open_action: 'reveal', primary: true}};

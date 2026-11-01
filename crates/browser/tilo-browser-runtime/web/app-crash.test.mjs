@@ -7,7 +7,7 @@ function memoryStorage(){
   return {getItem:key=>values.has(key)?values.get(key):null,setItem:(key,value)=>values.set(key,String(value))};
 }
 
-test('a crashed window is quarantined in its own room until it expires', () => {
+test('a crashed window is quarantined in its own workspace until it expires', () => {
   let clock=1000;
   const storage=memoryStorage();
   const crashes=createCrashQuarantine({storage,now:()=>clock});

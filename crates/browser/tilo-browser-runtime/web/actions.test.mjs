@@ -104,13 +104,13 @@ function memoryStore() {
 
 function actionsWith(peer, extra = {}) {
   let id = 0;
-  const actions = createActions({peer, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     newId: () => `inv-${++id}`, ...extra});
   const pumping = setInterval(() => actions.pump(), 1);
   return {actions, stop: () => { clearInterval(pumping); actions.dispose(); }};
 }
 
-test('the catalogue lists the room and feeds the v1 capability', async () => {
+test('the catalogue lists the workspace and feeds the v1 capability', async () => {
   const peer = fakeHost();
   const {actions, stop} = actionsWith(peer);
   try {
@@ -120,7 +120,7 @@ test('the catalogue lists the room and feeds the v1 capability', async () => {
     const ready = await actions.v1.catalogue();
     assert.equal(ready.state, 'ready');
     assert.equal(ready.host, HOST);
-    assert.deepEqual(ready.binding, {room: ROOM, sender: PAGE, senderRoot: USER, target: HOST, targetRoot: USER, certificate: HOST});
+    assert.deepEqual(ready.binding, {workspace: ROOM, sender: PAGE, senderRoot: USER, target: HOST, targetRoot: USER, certificate: HOST});
     const [surface] = ready.catalogue.surfaces;
     assert.equal(surface.peer_id, SHEET);
     assert.equal(surface.record_id, 'uuid:1');
@@ -176,7 +176,7 @@ test('an invocation keeps its id: a retry observes the original and runs once', 
     assert.equal(entry.intent.record_id, 'uuid:1');
     assert.equal(entry.intent.argument, 'Budget');
     // A reload reads the history back.
-    const reloaded = createActions({peer, room: ROOM, hostDevice: HOST, store});
+    const reloaded = createActions({peer, workspace: ROOM, hostDevice: HOST, store});
     await reloaded.loaded;
     assert.equal(reloaded.history()[0].invocation, ticket.id);
     reloaded.dispose();
@@ -188,7 +188,7 @@ test('an empty resource names a record\'s own, and only on a record', async () =
   const {actions, stop} = actionsWith(peer);
   try {
     await actions.loaded;
-    // The profile card asks the room's Discord record for the person's
+    // The profile card asks the workspace's Discord record for the person's
     // link without holding the connector's code: the host resolves it.
     const own = {provider: 'record:so.tilo.discord:', address: {resource: '', action: 'my-link'}};
     const ticket = actions.invoke(own, null);
@@ -263,7 +263,7 @@ function heldHost() {
 test('an answer that reached a page stalled past the timeout is read, not reported as missing', async () => {
   const time = manualTime();
   const host = heldHost();
-  const actions = createActions({peer: host.peer, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: host.peer, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     let outcome;
@@ -283,7 +283,7 @@ test('an answer that reached a page stalled past the timeout is read, not report
 test('a host still silent after a stalled page caught up is reported as not answering', async () => {
   const time = manualTime();
   const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
-  const actions = createActions({peer: silent, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: silent, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     let outcome;
@@ -307,7 +307,7 @@ test('a host still silent after a stalled page caught up is reported as not answ
 test('a timer that fires on time reports a silent host at once', async () => {
   const time = manualTime();
   const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
-  const actions = createActions({peer: silent, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: silent, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     const page = actions.catalogue({provider: SHEET});

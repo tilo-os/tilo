@@ -122,17 +122,17 @@ function fakeRuntime({phase = 'ready'} = {}) {
           snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}}}),
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
-          joinRoom: room => { peer.room = room; },
+          joinWorkspace: workspace => { peer.workspace = workspace; },
           liveGrant: async (room, ...agent) => {
             calls.grants++;
             calls.grantAgents.push(agent);
-            return JSON.stringify({token: '0102', room: ROOM_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
+            return JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
           },
           // Stand-in channel keys: a sealed frame carries the SEALED marker,
           // and only a sealed frame opens.
           sealLive: async (room, bytes) => (peer.sealing === false ? null : Uint8Array.from([SEALED, ...bytes])),
           openLive: async (room, bytes) => (bytes[0] === SEALED ? bytes.slice(1) : null),
-          roomRecords: () => JSON.stringify(peer.records),
+          workspaceRecords: () => JSON.stringify(peer.records),
           hasRecord: (app, record) => peer.records.some(row => row.app === app && row.record === record),
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
           takeRemoteActionEvents: () => '[]',
@@ -166,7 +166,7 @@ function vaultMemory() {
 }
 
 const options = (runtime, store, extra = {}) => ({
-  origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', room: ROOM,
+  origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', workspace: ROOM,
   custody, store, runtime, liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
 
@@ -191,7 +191,7 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   const peer = await connect(options(runtime, store, {onPairingCode: code => codes.push(code)}));
   assert.deepEqual(codes, ['123456']);
   assert.equal(runtime.calls.certify.length, 1);
-  assert.equal(runtime.peer.room, ROOM);
+  assert.equal(runtime.peer.workspace, ROOM);
   assert.deepEqual(runtime.peer.config.cert, {device: 1});
   assert.equal(typeof runtime.peer.post, 'function', 'the session posts to the host origin');
   assert.equal(peer.host.certificateSha256, 'ab'.repeat(32));
@@ -390,14 +390,14 @@ test('a lost live session reconnects with a fresh grant', async () => {
   await peer.dispose();
 });
 
-test('a room of members that lost the live plane comes back at jittered waits, not one tick', async () => {
+test('a workspace of members that lost the live plane comes back at jittered waits, not one tick', async () => {
   const timers = [];
   const session = {closed: new Promise(() => {}), close() {}, publishPresence: () => true, watchMembers() {}, subscribePresence() { return () => {}; }, subscribeOps() { return () => {}; }};
   let attempts = 0;
   const layer = createLiveLayer({liveGrant: async () => { attempts++; throw new Error('the relay is restarting'); }}, fakeRuntime(), ROOM, {
     endpoint: 'test', carriers: {connect: async () => session},
     setTimer: (callback, delay) => {timers.push(delay); return timers.length;}, clearTimer() {},
-    // A whole room's worth of pages, each with its own random draw.
+    // A whole workspace's worth of pages, each with its own random draw.
     random: () => 0.5,
   });
   await until(() => attempts === 1, 'the refused grant');
@@ -532,7 +532,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
     liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }};
 
   // Reconnecting with the kept state is refused, and nothing moves.
-  await assert.rejects(connect({...common, room: ROOM}), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
+  await assert.rejects(connect({...common, workspace: ROOM}), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
   assert.equal(runtime.calls.started.length, 0, 'no session started');
   assert.equal(runtime.calls.certify.length, 0, 'nothing was certified by the new host');
   assert.equal(profileDevice(profile, namespaces), PROFILE_DEVICE, 'the profile stays where it was');
@@ -556,7 +556,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   await peer.dispose();
 
   // The next visit reconnects there, with no new admission.
-  const again = await connect({...common, room: ROOM});
+  const again = await connect({...common, workspace: ROOM});
   assert.equal(runtime.peer.namespace, JSON.stringify({profile, device: fresh}));
   await again.dispose();
   // No session ever ran in the previous host's namespace, so its record
@@ -565,8 +565,8 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(runtime.calls.started.length, 2);
 });
 
-test('a device the room let go asks to join again under the certificate it already holds from that host', async () => {
-  // The room keeps the certificate of every device it admitted, also once
+test('a device the workspace let go asks to join again under the certificate it already holds from that host', async () => {
+  // The workspace keeps the certificate of every device it admitted, also once
   // its person was removed or pruned after an absence, and refuses the same
   // device under another one: a certificate made anew would never get back in.
   const runtime = fakeRuntime();
@@ -693,7 +693,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await peer.mountDesktop('target', {app: 'scratch'});
   assert.equal(mounts[0].profile, 'work');
   assert.equal(mounts[0].device, 'laptop');
-  assert.equal(mounts[0].room, ROOM);
+  assert.equal(mounts[0].workspace, ROOM);
   assert.equal(mounts[0].peer, peer);
 
   await peer.flush();
@@ -854,7 +854,7 @@ test('retry-saving commits the store again, then every mount, and clears the sto
   assert.equal(storageListener, undefined, 'dispose stops listening to the store');
 });
 
-test('refresh-checkpoint subscribes the room again and resolves once the host admitted it', async () => {
+test('refresh-checkpoint subscribes the workspace again and resolves once the host admitted it', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   runtime.peer.emit('ready');
@@ -872,7 +872,7 @@ test('refresh-checkpoint subscribes the room again and resolves once the host ad
   await peer.dispose();
 });
 
-test('httpsPost and the live plane accept a loopback http room for local review', () => {
+test('httpsPost and the live plane accept a loopback http workspace for local review', () => {
   assert.doesNotThrow(() => httpsPost('http://localhost:9764'));
   assert.doesNotThrow(() => httpsPost('http://127.0.0.1:9764'));
   assert.throws(() => httpsPost('http://10.0.0.2:9764'), TypeError);
@@ -888,7 +888,7 @@ test('httpsPost and the live plane accept a loopback http room for local review'
   });
 });
 
-test('the live grant waits until the room admitted the device', async () => {
+test('the live grant waits until the workspace admitted the device', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const liveCarriers = fakeCarriers();
   const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
@@ -1124,7 +1124,7 @@ test('an action through a mount speaks for the person only if it moved that moun
   await peer.dispose();
 });
 
-test('the room\'s records this page holds, and waiting for one', async () => {
+test('the workspace\'s records this page holds, and waiting for one', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   assert.deepEqual(peer.records(), []);
@@ -1172,7 +1172,7 @@ test('raw record watches bind the member namespace and stop retrying after unwat
       return () => { canceled++; };
     },
   };
-  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX,
+  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX,
     publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6})}, runtime, ROOM, {
     endpoint: 'test', carriers: {connect: async () => session},
     setTimer: callback => {timers.push(callback); return timers.length;}, clearTimer() {},
@@ -1220,7 +1220,7 @@ test('joining with an invitation waits for the owner, then connects with the roo
   assert.equal(runtime.calls.status[0].requestId, runtime.calls.asked.requestId);
   assert.equal(runtime.calls.certify.length, 0, 'no certification at the host');
   assert.deepEqual(runtime.peer.config.cert, {guest: true, device_public_key: Array(32).fill(0xdd)});
-  assert.equal(runtime.peer.room, ROOM);
+  assert.equal(runtime.peer.workspace, ROOM);
   assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
   await peer.dispose();
 });
@@ -1259,7 +1259,7 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
   assert.deepEqual(progress, ['asking', 'admitted']);
   assert.equal(runtime.calls.asked.token, 'one-time-token');
   assert.equal(runtime.calls.status, undefined, 'never polled');
-  assert.equal(runtime.peer.room, ROOM);
+  assert.equal(runtime.peer.workspace, ROOM);
   await peer.dispose();
 });
 
@@ -1288,7 +1288,7 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
   const carriers = fakeCarriers();
   const timers = [];
   const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     sealLive: async (_room, bytes) => bytes,
     openLive: async (_room, bytes) => bytes.slice(1),
   }, runtime, ROOM, {
@@ -1320,7 +1320,7 @@ test('a renewed live session announces the name the person chose since, not the 
   const carriers = fakeCarriers();
   const timers = [];
   const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     sealLive: async (_room, bytes) => bytes,
   }, fakeRuntime(), ROOM, {
     endpoint: 'test', carriers, participant: {kind: 'person', label: 'Ada', color: '#336699', activity: null},
@@ -1344,7 +1344,7 @@ test('a renewed live session announces the name the person chose since, not the 
 test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
   const advertised = [];
   const peerOf = () => ({
-    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    liveGrant: async () => JSON.stringify({token: '0102', workspace: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
     legacyCodecs: async (room, codecs) => { advertised.push([room, JSON.parse(codecs)]); return true; },
   });
   const timers = [];
@@ -1400,7 +1400,7 @@ test('a member opening a link never certifies or renews a device implicitly', as
   await peer.dispose();
 });
 
-test('leaving, cancelling and timing out pending room admission settle browser navigation', async () => {
+test('leaving, cancelling and timing out pending workspace admission settle browser navigation', async () => {
   const runtime = fakeRuntime({phase: 'authenticating'});
   const peer = await connect(options(runtime, memoryStore()));
   const controller = new AbortController();
@@ -1414,7 +1414,7 @@ test('leaving, cancelling and timing out pending room admission settle browser n
 });
 
 
-test('a room’s reports go through the page’s peer in the destination’s room, by its runtime id', async () => {
+test('a workspace’s reports go through the page’s peer in the destination’s workspace, by its runtime id', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
   const named = [];
@@ -1427,7 +1427,7 @@ test('a room’s reports go through the page’s peer in the destination’s roo
   assert.throws(() => peer.sendFeedbackThrough({runtimeId: 9}), /connected peer/);
 });
 
-test('feedback startup waits for owner admission and never joins another room', async () => {
+test('feedback startup waits for owner admission and never joins another workspace', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
   runtime.peer.hasRecord = () => true;
@@ -1443,8 +1443,8 @@ test('feedback startup waits for owner admission and never joins another room', 
   status = 'ready';
   runtime.peer.emit();
   await waiting;
-  assert.equal(runtime.peer.room, ROOM);
-  await assert.rejects(peer.configureFeedback({...destination, room: 'another-room'}), /existing room/);
+  assert.equal(runtime.peer.workspace, ROOM);
+  await assert.rejects(peer.configureFeedback({...destination, room: 'another-room'}), /existing workspace/);
   status = 'owner refused current certified admission';
   await assert.rejects(peer.configureFeedback(destination), /owner refused/);
 });

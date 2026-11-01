@@ -8,15 +8,15 @@
  *   this device as its owner (`workspaces.create`, `enter`); the page then
  *   opens it.
  * - `invite-someone` (also the desktop's own Invite): an invitation to the
- *   room this page is in (`createInvitation`), presented as a link with its
+ *   workspace this page is in (`createInvitation`), presented as a link with its
  *   `invite` secret to copy and send. Whoever opens it asks to join; the
  *   owner lets them in. A public workspace (anyone may join it as a guest)
  *   needs no invitation: inviting copies its own link and says so.
  * - `waiting-to-join`: the people who asked, each to let in or turn away
  *   (`membership.requests`, `admit`, `decline`), for the owner and anyone
  *   else the host lets see who asks (whoever it lets invite). While they
- *   are in the room, each new request is also offered on a banner to let
- *   them in. A room that takes people by invitation also lists the
+ *   are in the workspace, each new request is also offered on a banner to let
+ *   them in. A workspace that takes people by invitation also lists the
  *   addresses people left at its door (`membership.waitList`): each is
  *   answered with an invitation of the inviter's own, a link they send to
  *   that address, made for the entry so it shows as invited and leaves the
@@ -59,8 +59,8 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * The workspace actions of a page whose peer is `peer` (`null` on the
  * person's own desktop). `machines()` lists the origins of the machines
  * this browser set up for the person; `lobby(origin)` connects to one
- * without a room and resolves to that peer. `inviteLink(invitation)` is
- * the room's link carrying it; `open({origin, room, name, hostDevice})` opens
+ * without a workspace and resolves to that peer. `inviteLink(invitation)` is
+ * the workspace's link carrying it; `open({origin, room, name, hostDevice})` opens
  * a workspace, held by the host whose device key is `hostDevice`.
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
@@ -69,7 +69,7 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * to `{people, waitList}`; `invite(entry)` makes the invitation for a
  * wait-list address and has the host mail it, else shares it, resolving to
  * `{mailed, link}`) and `fail(text)`. `publicLink()` is
- * the link anyone joins the room in front with when it is a public
+ * the link anyone joins the workspace in front with when it is a public
  * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
  * host actions to `perform`.
  */
@@ -84,10 +84,10 @@ export function createWorkspaceActions({
   let stop = null;
   const offered = new Set();
   const waiting = new Map();
-  const inRoom = Boolean(peer?.room && peer.createInvitation);
+  const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
   const actions = () => [
     ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
-    ...(inRoom ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
+    ...(inWorkspace ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
     ...(lettingIn ? [WAITING] : []),
   ];
   const refresh = () => mount?.setHostActions?.(actions());
@@ -142,7 +142,7 @@ export function createWorkspaceActions({
   };
 
   const invite = async () => {
-    if (!inRoom) return;
+    if (!inWorkspace) return;
     const open = publicLink();
     if (open) {
       // Anyone may join a public workspace: its link is the invitation, and
@@ -207,17 +207,17 @@ export function createWorkspaceActions({
     async attach(target) {
       mount = target;
       refresh();
-      if (!inRoom) return;
+      if (!inWorkspace) return;
       let owner = false;
       try {
-        const room = await peer.membership.list();
-        workspaceName = room.name;
-        owner = room.members.some(member => member.owner && member.userPublicKey === peer.userPublicKey);
+        const state = await peer.membership.list();
+        workspaceName = state.name;
+        owner = state.members.some(member => member.owner && member.userPublicKey === peer.userPublicKey);
       } catch {
         // The host may keep its member list to the owner.
       }
       // The host shows who asks to join to whoever it lets invite, and
-      // they let in whom they invited: the owner, and members of a room
+      // they let in whom they invited: the owner, and members of a workspace
       // that has its members invite people.
       if (owner || await peer.membership.requests().then(() => true, () => false)) await letPeopleIn();
       else refresh();
@@ -232,7 +232,7 @@ export function createWorkspaceActions({
         if (id === NEW_WORKSPACE.id) await newWorkspace();
         else if (id === INVITE.id) await invite();
         else if (id === WAITING.id && lettingIn) {
-          // The wait list beside them, where the room keeps one: a room
+          // The wait list beside them, where the workspace keeps one: a workspace
           // without one, or a host that keeps it from this person, lists none.
           const load = async () => {
             const [people, waitList] = await Promise.all([peer.membership.requests(), peer.membership.waitList().catch(() => [])]);

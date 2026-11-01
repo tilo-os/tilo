@@ -1,6 +1,6 @@
 /**
  * Other members' legacy (non-Tilo) windows on the mounted desktop. A session
- * streams each legacy window it shares with the room's host (a browser, an
+ * streams each legacy window it shares with the workspace's host (a browser, an
  * office suite: anything that is not a Tilo app) as video, in a codec every
  * member's page decodes (H.264, VP9 or AV1: each page tells the host which,
  * `decodableCodecs`, and a page that never did counts as H.264 only); the host
@@ -71,8 +71,8 @@ const CHUNK_HEADER = 2 + 1 + 4 + 8 + 4;
 const MAX_ENCODED_FRAME_BYTES = 4 * 1024 * 1024;
 const MAX_FRAME_BYTES = 64 * 1024;
 const MAX_STREAMS = 32;
-const MAX_ROOM_STREAMS = 64;
-const MAX_ROOM_PIXELS = 32 * 1024 * 1024;
+const MAX_WORKSPACE_STREAMS = 64;
+const MAX_WORKSPACE_PIXELS = 32 * 1024 * 1024;
 // Four seconds of physical mixed-case typing can exceed 128 events while an
 // HTTPS send is pending. Keep eight wire batches, still bounded by 128 KiB.
 const MAX_INPUT_BACKLOG = 512;
@@ -91,7 +91,7 @@ export const RESYNC_QUIET_MS = 500;
 /** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
 const MAX_INPUT_EVENTS = 64;
 // Native input permits 120 offered events per second. A 32-event burst plus
-// 80 events/second of catch-up stays below that fence, with room for focus.
+// 80 events/second of catch-up stays below that fence, with workspace for focus.
 const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
 const INPUT_EVENTS_PER_SECOND = 80;
 /** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
@@ -334,7 +334,7 @@ function defaultCancelFrame(handle) {
 /**
  * Bind the legacy-window layer to a mounted desktop surface.
  *
- * - `live()`: the room's live layer (`peer.mjs`), or undefined.
+ * - `live()`: the workspace's live layer (`peer.mjs`), or undefined.
  * - `windows()`: `[{key, rect: [x0, y0, x1, y1], focused}]`, where the
  *   desktop shows each stream's window and whether it is the focused one
  *   (`desktop_peer_windows`), or undefined. A window the desktop focuses
@@ -427,7 +427,7 @@ export function createLegacyWindows({
     if (existing && isVideo(existing.stream.codec) === isVideo(stream.codec)) { existing.stream = stream; return; }
     if (existing) removeStream(key);
     const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
-    if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
+    if (streams.size >= MAX_WORKSPACE_STREAMS || pixels + stream.width * stream.height > MAX_WORKSPACE_PIXELS) return;
     if (stream.codec === PAINT_CODEC) {
       // Drawn by the runtime inside the desktop: no canvas, no decoder.
       const entry = {publisher, stream, paint: true, reassembler: createReassembler(), visible: false, rect: '', control: false,
@@ -734,7 +734,7 @@ export function createLegacyWindows({
       const {canvas} = entry;
       const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry || !other.canvas ? 0 : other.canvas.width * other.canvas.height), 0);
       if (picture.displayWidth <= 0 || picture.displayHeight <= 0 || picture.displayWidth > 8192 || picture.displayHeight > 8192
-        || pixels + picture.displayWidth * picture.displayHeight > MAX_ROOM_PIXELS) return;
+        || pixels + picture.displayWidth * picture.displayHeight > MAX_WORKSPACE_PIXELS) return;
       if (canvas.width !== picture.displayWidth || canvas.height !== picture.displayHeight) {
         canvas.width = picture.displayWidth;
         canvas.height = picture.displayHeight;
@@ -773,7 +773,7 @@ export function createLegacyWindows({
     const value = decodeFrame(bytes);
     if (value?.kind !== 'index') return;
     stats.indexes++;
-    if (!indexed.has(publisher) && indexed.size >= MAX_ROOM_STREAMS) return;
+    if (!indexed.has(publisher) && indexed.size >= MAX_WORKSPACE_STREAMS) return;
     indexed.set(publisher, now());
     const listed = new Set();
     for (const stream of value.streams) {

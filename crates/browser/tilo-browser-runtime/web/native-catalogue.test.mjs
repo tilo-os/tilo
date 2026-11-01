@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createNativeCatalogueBridge, invokeRoomMembership, roomGovernanceResource, runRoomAction} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeMembershipAction, governanceResource, runRecordAction} from './native-catalogue.mjs';
 /** The shared hang bound: a wait this long means the code under test is stuck. */
 const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 async function until(check,what){
@@ -11,7 +11,7 @@ async function until(check,what){
   }
 }
 
-test('the desktop asks the room host to run a room record action by its app and action alone', async () => {
+test('the desktop asks the workspace host to run a workspace record action by its app and action alone', async () => {
   const calls = [];
   const connection = {invoke(target, argument) {
     calls.push({target, argument});
@@ -20,13 +20,13 @@ test('the desktop asks the room host to run a room record action by its app and 
       : {state: 'failed', error: {code: 'unknown_action', message: 'no such action'}};
     return {done: Promise.resolve({terminal: true, update}), status: async () => ({terminal: true, update})};
   }};
-  assert.deepEqual(await runRoomAction(connection, {id: 1, app: 'so.tilo.discord', action: 'link-account', arguments: {}}),
+  assert.deepEqual(await runRecordAction(connection, {id: 1, app: 'so.tilo.discord', action: 'link-account', arguments: {}}),
     {ok: {code: 'ABCDEFGHJKLM'}});
   assert.deepEqual(calls[0], {target: {provider: 'record:so.tilo.discord:', address: {resource: '', action: 'link-account'}}, argument: 'None'});
-  assert.deepEqual(await runRoomAction(connection, {id: 2, app: 'so.tilo.chat', action: 'my-link', arguments: {}}),
+  assert.deepEqual(await runRecordAction(connection, {id: 2, app: 'so.tilo.chat', action: 'my-link', arguments: {}}),
     {error: 'no such action'});
-  assert.deepEqual(await runRoomAction(undefined, {id: 3, app: 'so.tilo.discord', action: 'my-link'}),
-    {error: 'this page reaches no room host'});
+  assert.deepEqual(await runRecordAction(undefined, {id: 3, app: 'so.tilo.discord', action: 'my-link'}),
+    {error: 'this page reaches no workspace host'});
 });
 
 test('native requests preserve their correlation and exact query through the certified catalogue', async () => {
@@ -82,7 +82,7 @@ test('runtime delivery failure is reported and releases the pending slot', async
   bridge.dispose();
 });
 
-test('an app\'s ban becomes the room\'s membership request and answers with a receipt', async () => {
+test('an app\'s ban becomes the workspace\'s membership request and answers with a receipt', async () => {
   const replies = [], calls = [];
   const invocation = '00000000-0000-4000-8000-000000000001';
   const target = action => ({provider:'tilo.workspace', address:{resource:'workspace.permissions:r', action}});
@@ -97,7 +97,7 @@ test('an app\'s ban becomes the room\'s membership request and answers with a re
   await new Promise(done=>setImmediate(done));
   assert.deepEqual(calls, ['bb'.repeat(32)]);
   assert.deepEqual(replies[0], {Receipt:{invocation:'other', status:{Rejected:{error:{Unavailable:{
-    reason:'Only the room\'s host runs another app\'s actions here'}}}}}});
+    reason:'Only the workspace\'s host runs another app\'s actions here'}}}}}});
   assert.deepEqual(replies[1], {Receipt:{invocation, status:{Completed:{output:{}}}}});
   rooms.ban = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
   requests.push({Invoke:{invocation, target:target('ban'), argument:{Json:{person:'cc'.repeat(32)}}}});
@@ -107,7 +107,7 @@ test('an app\'s ban becomes the room\'s membership request and answers with a re
   bridge.dispose();
 });
 
-test('an app\'s share-link asks the room\'s host as the person and answers with the link', async () => {
+test('an app\'s share-link asks the workspace\'s host as the person and answers with the link', async () => {
   const replies = [], asked = [];
   const invocation = '00000000-0000-4000-8000-000000000002';
   const target = {provider:'record:so.tilo.notes:', address:{resource:'notes.page:1', action:'share-link'}};
@@ -127,7 +127,7 @@ test('an app\'s share-link asks the room\'s host as the person and answers with 
   bridge.dispose();
 });
 
-test('any action the room\'s host runs goes to it with the person\'s answer, and its refusal comes back', async () => {
+test('any action the workspace\'s host runs goes to it with the person\'s answer, and its refusal comes back', async () => {
   const replies = [], asked = [];
   const archive = '00000000-0000-4000-8000-000000000003';
   const open = '00000000-0000-4000-8000-000000000004';
@@ -159,7 +159,7 @@ test('any action the room\'s host runs goes to it with the person\'s answer, and
   bridge.dispose();
 });
 
-test('the page removes someone through its own door: the room\'s membership request, on confirmation only', async () => {
+test('the page removes someone through its own door: the workspace\'s membership request, on confirmation only', async () => {
   const calls = [];
   const room = 'r1';
   const person = 'bb'.repeat(32);
@@ -167,15 +167,15 @@ test('the page removes someone through its own door: the room\'s membership requ
     remove: async who => { calls.push(['remove', who]); return {room, members: [{userPublicKey: who, removed: true}]}; },
     unban: async who => { calls.push(['unban', who]); return {room, members: []}; },
   };
-  const invoke = (action, args, options = {}) => invokeRoomMembership({membership, room,
-    resource: roomGovernanceResource(room), action, args, ...options});
-  // Not the room's membership: the application's door answers.
-  assert.equal(invokeRoomMembership({membership, room, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
-  assert.equal(invokeRoomMembership({membership, room, resource: roomGovernanceResource('r2'), action: 'remove-member', args: {person}}),
+  const invoke = (action, args, options = {}) => invokeMembershipAction({membership, workspace: room,
+    resource: governanceResource(room), action, args, ...options});
+  // Not the workspace's membership: the application's door answers.
+  assert.equal(invokeMembershipAction({membership, workspace: room, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
+  assert.equal(invokeMembershipAction({membership, workspace: room, resource: governanceResource('r2'), action: 'remove-member', args: {person}}),
     undefined, 'another room\'s governance');
   assert.equal(invoke('invite', {}), undefined, 'a verb the page does not take here');
   assert.equal(invoke('constructor', {person}), undefined, 'an inherited name is no verb');
-  assert.equal(invokeRoomMembership({membership, room: undefined, resource: roomGovernanceResource(undefined),
+  assert.equal(invokeMembershipAction({membership, workspace: undefined, resource: governanceResource(undefined),
     action: 'remove-member', args: {person}}), undefined, 'a peer in no room');
   // Removing someone asks first, and is the host's to decide.
   await assert.rejects(invoke('remove-member', {person}), /^Error: action_confirmation_required: /);
@@ -190,6 +190,6 @@ test('the page removes someone through its own door: the room\'s membership requ
   membership.remove = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
   await assert.rejects(invoke('remove-member', {person}, {confirm: true}),
     {message: 'action_failed: a Moderator cannot do this to a Moderator'});
-  await assert.rejects(invokeRoomMembership({membership: undefined, room, resource: roomGovernanceResource(room),
+  await assert.rejects(invokeMembershipAction({membership: undefined, workspace: room, resource: governanceResource(room),
     action: 'remove-member', args: {person}, confirm: true}), /^Error: action_unavailable: /);
 });

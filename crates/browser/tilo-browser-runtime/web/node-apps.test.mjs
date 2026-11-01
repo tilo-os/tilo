@@ -36,7 +36,7 @@ test('the node session lists its apps and opens the one the person picks', async
   let pendingAsks = 0;
   let requests = [];
   const nodeApps = createNodeApps({
-    room: ROOM,
+    workspace: ROOM,
     nodeSession: async () => 'ab'.repeat(32),
     actions: device => ({
       catalogue: async query => { queries.push({device, query}); return {rows: [row('app.host:chromium-browser', 'Chromium'), row('app.so.tilo.terminal', 'Terminal', 'applications.app')], exhausted: true}; },
@@ -76,7 +76,7 @@ test('the node session lists its apps and opens the one the person picks', async
 test('a host that runs no session lists nothing', async () => {
   const listed = [];
   const nodeApps = createNodeApps({
-    room: ROOM, nodeSession: async () => null, actions: () => { throw new Error('never asked'); },
+    workspace: ROOM, nodeSession: async () => null, actions: () => { throw new Error('never asked'); },
     setApps: apps => listed.push(apps), takeRequests: () => [],
     setInterval: () => 0, clearInterval: () => {},
   });

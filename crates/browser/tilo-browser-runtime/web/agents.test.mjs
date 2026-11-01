@@ -42,7 +42,7 @@ function manualTimers() {
 
 function agentsWith(peer, extra = {}) {
   let id = 0;
-  const agents = createAgents({peer, room: ROOM, hostDevice: HOST, userPublicKey: USER, newId: () => `inv-${++id}`, ...extra});
+  const agents = createAgents({peer, workspace: ROOM, hostDevice: HOST, userPublicKey: USER, newId: () => `inv-${++id}`, ...extra});
   const pumping = setInterval(() => agents.pump(), 1);
   return {agents, stop: () => clearInterval(pumping)};
 }
@@ -140,7 +140,7 @@ test('agent cursors come from presence that says agent; delegations verify in wa
       return JSON.stringify({agentId: 'writer', device: AGENT, label: 'Writer helper', rooms: [ROOM], apps: []});
     },
   };
-  const agents = createAgents({peer: fakePeer(() => undefined), runtime, room: ROOM, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
+  const agents = createAgents({peer: fakePeer(() => undefined), runtime, workspace: ROOM, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
   assert.deepEqual(agents.cursors(), [{
     device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
     focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,

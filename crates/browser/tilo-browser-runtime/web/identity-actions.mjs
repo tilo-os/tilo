@@ -26,7 +26,7 @@
  * - `set-photo` / `reset-photo`: the picture others see beside the name,
  *   chosen from an image file (`profile-photos.mjs`), or back to initials.
  *   Kept in the profile with the name, so it follows the person too.
- * - `set-linked`: the accounts elsewhere a room linked to the person, as
+ * - `set-linked`: the accounts elsewhere a workspace linked to the person, as
  *   its host answered (`{accounts, keep: true}`), or as the kept profile
  *   says (`{photoFrom, linked, keep: false}`). The profile names them, and
  *   wears an account's picture (Discord's avatar) until the person uploads
@@ -193,7 +193,7 @@ export function createIdentityActions({
     for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
     if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
   };
-  // The room's host said which accounts are linked (`[{service, handle,
+  // The workspace's host said which accounts are linked (`[{service, handle,
   // picture?}]`): the profile names them, and wears an account's picture
   // unless the person uploaded their own; an unlinked account's goes.
   const keepLinked = async accounts => {
