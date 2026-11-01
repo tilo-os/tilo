@@ -391,9 +391,7 @@ fn resident_mib(pid: u32) -> f64 {
 fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     let started = Instant::now();
     let desktop = Desktop::start();
-    desktop.wait_for("the restored Notes notebook", |targets| {
-        targets.iter().any(|name| name == "notes.first_note")
-    });
+    desktop.wait_for_app_window("so.tilo.notes");
     // Startup: from launching the compositor to its restored desktop
     // answering with the Notes tab it reopened.
     let startup = started.elapsed();
