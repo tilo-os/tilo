@@ -73,6 +73,43 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     assert!(report.new_findings().next().is_some(), "the check fails");
 }
 
+/// A view whose body is one `layers` is the window's Layers: its row at the foot covers the
+/// content under it on purpose, which is no overlap. The column's pane the window reconciles
+/// the view in reads as what it holds, so the check sees the layers and not a box of its own;
+/// and two layers overlap only where the text of one lies over the other's, not wherever a
+/// box holding text covers another.
+#[test]
+fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/layered")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.findings.is_empty(),
+        "the row over the content is where the view put it:\n{}",
+        layout_check::render(&report)
+    );
+}
+
+/// A desk bounded by its window: a middle longer than the window scrolls between the bar and
+/// the dock (a filled share takes no more than its share, in a stack and in layers), and a dock
+/// holding more than the window is wide is as wide as the window, its items scrolling along it
+/// (a chrome body narrows to the room it has).
+#[test]
+fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/bounded")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.findings.is_empty(),
+        "the middle and the dock scroll inside the window:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()

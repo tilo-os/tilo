@@ -68,6 +68,8 @@ pub struct Container {
     readable: bool,
     /// See [`Container::hug`].
     hug: bool,
+    /// See [`Container::narrows`].
+    narrows: bool,
     /// See [`Container::with_inset`].
     inset: Option<crate::tokens::Rhythm>,
     /// Pressing the container activates it; it lifts under the pointer.
@@ -117,6 +119,7 @@ impl Container {
             leading: false,
             readable: false,
             hug: false,
+            narrows: false,
             inset: None,
             activation: crate::widget::activation::Activation::default(),
             bleed: (0.0, 0.0),
@@ -285,6 +288,16 @@ impl Container {
     #[must_use]
     pub fn centered(mut self) -> Self {
         self.leading = false;
+        self
+    }
+
+    /// Never wider than the row it stands in: in a row too narrow for its content it narrows
+    /// to the room there is, and what it holds scrolls or gives way inside it (a dock along an
+    /// edge holding more than the edge has room for). Its height still never squashes below
+    /// its content's.
+    #[must_use]
+    pub fn narrows(mut self) -> Self {
+        self.narrows = true;
         self
     }
 
@@ -498,7 +511,9 @@ impl Widget for Container {
         };
         let style = Style {
             display: taffy::Display::Flex,
-            flex_shrink: 0.0, // Prevent vertical squashing
+            // Prevent vertical squashing; a narrowing container shrinks along a row, its
+            // automatic minimum height keeping a column from squashing it.
+            flex_shrink: if self.narrows { 1.0 } else { 0.0 },
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
             flex_grow: self.flex_grow,
@@ -510,13 +525,22 @@ impl Widget for Container {
             padding: super::layout::insets_all(pad),
             size: taffy::Size { width, height },
             min_size: taffy::Size {
-                width: self.min_width.map_or(taffy::Dimension::auto(), length),
+                width: match self.min_width {
+                    Some(px) => length(px),
+                    None if self.narrows => length(0.0_f32),
+                    None => taffy::Dimension::auto(),
+                },
                 height: self.min_height.map_or(taffy::Dimension::auto(), |size| {
                     length(crate::num::f32_of_f64(size.height(theme)))
                 }),
             },
             max_size: taffy::Size {
-                width: max_width.map_or(taffy::Dimension::auto(), length),
+                width: match max_width {
+                    Some(px) => length(px),
+                    // A hugging body is as wide as its content only up to the room it has.
+                    None if self.narrows => percent(1.0_f32),
+                    None => taffy::Dimension::auto(),
+                },
                 height: taffy::Dimension::auto(),
             },
             // A hugging container takes its content's width in a stretching

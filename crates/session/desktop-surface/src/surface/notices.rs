@@ -148,7 +148,10 @@ impl NotificationHost for NoticeState {
         // centre goes from the centre. Either way it is dismissed.
         let (from_banner, from_history) = {
             let mut log = self.log.borrow_mut();
-            (log.take_active(id).is_some(), log.take_history(id).is_some())
+            (
+                log.take_active(id).is_some(),
+                log.take_history(id).is_some(),
+            )
         };
         if from_banner || from_history {
             self.outcome(NotificationOutcome::Dismissed { id });
@@ -388,6 +391,12 @@ impl DesktopNotifications {
         if had {
             self.log.touch();
         }
+    }
+
+    /// Whether the notification `id` is one the person has not seen: what the centre's
+    /// unread mark on its row says, and the same set the bell counts.
+    pub fn is_unread(&self, id: u64) -> bool {
+        self.log.unread.borrow().contains(&id)
     }
 
     /// Banners on screen and notifications retained in the centre.
@@ -1145,9 +1154,23 @@ mod tests {
     fn notifications_stay_unread_until_the_centre_opens() {
         let (mut layer, notifications) = layer_with(2);
         assert_eq!(notifications.unread(), 2);
+        // Each row says whether it is news, by the same set the bell counts: the centre's
+        // rows and its header never disagree.
+        let ids: Vec<u64> = notifications
+            .log()
+            .history()
+            .iter()
+            .chain(notifications.log().active())
+            .map(|notification| notification.id)
+            .collect();
+        assert!(ids.iter().all(|id| notifications.is_unread(*id)));
         let revision = notifications.revision();
         layer.set_center_open(true);
         assert_eq!(notifications.unread(), 0, "opening the centre reads them");
+        assert!(
+            ids.iter().all(|id| !notifications.is_unread(*id)),
+            "every row is read once the centre opened"
+        );
         assert_ne!(notifications.revision(), revision, "the bell repaints");
         layer.set_center_open(false);
         let fresh = notifications.post(Notification::new("Grace renamed it", ""));

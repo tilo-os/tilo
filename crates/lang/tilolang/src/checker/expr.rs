@@ -793,6 +793,18 @@ impl Checker<'_> {
                 {
                     return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
                 }
+                // `host.Resource`: any resource at all, whose fields depend on what it is.
+                if key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME {
+                    self.err(
+                        "E021",
+                        name.span,
+                        format!(
+                            "`{}` is a resource of whatever type, so its fields depend on what it is; read its own type's fields inside `if let` on the type, or pass it to a view that takes one",
+                            name.name
+                        ),
+                    );
+                    return Ex::error();
+                }
                 let env = self.env;
                 let Some(info) = env.type_info(&key) else {
                     return Ex::error();
