@@ -142,14 +142,15 @@ fn opened(app: &str, records: &RecordStore, scratch: &Scratch) -> Workspace {
         .window
         .host()
         .expect("the window opens over the kept indexes");
-    let kept: Vec<String> = std::fs::read_dir(scratch.indexes().join("rooms").join(KEPT_WORKSPACE))
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let kept: Vec<String> =
+        std::fs::read_dir(scratch.indexes().join("workspaces").join(KEPT_WORKSPACE))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
     assert!(
         host.index_ready(),
         "the indexes the earlier window kept are read from: {kept:?}"
