@@ -289,7 +289,7 @@ mod tests {
     fn registry_before_the_authority_was_dropped() -> Vec<u8> {
         let text = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/registry_with_retired_records.postcard.hex"
+            "/../fixtures/registry_with_retired_records.postcard.hex"
         ));
         hex::decode(text.trim()).expect("the fixture is hex")
     }

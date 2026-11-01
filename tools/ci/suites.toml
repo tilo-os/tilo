@@ -1392,6 +1392,9 @@ inputs = [
   "docs/architecture/dictation-whistle-aot-review.json",
   "docs/architecture/dictation-whistle-aot-image.json",
   "docs/architecture/dictation-whistle-aot-image-120s.json",
+  # The registry the session and the shell both decode, as builds that kept
+  # lifecycle records wrote it.
+  "crates/session/fixtures/",
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
@@ -1417,6 +1420,7 @@ readers = [
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
   "crates/session/shell/src/shell/settings_records.rs",
+  "crates/session/shell/src/shell/mls_vault.rs",
 ]
 
 
@@ -1430,10 +1434,13 @@ inputs = [
   "apps/tl/shell/",
   "os/usr/lib/systemd/system/shell-firstboot.service",
   "os/components.toml",
+  # The registry both vaults decode, as builds that kept lifecycle records wrote it.
+  "crates/session/fixtures/",
 ]
 readers = [
   "crates/session/session/src/shell.rs",
   "crates/session/session/tests/firstboot.rs",
+  "crates/session/session/src/channels/vault.rs",
 ]
 
 [[cargo]]
