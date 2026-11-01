@@ -698,7 +698,7 @@ fn action_authority_context(
         standing = standing.on_foreign_device();
     }
     Ok(PermissionContext::new(
-        crate::permissions::Actor::person(person.0.clone()).in_room(room),
+        crate::permissions::Actor::person(person.0.clone()).in_workspace(room),
         Vec::new(),
         standing,
     ))

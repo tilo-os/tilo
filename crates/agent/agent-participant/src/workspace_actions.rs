@@ -125,7 +125,7 @@ impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
             ui::permissions::Actor::person(self.standing.person.clone())
-                .in_room(self.workspace.clone()),
+                .in_workspace(self.workspace.clone()),
             self.sandbox.clone(),
             self.standing.clone(),
         )

@@ -2,7 +2,7 @@
 //!
 //! Startup order is what keeps the tree safe to use:
 //!
-//! 1. the room's subvolume on the store volume exists;
+//! 1. the workspace's subvolume on the store volume exists;
 //! 2. the pre-content group starts, and every placeholder left by an
 //!    earlier run is re-adopted from its residency xattr — a placeholder
 //!    read without the daemon holding its mark returns zeros, so none may
@@ -11,7 +11,7 @@
 //! 4. the first epoch is cut: from the persisted epoch when there is one
 //!    (a comparison by inode metadata finds what changed while nothing was
 //!    journaling), else from scratch;
-//! 5. only then is the room bind-mounted at the workspace path.
+//! 5. only then is the workspace bind-mounted at its path.
 //!
 //! Stopping reverses it: the bind goes first, pending changes are cut into
 //! a last epoch, held leases are released, and the pre-content group
@@ -67,13 +67,13 @@ const MARK_STALE: Duration = Duration::from_secs(30);
 pub struct NativeConfig {
     /// Root of the dedicated store volume.
     pub store: PathBuf,
-    /// Room (workspace) id: the name of its subvolume under `live/`.
-    pub room: String,
-    /// Where the room is bind-mounted (`/var/workspace`).
+    /// Workspace id: the name of its subvolume under `live/`.
+    pub workspace: String,
+    /// Where the workspace is bind-mounted (`/var/workspace`).
     pub mount_point: PathBuf,
     /// Directory holding `meta.redb`.
     pub state_dir: PathBuf,
-    /// Owner of materialised files; `None` takes the room directory's.
+    /// Owner of materialised files; `None` takes the workspace directory's.
     pub owner: Option<(u32, u32)>,
     /// This device's key, as leases name their holder.
     pub device: [u8; 32],
@@ -81,21 +81,21 @@ pub struct NativeConfig {
     pub eager_bytes: u64,
     pub scheduler: EpochScheduler,
     pub leases: LeaseTiming,
-    /// Arbitrate the room's write leases (its always-on host).
+    /// Arbitrate the workspace's write leases (its always-on host).
     pub lease_authority: bool,
 }
 
 impl NativeConfig {
     pub fn new(
         store: PathBuf,
-        room: String,
+        workspace: String,
         mount_point: PathBuf,
         state_dir: PathBuf,
         device: [u8; 32],
     ) -> Self {
         Self {
             store,
-            room,
+            workspace,
             mount_point,
             state_dir,
             owner: None,
@@ -266,7 +266,7 @@ struct Engine {
 }
 
 impl NativePlane {
-    /// Sets the plane up and exposes the tree. Returns once the room is
+    /// Sets the plane up and exposes the tree. Returns once the workspace is
     /// bind-mounted at the workspace path.
     pub fn start(
         cfg: NativeConfig,
@@ -363,8 +363,8 @@ impl Engine {
         status: Arc<Mutex<PlaneStatus>>,
     ) -> Result<Self> {
         let layout = StoreLayout::new(&cfg.store);
-        let (live, owner) = prepare_room(&layout, &cfg)?;
-        let epochs = layout.epochs().join(&cfg.room);
+        let (live, owner) = prepare_workspace(&layout, &cfg)?;
+        let epochs = layout.epochs().join(&cfg.workspace);
         std::fs::create_dir_all(&epochs)?;
         std::fs::create_dir_all(&cfg.state_dir)?;
         let state = NativeState::open(&cfg.state_dir.join("meta.redb"))?;
@@ -1234,7 +1234,7 @@ impl Engine {
     }
 }
 
-/// Deletes capture snapshots of this room other than `keep`: leftovers of a
+/// Deletes capture snapshots of this workspace other than `keep`: leftovers of a
 /// run that stopped between cutting an epoch and persisting it.
 fn remove_other_snapshots(epochs: &Path, keep: Option<&Path>) {
     let Ok(entries) = std::fs::read_dir(epochs) else {
@@ -1251,16 +1251,23 @@ fn remove_other_snapshots(epochs: &Path, keep: Option<&Path>) {
     }
 }
 
-/// Creates the room's subvolume if needed and decides who owns what the
-/// daemon materialises: the configured owner, else the room directory's
-/// (a new room takes the workspace mount point's owner).
-fn prepare_room(layout: &StoreLayout, cfg: &NativeConfig) -> Result<(PathBuf, Option<(u32, u32)>)> {
-    let fresh_room = !layout.room(&cfg.room).exists();
-    let live = layout
-        .ensure_room(&cfg.room)
-        .with_context(|| format!("creating room {} on {}", cfg.room, cfg.store.display()))?;
+/// Creates the workspace's subvolume if needed and decides who owns what the
+/// daemon materialises: the configured owner, else the workspace directory's
+/// (a new workspace takes the mount point's owner).
+fn prepare_workspace(
+    layout: &StoreLayout,
+    cfg: &NativeConfig,
+) -> Result<(PathBuf, Option<(u32, u32)>)> {
+    let fresh_workspace = !layout.workspace(&cfg.workspace).exists();
+    let live = layout.ensure_workspace(&cfg.workspace).with_context(|| {
+        format!(
+            "creating workspace {} on {}",
+            cfg.workspace,
+            cfg.store.display()
+        )
+    })?;
     let owner_of = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.uid(), m.gid()));
-    if fresh_room && let Some((uid, gid)) = cfg.owner.or_else(|| owner_of(&cfg.mount_point)) {
+    if fresh_workspace && let Some((uid, gid)) = cfg.owner.or_else(|| owner_of(&cfg.mount_point)) {
         std::os::unix::fs::chown(&live, Some(uid), Some(gid))?;
     }
     let owner = cfg.owner.or_else(|| owner_of(&live));

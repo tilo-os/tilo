@@ -7,16 +7,16 @@
 //! # Reachability
 //!
 //! Possessing a hash never grants access. A blob is readable through an app's
-//! capability only while this device's index records the app's room as
+//! capability only while this device's index records the app's workspace as
 //! referencing it, which happens when the bytes were put on this device for
-//! that room: by an app in the room, or by the session for a record of the
-//! room whose content arrived from another of the record's devices. That
+//! that workspace: by an app in it, or by the session for a record of the
+//! workspace whose content arrived from another of the record's devices. That
 //! exchange is the collaboration broker's — content travels on the record's
 //! route (`tilo_action_broker::record_content`), never between daemons.
 //!
 //! A host can also offer an explicit owner action through
 //! [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
-//! room references, without claiming historical ownership. That host-only
+//! workspace references, without claiming historical ownership. That host-only
 //! authority is not exposed on the ordinary blob capability or socket.
 //!
 //! Reachability is per room, not per app, because apps in a room hand content
@@ -202,7 +202,7 @@ impl DocumentMedia {
     /// importing each piece as it comes, so the daemon never holds the whole
     /// content, and never caching it: media is read back by range. As for
     /// [`Self::store`], all of it is hashed and imported before answering,
-    /// and the room's reference is recorded only once the content is
+    /// and the workspace's reference is recorded only once the content is
     /// durable. Returns the content's hash and length.
     ///
     /// # Errors

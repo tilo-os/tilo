@@ -524,7 +524,7 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
     // that presents no such room.
     {
         let room_cap = CapOverride::new(
-            Subject::room("another-room"),
+            Subject::workspace("another-room"),
             Scope::FsPath("/w/docs".into()),
             Effect::Grant,
             CapAccess::Write,

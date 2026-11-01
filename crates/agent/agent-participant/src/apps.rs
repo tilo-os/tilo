@@ -994,7 +994,7 @@ fn replica_standing(
             sandbox,
             unix_time,
         } => PermissionContext::new(
-            ui::permissions::Actor::person(standing.person.clone()).in_room(workspace),
+            ui::permissions::Actor::person(standing.person.clone()).in_workspace(workspace),
             sandbox,
             standing,
         )

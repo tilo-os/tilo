@@ -2094,7 +2094,7 @@ pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> 
             "workspace-settings-granted-by-token",
             &[("id", short_id(id).into())],
         ),
-        Principal::Room(id) => t_args(
+        Principal::Workspace(id) => t_args(
             "workspace-settings-granted-by-workspace",
             &[("id", short_id(id).into())],
         ),
@@ -3736,7 +3736,7 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
                 &[("id", short_id(id).into())],
             ),
         },
-        Subject::Principal(Principal::Room(id)) => GrantSubject {
+        Subject::Principal(Principal::Workspace(id)) => GrantSubject {
             kind: SubjectKind::Other,
             id: t_args(
                 "workspace-settings-subject-workspace",

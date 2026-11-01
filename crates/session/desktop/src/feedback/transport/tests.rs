@@ -33,7 +33,7 @@ fn enrollment() -> Enrollment {
 /// `person`, holding no role in the workspace.
 fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
-        Actor::person(person).in_room(ROOM),
+        Actor::person(person).in_workspace(ROOM),
         vec![],
         ui::permissions::Standing::person(
             policy::WorkspacePolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),

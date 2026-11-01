@@ -114,17 +114,18 @@ impl LegacyImportAuthority for Authority {
         anyhow::ensure!(
             owner_revision(
                 self.workspace.as_ref(),
-                &request.destination_room,
+                &request.destination_workspace,
                 &approval.account
             )? == approval.authority_revision,
             "legacy import destination authority changed"
         );
         // Reads current enrollment and fleet revocations, not startup's snapshot.
         let (_, cert) =
-            tilo_identity_host::broker::trusted_current_device(&request.destination_room)?;
-        let selected =
-            tilo_identity_host::registry::selected_identity_profile(&request.destination_room)?
-                .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
+            tilo_identity_host::broker::trusted_current_device(&request.destination_workspace)?;
+        let selected = tilo_identity_host::registry::selected_identity_profile(
+            &request.destination_workspace,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
         anyhow::ensure!(
             cert.device_public_key == self.device && selected.principal_id() == approval.account,
             "legacy import enrollment changed"
@@ -174,8 +175,8 @@ impl WorkspaceGovernanceServices for MediaImport {
             input: tilo_actions::door::InputSpec::None,
             params: vec![
                 ActionParam::required("source_store", ParamType::Text, "Host-configured source: runtime-profile-content").with_choices([SOURCE]),
-                ActionParam::required("source_room", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
-                ActionParam::required("destination_room", ParamType::Text, "This runtime's owned room"),
+                ActionParam::required("source_workspace", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
+                ActionParam::required("destination_workspace", ParamType::Text, "This runtime's owned workspace"),
                 ActionParam::required("hashes", ParamType::Array, "Exact unique lowercase blake3 hashes; 1 to 128")
                     .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})),
                 ActionParam::required("max_bytes", ParamType::Integer, "Total byte ceiling; 1 to 268435456")
@@ -252,7 +253,7 @@ impl MediaImport {
         anyhow::ensure!(argument.len() <= 32 * 1024, "legacy import argument limit");
         let request: LegacyImportRequest = serde_json::from_str(argument)?;
         anyhow::ensure!(
-            request.destination_room == invocation.workspace
+            request.destination_workspace == invocation.workspace
                 && invocation.workspace == self.workspace.room(),
             "legacy import destination is not this runtime's owned room"
         );

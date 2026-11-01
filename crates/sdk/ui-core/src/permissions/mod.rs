@@ -303,7 +303,7 @@ impl PermissionContext {
             policy
         };
         Self::new(
-            Actor::person(person.clone()).in_room(room),
+            Actor::person(person.clone()).in_workspace(room),
             Vec::new(),
             Standing::person(policy, person),
         )
@@ -314,7 +314,7 @@ impl PermissionContext {
     #[must_use]
     pub fn from_standing(room: &str, standing: Standing) -> Self {
         Self::new(
-            Actor::person(standing.person.clone()).in_room(room),
+            Actor::person(standing.person.clone()).in_workspace(room),
             Vec::new(),
             standing,
         )
@@ -324,7 +324,7 @@ impl PermissionContext {
     pub fn stranger(person: impl Into<String>) -> Self {
         let person = person.into();
         Self::new(
-            Actor::person(person.clone()).in_room(LOCAL_ROOM),
+            Actor::person(person.clone()).in_workspace(LOCAL_ROOM),
             Vec::new(),
             Standing::person(
                 policy::WorkspacePolicy::unowned(LOCAL_ROOM, &policy::Subject::Role(Role::Owner)),
