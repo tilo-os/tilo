@@ -350,7 +350,15 @@ impl PowerLink {
             power_key: policy.power_key_action,
             held_awake: self.suspend_held(),
             holds: self.hold_reasons(),
+            profile: self.inner.bridge.active_profile(),
+            profiles: self.inner.bridge.profiles(),
         }
+    }
+
+    /// Switch to the power profile `profile` names, one of the profiles
+    /// [`Self::sleep`] offers.
+    pub fn set_profile(&self, profile: &str) {
+        self.inner.bridge.set_profile(profile);
     }
 }
 

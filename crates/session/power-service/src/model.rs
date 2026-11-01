@@ -61,4 +61,11 @@ pub struct Sleep {
     pub held_awake: bool,
     /// Why, in the holders' words.
     pub holds: Vec<String>,
+    /// The power profile in force, by the name this machine gives it; absent
+    /// where it offers none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// The profiles this machine offers, in its own order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
 }
