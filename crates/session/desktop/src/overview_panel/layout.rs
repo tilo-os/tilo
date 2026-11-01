@@ -14,12 +14,12 @@ use vello::kurbo::{Point, Rect, Size};
 use vello::peniko::Color;
 
 use super::OverviewPanel;
-use crate::overview::RoomCard;
+use crate::overview::WorkspaceCard;
 use crate::overview_picture::{GridMetrics, StripPlace, band_height, layout_strips};
 use crate::window_switcher::{PreviewSource, SwitcherWindow, WindowAddress};
 
 /// Most share rows drawn before the rest collapse into "and N more": the
-/// panel says whether things leave this room, the permissions pane has the
+/// panel says whether things leave this workspace, the permissions pane has the
 /// full list.
 pub(super) const SHARES_MAX_ROWS: usize = 4;
 
@@ -68,7 +68,7 @@ pub(super) struct Metrics {
     pub section_gap: f64,
     pub panel_radius: f64,
     pub row_radius: f64,
-    /// Line height of the current room's name; faces centre on it.
+    /// Line height of the current workspace's name; faces centre on it.
     pub name_lh: f64,
     /// The "you are here" block: the name line, `s1`, the access line and
     /// `s6` of air.
@@ -257,18 +257,18 @@ impl OverviewPanel {
         self.bump();
     }
 
-    /// The room this session is in, by its place among the cards.
+    /// The workspace this session is in, by its place among the cards.
     pub(super) fn here_index(&self) -> Option<usize> {
         self.desk.cards.iter().position(|card| card.is_current)
     }
 
-    pub(super) fn here_card(&self) -> Option<&RoomCard> {
+    pub(super) fn here_card(&self) -> Option<&WorkspaceCard> {
         self.desk.cards.iter().find(|card| card.is_current)
     }
 
     /// How many share rows the "shared out of here" list draws: none when
-    /// the room shares nothing.
-    pub(super) fn share_rows(card: &RoomCard) -> usize {
+    /// the workspace shares nothing.
+    pub(super) fn share_rows(card: &WorkspaceCard) -> usize {
         let shown = card.shares.len().min(SHARES_MAX_ROWS);
         shown.saturating_add(usize::from(card.shares.len() > shown))
     }
@@ -286,7 +286,7 @@ impl OverviewPanel {
         self.metrics.here_h + self.windows_row_height() + self.shares_height()
     }
 
-    /// Rows of the "go to" list: every room but the one you are in, then
+    /// Rows of the "go to" list: every workspace but the one you are in, then
     /// "New workspace" and "Join a workspace…".
     pub(super) fn list_slots(&self) -> usize {
         let rooms = self
@@ -379,7 +379,7 @@ impl OverviewPanel {
         self.panel_rect().inset(-self.metrics.pad)
     }
 
-    /// The "you are here" block: the current room's identity, access and
+    /// The "you are here" block: the current workspace's identity, access and
     /// people, and its picture when the panel holds it.
     pub(super) fn here_rect(&self) -> Rect {
         let c = self.content_rect();
@@ -449,7 +449,7 @@ impl OverviewPanel {
         Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
     }
 
-    /// The list slot room `idx` occupies: the room you are in has none (it
+    /// The list slot workspace `idx` occupies: the workspace you are in has none (it
     /// is the block at the top), every other keeps its order.
     pub(super) fn slot_of(&self, idx: usize) -> Option<usize> {
         match self.here_index() {
@@ -459,7 +459,7 @@ impl OverviewPanel {
         }
     }
 
-    /// Room `idx`: the "you are here" block for the room you are in, its
+    /// Workspace `idx`: the "you are here" block for the workspace you are in, its
     /// list row for any other.
     pub fn row_rect(&self, idx: usize) -> Rect {
         match self.slot_of(idx) {
@@ -475,7 +475,7 @@ impl OverviewPanel {
             .saturating_sub(usize::from(self.here_index().is_some()))
     }
 
-    /// The "New workspace" row, after the last room.
+    /// The "New workspace" row, after the last workspace.
     pub(super) fn add_rect(&self) -> Option<Rect> {
         self.can_add()
             .then(|| self.list_slot_rect(self.rooms_in_list()))
@@ -511,7 +511,7 @@ impl OverviewPanel {
         self.join_rect().and_then(|rect| self.in_band(rect))
     }
 
-    /// The Leave control on room `idx` when it is a site's workspace, at
+    /// The Leave control on workspace `idx` when it is a site's workspace, at
     /// its row's trailing edge.
     pub(super) fn leave_rect(&self, idx: usize) -> Option<Rect> {
         let card = self.desk.cards.get(idx)?;
@@ -576,10 +576,10 @@ impl OverviewPanel {
         self.scroll_y = y.clamp(0.0, self.max_scroll_y());
     }
 
-    /// The room at `p`, by its place among the cards. A row panned out of
-    /// the list's band cannot be hit: a click never lands on a room nobody
+    /// The workspace at `p`, by its place among the cards. A row panned out of
+    /// the list's band cannot be hit: a click never lands on a workspace nobody
     /// can see.
-    pub fn hit_room(&self, p: Point) -> Option<usize> {
+    pub fn hit_workspace(&self, p: Point) -> Option<usize> {
         if !self.content_rect().contains(p) {
             return None;
         }
@@ -817,13 +817,13 @@ impl OverviewPanel {
             .map(|strip| strip.id)
     }
 
-    /// The room a carried window would land in: any room but the one you
+    /// The workspace a carried window would land in: any workspace but the one you
     /// are in, under the pointer or finger.
     pub(super) fn drop_target(&self) -> Option<usize> {
         let press = self
             .press
             .filter(crate::overview::OverviewPress::is_dragging)?;
-        self.hit_room(press.at)
+        self.hit_workspace(press.at)
             .filter(|room| Some(*room) != self.here_index())
     }
 

@@ -37,8 +37,8 @@ pub enum DesktopAction {
     SwitchWorkspace { delta: i64 },
     /// Go `steps` strips on in the active workspace.
     StepStrip { steps: i64 },
-    /// Add an empty workspace and go there; with `room`, a workspace whose
-    /// shared room is `room` (joining it when this computer has none), named
+    /// Add an empty workspace and go there; with `workspace`, a workspace whose
+    /// shared workspace is `workspace` (joining it when this computer has none), named
     /// `name` when given.
     NewWorkspace {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,7 +251,7 @@ pub fn chrome_resource() -> ResourceSpec {
     with_workspace_actions(with_strip_actions(resource))
 }
 
-/// Making a workspace: an empty one, or the one sharing the room a join was
+/// Making a workspace: an empty one, or the one sharing the workspace a join was
 /// granted, named as its directory lists it.
 fn new_workspace() -> ActionSpec {
     action(

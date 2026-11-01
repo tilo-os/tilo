@@ -39,7 +39,7 @@ impl MorningSource {
     }
 }
 impl MorningPreferences {
-    /// Empty by default; a recycled workspace id never reuses another room's choices.
+    /// Empty by default; a recycled workspace id never reuses another workspace's choices.
     pub fn for_room(&self, room: &str) -> &[MorningSource] {
         if self.room == room {
             self.sources.get(..MAX_SOURCES).unwrap_or(&self.sources)
@@ -65,7 +65,7 @@ impl MorningPreferences {
     }
 }
 
-/// Each queued navigation/removal stays bound to the room where it was offered.
+/// Each queued navigation/removal stays bound to the workspace where it was offered.
 pub fn decode_action<'a>(id: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     let (room, key) = id.strip_prefix(prefix)?.split_once('.')?;
     uuid::Uuid::parse_str(room).ok()?;

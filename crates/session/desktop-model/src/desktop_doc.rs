@@ -1,7 +1,7 @@
 //! The device's whole-desktop document: every workspace this machine holds,
 //! as one automerge document the host keeps for local history and recovery.
 //!
-//! Unlike a room document (see [`crate::projection`]), it describes every
+//! Unlike a workspace document (see [`crate::projection`]), it describes every
 //! workspace, so it is never handed to a peer. This module is the only
 //! definition of its shape: [`seed`] writes it from a [`DesktopTree`],
 //! [`rebuild`] reads it back, and every other function is a narrow edit that
@@ -327,8 +327,8 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     let _ = doc.put_str_if_changed(entry, "name", &ws.name);
-    // Room identity travels with the workspace: a reader hydrating from
-    // this document must land in this room, not mint its own.
+    // Workspace identity travels with the workspace: a reader hydrating from
+    // this document must land in this workspace, not mint its own.
     let _ = doc.put_str_if_changed(entry, "room", &ws.room().to_string());
     match ws.owner() {
         Some(owner) => {
@@ -663,11 +663,11 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
 }
 
 /// A workspace's owner, members and grants as the document records them.
-/// An absent grants map leaves a freshly created room's default grants intact;
+/// An absent grants map leaves a freshly created workspace's default grants intact;
 /// an existing empty map records a deliberate removal of every grant.
 type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Option<Vec<Grant>>);
 
-/// Read policy fields independently: a new room has an owner before its
+/// Read policy fields independently: a new workspace has an owner before its
 /// grants map exists, while an explicit empty grants map revokes all grants.
 fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let owner = doc.str_at(entry, "owner");
@@ -749,7 +749,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
     })
 }
 
-/// Refresh `desktop` from `doc`. The active workspace, names, rooms,
+/// Refresh `desktop` from `doc`. The active workspace, names, workspaces,
 /// ownership, members, grants, sandbox, grant sets, receipts, shortcuts and
 /// each workspace's own fields come from the document; `active_strip`,
 /// `active_group` and presence stay as the tree had them, and so does how
@@ -773,9 +773,10 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             .str_at(entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil());
-        // A workspace is its room: an existing one keeps the room it has,
-        // whatever the document names, and a new one is made in the room
-        // the document names (one minted for it when it names none).
+        // A workspace keeps the identity it has: an existing one keeps the id
+        // it was given, whatever the document names, and a new one is made at
+        // the identity the document names (one minted for it when it names
+        // none).
         let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
             Some(existing) => {
                 let mut existing = desktop.workspaces.remove(existing);
@@ -800,7 +801,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             ws.policy.grants = tilo_action_policy::roles::current_role_grants(grants);
         } else {
             // Old appended entries had no grants map. Reconstruct their
-            // canonical defaults even when this tree reuses a cached room.
+            // canonical defaults even when this tree reuses a cached workspace.
             ws.policy.grants =
                 RoomPolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
         }
@@ -995,8 +996,8 @@ fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId>
         .map(|(_, entry)| entry)
 }
 
-/// Append a new workspace entry with its room's default grants. Its strips
-/// reach the document through later edits or the next [`seed`]. The room and
+/// Append a new workspace entry with its workspace's default grants. Its strips
+/// reach the document through later edits or the next [`seed`]. The workspace and
 /// its initial authority travel in the same change that creates the entry,
 /// so a later grant revocation can remove a real document key. Creates the
 /// list for an unseeded document.

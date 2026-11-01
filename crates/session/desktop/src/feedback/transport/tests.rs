@@ -30,7 +30,7 @@ fn enrollment() -> Enrollment {
     }
 }
 
-/// `person`, holding no role in the room.
+/// `person`, holding no role in the workspace.
 fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
         Actor::person(person).in_room(ROOM),
@@ -593,7 +593,7 @@ fn canonical_owner_acknowledges_a_recording_only_once_it_keeps_the_bytes() {
 }
 
 /// A report with a picture reaches its owner before the picture does: the
-/// owner takes the picture in from the room only once the report landed.
+/// owner takes the picture in from the workspace only once the report landed.
 /// Asked for the receipt before then, the owner answers "not yet" rather
 /// than refusing, so the reporter keeps waiting with no error, and the
 /// report ends Sent once the owner keeps the picture.
@@ -750,7 +750,7 @@ fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() 
     let mut other_room = enrollment();
     other_room.destination.room = "other".into();
     assert!(other_room.authorize().is_err());
-    // A room's owner holds everything; a member's grants can be refused.
+    // A workspace's owner holds everything; a member's grants can be refused.
     let mut blocked = enrollment();
     blocked.permissions = PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Editor)
         .with_grant(submit_grant(KindSet::ALL, Answer::Deny))

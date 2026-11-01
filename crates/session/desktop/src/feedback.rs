@@ -29,7 +29,7 @@ impl PrivateFeedback {
         self.services.next_wake_deadline()
     }
 
-    /// Bind existing host authority without joining a room or creating a grant.
+    /// Bind existing host authority without joining a workspace or creating a grant.
     ///
     /// # Errors
     /// Refuses invalid destinations, concurrent outbox ownership and storage
@@ -92,7 +92,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 }
 
 /// An unconfigured desktop still opens private controls and explicitly refuses
-/// review/send. It never guesses a public room or lends a generic writer.
+/// review/send. It never guesses a public workspace or lends a generic writer.
 ///
 /// # Errors
 /// Refuses invalid private component identity.

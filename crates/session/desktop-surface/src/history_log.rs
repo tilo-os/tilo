@@ -3,11 +3,11 @@
 //! A host that saves (or replicates) its desktop as a shared desktop record
 //! ([`tilo_desktop_model::shared_record`]) stamps each change of it with
 //! when it was made and who made it ([`record`]). The history pane reads
-//! room documents, so [`room_history`] replays such a log into one: each
-//! change that moved a window of the room becomes one change of the room's
+//! workspace documents, so [`workspace_history`] replays such a log into one: each
+//! change that moved a window of the workspace becomes one change of the workspace's
 //! projection, by the same actor at the same time, which the pane
 //! summarises ("opened", "closed", "renamed") and replays exactly as it does
-//! a native room's.
+//! a native workspace's.
 use std::collections::BTreeMap;
 
 use automerge::transaction::{CommitOptions, Transactable as _};
@@ -19,7 +19,7 @@ use tilo_desktop_model::{DesktopTree, RoomId, shared_record};
 /// A change written before changes named their action names its author
 /// after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
-/// The newest changes a room history replays; older ones stay in the log.
+/// The newest changes a workspace history replays; older ones stay in the log.
 pub const MAX_REPLAYED_CHANGES: usize = 600;
 
 /// The desktop a host value carries: `{ tree, records?, authors? }`, or a
@@ -146,9 +146,9 @@ impl WorkspaceRename {
     }
 }
 
-/// A room document replayed from a desktop log, and who each of its actors
+/// A workspace document replayed from a desktop log, and who each of its actors
 /// writes for.
-pub struct RoomHistory {
+pub struct WorkspaceHistory {
     pub doc: AutoCommit,
     /// Older desktop changes remain retained but exceed the replay budget.
     pub truncated: bool,
@@ -157,9 +157,9 @@ pub struct RoomHistory {
 }
 
 /// Replay `log`'s newest [`MAX_REPLAYED_CHANGES`] changes into `room`'s
-/// layout, in causal order. A change that did not move a window of the room
+/// layout, in causal order. A change that did not move a window of the workspace
 /// adds nothing.
-pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
+pub fn workspace_history(mut log: AutoCommit, room: RoomId) -> WorkspaceHistory {
     let mut doc = AutoCommit::new();
     let mut authors = BTreeMap::new();
     let changes = log.get_changes(&[]);
@@ -210,7 +210,7 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
         let time = change.timestamp();
         doc.commit_with(CommitOptions::default().with_time(time));
     }
-    RoomHistory {
+    WorkspaceHistory {
         doc,
         authors,
         truncated: skip != 0,
@@ -224,7 +224,7 @@ pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
 /// Name `authors`' actors in `directory`, as one participant per author.
 /// An author `person` knows reads as presence shows them, by the same
 /// name and in the same colour as their avatar; a change names its author
-/// by their principal (a key, in a room), never something to show.
+/// by their principal (a key, in a workspace), never something to show.
 pub fn register_authors(
     directory: &mut ui::AuthorDirectory,
     authors: &BTreeMap<String, String>,
@@ -251,7 +251,7 @@ pub fn register_authors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::activity::{ActivitySnapshot, RoomActivityPane};
+    use crate::activity::{ActivitySnapshot, WorkspaceActivityPane};
     use tilo_automerge::ApplyIncoming as _;
     use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
 
@@ -359,7 +359,7 @@ mod tests {
     fn a_desktop_log_replays_as_the_rooms_history_with_its_authors_and_times() {
         let (log, tree) = log();
         let room = tree.workspaces[0].room();
-        let mut history = room_history(log, room);
+        let mut history = workspace_history(log, room);
         assert_eq!(history.doc.get_changes(&[]).len(), 3);
         let mut names: Vec<_> = history.authors.values().cloned().collect();
         names.sort();
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(times, [1_000, 2_000, 3_000]);
 
         let mut snapshot = ActivitySnapshot::new(tree, history.doc).unwrap();
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         register_authors(pane.authors_mut(), &history.authors, &|_| None);
         pane.begin_view(snapshot.active.raw());
         pane.refresh(&mut snapshot);
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(pane.replay_unavailable_checkpoints(), 0);
     }
 
-    /// A room's changes name their author by principal (a key); History
+    /// A workspace's changes name their author by principal (a key); History
     /// shows them as presence does, by name and colour, not by the key's
     /// first letter in a colour of its own.
     #[test]
@@ -433,7 +433,7 @@ mod tests {
                 i64::try_from(i).unwrap()
             ));
         }
-        let mut history = room_history(log.clone(), tree.workspaces[0].room());
+        let mut history = workspace_history(log.clone(), tree.workspaces[0].room());
         assert!(history.truncated);
         assert_eq!(history.doc.get_changes(&[]).len(), MAX_REPLAYED_CHANGES);
         assert_eq!(log.get_changes(&[]).len(), MAX_REPLAYED_CHANGES + 1);
@@ -475,7 +475,7 @@ mod tests {
         assert!(!pending.get());
         let reloaded = AutoCommit::load(&saved).unwrap();
         assert_eq!(
-            room_history(reloaded, tree.workspaces[0].room())
+            workspace_history(reloaded, tree.workspaces[0].room())
                 .doc
                 .get_changes(&[])
                 .len(),
@@ -491,14 +491,20 @@ mod tests {
     fn another_room_and_values_that_are_no_desktop_add_nothing() {
         let (log, _) = log();
         assert_eq!(
-            room_history(log, RoomId::new()).doc.get_changes(&[]).len(),
+            workspace_history(log, RoomId::new())
+                .doc
+                .get_changes(&[])
+                .len(),
             0
         );
         let mut junk = AutoCommit::new();
         junk.put(ROOT, "workspaces", "not a desktop").unwrap();
         junk.commit();
         assert_eq!(
-            room_history(junk, RoomId::new()).doc.get_changes(&[]).len(),
+            workspace_history(junk, RoomId::new())
+                .doc
+                .get_changes(&[])
+                .len(),
             0
         );
     }

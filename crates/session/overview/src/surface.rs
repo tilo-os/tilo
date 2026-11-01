@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use tilo_desktop::overview::RoomCard;
+use tilo_desktop::overview::WorkspaceCard;
 use tilo_desktop::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
 use tilo_desktop::strip_switcher::valid_strip_name;
 use tilo_desktop_model::{StripId, TabId, WorkspaceId};
@@ -146,7 +146,7 @@ impl OverviewSurface {
                 self.panel.rename_in_place(fixture::READING);
             }
             Some("carrying") => {
-                if let Some(target) = self.panel.room_rect(1) {
+                if let Some(target) = self.panel.workspace_rect(1) {
                     self.panel.carry(104, target.center());
                 }
             }
@@ -221,7 +221,7 @@ fn effect_of(pick: &OverviewPick, desk: &OverviewDesk) -> Option<OverviewEffect>
 }
 
 /// The workspace `name` names: its id, or its name (any case).
-fn find_workspace<'a>(desk: &'a OverviewDesk, name: &str) -> Result<&'a RoomCard, String> {
+fn find_workspace<'a>(desk: &'a OverviewDesk, name: &str) -> Result<&'a WorkspaceCard, String> {
     let name = name.trim();
     desk.cards
         .iter()
@@ -238,7 +238,7 @@ fn find_workspace<'a>(desk: &'a OverviewDesk, name: &str) -> Result<&'a RoomCard
 /// case), the workspace you are in first.
 fn find_window(desk: &OverviewDesk, name: &str) -> Result<TabId, String> {
     let name = name.trim();
-    let mut cards: Vec<&RoomCard> = desk.cards.iter().collect();
+    let mut cards: Vec<&WorkspaceCard> = desk.cards.iter().collect();
     cards.sort_by_key(|card| !card.is_current);
     let tabs = || {
         cards

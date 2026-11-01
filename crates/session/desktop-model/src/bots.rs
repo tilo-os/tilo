@@ -1,12 +1,12 @@
-//! The bots of a room, as the room's governance records them.
+//! The bots of a workspace, as the workspace's governance records them.
 
 use serde::{Deserialize, Serialize};
 
-/// One bot of a room: one it runs, or one a member asked the room's host to
+/// One bot of a workspace: one it runs, or one a member asked the workspace's host to
 /// run that does not run yet. Bots are participants like people and agents,
-/// so every surface that lists who is in a room lists them, tagged as bots.
+/// so every surface that lists who is in a workspace lists them, tagged as bots.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoomBot {
+pub struct WorkspaceBot {
     /// The name it shows; its directory entry while it does not run yet.
     pub name: String,
     /// Its installation (the `Subject::Bot` id), once installed.
@@ -24,7 +24,7 @@ pub struct RoomBot {
     pub version: Option<String>,
     /// The person who installed it or asked for it, user root hex.
     pub added_by: String,
-    /// A member asked the room's host for it: taking the request back is
+    /// A member asked the workspace's host for it: taking the request back is
     /// what removes it.
     #[serde(default)]
     pub requested: bool,
@@ -33,7 +33,7 @@ pub struct RoomBot {
     pub paused: bool,
 }
 
-impl RoomBot {
+impl WorkspaceBot {
     /// Whether `participant` (a presence id: a device or person key, hex, or
     /// a name) is this bot.
     #[must_use]

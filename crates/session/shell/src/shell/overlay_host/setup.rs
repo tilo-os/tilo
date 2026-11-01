@@ -256,7 +256,7 @@ impl ShellOverlayHost {
                 qs_actions,
                 qs_action_slot,
                 room_activity: Box::new(
-                    crate::shell::room_activity::RoomActivityPane::new_persistent(),
+                    crate::shell::room_activity::WorkspaceActivityPane::new_persistent(),
                 ),
                 display_sheet: Box::default(),
                 portal_dialogs: Box::default(),
@@ -323,7 +323,7 @@ impl ShellOverlayHost {
                 qs_actions,
                 qs_action_slot,
                 room_activity: Box::new(
-                    crate::shell::room_activity::RoomActivityPane::with_local_user(
+                    crate::shell::room_activity::WorkspaceActivityPane::with_local_user(
                         "shell-fixture".into(),
                     ),
                 ),

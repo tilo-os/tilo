@@ -6,16 +6,16 @@ use super::*;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
-    //! Every fixture mutates the room through the *production* mirrors
+    //! Every fixture mutates the workspace through the *production* mirrors
     //! and reads the pane back — nothing writes a synthetic `HistoryEntry`.
 
     use super::*;
     use crate::activity::testing::TestTree as WorkspaceTree;
     use tilo_desktop_model::WorkspaceId;
 
-    /// The pane with a device that may mutate the room.
-    fn native_pane() -> RoomActivityPane {
-        let mut pane = RoomActivityPane::new();
+    /// The pane with a device that may mutate the workspace.
+    fn native_pane() -> WorkspaceActivityPane {
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
         pane
     }
@@ -87,7 +87,7 @@ mod tests {
         pane.refresh(&mut tree);
         let reads = || {
             (
-                ROOM_CHANGE_READS.with(Cell::get),
+                WORKSPACE_CHANGE_READS.with(Cell::get),
                 crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
             )
         };
@@ -128,7 +128,7 @@ mod tests {
             format!("{:?}", fresh.derived),
             "the feed rows and their workspaces"
         );
-        let frames = |pane: &RoomActivityPane| {
+        let frames = |pane: &WorkspaceActivityPane| {
             pane.replay_frames
                 .iter()
                 .map(|frame| {
@@ -161,7 +161,7 @@ mod tests {
         tree.seed_doc_from_cache();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
-        let renamed = |pane: &RoomActivityPane| {
+        let renamed = |pane: &WorkspaceActivityPane| {
             pane.derived
                 .iter()
                 .filter(|(entry, _)| is_feed_change(entry))
@@ -320,7 +320,7 @@ mod tests {
         );
     }
 
-    fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {
+    fn pane_over(tree: &mut WorkspaceTree) -> WorkspaceActivityPane {
         let mut pane = native_pane();
         // Legacy timeline tests exercise the granular surface explicitly;
         // production opens on the outcome-first Catch up tab.
@@ -329,7 +329,7 @@ mod tests {
         pane
     }
 
-    fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
+    fn agent_task_fixture() -> (WorkspaceTree, RecordStore, WorkspaceActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
@@ -419,24 +419,27 @@ mod tests {
         (tree, records, pane, record)
     }
 
-    /// An app whose content is the room's own document (Notes' notebook)
+    /// An app whose content is the workspace's own document (Notes' notebook)
     /// keeps it beside its records, announced as none: what was done in it,
     /// by a person or an agent's task, is still part of the workspace's
     /// history.
     #[test]
     fn an_apps_room_document_is_part_of_the_workspace_history() {
-        struct RoomDocuments {
+        struct WorkspaceDocuments {
             room: tilo_desktop_model::RoomId,
             id: RecordId,
             document: Vec<u8>,
         }
-        impl crate::activity::index::PersistedRecordHistory for RoomDocuments {
+        impl crate::activity::index::PersistedRecordHistory for WorkspaceDocuments {
             fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
                 (id == &self.id)
                     .then(|| automerge::AutoCommit::load(&self.document).ok())
                     .flatten()
             }
-            fn room_documents(&self, room: tilo_desktop_model::RoomId) -> Vec<ui::RecordCheckout> {
+            fn workspace_documents(
+                &self,
+                room: tilo_desktop_model::RoomId,
+            ) -> Vec<ui::RecordCheckout> {
                 if room == self.room {
                     vec![ui::RecordCheckout::new(
                         self.id.clone(),
@@ -464,7 +467,7 @@ mod tests {
                 .with_time(20)
                 .with_message(context.change_message().unwrap()),
         );
-        let local = RoomDocuments {
+        let local = WorkspaceDocuments {
             room,
             id: RecordId::parse("uuid:5f0e9c1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b").unwrap(),
             document: doc.save(),
@@ -555,7 +558,7 @@ mod tests {
             loads: std::cell::Cell::new(0),
         };
         let records = RecordStore::in_memory();
-        let held_run = |pane: &RoomActivityPane| {
+        let held_run = |pane: &WorkspaceActivityPane| {
             pane.agent_runs.iter().any(|indexed| {
                 indexed.source_record.as_ref() == Some(&record)
                     && indexed.run.label == "Rewrite the opening"
@@ -657,7 +660,7 @@ mod tests {
     fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
         let (mut tree, workspace, _) = busy_room();
         let host = Rc::new(crate::activity::testing::TestHost::default());
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host);
         pane.load_frontiers();
         pane.refresh(&mut tree);
@@ -694,7 +697,7 @@ mod tests {
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
         let (mut tree, workspace, user) = busy_room();
         let host = Rc::new(crate::activity::testing::TestHost::default());
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.load_frontiers();
         pane.refresh(&mut tree);
@@ -723,7 +726,7 @@ mod tests {
         let after_change = pane.glance_signal(workspace.raw()).1;
         assert!(after_change > 0, "a change after arriving is");
 
-        let mut next_session = RoomActivityPane::new();
+        let mut next_session = WorkspaceActivityPane::new();
         next_session.set_host(host);
         next_session.load_frontiers();
         next_session.refresh(&mut tree);
@@ -948,7 +951,7 @@ mod tests {
                 .insert(id.to_string(), kind.to_string());
         }
         let host = Rc::new(crate::activity::testing::TestHost::default());
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
@@ -980,7 +983,7 @@ mod tests {
             heads,
             "review is private viewer state"
         );
-        let mut next = RoomActivityPane::new();
+        let mut next = WorkspaceActivityPane::new();
         next.set_host(host);
         next.load_frontiers();
         next.refresh(&mut tree);
@@ -1230,7 +1233,11 @@ mod tests {
     fn this_rooms_scope_excludes_another_workspaces_governance() {
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
-        assert_eq!(pane.scope(), RoomScope::ThisRoom, "scoped by default");
+        assert_eq!(
+            pane.scope(),
+            WorkspaceScope::ThisWorkspace,
+            "scoped by default"
+        );
 
         let scoped: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
@@ -1244,7 +1251,7 @@ mod tests {
 
         let all_tree = { tree.desktop.workspaces.clone() };
         let _ = all_tree;
-        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             widened.iter().any(|s| s.contains("research.example")),
@@ -1262,7 +1269,7 @@ mod tests {
     fn a_widened_row_names_the_workspace_it_happened_in() {
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
-        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         let named_rows: Vec<String> = pane
             .entries()
             .iter()
@@ -1314,7 +1321,7 @@ mod tests {
                 .all(|e| !e.summary.starts_with("Recorded ")),
             "a whole-tree flush is setup bookkeeping, not a feed change"
         );
-        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         assert!(
             pane.entries()
                 .iter()
@@ -1974,7 +1981,7 @@ mod tests {
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
 
-        // A peer forks the room document, names the same run differently, and
+        // A peer forks the workspace document, names the same run differently, and
         // syncs back — the shape a remote replica's sync round has.
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
@@ -2096,7 +2103,7 @@ mod tests {
 
     /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be
     /// counted seen once the person stops reading.
-    fn show_summary(pane: &mut RoomActivityPane) {
+    fn show_summary(pane: &mut WorkspaceActivityPane) {
         let Some(workspace) = pane.last_active else {
             return;
         };
@@ -2514,7 +2521,7 @@ mod tests {
                 format!("{:?}", fresh.timeline.entries()),
                 "step {step} ({kind}): the feed"
             );
-            let frames = |pane: &RoomActivityPane| {
+            let frames = |pane: &WorkspaceActivityPane| {
                 pane.replay_frames
                     .iter()
                     .map(|frame| {
@@ -2617,10 +2624,10 @@ mod tasks_link_tests {
             self.ended.borrow_mut().take()
         }
     }
-    fn fixture() -> (WorkspaceTree, RoomActivityPane, Rc<UndoHost>) {
+    fn fixture() -> (WorkspaceTree, WorkspaceActivityPane, Rc<UndoHost>) {
         let mut tree = WorkspaceTree::bootstrap_default();
         let host = Rc::new(UndoHost::default());
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::Explore);
@@ -2896,7 +2903,7 @@ mod morning_source_tests {
                 .with_time(1_800_000_000)
                 .with_message(context.change_message().unwrap()),
         );
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(VisitorHost));
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::CatchUp);
@@ -2929,7 +2936,7 @@ mod morning_source_tests {
         );
     }
 
-    fn fixture() -> (TestTree, RoomActivityPane) {
+    fn fixture() -> (TestTree, WorkspaceActivityPane) {
         let mut tree = TestTree::bootstrap_default();
         let context = tilo_actions::ActionContext::for_resource(
             "weather.location:fixture",
@@ -2946,7 +2953,7 @@ mod morning_source_tests {
                 .with_time(1_800_000_000)
                 .with_message(context.change_message().unwrap()),
         );
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
         pane.refresh(&mut tree);
         let index = pane
@@ -3015,7 +3022,7 @@ mod morning_source_tests {
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
         let room = tree.workspaces[0].room();
-        let mut restarted = RoomActivityPane::new();
+        let mut restarted = WorkspaceActivityPane::new();
         restarted.set_host(host.clone());
         restarted.load_frontiers();
         restarted.refresh(&mut tree);
@@ -3054,7 +3061,7 @@ mod morning_source_tests {
         tree.workspaces[0] = same_id_in(&tree.workspaces[0], room);
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
-        restarted.set_scope(RoomScope::AllWorkspaces, &tree);
+        restarted.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         assert!(
             restarted
                 .apply_selection_history_action(
@@ -3065,7 +3072,7 @@ mod morning_source_tests {
                 .open_target
                 .is_none()
         );
-        restarted.set_scope(RoomScope::ThisRoom, &tree);
+        restarted.set_scope(WorkspaceScope::ThisWorkspace, &tree);
         restarted.timeline.set_entries(Vec::new());
         assert!(
             restarted.morning_target(&key).is_none(),
@@ -3169,7 +3176,7 @@ mod morning_source_tests {
     }
 
     fn run_source(
-        pane: &mut RoomActivityPane,
+        pane: &mut WorkspaceActivityPane,
         tree: &mut TestTree,
         key: &str,
         command: tilo_actions::remote::workspace_activity::SourceCommand,
@@ -3361,8 +3368,8 @@ mod reader_tests {
     }
 }
 
-/// A workspace of `room` under `workspace`'s id, with its windows and its
-/// grants rehomed: what a device holds when one id has named two rooms (a
+/// A workspace of `workspace` under `room`'s id, with its windows and its
+/// grants rehomed: what a device holds when one id has named two workspaces (a
 /// workspace never changes its room).
 fn same_id_in(
     workspace: &tilo_desktop_model::Workspace,

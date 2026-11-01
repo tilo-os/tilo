@@ -1,7 +1,7 @@
 //! How a room's replication document carries a workspace, and how it is
 //! read back.
 //!
-//! Pure functions over an [`AutoCommit`] the host owns: the room's
+//! Pure functions over an [`AutoCommit`] the host owns: the workspace's
 //! governance, people, shortcuts, receipts and record index. Its layout
 //! (strips, groups and windows) is the workspace's layout record, kept at
 //! the document's root in [`crate::shared_record`]'s shape, which every
@@ -9,7 +9,7 @@
 //! deciding whether a peer's batch may land at all — and the documents'
 //! lifetimes stay with the host.
 //!
-//! This is the one room schema every host reads and writes. Versioning is
+//! This is the one workspace schema every host reads and writes. Versioning is
 //! additive and per key: a key a build does not know is left alone, and a
 //! key's shape never changes under the same name.
 
@@ -23,42 +23,42 @@ use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::workspace::Workspace;
 
-/// Key naming the room a document describes (a UUID string).
+/// Key naming the workspace a document describes (a UUID string).
 pub const ROOM_ID_KEY: &str = "room";
-/// Key of the room's display name.
+/// Key of the workspace's display name.
 pub const ROOM_NAME_KEY: &str = "name";
-/// Key of the room owner's user id.
+/// Key of the workspace owner's user id.
 pub const ROOM_OWNER_KEY: &str = "owner";
 /// Key of the next id counter a durable topology owner mints from, so a
 /// restarted owner never reuses an id a closed tab once had.
 pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
-/// Key a room document stores its effect receipts under: one slice per
+/// Key a workspace document stores its effect receipts under: one slice per
 /// member, `{person → {invocation → JSON receipt}}`, which only that
 /// member's devices write.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
-/// Key a room document anchors each member's archived effect receipts
+/// Key a workspace document anchors each member's archived effect receipts
 /// under: `{person → {device → history root}}`, each device's own.
 pub const ROOM_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
-/// Key a room document stores its saved shortcuts under.
+/// Key a workspace document stores its saved shortcuts under.
 pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
-/// Key a room document stores its named grant sets under, by lowercase name.
+/// Key a workspace document stores its named grant sets under, by lowercase name.
 pub const ROOM_PRESETS_KEY: &str = "presets_v1";
 /// Key of the map from member person id to the role preset they hold.
 pub const ROOM_MEMBERS_KEY: &str = "members";
-/// Key of the map from member person id to when the room admitted them,
+/// Key of the map from member person id to when the workspace admitted them,
 /// Unix milliseconds (JSON bytes). Written once by the admitting authority.
 pub const ROOM_MEMBERS_JOINED_KEY: &str = "members_joined_v1";
 /// Key of the map from grant id to the grant (JSON bytes).
 pub const ROOM_GRANTS_KEY: &str = "grants";
 /// Key of the map from sandbox capability id to the capability (JSON bytes).
 pub const ROOM_SANDBOX_KEY: &str = "sandbox";
-/// Key a room document stores its schedule claims under.
+/// Key a workspace document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
 /// collaborators saving different shortcuts concurrently merge as two keys.
 /// A key this workspace no longer holds is deleted, which is how deleting a
-/// shortcut reaches the room: a peer's addition lands in the local list when
+/// shortcut reaches the workspace: a peer's addition lands in the local list when
 /// its change is merged, before this runs again.
 ///
 /// # Errors
@@ -162,7 +162,7 @@ fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> V
 
 /// Project a workspace's named grant sets as one map value per lowercase
 /// name. A set itself grants nothing; the grants an assignment expands to
-/// travel with the room's policy.
+/// travel with the workspace's policy.
 ///
 /// # Errors
 ///
@@ -183,7 +183,7 @@ pub fn project_workspace_presets(
     project_blob_map(doc, ROOM_PRESETS_KEY, entries)
 }
 
-/// The named grant sets a room document carries, by name. A value that does
+/// The named grant sets a workspace document carries, by name. A value that does
 /// not decode or validate is skipped.
 pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset> {
     let mut presets: Vec<tilo_action_policy::Preset> = blob_map_of(doc, ROOM_PRESETS_KEY)
@@ -195,7 +195,7 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
     presets
 }
 
-/// Project a room's authority: its owner, each member's role and every grant.
+/// Project a workspace's authority: its owner, each member's role and every grant.
 ///
 /// # Errors
 ///
@@ -221,8 +221,8 @@ pub fn project_room_policy(
         .iter()
         .filter_map(|(person, role)| Some((person.clone(), serde_json::to_vec(role).ok()?)))
         .collect();
-    // The room's members and grants are always present, if empty: readers
-    // of the room's security basis require both.
+    // The workspace's members and grants are always present, if empty: readers
+    // of the workspace's security basis require both.
     ensure_map(doc, ROOM_MEMBERS_KEY)?;
     ensure_map(doc, ROOM_GRANTS_KEY)?;
     project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
@@ -245,8 +245,8 @@ pub fn project_room_policy(
     project_blob_map(doc, ROOM_GRANTS_KEY, grants)
 }
 
-/// The authority a room document records for `room`. Values that do not
-/// decode are skipped; grants on another room's nodes are dropped.
+/// The authority a workspace document records for `room`. Values that do not
+/// decode are skipped; grants on another workspace's nodes are dropped.
 pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
     use automerge::{ROOT, ReadDoc};
 
@@ -274,7 +274,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
     .with_current_roles()
 }
 
-/// Project a room's sandbox capabilities, by id.
+/// Project a workspace's sandbox capabilities, by id.
 ///
 /// # Errors
 ///
@@ -290,7 +290,7 @@ pub fn project_room_sandbox(
     project_blob_map(doc, ROOM_SANDBOX_KEY, entries)
 }
 
-/// The sandbox capabilities a room document carries.
+/// The sandbox capabilities a workspace document carries.
 pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
     blob_map_of(doc, ROOM_SANDBOX_KEY)
         .into_iter()
@@ -298,7 +298,7 @@ pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride>
         .collect()
 }
 
-/// The shortcuts a room document carries, by id. A value that does not
+/// The shortcuts a workspace document carries, by id. A value that does not
 /// decode is skipped.
 pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::SavedShortcut> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -364,7 +364,7 @@ pub fn project_schedule_claims(
     Ok(())
 }
 
-/// The schedule claims a room document carries. A value that does not
+/// The schedule claims a workspace document carries. A value that does not
 /// decode, or that is filed under another schedule's key, is skipped.
 pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClaim> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -390,7 +390,7 @@ pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClai
     claims
 }
 
-/// Project `receipts` into `person`'s slice of the room's effect receipts,
+/// Project `receipts` into `person`'s slice of the workspace's effect receipts,
 /// keyed by invocation, so receipts from two devices merge as separate
 /// keys.
 ///
@@ -432,7 +432,7 @@ pub fn project_effect_receipts(
     Ok(())
 }
 
-/// Every effect receipt the room holds, each member's slice together,
+/// Every effect receipt the workspace holds, each member's slice together,
 /// oldest first. Receipts that do not decode are skipped.
 pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -501,7 +501,7 @@ pub fn localise_tile(
                 missing: None,
             }
         }
-        // A governed room's owner places in-process kinds; a member that bound
+        // A governed workspace's owner places in-process kinds; a member that bound
         // its own instance of that app to the tab keeps it.
         placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {
             let app = crate::apps::canonical_app_id(&placeholder);
@@ -522,13 +522,13 @@ pub fn localise_tile(
     }
 }
 
-/// Key the room document stores a room's record index under, mirroring
+/// Key the workspace document stores a workspace's record index under, mirroring
 /// the record index's shape (id -> `kind`) in the document that
 /// crosses the wire.
 pub const ROOM_RECORDS_KEY: &str = "records";
 
-/// Project a room's record index into that room's replication
-/// document. A room holds a *reference* (id and type), never the
+/// Project a workspace's record index into that workspace's replication
+/// document. A workspace holds a *reference* (id and type), never the
 /// record itself — documents travel per-record over the broker.
 ///
 /// Additive only: a key this machine doesn't hold is left alone,
@@ -568,12 +568,12 @@ pub fn project_room_records(
     Ok(())
 }
 
-/// Read a room document's record index back as `(record id, kind)`
+/// Read a workspace document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
     use automerge::{ObjType, ROOT, ReadDoc, Value};
 
-    // `records` is created on first projection, so two peers whose room
+    // `records` is created on first projection, so two peers whose workspace
     // documents started empty may each have minted one: a key conflict
     // where a plain `get` hides one peer's index. Join every candidate
     // map (the `get` winner first; the first copy of a record wins).
@@ -607,23 +607,23 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
     out
 }
 
-/// The room a candidate document says it describes, when it names a valid
-/// one. A payload naming a different room than the one it answers must be
+/// The workspace a candidate document says it describes, when it names a valid
+/// one. A payload naming a different workspace than the one it answers must be
 /// refused before anything else reads it.
 pub fn declared_room(candidate: &AutoCommit) -> Option<RoomId> {
     RoomId::parse(&candidate.str_at(&automerge::ROOT, ROOM_ID_KEY)?)
 }
 
-/// Apply one already-admitted room document to `tree`: create the room's
+/// Apply one already-admitted workspace document to `tree`: create the workspace's
 /// workspace if the tree has none (under [`WorkspaceId::of_room`]),
-/// take the room's name and owner, and fold its layout in as a viewer that
-/// shows every window as the room does. Existing local workspace identity
+/// take the workspace's name and owner, and fold its layout in as a viewer that
+/// shows every window as the workspace does. Existing local workspace identity
 /// and local selection remain untouched. Returns whether anything changed.
 ///
 /// # Errors
 ///
 /// A description when the document does not declare exactly `room`, or
-/// another workspace holds the room's workspace id.
+/// another workspace already holds the id derived from it.
 pub fn apply_admitted_room(
     tree: &mut DesktopTree,
     room: RoomId,
@@ -675,27 +675,27 @@ pub fn apply_admitted_room(
     Ok(changed || renamed || reshortcut || reprofiled)
 }
 
-/// Key of the room's layout scope in its governance document
-/// ([`RoomLayout`]), which only the room's governor writes.
+/// Key of the workspace's layout scope in its governance document
+/// ([`RoomLayout`]), which only the workspace's governor writes.
 pub const ROOM_LAYOUT_KEY: &str = "layout_v1";
 
-/// Whether a room shares its members' strips and windows: a field of the
-/// room's governance, written by its governor alone, that every member reads.
+/// Whether a workspace shares its members' strips and windows: a field of the
+/// workspace's governance, written by its governor alone, that every member reads.
 ///
-/// A room admitted through a public door (a community site's) or with open
+/// A workspace admitted through a public door (a community site's) or with open
 /// admission (listed in a public directory) is [`Self::Personal`]; an
-/// invite-only room is [`Self::Shared`]. The governor may change it.
+/// invite-only workspace is [`Self::Shared`]. The governor may change it.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RoomLayout {
     /// The namespaced layout model: each member's windows are published into
-    /// the room, and every member shows everyone's.
+    /// the workspace, and every member shows everyone's.
     #[default]
     Shared,
     /// Each member's strips and windows stay on their device. Only the
-    /// room's records (its apps' documents) and its people are shared: the
+    /// workspace's records (its apps' documents) and its people are shared: the
     /// governor takes in no member's layout, and devices send none.
     Personal,
 }
@@ -729,7 +729,7 @@ impl RoomLayout {
 
 /// The layout scope `doc`'s governor chose, `None` when it chose none (a
 /// room from before the field, or an invite-only room left at the
-/// default). A value this build does not read is personal: what a room may
+/// default). A value this build does not read is personal: what a workspace may
 /// not share is never shared by a device that misreads it.
 #[must_use]
 pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
@@ -743,7 +743,7 @@ pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
     }
 }
 
-/// The people the room `doc` governs lists as its owner and members, by
+/// The people the workspace `doc` governs lists as its owner and members, by
 /// person id: who still holds what they made on its desktop
 /// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
 /// heard yet), so nothing is taken as released before the list arrives.
@@ -764,15 +764,15 @@ pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<Strin
     (!people.is_empty()).then_some(people)
 }
 
-/// The layout scope of the room `doc` governs: its governor's choice, else
-/// [`RoomLayout::Shared`], an invite-only room's default.
+/// The layout scope of the workspace `doc` governs: its governor's choice, else
+/// [`RoomLayout::Shared`], an invite-only workspace's default.
 #[must_use]
 pub fn room_layout(doc: &AutoCommit) -> RoomLayout {
     room_layout_choice(doc).unwrap_or_default()
 }
 
 /// In the workspace addressing `room`, remove every window `foreign` names
-/// (someone else's, mirrored here while the room shared its layout), then
+/// (someone else's, mirrored here while the workspace shared its layout), then
 /// the window groups left with none, and the strips left with none that this
 /// machine (`local_salt`) did not make. Every window of this machine's own
 /// stays where it is. Reports whether anything changed.
@@ -836,7 +836,7 @@ mod tests {
     use crate::layout::{Strip, WindowGroup};
     use tilo_automerge::ApplyIncoming;
 
-    /// A grant given and revoked in a room is what the room document holds:
+    /// A grant given and revoked in a workspace is what the workspace document holds:
     /// the grant is in it under its id while it stands, gone once revoked,
     /// signed by whoever gave it, and with it a member's role preset.
     #[test]
@@ -965,7 +965,7 @@ mod tests {
         std::collections::BTreeMap::from([(entry.0.to_string(), entry.1.to_string())])
     }
 
-    /// Two room documents that start empty (the legacy path) each mint the
+    /// Two workspace documents that start empty (the legacy path) each mint the
     /// `records` map on first projection; the merge must show both indexes.
     #[test]
     fn concurrently_created_record_indexes_both_survive() {
@@ -1036,7 +1036,7 @@ mod tests {
         }
     }
 
-    /// A device's local copy of a workspace whose room became personal loses
+    /// A device's local copy of a workspace whose workspace became personal loses
     /// the windows it mirrored of others, and keeps every window of its own,
     /// wherever it stands.
     #[test]

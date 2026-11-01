@@ -500,7 +500,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
         let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
-        let history = history_log::room_history(self.desktop_log(), room);
+        let history = history_log::workspace_history(self.desktop_log(), room);
         self.authors = history.authors;
         self.partial = history.truncated;
         let mut desktop = tree.clone();

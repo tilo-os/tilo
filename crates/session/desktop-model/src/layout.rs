@@ -43,7 +43,7 @@ pub enum TileContent {
     /// instance to the tab. The peer's `surface_id` only resolves on
     /// their compositor so it is dropped, keeping only the app id. A
     /// waypoint: `shell::peer_windows` binds a local instance and the
-    /// tile becomes `Foreign`. Never projected into a room document,
+    /// tile becomes `Foreign`. Never projected into a workspace document,
     /// since a `PeerWindow` is by construction somebody else's.
     PeerWindow {
         /// The wayland app-id the peer's window announces.
@@ -336,7 +336,7 @@ pub struct WindowGroup {
     pub active_tab: TabId,
     pub width: WindowWidth,
     /// Mirrors the widget's maximized flag. This is presentation state for
-    /// this device: it survives a local restart but is never sent to room
+    /// this device: it survives a local restart but is never sent to workspace
     /// peers. `#[serde(default)]` keeps pre-existing local JSON loading
     /// un-maximized.
     #[serde(default)]

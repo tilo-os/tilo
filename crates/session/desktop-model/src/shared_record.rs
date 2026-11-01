@@ -1,4 +1,4 @@
-//! A room's shared desktop as one Automerge record, entry by entry.
+//! A workspace's shared desktop as one Automerge record, entry by entry.
 //!
 //! Every workspace, strip, window group and window is its own map under its
 //! id, holding where it is (its parent and an order among its siblings) and
@@ -141,9 +141,9 @@ impl<D: ReadDoc> At<'_, D> {
 
     /// [`Self::entries`], each saying whether it was written blind: held
     /// by a container concurrent with the winning one. Only a document
-    /// that did not hold the room's record yet makes a container of its
+    /// that did not hold the workspace's record yet makes a container of its
     /// own, so what such a container holds was written without seeing the
-    /// room's desktop.
+    /// workspace's desktop.
     fn placed_entries(&self, key: &str) -> BTreeMap<u64, (ObjId, bool)> {
         let mut entries = BTreeMap::new();
         for (index, container) in self.containers(key).into_iter().enumerate() {
@@ -312,12 +312,12 @@ impl Parts {
     /// Put the parts together, adopting what lost its parent meanwhile
     /// into the first workspace or strip.
     ///
-    /// A page that publishes before the room's desktop reached it writes
-    /// its own fresh one (a workspace named after the room, a "Main"
-    /// strip) into maps of its own, concurrent with the room's; read side
-    /// by side, every such page added another workspace of the room's
+    /// A page that publishes before the workspace's desktop reached it writes
+    /// its own fresh one (a workspace named after the workspace, a "Main"
+    /// strip) into maps of its own, concurrent with the workspace's; read side
+    /// by side, every such page added another workspace of the workspace's
     /// name. A workspace or strip written blind like that folds into the
-    /// one of its name the room has, and what it held moves there.
+    /// one of its name the workspace has, and what it held moves there.
     fn assemble(mut self) -> Option<SharedDesktop> {
         let (workspaces, folded_workspaces) =
             fold(std::mem::take(&mut self.workspaces), &self.blind, |w| {
@@ -424,7 +424,7 @@ pub fn read(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option<SharedDe
 }
 
 /// `desktop` as [`read`] gives it back: only what the record keeps, so a
-/// local desktop and the room's compare equal when nothing shared differs.
+/// local desktop and the workspace's compare equal when nothing shared differs.
 #[must_use]
 pub fn canonical(desktop: &SharedDesktop) -> SharedDesktop {
     let mut doc = AutoCommit::new();

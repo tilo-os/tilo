@@ -340,7 +340,7 @@ fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceId, u64)> {
 }
 
 /// Which windows were focused most recently, per workspace. Each workspace
-/// is its own room with its own windows, so its recency is its own too.
+/// is its own workspace with its own windows, so its recency is its own too.
 #[derive(Default)]
 pub struct FocusHistory {
     recent: HashMap<WorkspaceId, Vec<u64>>,

@@ -17,8 +17,8 @@ mod native_history {
     );
 
     /// The pane, as a native session serves it.
-    fn native_pane() -> RoomActivityPane {
-        let mut pane = RoomActivityPane::new();
+    fn native_pane() -> WorkspaceActivityPane {
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(TestHost::default()));
         pane
     }

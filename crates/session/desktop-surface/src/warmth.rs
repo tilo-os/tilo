@@ -4,7 +4,7 @@
 //! The desk paints its own chrome in the active workspace's appearance and
 //! sends each app window the appearance of the workspace that window is in
 //! ([`ui::floating_surface::FloatingSurfaceHostMessage::Appearance`]), so a
-//! window takes the same temperature as the room around it and the same
+//! window takes the same temperature as the workspace around it and the same
 //! focus ring, caret and selection colour as the desk.
 
 use std::collections::{HashMap, HashSet};
@@ -17,7 +17,7 @@ use ui::WindowAppearance;
 use ui::tokens::PresenceHue;
 
 /// How often every workspace's temperature is looked at again while the
-/// active workspace stays put, so a new wallpaper retints its room.
+/// active workspace stays put, so a new wallpaper retints its workspace.
 pub const RECHECK: Duration = Duration::from_secs(3);
 
 /// Every workspace's temperature as last looked at, and the person's
@@ -217,7 +217,7 @@ mod tests {
     }
 
     /// A wallpaper whose hue moves less than half a degree is the same
-    /// wallpaper, so a re-look does not retint the room every 3 s.
+    /// wallpaper, so a re-look does not retint the workspace every 3 s.
     #[test]
     fn a_temperature_within_half_a_degree_is_the_same_one() {
         let mut warmth = WindowWarmth::new(PresenceHue::Teal);

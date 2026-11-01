@@ -46,7 +46,7 @@ fn pane() -> Rect {
     Rect::new(0.0, 0.0, 640.0, 520.0)
 }
 
-/// The room's roles decide, at the node of the app keeping the record:
+/// The workspace's roles decide, at the node of the app keeping the record:
 /// a Viewer or Commenter changes nothing, an Editor adds and removes their
 /// own, and removing someone else's is moderation.
 #[test]

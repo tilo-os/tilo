@@ -50,7 +50,7 @@ impl HistorySource for RetainedHistory {
         workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
         let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
-        let history = crate::history_log::room_history(self.log.borrow().clone(), room);
+        let history = crate::history_log::workspace_history(self.log.borrow().clone(), room);
         let mut desktop = tree.clone();
         desktop.active = workspace;
         crate::activity::ActivitySnapshot::new(desktop, history.doc).ok()

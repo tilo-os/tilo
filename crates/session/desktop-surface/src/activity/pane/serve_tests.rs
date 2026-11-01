@@ -4,11 +4,11 @@ use automerge::ActorId;
 use collab_types::caps::{Access, CapOverride, Scope, Subject};
 use tilo_actions::remote::workspace_activity as wire;
 
-use super::super::{ActivityView, RoomActivityPane};
+use super::super::{ActivityView, WorkspaceActivityPane};
 use crate::activity::testing::{TestHost, TestTree};
 
-/// A room another person changed three times since this device arrived.
-fn room_a_peer_changed() -> (TestTree, u64) {
+/// A workspace another person changed three times since this device arrived.
+fn workspace_a_peer_changed() -> (TestTree, u64) {
     let mut tree = TestTree::bootstrap_demo();
     let reader = tree.doc.get_actor().clone();
     tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
@@ -40,8 +40,8 @@ fn room_a_peer_changed() -> (TestTree, u64) {
     (tree, workspace.raw())
 }
 
-fn pane() -> RoomActivityPane {
-    let mut pane = RoomActivityPane::new();
+fn pane() -> WorkspaceActivityPane {
+    let mut pane = WorkspaceActivityPane::new();
     pane.set_host(Rc::new(TestHost::default()));
     pane
 }
@@ -56,7 +56,7 @@ fn shown(summary: &wire::Summary) -> Vec<String> {
 
 #[test]
 fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_room_alone() {
-    let (mut tree, workspace) = room_a_peer_changed();
+    let (mut tree, workspace) = workspace_a_peer_changed();
     let heads = tree.doc.get_heads();
     let mut pane = pane();
     pane.refresh(&mut tree);
@@ -82,13 +82,13 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_room_alone() {
     assert_eq!(tree.doc.get_heads(), heads, "seeing history writes nothing");
 }
 
-/// Two people in one room, each with Activity open on their own device:
+/// Two people in one workspace, each with Activity open on their own device:
 /// what is new is each person's own. One marking it viewed moves only their
-/// summary and unread count; it writes nothing to the room the other could
+/// summary and unread count; it writes nothing to the workspace the other could
 /// receive.
 #[test]
 fn two_people_in_one_room_each_see_their_own_whats_new() {
-    let (mut mine, workspace) = room_a_peer_changed();
+    let (mut mine, workspace) = workspace_a_peer_changed();
     let mut theirs = mine.clone();
     theirs
         .doc
@@ -145,7 +145,7 @@ fn two_people_in_one_room_each_see_their_own_whats_new() {
 
 #[test]
 fn what_is_shown_for_later_counts_as_seen_only_when_the_summary_ends() {
-    let (mut tree, workspace) = room_a_peer_changed();
+    let (mut tree, workspace) = workspace_a_peer_changed();
     let mut pane = pane();
     pane.refresh(&mut tree);
     pane.begin_summary(workspace);
@@ -168,7 +168,7 @@ fn what_is_shown_for_later_counts_as_seen_only_when_the_summary_ends() {
 
 #[test]
 fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
-    let (mut tree, _) = room_a_peer_changed();
+    let (mut tree, _) = workspace_a_peer_changed();
     let mut pane = pane();
     pane.refresh(&mut tree);
     let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
@@ -216,7 +216,7 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
 
 #[test]
 fn a_deep_link_is_offered_until_an_app_shows_it() {
-    let (mut tree, _) = room_a_peer_changed();
+    let (mut tree, _) = workspace_a_peer_changed();
     let mut pane = pane();
     pane.refresh(&mut tree);
     let entry = pane.entries()[0].id;

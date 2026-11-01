@@ -19,7 +19,7 @@ use ui::widget::{HistoryEntry, HistoryEntryId};
 use super::ActivityTree;
 use tilo_desktop_model::RoomId;
 
-/// Hard ceilings keep a corrupt index or a room with thousands of references
+/// Hard ceilings keep a corrupt index or a workspace with thousands of references
 /// from turning opening History into an unbounded allocation.
 pub const MAX_FEED_ENTRIES: usize = 2_000;
 pub const MAX_INDEXED_RECORDS: usize = 512;
@@ -44,9 +44,9 @@ pub trait PersistedRecordHistory {
 
     /// The documents apps keep for `room` itself rather than as records
     /// (Notes keeps its notebook there), as this device holds them: they
-    /// are part of the room's history as much as its records are. None by
+    /// are part of the workspace's history as much as its records are. None by
     /// default.
-    fn room_documents(&self, _room: RoomId) -> Vec<RecordCheckout> {
+    fn workspace_documents(&self, _room: RoomId) -> Vec<RecordCheckout> {
         Vec::new()
     }
 }
@@ -191,7 +191,7 @@ pub struct WorkspaceSeenFrontier {
 impl WorkspaceSeenFrontier {
     /// Advance origins the current index exposed, retaining absent origins and
     /// previously acknowledged exceptions outside a bounded projection.
-    /// A room-scoped tree is only a projection of the global tree document, so
+    /// A workspace-scoped tree is only a projection of the global tree document, so
     /// its visible changes are exceptions rather than an unsafe global head.
     pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
         let room_scoped = index.query.as_ref().is_some_and(|query| {
@@ -254,7 +254,7 @@ impl WorkspaceHistoryEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceHistoryQuery {
     /// `Some` includes only records held by, or originally minted in, this
-    /// room. `None` defers scope to `rooms`.
+    /// workspace. `None` defers scope to `rooms`.
     pub room: Option<RoomId>,
     /// When set, restrict a multi-workspace query to this exact union instead
     /// of treating `room: None` as unrestricted device history.
@@ -296,7 +296,7 @@ impl WorkspaceHistoryQuery {
 }
 
 /// Explains whether the feed is complete on this device.  A referenced record
-/// can be known to the room before its Automerge document has been opened or
+/// can be known to the workspace before its Automerge document has been opened or
 /// downloaded; silently omitting it would make the history falsely reassuring.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FeedCoverage {
@@ -527,8 +527,8 @@ impl WorkspaceHistoryIndex {
 
     /// Build from the tree's complete history.  A surface that already has a
     /// correctly workspace-scoped tree reduction should use
-    /// [`Self::refresh_with_workspace_entries`] to avoid leaking other rooms'
-    /// shell metadata into a room-specific feed.
+    /// [`Self::refresh_with_workspace_entries`] to avoid leaking other workspaces'
+    /// shell metadata into a workspace-specific feed.
     pub fn refresh(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -550,8 +550,8 @@ impl WorkspaceHistoryIndex {
         self.refresh_inner(tree, records, query, None, Some(local))
     }
 
-    /// Join a caller's room-scoped tree rows with all records reachable from
-    /// that room.  The supplied rows remain the exact objects used by the room
+    /// Join a caller's workspace-scoped tree rows with all records reachable from
+    /// that workspace.  The supplied rows remain the exact objects used by the workspace
     /// pane, so naming and workspace labels cannot drift between surfaces.
     pub fn refresh_with_workspace_entries(
         &mut self,
@@ -849,7 +849,7 @@ impl WorkspaceHistoryIndex {
                 .clone()
                 .unwrap_or_else(|| query.room.into_iter().collect());
             for room in rooms {
-                for checkout in local.room_documents(room) {
+                for checkout in local.workspace_documents(room) {
                     candidates.entry(checkout.id.clone()).or_insert(checkout);
                 }
             }

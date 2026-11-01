@@ -480,6 +480,6 @@ fn a_room_laid_out_before_the_record_brings_its_windows_over() {
         shared.tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
         NOTES
     );
-    // Not as the desk's: nobody's until the room says otherwise.
+    // Not as the desk's: nobody's until the workspace says otherwise.
     assert!(!shared.authors.contains_key(&NOTES));
 }

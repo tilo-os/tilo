@@ -1028,7 +1028,7 @@ pub(super) fn music_transport(card: Rect, stage: Stage) -> Vec<(MusicAction, Rec
 }
 
 /// The playhead's track under the song's lines, and where the lines have
-/// room.
+/// workspace.
 fn music_track(card: Rect) -> Rect {
     let y = card.y1 - PAD - CONTROL_SIDE - 12.0 - TRACK;
     Rect::new(card.x0 + PAD, y, card.x1 - PAD, y + TRACK)

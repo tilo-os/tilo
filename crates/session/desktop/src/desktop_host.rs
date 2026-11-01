@@ -44,7 +44,7 @@ use crate::desktop_actions::{
 };
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
-use crate::overview::{OverviewHost, room_cards};
+use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
@@ -75,7 +75,7 @@ pub const NEW_WORKSPACE: &str = "new-workspace";
 pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
 const HOST_KEY: &str = "host:";
 
-/// What the host answers about the person at this desktop and the room it
+/// What the host answers about the person at this desktop and the workspace it
 /// shows.
 pub trait DesktopRules {
     /// The tree as the chrome shows it: the surface's, with who is here as
@@ -105,7 +105,7 @@ pub trait DesktopRules {
     /// The person made `strip`: it is theirs from now on.
     fn made_strip(&self, _strip: StripId) {}
 
-    /// Where the room shown is hosted (`example.org`), named beside the
+    /// Where the workspace shown is hosted (`example.org`), named beside the
     /// workspace; `None` on the person's own desktop.
     fn workspace_host(&self) -> Option<String> {
         None
@@ -299,7 +299,7 @@ impl DeskLayer {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
         let workspace = handle.read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
         // The room the bar takes above the strips, at the same height it
-        // takes itself. The bar docks in this desktop's column, so its room
+        // takes itself. The bar docks in this desktop's column, so its workspace
         // is there until a window covers its display and the bar steps
         // aside.
         let desk = handle.clone();
@@ -1331,12 +1331,12 @@ impl DesktopChrome {
         self.overview.set_open(open, cards);
     }
 
-    fn cards(&self) -> Vec<crate::overview::RoomCard> {
+    fn cards(&self) -> Vec<crate::overview::WorkspaceCard> {
         let host = PlainOverview {
             user: ui::collaboration::local_user_id().0,
         };
         let now = ui::time::unix_now();
-        self.handle.read(|tree| room_cards(tree, &host, now))
+        self.handle.read(|tree| workspace_cards(tree, &host, now))
     }
 
     fn apply_pick(&mut self, pick: &OverviewPick) {
@@ -1560,9 +1560,9 @@ impl DesktopChrome {
     }
 
     /// Make a workspace after the others and go there; with `room`, the
-    /// workspace sharing that room, joining it when this computer has none (a
-    /// workspace that exists is a room that exists, so joining one is holding
-    /// its room, which needs no room of the person's own to make).
+    /// workspace sharing that workspace, joining it when this computer has none (a
+    /// workspace that exists is a workspace that exists, so joining one is holding
+    /// its workspace, which needs no workspace of the person's own to make).
     fn new_workspace(&self, room: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
@@ -1574,7 +1574,7 @@ impl DesktopChrome {
             };
             if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
                 // Already held, here or from another device: go there rather
-                // than make a second workspace of one room.
+                // than make a second workspace of one workspace.
                 let held = held.id;
                 tree.active = held;
                 self.handle.replace_tree(tree);

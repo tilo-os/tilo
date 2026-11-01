@@ -1,6 +1,6 @@
 //! The platform-neutral desktop, as widgets over the shared desktop model.
 //!
-//! Every model type (workspaces, strips, groups, tabs, the room schema and
+//! Every model type (workspaces, strips, groups, tabs, the workspace schema and
 //! desktop commands) comes from [`tilo_desktop_model`]; this crate holds
 //! none. Hosts supply platform reads through snapshot fields and traits
 //! (chrome, activity, tile resolution) and apply the intents it emits.

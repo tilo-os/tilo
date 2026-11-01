@@ -4,14 +4,14 @@
 //!
 //! A workspace belongs to whoever governs it, its owner and moderators:
 //! they name it and manage its strips (desks). Everyone who writes in the
-//! room opens windows, and closes, moves and arranges the windows they
+//! workspace opens windows, and closes, moves and arranges the windows they
 //! opened and the strips they made; what someone else made is theirs, or a
 //! moderator's, to change ([`crate::ownership`]). A public workspace is no
 //! different: its guests write in it as members do, so they open and close
 //! their own windows, and leave its name and desks to whoever governs it.
 //!
-//! A room may share no member's layout at all ([`Standing::layout_shared`]
-//! false): a public room keeps each visitor's windows to themselves, so
+//! A workspace may share no member's layout at all ([`Standing::layout_shared`]
+//! false): a public workspace keeps each visitor's windows to themselves, so
 //! everything on their desktop is theirs to arrange, and the workspace's
 //! name and desks are its host's alone.
 //!
@@ -25,18 +25,18 @@ use super::DesktopCommand;
 use crate::ownership::{Authors, made_by, released};
 use crate::workspace::Workspace;
 
-/// Who asks, and the role the room holds them to.
+/// Who asks, and the role the workspace holds them to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Standing<'a> {
     /// The person, by the id the desktop's authors name them by.
     pub person: &'a str,
-    /// Their role in the room, as its host answers it or its policy reads;
-    /// `None` while not known yet, or for someone the room does not list.
+    /// Their role in the workspace, as its host answers it or its policy reads;
+    /// `None` while not known yet, or for someone the workspace does not list.
     pub role: Option<Role>,
-    /// Whether the room shares its members' layout. A public room does
+    /// Whether the workspace shares its members' layout. A public workspace does
     /// not: what a member arranges stays on their own desktop.
     pub layout_shared: bool,
-    /// The room's current members, by person id, when known: what someone
+    /// The workspace's current members, by person id, when known: what someone
     /// no longer among them made is released, theirs to close and move
     /// ([`crate::ownership::released`]).
     pub members: Option<&'a std::collections::BTreeSet<String>>,
@@ -49,7 +49,7 @@ impl Standing<'_> {
         self.role >= Some(Role::Moderator)
     }
 
-    /// Whether they write in the room at all.
+    /// Whether they write in the workspace at all.
     #[must_use]
     pub fn writes(&self) -> bool {
         self.role >= Some(Role::Editor)
@@ -64,7 +64,7 @@ pub enum Governed {
     /// Its strips: adding them, and renaming, moving or removing the ones
     /// nobody here made themselves.
     Desks,
-    /// The room's workspaces: adding another beside this one.
+    /// More workspaces: adding another beside this one.
     Workspaces,
 }
 
@@ -74,11 +74,11 @@ pub enum Refusal {
     /// Only the workspace's owner and moderators change this.
     Governed(Governed),
     /// The window or strip `id` is someone else's: `owner` opened or made
-    /// it (`None`: the room itself lists it).
+    /// it (`None`: the workspace itself lists it).
     Others { id: u64, owner: Option<String> },
     /// They may look at this workspace, not change it.
     ReadOnly,
-    /// The room shares no member's layout: only its host names it and sets
+    /// The workspace shares no member's layout: only its host names it and sets
     /// its desks.
     HostsLayout,
 }
@@ -123,9 +123,9 @@ fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
 }
 
 /// Whether `standing` may close, move or reorder the window `tab`: they
-/// opened it, whoever did has left the room, or they govern the workspace.
-/// In a room that shares no member's layout every window on their desktop
-/// is theirs to arrange, unless they only look at the room (a spectator, a
+/// opened it, whoever did has left the workspace, or they govern the workspace.
+/// In a workspace that shares no member's layout every window on their desktop
+/// is theirs to arrange, unless they only look at the workspace (a spectator, a
 /// Viewer): they open nothing, so a window they closed would be gone from
 /// what they watch for good.
 ///
@@ -156,7 +156,7 @@ pub fn may_rearrange_window(
 }
 
 /// Whether `standing` may rename, move or remove the strip `strip`: they
-/// made it, whoever did has left the room, or they govern the workspace.
+/// made it, whoever did has left the workspace, or they govern the workspace.
 ///
 /// # Errors
 ///
@@ -176,8 +176,8 @@ pub fn may_manage_strip(
     }
 }
 
-/// Whether `standing` may add a workspace to the room: whoever governs it,
-/// as for its desks. A room that shares no member's layout keeps its
+/// Whether `standing` may add a workspace beside this one: whoever governs it,
+/// as for its desks. A workspace that shares no member's layout keeps adding
 /// workspaces to its host.
 ///
 /// # Errors
@@ -203,7 +203,7 @@ pub fn may_command(
     match command {
         DesktopCommand::RenameWorkspace { .. } => govern(standing, Governed::Name),
         // How the workspace lays out its windows is everyone's: as much
-        // the room's arrangement as its desks.
+        // the workspace's arrangement as its desks.
         DesktopCommand::CreateStrip { .. } | DesktopCommand::SetArrangement { .. } => {
             govern(standing, Governed::Desks)
         }
@@ -249,7 +249,7 @@ mod tests {
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::width::WindowWidth;
 
-    /// A guest who came in through a public workspace's door: the room
+    /// A guest who came in through a public workspace's door: the workspace
     /// lets guests write, as members do.
     const GUEST: Standing<'static> = Standing {
         person: "guest",
@@ -290,7 +290,7 @@ mod tests {
         }
     }
 
-    /// The Lounge: one strip (10) the room lists, the guest's window 1 and
+    /// The Lounge: one strip (10) the workspace lists, the guest's window 1 and
     /// another guest's window 2 on it.
     fn lounge() -> (Workspace, Authors) {
         let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
@@ -388,7 +388,7 @@ mod tests {
         assert!(may_command(&GUEST, &authors, &workspace, &rename).is_err());
     }
 
-    /// A window whose opener has left the room holds nobody: whoever
+    /// A window whose opener has left the workspace holds nobody: whoever
     /// writes there closes or moves it. While the members are not known,
     /// or while the opener is still a member, it stays theirs.
     #[test]
@@ -411,7 +411,7 @@ mod tests {
             asks(&viewer, &theirs).is_err(),
             "someone who only looks closes nothing"
         );
-        // The room's own windows are nobody's to release.
+        // The workspace's own windows are nobody's to release.
         let (workspace, mut authors) = lounge();
         authors.remove(&2);
         assert!(may_command(&guest(Some(&left)), &authors, &workspace, &theirs).is_err());

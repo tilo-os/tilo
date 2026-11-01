@@ -1,5 +1,5 @@
 //! Feedback over an existing authenticated session and canonical Chat owner.
-//! No constructor enrolls a device, grants a capability or chooses a room.
+//! No constructor enrolls a device, grants a capability or chooses a workspace.
 use std::rc::Rc;
 
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -297,7 +297,7 @@ pub struct CanonicalRecord {
     pub records: RecordStore,
     pub record: RecordId,
     pub project: ReportProjection,
-    /// The owner's durable content store, where the room keeps what its
+    /// The owner's durable content store, where the workspace keeps what its
     /// records reference. Without one a report with a screenshot is never
     /// acknowledged: its metadata alone does not prove the picture is kept.
     pub content: Option<ui::content::ContentStore>,

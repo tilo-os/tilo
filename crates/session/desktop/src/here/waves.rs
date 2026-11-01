@@ -1,4 +1,4 @@
-//! Waves: "hello", from one person here to another, through the room's
+//! Waves: "hello", from one person here to another, through the workspace's
 //! live presence. The installed desktop and a browser tab both wave this
 //! way, with this code: [`WaveOut`] puts a wave on the waver's presence,
 //! [`WaveEar`] picks out the new ones at the person listening.

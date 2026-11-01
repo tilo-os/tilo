@@ -415,7 +415,7 @@ impl DesktopHandle {
     /// in the next update pass, and to every window built after. Whether
     /// that changed anything.
     /// Whether this desktop's person opens windows and tabs here: someone
-    /// the room lets only look (a spectator) is offered no new tab. Whether
+    /// the workspace lets only look (a spectator) is offered no new tab. Whether
     /// that changed anything.
     pub fn set_opens(&self, opens: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
@@ -465,13 +465,13 @@ impl DesktopHandle {
         shared.changed();
     }
 
-    /// The room snapshot, excluding process-local stream proxies and
+    /// The workspace snapshot, excluding process-local stream proxies and
     /// device presentation. Durable profile saves still use the full tree.
     pub fn shared_tree(&self) -> DesktopTree {
         self.read(|tree| crate::shared_tree::projection(tree.clone()))
     }
 
-    /// Apply room topology without replacing this device's stream bindings
+    /// Apply workspace topology without replacing this device's stream bindings
     /// or focus. Only `local_tabs` survive omission from the shared snapshot;
     /// removed workspaces and strips still retire their contents.
     pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
@@ -504,7 +504,7 @@ impl DesktopHandle {
     /// ([`tilo_desktop_model::commands::apply_command`]), with ids from the
     /// tree's id space. A strip it creates is shown; when the strip shown is
     /// removed, the workspace's first one is. The caller has asked the
-    /// room's policy ([`tilo_desktop_model::commands::may_command`]) first.
+    /// workspace's policy ([`tilo_desktop_model::commands::may_command`]) first.
     /// Returns the strip a `CreateStrip` made.
     ///
     /// # Errors
@@ -1240,7 +1240,7 @@ impl DesktopSurface {
     /// ([`splice::splice_row`]): its pan stays where the person left it, and
     /// windows removed, added or moved elsewhere slide as they do when the
     /// person closes, opens or moves one here. Rebuilding the row instead
-    /// threw its pan away, so each peer's edit, or the room's echo of a
+    /// threw its pan away, so each peer's edit, or the workspace's echo of a
     /// close, flew the strip home and cut every window to its new place.
     fn reconcile(&mut self) {
         if !std::mem::take(&mut self.shared.borrow_mut().replaced) {

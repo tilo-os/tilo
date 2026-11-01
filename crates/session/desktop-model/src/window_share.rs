@@ -1,36 +1,36 @@
-//! A window one member shares with a room whose layout is personal.
+//! A window one member shares with a workspace whose layout is personal.
 //!
-//! In a personal room each member's windows stay on their device
+//! In a personal workspace each member's windows stay on their device
 //! ([`crate::projection::RoomLayout::Personal`]). A member who wants the
-//! others to see one of them shares it, and the share is the room's
+//! others to see one of them shares it, and the share is the workspace's
 //! resource share ([`tilo_action_policy::share`]) of the window's own node,
-//! `room › <app> › window › <tab>`: grants the room's governor writes into
+//! `workspace › <app> › window › <tab>`: grants the workspace's governor writes into
 //! its governance at the sharer's request, naming who gave them
 //! (`granted_by`) and until when (`lifetime`). The governor takes such a
 //! share only from the device that minted the tab's id: every device mints
 //! under the salt its key derives ([`crate::ids::device_salt_of_key`]), and
-//! the room knows its members' device keys ([`device_salts`]), so the tab
+//! the workspace knows its members' device keys ([`device_salts`]), so the tab
 //! says which device hosts the window, and nobody shares another device's
 //! window.
 //!
 //! A Tilo app's window is a view of a resource that already lives in the
-//! room, so its share also says what the window shows: the share
+//! workspace, so its share also says what the window shows: the share
 //! [`window_shows_share_id`] of the resource's own node (the record, or the
 //! item of it the window is at). Its sharer streams none of its pixels; every
 //! other member opens the same app on that resource. A window with no such
 //! share is an outside window (a terminal, any Wayland or X client), whose
 //! state lives in its process: it is streamed.
 //!
-//! Every device reads the room's live window shares from the room's
+//! Every device reads the workspace's live window shares from the workspace's
 //! governance ([`window_shares`]): the sharer streams only the outside
-//! windows among them to the room, and every other member shows each as a
+//! windows among them to the workspace, and every other member shows each as a
 //! tab of the sharer's window in its own layout, for as long as the share
 //! lasts.
 //!
 //! A window that closes ends its share as it goes
 //! ([`Workspace::end_window_shares`]): the grants are in the same workspace
 //! the close already changes, so the close retracts them itself, and the
-//! room stops naming a window that no longer exists.
+//! workspace stops naming a window that no longer exists.
 
 use std::collections::BTreeMap;
 
@@ -42,7 +42,7 @@ use tilo_action_policy::{
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
 use crate::workspace::Workspace;
 
-/// Key of the room's governed device identities, by device key.
+/// Key of the workspace's governed device identities, by device key.
 const PEER_IDENTITIES_KEY: &str = "peer_identities_v1";
 
 /// A window id as it stands in a share id or a node: fixed-width hex, so it
@@ -56,9 +56,9 @@ fn tab_of_key(key: &str) -> Option<TabId> {
     u64::from_str_radix(key, 16).ok()
 }
 
-/// The salts the devices `doc`, a room's document, admitted mint under, and
+/// The salts the devices `doc`, a workspace's document, admitted mint under, and
 /// each one's device key (64 lowercase hex digits): what tells which device
-/// a window of the room runs on. A salt two of its devices share is
+/// a window of the workspace runs on. A salt two of its devices share is
 /// nobody's, so neither can speak for the other's windows.
 #[must_use]
 pub fn device_salts(doc: &automerge::AutoCommit) -> BTreeMap<u16, String> {
@@ -148,12 +148,12 @@ pub fn window_of_node(node: &TreePath) -> Option<(String, TabId)> {
     Some((app.to_owned(), tab))
 }
 
-/// What a Tilo app's shared window shows: a record of the room, and the
+/// What a Tilo app's shared window shows: a record of the workspace, and the
 /// item of it the window is at.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowShows {
     /// The record, as its route names it: empty for the app's own record
-    /// of the room.
+    /// of the workspace.
     pub record: String,
     /// What in the record the window is at (a note of the notebook), as
     /// the app's `open` takes it; `None` for the record as a whole.
@@ -217,7 +217,7 @@ pub fn shows_of_node(node: &TreePath, app_id: &str, tab: TabId) -> Option<Window
     Some(WindowShows { record, item })
 }
 
-/// One window shared with a room, as its governance records it.
+/// One window shared with a workspace, as its governance records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowShare {
     /// The sharer's tab, minted under the salt of the device hosting it.
@@ -237,9 +237,9 @@ pub struct WindowShare {
     pub shows: Option<WindowShows>,
 }
 
-/// The windows shared with `policy`'s room that are live at `now_ms`, by
+/// The windows shared with `policy`'s workspace that are live at `now_ms`, by
 /// tab, each hosted on the device whose salt its tab carries (`owners`,
-/// [`device_salts`] of the room's document). A share counts when it is a
+/// [`device_salts`] of the workspace's document). A share counts when it is a
 /// share of one window's node under that window's share id, given by a
 /// person, allowing the room to see it; a window no device of the room
 /// minted is nobody's to show.
@@ -318,10 +318,10 @@ impl Workspace {
     /// The window `tab` is gone: the share of it ends here, and with it the
     /// share of what it showed ([`window_shows_share_id`] starts with the
     /// window's own share id). [`Workspace::note_close`] calls it as it
-    /// applies a close, so the room's record stops naming the window the
+    /// applies a close, so the workspace's record stops naming the window the
     /// moment it closes, and a window reopened afterwards carries no share of
     /// the one that went. Answers the grants retracted, for whoever mirrors
-    /// the workspace's policy into the room's document.
+    /// the workspace's policy into the workspace's document.
     pub fn end_window_shares(&mut self, tab: TabId) -> Vec<GrantId> {
         let share = window_share_id(tab);
         self.revoke_grants_matching(|grant| is_of_share(grant, &share))
@@ -494,7 +494,7 @@ mod tests {
         );
     }
 
-    /// The device the two windows below run on, and the room's name for it.
+    /// The device the two windows below run on, and the workspace's name for it.
     const ANA: u16 = 0x0A51;
     const APP: &str = "so.tilo.notes";
     const NOTES: TabId = compose_id(ANA, 4);
@@ -503,8 +503,8 @@ mod tests {
     const STRIP: u64 = compose_id(ANA, 7);
 
     /// A workspace in [`ROOM`] holding one group of two windows, both shared
-    /// with the room — the first with the note it shows beside its own share
-    /// — and the room's devices, as its document lists them.
+    /// with the workspace — the first with the note it shows beside its own share
+    /// — and the workspace's devices, as its document lists them.
     fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
         use crate::app::AppKind;
         use crate::ids::{RoomId, StripId, WorkspaceId};

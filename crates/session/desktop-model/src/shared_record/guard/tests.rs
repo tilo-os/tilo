@@ -56,7 +56,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
     }
 }
 
-/// The windows on the room's desktop, in order.
+/// The windows on the workspace's desktop, in order.
 fn windows(guard: &DesktopGuard) -> Vec<u64> {
     let desktop = shared_record::read(&guard.doc, None).unwrap();
     desktop.tree.workspaces[0].strips[0]
@@ -66,7 +66,7 @@ fn windows(guard: &DesktopGuard) -> Vec<u64> {
         .collect()
 }
 
-/// A member's copy of the room's desktop record, as it was when made.
+/// A member's copy of the workspace's desktop record, as it was when made.
 struct Page(AutoCommit);
 
 impl Page {
@@ -79,7 +79,7 @@ impl Page {
         )
     }
 
-    /// Write `desktop` as one change: what the room gets, incrementally.
+    /// Write `desktop` as one change: what the workspace gets, incrementally.
     fn write(&mut self, desktop: &SharedDesktop) -> DocumentMutation {
         let heads = self.0.get_heads();
         shared_record::write(&mut self.0, desktop).unwrap();
@@ -88,7 +88,7 @@ impl Page {
     }
 }
 
-/// A room whose desktop holds Ada's window 1 and Ben's window 2.
+/// A workspace whose desktop holds Ada's window 1 and Ben's window 2.
 fn room() -> DesktopGuard {
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
     shared_record::write(&mut doc, &desktop(&[(1, 100, ADA), (2, 200, BEN)])).unwrap();
@@ -108,7 +108,7 @@ fn writer<'a>(
     }
 }
 
-/// Only the room's moderator may act on what someone else made.
+/// Only the workspace's moderator may act on what someone else made.
 fn moderates(writer: &'static str) -> impl Fn(&Touched) -> bool {
     move |_| writer == MOD
 }
@@ -223,7 +223,7 @@ fn opening_a_window_in_someone_elses_name_is_refused() {
 }
 
 /// A record route is a window's identity: once a window shows a record,
-/// not even its maker binds it to another one, and the room keeps the one
+/// not even its maker binds it to another one, and the workspace keeps the one
 /// it showed.
 #[test]
 fn not_even_its_maker_rebinds_a_windows_record() {
@@ -266,7 +266,7 @@ fn a_write_that_is_not_automerge_changes_nothing() {
     assert_eq!(windows(&guard), vec![1, 2]);
 }
 
-/// Ben has left the room: his window holds nobody, and Ada, who writes
+/// Ben has left the workspace: his window holds nobody, and Ada, who writes
 /// there, may close it without moderating.
 #[test]
 fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
