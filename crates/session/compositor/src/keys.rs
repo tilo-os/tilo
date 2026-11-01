@@ -121,8 +121,13 @@ impl HostKeys {
         self.repeating.as_ref().map(|repeating| repeating.due)
     }
 
-    /// The repeats due by `now`: the surface and the key, once per
-    /// interval passed (a stalled loop catches up, as a client would).
+    /// The repeat due by `now`: the surface and the key, or nothing.
+    ///
+    /// A beat the loop came to more than an interval late is gone, not owed:
+    /// the person's press and its release may both be behind the stall, and
+    /// a burst of catch-up repeats would type the key again for a press they
+    /// already let go. The next repeat comes an interval from now, so a key
+    /// still held carries on repeating once the loop is keeping time.
     pub(crate) fn due(&mut self, now: Instant) -> Vec<(usize, HostKey)> {
         let Some(interval) = self.repeat.interval() else {
             self.repeating = None;
@@ -131,16 +136,14 @@ impl HostKeys {
         let Some(repeating) = self.repeating.as_mut() else {
             return Vec::new();
         };
-        let mut due = Vec::new();
-        // A loop stalled for long catches up a few repeats, never a flood.
-        while repeating.due <= now && due.len() < 8 {
-            due.push((repeating.host, repeating.key.clone()));
-            repeating.due = repeating.due.checked_add(interval).unwrap_or(now);
+        let Some(late) = now.checked_duration_since(repeating.due) else {
+            return Vec::new();
+        };
+        repeating.due = now.checked_add(interval).unwrap_or(now);
+        if late > interval {
+            return Vec::new();
         }
-        if repeating.due <= now {
-            repeating.due = now.checked_add(interval).unwrap_or(now);
-        }
-        due
+        vec![(repeating.host, repeating.key.clone())]
     }
 }
 
@@ -265,7 +268,10 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].0, 2);
         assert!(first[0].1.repeat && first[0].1.pressed);
-        assert_eq!(keys.due(start + Duration::from_millis(300)).len(), 2);
+        // One interval on, the key repeats again; the next one is due a beat
+        // after it, not at the beat the first repeat kept.
+        assert_eq!(keys.due(start + Duration::from_millis(200)).len(), 1);
+        assert_eq!(keys.due(start + Duration::from_millis(300)).len(), 1);
         assert_eq!(keys.release(30), Some(2));
         assert!(keys.next_due().is_none());
         assert!(keys.due(start + Duration::from_secs(1)).is_empty());
@@ -284,14 +290,23 @@ mod tests {
     }
 
     #[test]
-    fn a_stalled_loop_catches_up_a_few_repeats_not_a_flood() {
+    fn a_stalled_loop_does_not_type_the_key_again() {
         let mut keys = HostKeys::default();
         let now = Instant::now();
         keys.press(0, &key(30), true, now);
-        assert_eq!(keys.due(now + Duration::from_secs(60)).len(), 8);
+        // The press and the release are both behind the stall: nothing of
+        // the beat the loop missed is typed, and the key is not left owing
+        // a burst of repeats when the loop keeps time again.
+        assert!(keys.due(now + Duration::from_secs(1)).is_empty());
         assert!(
             keys.next_due()
-                .is_some_and(|due| due > now + Duration::from_secs(60))
+                .is_some_and(|due| due > now + Duration::from_secs(1))
+        );
+        // Keeping time again, a key still held repeats on the beat.
+        assert_eq!(
+            keys.due(now + Duration::from_secs(1) + Duration::from_millis(34))
+                .len(),
+            1
         );
     }
 }
