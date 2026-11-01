@@ -14,12 +14,16 @@
 //! own scope ([`PERSONAL_SCOPE`]), not in a workspace and not in an id
 //! derived from their key. [`PersonRecords`] is where they are kept on this
 //! device for one app; [`StoredRecord`] is one of them, opened, edited with
-//! attribution and undo, and — once their personal store carries them — sent
-//! on to the person's other devices ([`StoredRecord::history_owner`]).
+//! attribution and undo, and sent on to the person's other devices
+//! ([`StoredRecord::history_owner`]).
 //!
-//! Until their personal store exists, records in that scope have no route:
-//! they are kept on this device and reach no other, which is where a device
-//! without a root identity keeps them.
+//! A record of that scope carries one route per app and record
+//! ([`StoredRecord::route`]), and it names the person's own cluster: the
+//! cluster every device of theirs derives from their identity root alone,
+//! and the one their store carries between them. The same record opened by
+//! the same app on another device is therefore the same document. On a
+//! device whose identity derives no cluster they have no route, and are kept
+//! on that device alone.
 
 use std::rc::Rc;
 
@@ -40,8 +44,7 @@ mod owner_tests;
 
 /// The scope of the person's own records, `(app, personal)`: theirs and not
 /// a workspace's, so it is carried to their devices by their personal store
-/// and never by a workspace's route. It is a scope no route names yet, so
-/// these records are kept on this device alone.
+/// and never by a workspace's route.
 pub const PERSONAL_SCOPE: &str = "personal";
 
 /// The id of the person's record of `kind` for an app: one per kind, the
@@ -86,7 +89,7 @@ impl PersonRecords {
         author: UserId,
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
-            store: owners.open_person(package_id, PERSONAL_SCOPE)?,
+            store: owners.open_personal(package_id, &author.0)?,
             owners: owners.clone(),
             replica: false,
             author,
@@ -98,9 +101,7 @@ impl PersonRecords {
 
     /// Records that store nothing on this device, for a window whose app
     /// already holds the stored ones elsewhere (the same app open in another
-    /// window): they converge with that window over the record's route, which
-    /// a record in the person's own scope has none of until their personal
-    /// store carries it.
+    /// window): they converge with that window over the record's route.
     ///
     /// # Errors
     /// Rejects an invalid package.
@@ -111,8 +112,13 @@ impl PersonRecords {
     /// [`Self::replica`], of the records kept in `scope`.
     fn replica_in(package_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let store = if scope == PERSONAL_SCOPE {
+            owners.open_personal(package_id, &author.0)?
+        } else {
+            owners.open_person(package_id, scope)?
+        };
         Ok(Self {
-            store: owners.open_person(package_id, scope)?,
+            store,
             owners,
             replica: true,
             author,
@@ -126,10 +132,9 @@ impl PersonRecords {
     /// beside its own. In one host, these use the original profile-scoped
     /// owner registry; another mounted app never opens a second writer or
     /// empty fallback replica for the same record. Separate hosts/devices
-    /// converge over the record's route where it has one, which a record in
-    /// the person's own scope gets from their personal store. Sharing an
-    /// owner adds no editor permission; the framework enforces the
-    /// resource's editor list.
+    /// converge over the record's route, which a record of the person's own
+    /// scope names in their own cluster. Sharing an owner adds no editor
+    /// permission; the framework enforces the resource's editor list.
     ///
     /// # Errors
     /// Rejects an invalid package.
@@ -139,7 +144,7 @@ impl PersonRecords {
         }
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
-            store: owners.open_person(package_id, PERSONAL_SCOPE)?,
+            store: owners.open_personal(package_id, &self.author.0)?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
@@ -562,8 +567,9 @@ impl StoredRecord {
     }
 
     /// Where the content this record references is stored and read: under
-    /// the workspace whose route carries the record. `None` for a record
-    /// kept on this device only, which keeps no content of its own.
+    /// the workspace whose route carries the record. `None` for a record the
+    /// person keeps in their own scope, which carries no content of its own,
+    /// and for one kept on this device only.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.package_and_home();

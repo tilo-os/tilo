@@ -1,7 +1,8 @@
 //! Records kept beside the one a window shows. An app's own records of a
 //! kind are each member's own in the workspace, published on their own route
 //! there and merged from that member's other devices; the person's shared
-//! records have no route and stay on the device.
+//! records ride the person's own cluster, one route per app and record, and
+//! the person's store carries them to their other devices.
 
 use super::*;
 use crate::record::person::{PERSONAL_SCOPE, PersonRecords, StoredRecord};
@@ -16,6 +17,19 @@ const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000a5";
 
 fn person() -> crate::permissions::UserId {
     crate::permissions::UserId(hex::encode(ROOT_KEY))
+}
+
+/// One device's copy of the person's watched list in their own scope.
+fn personal_device() -> StoredRecord {
+    let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    PersonRecords::open(&mut owners, APP, person())
+        .unwrap()
+        .open_record(RecordKind::new("test.watched"), &|doc| {
+            doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap()
 }
 
 /// One device's copy of the member's watched list in the workspace.
@@ -212,27 +226,57 @@ fn a_members_record_route_joins_naming_the_records_kind() {
 }
 
 /// The person's own records — their accounts, their contacts, what they
-/// watched — belong to them and to no workspace, and no route carries them
-/// yet: each device keeps its own until their personal store does.
+/// watched — belong to them and to no workspace: their route names the
+/// person's own cluster, which every device of theirs derives from their
+/// identity root alone, so the same record opened by the same app on another
+/// device is the same document and the person's store carries it there.
 #[test]
-fn the_persons_records_stay_on_this_device() {
-    for author in [person(), crate::permissions::UserId("local".into())] {
-        let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-        let records = PersonRecords::open(&mut owners, APP, author).unwrap();
-        let record = records
-            .open_record(RecordKind::new("test.watched"), &|doc| {
-                doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        watch(&record, "kept-here");
-        assert_eq!(record.route(), None, "no route names a personal record");
-        assert!(record.content().is_none(), "and none carries its content");
-        let mut app = app_holding(&record);
-        app.publish_owned_documents();
-        assert!(app.document_routes.sent.is_empty());
-    }
+fn the_persons_records_ride_the_persons_own_cluster() {
+    let laptop = personal_device();
+    watch(&laptop, "watched-on-the-laptop");
+    let route = laptop
+        .route()
+        .expect("the person's own cluster carries their record");
+    assert_eq!(route.app_id, APP);
+    assert_eq!(route.cluster_id, collab_types::person_room(&ROOT_KEY));
+    assert_eq!(route.record.as_deref(), Some(laptop.checkout().id.as_str()));
+
+    // Another device of the person derives the very same route for the
+    // record of that kind, without either device naming the other.
+    let phone = personal_device();
+    assert_eq!(phone.route(), Some(route.clone()));
+
+    // The app publishes the record on that route, as any other.
+    let mut app = app_holding(&laptop);
+    app.publish_owned_documents();
+    assert!(!app.document_routes.sent.is_empty());
+    assert!(
+        app.document_routes
+            .sent
+            .iter()
+            .all(|(sent, _)| sent == &route)
+    );
+}
+
+/// A device whose identity derives no cluster keeps the person's records on
+/// itself, as it does without a root identity.
+#[test]
+fn a_device_without_an_identity_keeps_the_persons_records_on_itself() {
+    let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    let record = PersonRecords::open(&mut owners, APP, crate::permissions::UserId("local".into()))
+        .unwrap()
+        .open_record(RecordKind::new("test.watched"), &|doc| {
+            doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    watch(&record, "kept-here");
+    assert_eq!(record.route(), None, "no route names a personal record");
+    assert!(record.content().is_none(), "and none carries its content");
+    let mut app = app_holding(&record);
+    app.publish_owned_documents();
+    assert!(app.document_routes.sent.is_empty());
 }
 
 /// The person's own scope is theirs alone: an app's record of a kind kept
@@ -511,7 +555,11 @@ fn a_reader_of_another_apps_record_publishes_nothing() {
         owned.checkout().id,
         "one record, as every device derives it"
     );
-    assert_eq!(read.route(), None, "and no route carries it yet");
+    assert_eq!(
+        read.route(),
+        owned.route(),
+        "one route per app and record: the reader follows it like the keeper"
+    );
 }
 
 /// The app that keeps a record of a kind publishes it on the route it syncs

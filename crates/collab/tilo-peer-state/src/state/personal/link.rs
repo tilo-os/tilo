@@ -29,6 +29,19 @@ use web_time::SystemTime;
 /// ALPN of a personal store's link between two devices of one person.
 pub const PERSONAL_ALPN: &[u8] = b"tilo-personal-store/1";
 
+/// A write a link admitted from another of the person's devices: the signed
+/// op, for the record it changes.
+///
+/// The host hands it to the apps that have the record open, so a sibling's
+/// edit arrives as any other device's does. Nothing else of the link's
+/// traffic is a document: the certificates and revocations stay the store's.
+#[derive(Clone, Debug)]
+pub struct AdmittedFrame {
+    pub app: String,
+    pub record: String,
+    pub envelope: collab_types::SignedOp,
+}
+
 /// A device's store, shared by the device's engine and its links to the
 /// person's other devices.
 ///
@@ -42,6 +55,7 @@ struct Inner {
     store: PeerPersonal,
     key: SigningKey,
     outgoing: broadcast::Sender<NeighbourMsg>,
+    admitted: broadcast::Sender<AdmittedFrame>,
     changed: watch::Sender<u64>,
 }
 
@@ -71,6 +85,7 @@ impl PersonalSync {
             store,
             key,
             outgoing: broadcast::channel(OUTGOING).0,
+            admitted: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
         }))
     }
@@ -118,6 +133,24 @@ impl PersonalSync {
         Ok(self.published(message))
     }
 
+    /// Apply a change to the store that is not a document of it: the devices
+    /// the person's identity certified, and the revocations it signed. Sends
+    /// the hello that carries them to every open link, and returns whether
+    /// the store changed.
+    pub fn admit(
+        &self,
+        admit: impl FnOnce(&mut super::PersonalStore, SystemTime) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        let changed = self
+            .0
+            .store
+            .write(|store| admit(store, SystemTime::now()))?;
+        if changed {
+            self.published(self.0.store.read(super::PersonalStore::hello));
+        }
+        Ok(changed)
+    }
+
     fn published(&self, message: NeighbourMsg) -> NeighbourMsg {
         self.0.changed.send_modify(bump);
         // No open link is no error: the next one catches up from the store.
@@ -130,6 +163,14 @@ impl PersonalSync {
     #[must_use]
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.0.changed.subscribe()
+    }
+
+    /// Every write a link admits from another of the person's devices, from
+    /// now on. A receiver that falls behind loses frames and catches up on
+    /// its next link.
+    #[must_use]
+    pub fn admitted(&self) -> broadcast::Receiver<AdmittedFrame> {
+        self.0.admitted.subscribe()
     }
 
     /// Dial the device at `addr` from `endpoint` and sync with it until the
@@ -199,6 +240,7 @@ impl PersonalSync {
             .map_err(|error| error.to_string())?;
         while let Some(message) = read_frame(&mut recv).await? {
             let identity = matches!(message, NeighbourMsg::IdentityHello { .. });
+            let frame = admitted_frame(&message);
             let admitted = self
                 .0
                 .store
@@ -207,6 +249,13 @@ impl PersonalSync {
                 Ok(outcome) => {
                     if outcome.changed || outcome.metadata_changed {
                         self.0.changed.send_modify(bump);
+                    }
+                    if outcome.changed
+                        && let Some(frame) = frame
+                    {
+                        // No local app having the record open is no error: the
+                        // store has it for when one opens it.
+                        let _ = self.0.admitted.send(frame);
                     }
                 }
                 Err(reason) if identity => {
@@ -218,6 +267,24 @@ impl PersonalSync {
         }
         Ok(())
     }
+}
+
+/// The document `message` carries, as local apps are handed it.
+fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
+    let NeighbourMsg::AppDocument {
+        app_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        return None;
+    };
+    Some(AdmittedFrame {
+        app: app_id.clone(),
+        record: record_id.clone(),
+        envelope: envelope.as_ref().clone(),
+    })
 }
 
 impl ProtocolHandler for PersonalSync {

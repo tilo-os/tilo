@@ -89,6 +89,11 @@ tilo-actions = { path = "../actions", features = ["test-support"] }
 tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] }
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
+# The record API apps open their own records with: a person's record reaches
+# their other device through the store the same way an app writes it.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# Where that record API keeps a device's records in the test: in memory.
+durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true
 # The governed-room acceptance test runs against a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }

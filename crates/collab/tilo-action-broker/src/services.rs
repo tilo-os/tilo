@@ -1916,4 +1916,7 @@ pub struct HostServices {
     /// reaches a room, and the broker refuses it rather than let a share
     /// promise access no grant backs.
     pub room_nodes: Option<Arc<dyn RoomNodeActions>>,
+    /// The person's own store, which carries the records of their own scope
+    /// to their other devices. Without it those records stay on this device.
+    pub personal: Option<tilo_peer_state::PersonalSync>,
 }

@@ -27,6 +27,7 @@ mod joined;
 mod media_import;
 #[cfg(test)]
 mod media_import_tests;
+mod personal;
 mod rooms;
 mod workspace;
 
@@ -34,6 +35,7 @@ use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
 use joined::{Joined, RecordCreation, Refusal};
+use personal::PersonalDoor;
 use rooms::Rooms;
 use std::{
     io,
@@ -59,7 +61,7 @@ use tilo_identity_host::{
     provisioning::IdentityStorage,
 };
 use tilo_peer_state::owner_commit::OwnerCommitService;
-use tilo_peer_state::{PeerPersonal, PersonalStore};
+use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
 use workspace::{ProfileGrants, ProfileWorkspace};
 
 /// Durable collaboration history, where the desktop session keeps it under
@@ -88,6 +90,9 @@ pub struct Standalone {
     _media: profile::MediaHost,
     /// The person's own documents, opened on their identity root.
     _personal: PeerPersonal,
+    /// The store open to the person's other devices for as long as this
+    /// runtime runs.
+    _personal_door: PersonalDoor,
     _lock: advisory_lock::FileLock,
 }
 
@@ -128,7 +133,7 @@ impl Standalone {
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         stage("opening the personal store");
-        let personal = personal_store(root, identity.user_public_key, &room_id)?;
+        let (personal, personal_key) = personal_store(root, identity.user_public_key, &room_id)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
         serve_device_grants(root, &apps);
@@ -145,6 +150,15 @@ impl Standalone {
             stage("placing the workspace on this device's room host");
             place_own_room(root, &workspace, &joined, &channel_keys.keys, (&apps, dev))?;
         }
+        stage("opening the person's store to their other devices");
+        let (personal_sync, personal_door) = PersonalDoor::serve(
+            joined.endpoint(),
+            (personal.clone(), personal_key),
+            &identity,
+            &actor,
+            Arc::clone(&channels),
+            Arc::clone(&fanout),
+        );
         let rooms = Arc::new(Rooms::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
@@ -158,40 +172,19 @@ impl Standalone {
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
-        let (policy_origin, policy_time) = execution_policy_clock()?;
-        let broker = tilo_action_broker::collab_broker::spawn_with_services(
-            root.join(COLLAB_SOCKET),
-            Some(rooms as Arc<dyn WorkspaceAuthority>),
-            PeerPublisher::with_optional_owner_commit(
-                None,
-                Arc::clone(&joined) as Arc<dyn OwnerCommitService>,
-            ),
-            None,
-            HostServices {
-                native_certificates: Some(Arc::new(Certificates {
-                    room: room_id.clone(),
-                    device,
-                    policy_time,
-                    joined: Arc::downgrade(&joined),
-                })),
-                launchable_catalogue: Some(root.join("state/launchable-actions.json")),
-                launcher: Some(Arc::clone(&apps) as Arc<dyn LauncherServices>),
-                app_action_access: Some(apps.access_resolver()),
-                app_action_grants: Some(Arc::new(ProfileGrants {
-                    workspace: Arc::clone(&workspace),
-                    apps: Arc::clone(&apps),
-                })),
-                legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
-                workspace_governance: Some(media_import::service(&workspace, &media)?),
-                record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
-                // The service the identity service answers key requests
-                // from: endpoints ask again when it says a channel changed.
-                channel_keys: Some(channel_keys.keys.clone()),
-                // Offloadable actions of the room may run on a better-placed
-                // device of this person, over the room's media in this store.
-                action_offload: crate::offload::action_offload(&[room_id.as_str()], media.store()),
-                ..HostServices::default()
+        let (policy_origin, broker) = start_broker(
+            BrokerParts {
+                root,
+                room_id: &room_id,
+                workspace: &workspace,
+                apps: &apps,
+                media: &media,
+                joined: &joined,
+                keys: &channel_keys.keys,
+                device,
+                personal: personal_sync,
             },
+            rooms,
             channels,
             fanout,
         )?;
@@ -218,9 +211,85 @@ impl Standalone {
             _files: files,
             _media: media,
             _personal: personal,
+            _personal_door: personal_door,
             _lock: lock,
         })
     }
+}
+
+/// What the broker's services are opened from: this profile's workspace, apps
+/// and media, the rooms this device joined, and the person's own store.
+struct BrokerParts<'a> {
+    root: &'a Path,
+    room_id: &'a str,
+    workspace: &'a Arc<ProfileWorkspace>,
+    apps: &'a Arc<apps::Apps>,
+    media: &'a profile::MediaHost,
+    joined: &'a Arc<Joined>,
+    keys: &'a tilo_action_broker::channel_encryption::ChannelKeyProvider,
+    device: [u8; 32],
+    personal: PersonalSync,
+}
+
+/// Start the collaboration broker over this profile's services.
+fn start_broker(
+    parts: BrokerParts<'_>,
+    rooms: Arc<Rooms>,
+    channels: Arc<Mutex<BrokerChannels>>,
+    fanout: Arc<FanoutState>,
+) -> io::Result<(tilo_action_broker::peer_actions::PolicyOrigin, BrokerHandle)> {
+    let (policy_origin, policy_time) = execution_policy_clock()?;
+    let broker = tilo_action_broker::collab_broker::spawn_with_services(
+        parts.root.join(COLLAB_SOCKET),
+        Some(rooms as Arc<dyn WorkspaceAuthority>),
+        PeerPublisher::with_optional_owner_commit(
+            None,
+            Arc::clone(parts.joined) as Arc<dyn OwnerCommitService>,
+        ),
+        None,
+        broker_services(parts, policy_time)?,
+        channels,
+        fanout,
+    )?;
+    Ok((policy_origin, broker))
+}
+
+/// The services the collaboration broker runs with, including the person's
+/// own store: the records of their own scope are kept in it as well as here,
+/// so their other devices have them.
+fn broker_services(
+    parts: BrokerParts<'_>,
+    policy_time: tilo_action_broker::peer_actions::PolicyTime,
+) -> io::Result<HostServices> {
+    Ok(HostServices {
+        native_certificates: Some(Arc::new(Certificates {
+            room: parts.room_id.to_owned(),
+            device: parts.device,
+            policy_time,
+            joined: Arc::downgrade(parts.joined),
+        })),
+        launchable_catalogue: Some(parts.root.join("state/launchable-actions.json")),
+        launcher: Some(Arc::clone(parts.apps) as Arc<dyn LauncherServices>),
+        app_action_access: Some(parts.apps.access_resolver()),
+        app_action_grants: Some(Arc::new(ProfileGrants {
+            workspace: Arc::clone(parts.workspace),
+            apps: Arc::clone(parts.apps),
+        })),
+        legacy_workspace: Some(Arc::clone(parts.workspace) as Arc<dyn LegacyWorkspaceProjection>),
+        workspace_governance: Some(media_import::service(parts.workspace, parts.media)?),
+        record_content: Some(joined::record_content(
+            parts.joined,
+            &parts.root.join(BLOB_SOCKET),
+        )),
+        // The service the identity service answers key requests from:
+        // endpoints ask again when it says a channel changed.
+        channel_keys: Some(parts.keys.clone()),
+        // Offloadable actions of the room may run on a better-placed device
+        // of this person, over the room's media in this store.
+        action_offload: crate::offload::action_offload(&[parts.room_id], parts.media.store()),
+        personal: Some(parts.personal),
+        ..HostServices::default()
+    })
 }
 
 fn execution_policy_clock() -> io::Result<(
@@ -747,8 +816,12 @@ fn channels(root: &Path) -> BrokerChannels {
 /// The person's own documents on this device: kept beside the profile's
 /// workspaces, opened on the identity `root` this device acts for. A store an
 /// earlier start kept is read back; the first start opens it empty.
-fn personal_store(profile: &Path, identity_root: [u8; 32], room: &str) -> io::Result<PeerPersonal> {
-    let (_, device) = tilo_identity_host::broker::trusted_current_device(room)?;
+fn personal_store(
+    profile: &Path,
+    identity_root: [u8; 32],
+    room: &str,
+) -> io::Result<(PeerPersonal, ed25519_dalek::SigningKey)> {
+    let (key, device) = tilo_identity_host::broker::trusted_current_device(room)?;
     let now = SystemTime::now();
     let path = profile.join(PERSONAL_STORE);
     let store = match std::fs::read(&path) {
@@ -758,7 +831,7 @@ fn personal_store(profile: &Path, identity_root: [u8; 32], room: &str) -> io::Re
         }
         Err(error) => return Err(error),
     };
-    Ok(PeerPersonal::new(store))
+    Ok((PeerPersonal::new(store), key))
 }
 
 /// This device's collaboration identity, provisioned in `storage` on first

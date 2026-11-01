@@ -31,6 +31,9 @@ mod shared;
 mod state;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+/// The person's own documents between their devices, with no host in between.
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
     GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation,
@@ -43,9 +46,6 @@ pub use state::{
     UnmergedWrite, committed_document_revision, decide_with_surfaces, default_surfaces,
     peer_handle, room_host_actor, room_hosts_of, seed_room, workspace_seed,
 };
-/// The person's own documents between their devices, with no host in between.
-#[cfg(not(target_arch = "wasm32"))]
-pub use state::{PERSONAL_ALPN, PersonalSync};
 pub mod coverage;
 mod governed_routes;
 pub use collab_types::DocumentMutation;

@@ -16,10 +16,16 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use ui::permissions::UserId;
+use ui::record::RecordKind;
+use ui::record::person::PersonRecords;
 use web_time::SystemTime;
 
 const APP: &str = "tube";
 const RECORD: &str = "prefs";
+/// The app whose own record the devices share, and the kind of it.
+const NOTES: &str = "so.tilo.notes";
+const KIND: &str = "notes.reading-position";
 
 /// A device key `n` certified by `root`.
 fn device(root: &SigningKey, n: u8, capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
@@ -167,4 +173,147 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
     a_router.shutdown().await.unwrap();
     b_endpoint.close().await;
     c_endpoint.close().await;
+}
+
+/// One device's copy of the app's record of `KIND`, opened the way the app
+/// opens it: in the person's own scope, under the id every device derives
+/// for that kind.
+fn app_record(person: &str) -> ui::record::person::StoredRecord {
+    let mut owners =
+        ui::record::RecordOwners::with_store(std::rc::Rc::new(durable_store::MemoryStore::new()));
+    PersonRecords::open(&mut owners, NOTES, UserId(person.to_owned()))
+        .unwrap()
+        .open_record(RecordKind::new(KIND), &|_| Ok(()))
+        .unwrap()
+}
+
+fn chapter(record: &ui::record::person::StoredRecord) -> Option<String> {
+    record
+        .read(|doc| {
+            doc.get(ROOT, "chapter")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_string().ok())
+        })
+        .flatten()
+}
+
+fn set_chapter(record: &ui::record::person::StoredRecord, value: &str) {
+    record
+        .edit(true, |doc| {
+            doc.put(ROOT, "chapter", value)
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+}
+
+/// The record an app writes on one of the person's devices is the record the
+/// same app reads on another of them, with no workspace anywhere: both
+/// devices open one route per app and record in the person's own cluster, and
+/// the person's store is what carries the document between them.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apps_record_written_on_one_device_is_read_on_another() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let root_key = root.verifying_key().to_bytes();
+    let person = hex::encode(root_key);
+    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let now = SystemTime::now();
+
+    let a = PersonalSync::new(
+        PersonalStore::open(root_key, a_cert, now).unwrap(),
+        a_key.clone(),
+    );
+    let b = PersonalSync::new(
+        PersonalStore::open(root_key, b_cert, now).unwrap(),
+        b_key.clone(),
+    );
+
+    // Both devices' apps hold the record, on the one route their identity
+    // root derives: the store's own key.
+    let on_a = app_record(&person);
+    let on_b = app_record(&person);
+    let route = on_a
+        .route()
+        .expect("the person's cluster carries the record");
+    assert_eq!(route, on_b.route().expect("one route per app and record"));
+    assert_eq!(route.cluster_id, collab_types::person_room(&root_key));
+    assert_eq!(route.cluster_id.to_string(), a.store().store_key());
+    assert_eq!(route.cluster_id.to_string(), b.store().store_key());
+
+    // The person reads on their laptop, and their app's write reaches their
+    // own store on the route it opens.
+    set_chapter(&on_a, "three");
+    let written = on_a.document().expect("the record's document");
+    a.publish(|store, key, now| {
+        store.publish(
+            NOTES,
+            route.record.as_deref().unwrap(),
+            &collab_types::DocumentMutation::Snapshot(written),
+            key,
+            now,
+        )
+    })
+    .unwrap();
+    assert_eq!(chapter(&on_b), None, "nothing has reached the phone yet");
+
+    // Nothing is joined and no workspace exists: the devices meet over the
+    // person's store alone.
+    let a_endpoint = endpoint(&a_key).await;
+    let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(PERSONAL_ALPN, a.clone())
+        .spawn();
+    let b_endpoint = endpoint(&b_key).await;
+    let link = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let a_addr = addr(&a_endpoint);
+        async move { b.connect(&b_endpoint, a_addr).await }
+    });
+    until(&b, |store| {
+        store.holds_document(NOTES, route.record.as_deref().unwrap())
+    })
+    .await;
+
+    // The phone's app merges what its own store holds, as it merges any
+    // device's document of the record, and reads what the laptop wrote.
+    let held = b
+        .store()
+        .document(NOTES, route.record.as_deref().unwrap())
+        .unwrap();
+    assert!(on_b.merge_peer_document(held).unwrap());
+    assert_eq!(chapter(&on_b).as_deref(), Some("three"));
+
+    // The other way round: the phone's edit reaches the laptop's app, and
+    // undo on the phone takes back the phone's edit and no one else's.
+    set_chapter(&on_b, "four");
+    let written = on_b.document().expect("the record's document");
+    b.publish(|store, key, now| {
+        store.publish(
+            NOTES,
+            route.record.as_deref().unwrap(),
+            &collab_types::DocumentMutation::Snapshot(written),
+            key,
+            now,
+        )
+    })
+    .unwrap();
+    until(&a, |store| {
+        store
+            .document(NOTES, route.record.as_deref().unwrap())
+            .is_some_and(|doc| field(&doc, "chapter").as_deref() == Some("four"))
+    })
+    .await;
+    let held = a
+        .store()
+        .document(NOTES, route.record.as_deref().unwrap())
+        .unwrap();
+    assert!(on_a.merge_peer_document(held).unwrap());
+    assert_eq!(chapter(&on_a).as_deref(), Some("four"));
+    assert!(on_b.undo());
+    assert_eq!(chapter(&on_b).as_deref(), Some("three"));
+
+    link.abort();
+    a_router.shutdown().await.unwrap();
+    b_endpoint.close().await;
 }

@@ -533,6 +533,13 @@ pub struct RecordSet {
     /// The room these records are being opened in — the cluster/workspace id.
     /// Stamped as a record's home when it is first created here.
     home: String,
+    /// The person's own cluster, for records kept in their own scope
+    /// ([`person::PERSONAL_SCOPE`]): their route names it, so one record of
+    /// an app is one record on every device the person uses, and the record
+    /// store that carries it is theirs rather than a workspace's. `None` for
+    /// records kept in a workspace, and for a person's records on a device
+    /// whose identity derives no cluster.
+    person: Option<uuid::Uuid>,
     open: HashMap<RecordId, Parked>,
     /// Names currently granted by the room index.  Discovery is intentionally
     /// separate from `open`: a hostile or merely large index must not create
@@ -631,6 +638,7 @@ impl RecordSet {
         Self {
             package_id: package_id.into(),
             home: home.into(),
+            person: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -662,6 +670,7 @@ impl RecordSet {
         Self {
             package_id: String::new(),
             home: String::new(),
+            person: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -787,17 +796,25 @@ impl RecordSet {
         self.open.get(id).and_then(|p| p.doc.as_ref())
     }
 
+    /// The cluster a record's route names: the workspace it is kept in, or
+    /// the person's own cluster for a record kept in their own scope.
+    fn cluster(&self) -> Result<uuid::Uuid, RecordOpenError> {
+        if let Some(person) = self.person {
+            return Ok(person);
+        }
+        uuid::Uuid::parse_str(&self.home).map_err(|_| RecordOpenError::IdentityMismatch)
+    }
+
     /// Primary stays `record=None` on every host.
     fn wire_route(
         &self,
         id: &RecordId,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
-        let room =
-            uuid::Uuid::parse_str(&self.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        let cluster = self.cluster()?;
         Ok(if id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(&self.package_id, room)
+            crate::collaboration::RouteSpec::app(&self.package_id, cluster)
         } else {
-            crate::collaboration::RouteSpec::record(&self.package_id, room, id.as_str())
+            crate::collaboration::RouteSpec::record(&self.package_id, cluster, id.as_str())
         })
     }
 
@@ -1744,7 +1761,32 @@ impl RecordOwners {
         package_id: &str,
         scope: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_with(package_id, scope, false)
+        self.open_scoped(package_id, scope, false, None)
+    }
+
+    /// The owner of `package_id`'s records of the person `person` (the
+    /// lowercase hex of their identity root), kept in their own scope
+    /// ([`person::PERSONAL_SCOPE`]).
+    ///
+    /// Those records carry one route per `(app, record)` in the person's own
+    /// cluster, so every device of theirs that opens the record opens the
+    /// same document, and the person's store is what carries it between
+    /// them. A `person` that derives no cluster keeps them on this device,
+    /// as it does without a root identity.
+    ///
+    /// # Errors
+    /// Rejects an invalid package or scope.
+    pub fn open_personal(
+        &mut self,
+        package_id: &str,
+        person: &str,
+    ) -> Result<RecordStore, RecordOpenError> {
+        self.open_scoped(
+            package_id,
+            person::PERSONAL_SCOPE,
+            false,
+            collab_types::person_room_of(person),
+        )
     }
 
     fn open_with(
@@ -1753,6 +1795,19 @@ impl RecordOwners {
         workspace_id: &str,
         joins_construction: bool,
     ) -> Result<RecordStore, RecordOpenError> {
+        self.open_scoped(package_id, workspace_id, joins_construction, None)
+    }
+
+    fn open_scoped(
+        &mut self,
+        package_id: &str,
+        workspace_id: &str,
+        joins_construction: bool,
+        person: Option<uuid::Uuid>,
+    ) -> Result<RecordStore, RecordOpenError> {
+        // A cluster of the person's own routes their own scope only: a
+        // workspace's records name the workspace.
+        let person = person.filter(|_| workspace_id == person::PERSONAL_SCOPE);
         if self.portable.is_some() {
             app_state::validate_record_namespace(package_id, workspace_id)?;
         } else {
@@ -1776,6 +1831,7 @@ impl RecordOwners {
         let store = RecordStore::new(RecordSet {
             package_id: package_id.to_owned(),
             home: workspace_id.to_owned(),
+            person,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,

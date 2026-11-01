@@ -593,7 +593,13 @@ fn a_running_host_holds_the_persons_own_documents_store() {
         personal.read(tilo_peer_state::PersonalStore::root),
         identity.user_public_key
     );
-    assert_eq!(personal.store_key(), hex::encode(identity.user_public_key));
+    // Its key is the cluster every record of the person's own is routed
+    // under: what an app's own record names, and the only thing two devices
+    // of theirs need agree on.
+    assert_eq!(
+        personal.store_key(),
+        collab_types::person_room(&identity.user_public_key).to_string()
+    );
     assert!(personal.rows().is_empty(), "nothing is written yet");
 }
 

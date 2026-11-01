@@ -84,13 +84,16 @@ impl PersonalStore {
         self.root
     }
 
-    /// The store's key in the routing key's text form: its identity root.
+    /// The store's key in the routing key's text form: the cluster every
+    /// record of this person's own is routed under.
     ///
-    /// Documents travel under it, so two devices of one person agree on
-    /// where a document lives without either naming the other.
+    /// It is derived from the identity root alone, so two devices of one
+    /// person agree on where a document lives without either naming the
+    /// other, and an app's own route for one of its records names the same
+    /// cluster as the store that carries it.
     #[must_use]
     pub fn store_key(&self) -> String {
-        hex::encode(self.root)
+        collab_types::person_room(&self.root).to_string()
     }
 
     /// This device's certificate.
@@ -133,11 +136,31 @@ impl PersonalStore {
 
     /// Hold a revocation the identity root signed. Returns whether it
     /// changed the store: an earlier revocation of the same device stands.
+    ///
+    /// A revocation of this device ends its hold on the documents: what the
+    /// person took away from it, it keeps none of.
     pub fn revoke(&mut self, entry: RevocationEntry) -> Result<bool, String> {
         if entry.user_public_key != self.root {
             return Err("the revocation names another identity".into());
         }
-        self.revocations.insert(entry).map_err(err)
+        let changed = self.revocations.insert(entry).map_err(err)?;
+        if self.revoked_here() {
+            self.forget_documents();
+        }
+        Ok(changed)
+    }
+
+    /// Whether the identity root revoked this device: it is no longer one of
+    /// the person's devices, and holds none of their documents.
+    fn revoked_here(&self) -> bool {
+        self.revocations.is_revoked(&self.device.device_public_key)
+    }
+
+    /// Let go of every document and every decided write: a device the person
+    /// revoked reads and writes nothing of theirs from here on.
+    fn forget_documents(&mut self) {
+        self.documents.clear();
+        self.exact = ExactAdmissions::default();
     }
 
     /// Whether `device` may hold a link to this store: it is not revoked, and
@@ -249,6 +272,11 @@ impl PersonalStore {
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut messages = vec![self.hello()];
+        // A revoked device says only who it is: its siblings end the link
+        // when they learn the person revoked it.
+        if self.revoked_here() {
+            return Ok(messages);
+        }
         let routes: Vec<Route> = self.documents.keys().cloned().collect();
         for route in routes {
             let Some(held) = self.documents.get(&route) else {
@@ -381,6 +409,9 @@ impl PersonalStore {
         local: bool,
     ) -> Result<ReceiveOutcome, String> {
         let source = *envelope.author.as_bytes();
+        if self.revoked_here() {
+            return Err("this device was revoked".into());
+        }
         if local {
             if source != self.device.device_public_key {
                 return Err("this device signs its own writes".into());
@@ -613,6 +644,10 @@ impl PersonalStore {
             );
         }
         store.exact = ExactAdmissions::decode(&durable.exact).map_err(err)?;
+        // A device revoked after it kept these bytes keeps none of them.
+        if store.revoked_here() {
+            store.forget_documents();
+        }
         Ok(store)
     }
 }
@@ -987,6 +1022,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_revoked_device_lets_go_of_the_documents_it_held() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+        let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
+        let mut b = PersonalStore::open(root_key, b_cert.clone(), now()).unwrap();
+        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            .unwrap();
+        for message in a.catch_up(&a_key, now()).unwrap() {
+            b.receive(a_key.verifying_key().to_bytes(), message, now())
+                .unwrap();
+        }
+        assert!(b.holds_document("tube", "prefs"));
+
+        // The person's root revokes B: it holds none of their documents from
+        // here on, writes none of them, and offers none.
+        assert!(b.revoke(revocation(&root, &b_key)).unwrap());
+        assert!(!b.holds_document("tube", "prefs"));
+        assert_eq!(b.document("tube", "prefs"), None);
+        assert!(b.rows().is_empty());
+        assert!(
+            b.publish("tube", "prefs", &change("accent", "blue"), &b_key, now())
+                .is_err()
+        );
+        assert!(
+            !b.catch_up(&b_key, now())
+                .unwrap()
+                .iter()
+                .any(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
+        );
+
+        // Kept after the revocation, the store comes back empty.
+        let kept = b.durable().unwrap();
+        let restored = PersonalStore::restore(&kept, &b_cert, now()).unwrap();
+        assert!(restored.rows().is_empty());
     }
 
     #[test]

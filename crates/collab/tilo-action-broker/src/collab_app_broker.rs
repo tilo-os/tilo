@@ -9524,6 +9524,28 @@ fn handle_signed_op_send_for_artifact(
     }
 }
 
+impl AppBrokerState {
+    /// Keep a record of the person's own scope in their store as well as
+    /// here, so it reaches their other devices: the store admits it as this
+    /// device's own write, on the cluster the record's route names.
+    ///
+    /// Nothing about the workspace joins or their rosters is involved — a
+    /// record of that scope has no workspace — and a record of any other
+    /// route is none of the store's.
+    pub(crate) fn keep_personally(&self, route: &CrdtRoute, envelope: &SignedOp) {
+        let Some(personal) = self.services.personal.as_ref() else {
+            return;
+        };
+        if personal.read(tilo_peer_state::PersonalStore::store_key) != route.cluster_id {
+            return;
+        }
+        if let Err(error) = personal.admit_local(&route.app_id, &route.record_id, envelope.clone())
+        {
+            tracing::warn!(%error, "a record of the person's own was not kept");
+        }
+    }
+}
+
 fn handle_authorized_signed_op_send(
     state: &Arc<AppBrokerState>,
     peer_id: u64,
