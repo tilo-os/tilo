@@ -13,7 +13,7 @@ use tilo_action_broker::{
 use tilo_user_identity::DeviceCert;
 
 pub(in crate::standalone) struct FixtureAuthority {
-    pub(in crate::standalone) room: uuid::Uuid,
+    pub(in crate::standalone) workspace: uuid::Uuid,
     pub(in crate::standalone) cert: DeviceCert,
     pub(in crate::standalone) time: PolicyTime,
 }
@@ -22,8 +22,8 @@ impl CertificateAuthority for FixtureAuthority {
         self.time.now_ns().map_err(|error| error.to_string())?;
         Ok(Some(self.time.clone()))
     }
-    fn authorize(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        if room != self.room || cert != &self.cert {
+    fn authorize(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
+        if workspace != self.workspace || cert != &self.cert {
             return Err("unheld fixture identity".into());
         }
         tilo_user_identity::verify_device_cert_at(
@@ -34,17 +34,17 @@ impl CertificateAuthority for FixtureAuthority {
     }
     fn authorize_with_policy_time(
         &self,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         cert: &DeviceCert,
         time: &PolicyTime,
     ) -> Result<(), String> {
         if !time.same_origin(&self.time) {
             return Err("runtime origin changed".into());
         }
-        self.authorize(room, cert)
+        self.authorize(workspace, cert)
     }
-    fn governs(&self, room: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
-        room == self.room
+    fn governs(&self, workspace: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
+        workspace == self.workspace
     }
 }
 
@@ -73,7 +73,7 @@ impl LauncherServices for RecordingLauncher {
             .push((app.into(), workspace.room().to_string()));
         Ok(())
     }
-    fn attest_process(&self, _pid: u32, _app: &str, _room: &str) -> bool {
+    fn attest_process(&self, _pid: u32, _app: &str, _workspace: &str) -> bool {
         false
     }
 }
@@ -90,7 +90,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::in_room(TestWorkspaceId(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
@@ -101,7 +101,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let launcher = Arc::new(RecordingLauncher::default());
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(FixtureAuthority {
-        room: uuid::Uuid::parse_str(&room).unwrap(),
+        workspace: uuid::Uuid::parse_str(&workspace_id).unwrap(),
         cert: certificate.clone(),
         time: origin.capture().unwrap(),
     }));
@@ -113,11 +113,15 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     // This is the exact factory used by Standalone::mcp_session_factory.
     let factory = RuntimeActionHost {
         broker,
-        room: room.clone(),
+        workspace: workspace_id.clone(),
         joined,
         session: None,
     }
-    .session_factory(room.clone(), actor.clone(), origin.capture().unwrap());
+    .session_factory(
+        workspace_id.clone(),
+        actor.clone(),
+        origin.capture().unwrap(),
+    );
     let server = factory().unwrap();
     let caller = server.execution_caller();
     assert_eq!(caller.user_public_key(), Some(&certificate.user_public_key));
@@ -143,7 +147,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     assert_eq!(opened["result"]["isError"], false, "{opened}");
     assert_eq!(
         launcher.0.lock().unwrap().as_slice(),
-        &[("host:fixture".into(), room.clone())]
+        &[("host:fixture".into(), workspace_id.clone())]
     );
     caller.retire_execution();
     for request in [query, invoke] {
@@ -173,19 +177,19 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     );
 }
 
-/// A room the runtime no longer holds is a confirmed custody change: the
+/// A workspace the runtime no longer holds is a confirmed custody change: the
 /// run ends for good, and the client is told that rather than to retry.
 #[tokio::test]
 async fn custody_the_runtime_no_longer_holds_ends_the_run() {
-    let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
-    let (joined, _directory) = Joined::test_hosting(room).await;
+    let workspace = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let (joined, _directory) = Joined::test_hosting(workspace).await;
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let run = joined
-        .admit_mcp_execution(&room.to_string(), &actor)
+        .admit_mcp_execution(&workspace.to_string(), &actor)
         .unwrap();
-    joined.owner.invalidate_identity(room);
+    joined.owner.invalidate_identity(workspace);
     let refusal = run.check(&joined).unwrap_err();
     assert_eq!(refusal, super::Refusal::Ended);
     assert!(!run.caller().execution_is_live());

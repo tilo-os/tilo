@@ -451,12 +451,12 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
             let channel = workspace.route.channel_key();
             assert_eq!(
                 endpoint
-                    .call(Operation::Room {
+                    .call(Operation::Workspace {
                         channel: channel.clone(),
                         seen: None,
                     })
                     .await,
-                Ok(Reply::Room(runtime_collab::RoomStatus::Ready))
+                Ok(Reply::Workspace(runtime_collab::WorkspaceStatus::Ready))
             );
             let refused = endpoint
                 .call(Operation::Join(Join {

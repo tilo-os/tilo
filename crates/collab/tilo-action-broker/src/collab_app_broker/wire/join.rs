@@ -79,12 +79,12 @@ impl AppConnection {
         // until apps can open documents in it, whichever client asks.
         if let Some(memberships) = state.services.workspace_memberships.clone() {
             let mut status = memberships.workspace_status(&route.cluster_id);
-            while matches!(status, runtime_collab::RoomStatus::Waiting { .. }) {
+            while matches!(status, runtime_collab::WorkspaceStatus::Waiting { .. }) {
                 status = memberships
                     .workspace_status_change(&route.cluster_id, status)
                     .await;
             }
-            if let runtime_collab::RoomStatus::Refused(reason) = status {
+            if let runtime_collab::WorkspaceStatus::Refused(reason) = status {
                 return Err(BrokerError::failed(reason));
             }
         }

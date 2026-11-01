@@ -3,7 +3,7 @@ use runtime_fs::blobs::{BlobClient, ReadOutcome};
 use std::collections::BTreeMap;
 use tilo_actions::remote::{Confirmation, InvokeArgument, PendingPoll, RemoteActionTarget};
 
-const TEST: &str = "standalone::media_import_tests::owner_import_through_the_canonical_door_grants_only_the_selected_room";
+const TEST: &str = "standalone::media_import_tests::owner_import_through_the_canonical_door_grants_only_the_selected_workspace";
 
 #[test]
 fn retained_owner_facade_refuses_revoked_device_before_import() {
@@ -16,24 +16,24 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     // The persistent OS-search door and CLI use this same runtime facade.
     // It retains certified custody without installing a native seat service.
     let host = session.action_host().unwrap();
-    let owner = Caller::local_person(session.actor()).in_room(session.room());
+    let owner = Caller::local_person(session.actor()).in_room(session.workspace());
     let runtime = session.media_host().handle().unwrap();
     let store = session.media_host().store();
     let first = runtime
         .block_on(store.ingest(b"approved".to_vec()))
         .unwrap();
     let untouched = runtime.block_on(store.ingest(b"revoked".to_vec())).unwrap();
-    let accepted = request(session.room(), &first.to_hex());
+    let accepted = request(session.workspace(), &first.to_hex());
     let result = finish(&host, &owner, &accepted).unwrap();
     assert!(matches!(
         result.update,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    let selected = tilo_identity_host::registry::selected_identity_profile(session.room())
+    let selected = tilo_identity_host::registry::selected_identity_profile(session.workspace())
         .unwrap()
         .unwrap();
     let (_, certificate) =
-        tilo_identity_host::broker::trusted_current_device(session.room()).unwrap();
+        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
     tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
         .unwrap()
         .revoke(
@@ -45,7 +45,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         .unwrap();
     for asked in [
         accepted.clone(),
-        request(session.room(), &untouched.to_hex()),
+        request(session.workspace(), &untouched.to_hex()),
     ] {
         assert!(matches!(
             host.invoke(&owner, asked).poll_ready(),
@@ -63,7 +63,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
             .is_err()
     );
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
-    let scope = client.scope(session.room(), "so.tilo.photos").unwrap();
+    let scope = client.scope(session.workspace(), "so.tilo.photos").unwrap();
     assert_eq!(
         scope.read_all(&untouched.to_hex()).unwrap(),
         ReadOutcome::Unavailable
@@ -72,17 +72,17 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     drop(session);
 }
 
-fn request(room: &str, hash: &str) -> InvokeRequest {
+fn request(workspace: &str, hash: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(room),
+            provider: tilo_actions::remote::workspace_provider(workspace),
             address: tilo_actions::ActionAddress::new(media_import::RESOURCE, media_import::ACTION),
         },
         argument: InvokeArgument::Json(
             serde_json::from_value(serde_json::json!({
                 "source_store": "runtime-profile-content", "source_workspace": "unscoped",
-                "destination_workspace": room, "hashes": [hash], "max_bytes": 1024
+                "destination_workspace": workspace, "hashes": [hash], "max_bytes": 1024
             }))
             .unwrap(),
         ),
@@ -168,20 +168,20 @@ fn refuse_scoped_imports(
     owner: &Caller,
     asked: &InvokeRequest,
 ) {
-    let room = session.room();
+    let workspace = session.workspace();
     refused(
         host,
-        &Caller::local_agent("limited").in_room(room),
+        &Caller::local_agent("limited").in_room(workspace),
         asked.clone(),
     );
     refused(
         host,
-        &Caller::local_app("so.tilo.photos").in_room(room),
+        &Caller::local_app("so.tilo.photos").in_room(workspace),
         asked.clone(),
     );
     refused(
         host,
-        &Caller::local_person("other-owner").in_room(room),
+        &Caller::local_person("other-owner").in_room(workspace),
         asked.clone(),
     );
     refused(
@@ -200,12 +200,12 @@ fn refuse_scoped_imports(
             ..asked.clone()
         },
     );
-    let selected = tilo_identity_host::registry::selected_identity_profile(room)
+    let selected = tilo_identity_host::registry::selected_identity_profile(workspace)
         .unwrap()
         .unwrap();
     refused(
         host,
-        &Caller::authenticated(selected.user_public_key, [9; 32]).in_room(room),
+        &Caller::authenticated(selected.user_public_key, [9; 32]).in_room(workspace),
         asked.clone(),
     );
     let mut spoofed = asked.clone();
@@ -239,16 +239,16 @@ fn refuse_scoped_imports(
 }
 
 #[test]
-fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
+fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() {
     let Some(profile) = super::tests::isolated_root(TEST) else {
         return;
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let host = session.action_host().unwrap();
-    let room = session.room();
-    let owner = Caller::local_person(session.actor()).in_room(room);
+    let workspace = session.workspace();
+    let owner = Caller::local_person(session.actor()).in_room(workspace);
     // Historical raw content in the actual runtime profile store, without a
-    // media room tag. No synthetic source-room root is manufactured.
+    // media workspace tag. No synthetic source-workspace root is manufactured.
     let store = session.media_host().store();
     let hash = session
         .media_host()
@@ -263,8 +263,8 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
         .block_on(store.ingest(b"not selected".to_vec()))
         .unwrap();
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
-    let own = client.scope(room, "so.tilo.photos").unwrap();
-    let other = client.scope("another-room", "so.tilo.photos").unwrap();
+    let own = client.scope(workspace, "so.tilo.photos").unwrap();
+    let other = client.scope("another-workspace", "so.tilo.photos").unwrap();
     assert_eq!(
         own.read_all(&hash.to_hex()).unwrap(),
         ReadOutcome::Unavailable
@@ -276,12 +276,12 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
         )),
         runtime.clone(),
     );
-    let own_scope = runtime_fs::blobs::BlobScope::new(room, "so.tilo.photos").unwrap();
+    let own_scope = runtime_fs::blobs::BlobScope::new(workspace, "so.tilo.photos").unwrap();
     assert_eq!(
         runtime.block_on(route_content.bind_blob(&own_scope, *hash.as_bytes())),
         Err(tilo_relay::offload::BindError::NotLocal)
     );
-    let asked = request(room, &hash.to_hex());
+    let asked = request(workspace, &hash.to_hex());
     refuse_scoped_imports(&session, &host, &owner, &asked);
     assert_eq!(
         own.read_all(&hash.to_hex()).unwrap(),
@@ -306,7 +306,8 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
         runtime.block_on(route_content.bind_blob(&own_scope, *hash.as_bytes())),
         Ok(19)
     );
-    let other_scope = runtime_fs::blobs::BlobScope::new("another-room", "so.tilo.photos").unwrap();
+    let other_scope =
+        runtime_fs::blobs::BlobScope::new("another-workspace", "so.tilo.photos").unwrap();
     assert_eq!(
         runtime.block_on(route_content.bind_blob(&other_scope, *hash.as_bytes())),
         Err(tilo_relay::offload::BindError::NotLocal)
@@ -331,7 +332,7 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
         host.invoke(&owner, asked).poll_ready(),
         PendingPoll::Ready(Ok(_))
     ));
-    let cli_request = serde_json::to_string(&request(room, &untouched.to_hex())).unwrap();
+    let cli_request = serde_json::to_string(&request(workspace, &untouched.to_hex())).unwrap();
     // An active daemon owns the profile. The owner CLI must never start a
     // second server or bypass that custody.
     assert!(crate::cli::owner_action::<Standalone>(&profile, &cli_request).is_err());
@@ -391,7 +392,9 @@ fn check_owner_cli(profile: &Path, cli_request: &str, hash: &str) {
     );
     let reopened = Standalone::start_reporting(profile, &mut |_| {}).unwrap();
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
-    let own = client.scope(reopened.room(), "so.tilo.photos").unwrap();
+    let own = client
+        .scope(reopened.workspace(), "so.tilo.photos")
+        .unwrap();
     assert!(matches!(
         own.read_all(hash).unwrap(),
         ReadOutcome::Ready { .. }

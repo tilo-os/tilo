@@ -2085,19 +2085,19 @@ impl WireConnection {
                     ))
                 })
             }
-            Operation::Room { channel, seen } => {
+            Operation::Workspace { channel, seen } => {
                 let memberships = self
                     .service
                     .as_ref()
                     .and_then(|service| service.state.services.workspace_memberships.clone());
                 let workspace = CrdtRoute::from_channel_key(&channel).cluster_id;
                 Box::pin(async move {
-                    Ok(Reply::Room(match (memberships, seen) {
+                    Ok(Reply::Workspace(match (memberships, seen) {
                         (Some(memberships), Some(seen)) => {
                             memberships.workspace_status_change(&workspace, seen).await
                         }
                         (Some(memberships), None) => memberships.workspace_status(&workspace),
-                        (None, _) => runtime_collab::RoomStatus::default(),
+                        (None, _) => runtime_collab::WorkspaceStatus::default(),
                     }))
                 })
             }
@@ -2279,7 +2279,7 @@ impl WireConnection {
                 ..
             }
             | Operation::Join(_)
-            | Operation::Room { .. }
+            | Operation::Workspace { .. }
             | Operation::Command { .. }
             | Operation::Changed { .. }
             | Operation::Task { .. }

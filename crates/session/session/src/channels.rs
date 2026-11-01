@@ -107,7 +107,7 @@ impl Channels {
         // carries a room's window streams between the devices it admits from
         // the moment it runs, not only from the room's next change.
         for room in engine.rooms() {
-            link.room_changed(room);
+            link.workspace_changed(room);
         }
         engine.attach_link(link);
         Ok(Self { _pump: pump })
@@ -118,8 +118,8 @@ impl Channels {
 /// session's collaboration plane hears and says, reached from the thread that
 /// settles the groups.
 ///
-/// It is also how the plane learns that a room's state moved
-/// ([`Self::room_changed`]) and which devices the room admits
+/// It is also how the plane learns that a workspace's state moved
+/// ([`Self::workspace_changed`]) and which devices the workspace admits
 /// ([`Self::tell_roster`]), so a change the host published is acted on in the
 /// pass after it was taken in.
 pub struct ChannelLink {
@@ -195,10 +195,10 @@ impl ChannelLink {
         true
     }
 
-    /// Room `room`'s state moved here: the devices it admits and the channels
-    /// its records are may differ from what was last read.
-    pub(crate) fn room_changed(&self, room: RoomId) {
-        self.changed.lock_recover().insert(room);
+    /// Workspace `workspace`'s state moved here: the devices it admits and
+    /// the channels its records are may differ from what was last read.
+    pub(crate) fn workspace_changed(&self, workspace: RoomId) {
+        self.changed.lock_recover().insert(workspace);
         self.park.poke();
     }
 
@@ -529,18 +529,18 @@ fn spawn_pump(
     Ok(Pump { park, stop })
 }
 
-/// The devices a room admits, by the publisher each of their sessions is
-/// known by, and when the certificate the room holds of them expires (Unix
-/// nanoseconds).
+/// The devices a workspace admits, by the publisher each of their sessions
+/// is known by, and when the certificate the workspace holds of them expires
+/// (Unix nanoseconds).
 pub(crate) type Roster = Vec<RosterDevice>;
 
-/// The roster of `room`: the devices its governance admits now, which are the
-/// ones its window streams carry between. A device the room removed, or whose
-/// certificate ran out, is not on it, and what it sent or would receive is
-/// refused from then on.
-pub(crate) fn roster_of(engine: &Engine, room: RoomId) -> Result<Roster, String> {
+/// The roster of `workspace`: the devices its governance admits now, which
+/// are the ones its window streams carry between. A device the workspace
+/// removed, or whose certificate ran out, is not on it, and what it sent or
+/// would receive is refused from then on.
+pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, String> {
     let now = SystemTime::now();
-    engine.owner().with_current(room, |view| {
+    engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
             .peer()
             .governance()

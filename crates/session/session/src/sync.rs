@@ -1,14 +1,14 @@
 //! Who is here with this person: the session as a client of the
 //! collaboration plane.
 //!
-//! The session takes part in the room each workspace is. It says this
-//! person's presence on the room's topic — that they are here, what they say
-//! they are doing, how available they are, whose view they follow, where
-//! their pointer is — and it hears everyone else's from there, as one
-//! [`PeerPresence`] under the room's workspace scope. The wire is the
-//! collaboration plane's own message ([`NeighbourMsg::AppPresenceV2`]), so a
-//! browser, an agent and this session are present to each other alike, and
-//! the session needs nothing of its own to be one of them.
+//! The session takes part in the workspace each window shows. It says this
+//! person's presence on the workspace's topic — that they are here, what they
+//! say they are doing, how available they are, whose view they follow, where
+//! their pointer is — and hears everyone else's from there, as one
+//! [`PeerPresence`] under the workspace's scope. The wire is the collaboration
+//! plane's own message ([`NeighbourMsg::AppPresenceV2`]), so a browser, an
+//! agent and this session are present to each other alike, and the session
+//! needs nothing of its own to be one of them.
 //!
 //! Nothing here is drawn. The roster it feeds is the desktop's
 //! (`tilo_desktop::here`): the People panel, the bar's faces and the markers
@@ -52,16 +52,16 @@ use crate::engine::Engine;
 
 mod gate;
 
-/// The app id the desktop of a room says its own presence under, as the
-/// browser, the agents and every app reading a room expect it.
+/// The app id the desktop of a workspace says its own presence under, as the
+/// browser, the agents and every app reading a workspace expect it.
 const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 
 /// How often this person says again where they are, so someone whose host
-/// session came up after the first word still hears them, and so a room never
+/// session came up after the first word still hears them, and so a workspace never
 /// mistakes nobody speaking for nobody being here.
 const PRESENCE_AGAIN: Duration = Duration::from_secs(20);
 
-/// How long redeeming an invitation to a room may take: the host is asked
+/// How long redeeming an invitation to a workspace may take: the host is asked
 /// three times, each exchange with its own bound.
 const REDEEM_WITHIN: Duration = Duration::from_secs(120);
 
@@ -83,11 +83,11 @@ pub struct OwnPresence {
     pub following: Option<String>,
 }
 
-/// A call in progress in a room, as the people in it say.
+/// A call in progress in a workspace, as the people in it say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveCall {
-    /// The room the channel is in, as its id travels.
-    pub room: String,
+    /// The workspace the channel is in, as its id travels.
+    pub workspace: String,
     /// Chat's id of the voice channel.
     pub channel: String,
     /// What the channel is called, as the people in it say; empty when
@@ -127,7 +127,7 @@ impl LiveCall {
 /// Someone else here, as their presence and their certificate tell it.
 #[derive(Clone, Debug, PartialEq)]
 struct Peer {
-    /// Their device's publisher: the endpoint id every room member names it
+    /// Their device's publisher: the endpoint id every workspace member names it
     /// by.
     publisher: EndpointId,
     /// The person behind the device (user root, hex), once its certificate
@@ -146,7 +146,7 @@ struct Peer {
     /// The call they are in, as their presence says: the channel's id and
     /// what it is called.
     call: Option<ui::CallPresence>,
-    /// Where their pointer is: the tab of this room its tile shows, and the
+    /// Where their pointer is: the tab of this workspace its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
     /// They said they are here and have not left: what makes them a member.
@@ -188,18 +188,18 @@ impl Peer {
     }
 }
 
-/// One room this session takes part in, and who it heard is here.
+/// One workspace this session takes part in, and who it heard is here.
 #[derive(Debug)]
-struct Room {
-    /// The room's topic.
+struct Workspace {
+    /// The workspace's topic.
     ws: WorkspaceId,
-    /// The room, as its id travels: the uuid string every publish names.
+    /// The workspace, as its id travels: the uuid string every publish names.
     id: String,
     /// Everyone heard here, in the order they arrived.
     peers: Vec<Peer>,
 }
 
-impl Room {
+impl Workspace {
     /// Change what is known of `publisher`, starting their entry the first
     /// time they say anything.
     fn with(&mut self, publisher: EndpointId, change: impl FnOnce(&mut Peer)) {
@@ -261,7 +261,7 @@ impl Room {
         }
     }
 
-    /// Where their pointer moved on the tile of a tab of this room.
+    /// Where their pointer moved on the tile of a tab of this workspace.
     fn point(&mut self, from: EndpointId, key: &PresenceKey, point: (f64, f64)) {
         if let PresenceKey::Pointer {
             space: PointerSpace::Tile { room, tab },
@@ -311,7 +311,7 @@ impl Room {
         });
     }
 
-    /// They left the room.
+    /// They left the workspace.
     fn depart(&mut self, publisher: EndpointId) {
         self.peers.retain(|peer| peer.publisher != publisher);
     }
@@ -333,7 +333,7 @@ impl Room {
                 }
             } else {
                 let mut call = LiveCall {
-                    room: self.id.clone(),
+                    workspace: self.id.clone(),
                     channel: presence.channel.clone(),
                     name: presence.name.clone(),
                     people: Vec::new(),
@@ -367,19 +367,21 @@ impl Room {
     }
 }
 
-/// The rooms this session takes part in, and the one in front.
+/// The workspaces this session takes part in, and the one in front.
 #[derive(Debug)]
 struct Plane {
     /// This device's publisher.
     publisher: EndpointId,
-    rooms: Vec<Room>,
-    /// The room in front: whose roster the desktop shows.
+    workspaces: Vec<Workspace>,
+    /// The workspace in front: whose roster the desktop shows.
     active: Option<WorkspaceId>,
 }
 
 impl Plane {
-    fn room(&mut self, ws: WorkspaceId) -> Option<&mut Room> {
-        self.rooms.iter_mut().find(|room| room.ws == ws)
+    fn workspace(&mut self, ws: WorkspaceId) -> Option<&mut Workspace> {
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.ws == ws)
     }
 
     /// Take one event from the plane.
@@ -387,8 +389,8 @@ impl Plane {
         match event {
             NetEvent::Msg { ws, peer, msg, .. } => self.message(ws, peer, msg),
             NetEvent::PeerLeft { ws, peer, .. } => {
-                if let Some(room) = self.room(ws) {
-                    room.depart(peer);
+                if let Some(workspace) = self.workspace(ws) {
+                    workspace.depart(peer);
                 }
             }
             _ => {}
@@ -401,14 +403,14 @@ impl Plane {
             return;
         }
         let Some(id) = self
-            .rooms
+            .workspaces
             .iter()
-            .find(|room| room.ws == ws)
-            .map(|room| room.id.clone())
+            .find(|workspace| workspace.ws == ws)
+            .map(|workspace| workspace.id.clone())
         else {
             return;
         };
-        let Some(room) = self.room(ws) else {
+        let Some(workspace) = self.workspace(ws) else {
             return;
         };
         match msg {
@@ -418,29 +420,29 @@ impl Plane {
                 presence,
                 ..
             } if app_id == DESKTOP_PRESENCE_APP && cluster_id == id => {
-                room.hear(from, &presence);
+                workspace.hear(from, &presence);
             }
             NeighbourMsg::PresenceMoved { key, point, .. } => {
                 if let Some(key) = pointer_key(&key) {
-                    room.point(from, &key, point);
+                    workspace.point(from, &key, point);
                 }
             }
             NeighbourMsg::PresenceCleared { key, .. } => {
                 if let Some(key) = pointer_key(&key) {
-                    room.clear_point(from, &key);
+                    workspace.clear_point(from, &key);
                 }
             }
-            NeighbourMsg::IdentityHello { cert, .. } => room.certified(from, &cert),
+            NeighbourMsg::IdentityHello { cert, .. } => workspace.certified(from, &cert),
             _ => {}
         }
     }
 
-    /// Everyone whose pointer is over `tab` of `room` now, by publisher, if
-    /// this session takes part in that room.
-    fn pointers(&self, room: &str, tab: u64) -> Vec<(String, f64, f64)> {
-        self.rooms
+    /// Everyone whose pointer is over `tab` of `workspace` now, by publisher, if
+    /// this session takes part in that workspace.
+    fn pointers(&self, workspace: &str, tab: u64) -> Vec<(String, f64, f64)> {
+        self.workspaces
             .iter()
-            .find(|held| held.id == room)
+            .find(|held| held.id == workspace)
             .map(|held| held.pointers(tab))
             .unwrap_or_default()
     }
@@ -452,10 +454,10 @@ fn pointer_key(key: &str) -> Option<PresenceKey> {
     serde_json::from_str(key).ok()
 }
 
-/// One room's address, as a publish names it.
-fn room_key(room: &str) -> Vec<u8> {
+/// One workspace's address, as a publish names it.
+fn workspace_key(workspace: &str) -> Vec<u8> {
     postcard::to_stdvec(&PresenceKey::Workspace {
-        id: room.to_owned(),
+        id: workspace.to_owned(),
     })
     .unwrap_or_default()
 }
@@ -464,7 +466,7 @@ fn room_key(room: &str) -> Vec<u8> {
 /// shared window, or a member's ask to view one of this device's.
 #[derive(Clone, Debug)]
 pub(crate) struct ReceivedSurface {
-    /// The room's topic it came in on.
+    /// The workspace's topic it came in on.
     pub(crate) ws: WorkspaceId,
     /// The device that published it.
     pub(crate) from: EndpointId,
@@ -474,16 +476,16 @@ pub(crate) struct ReceivedSurface {
 /// What the sync thread is asked to do.
 #[derive(Debug)]
 pub(crate) enum Outgoing {
-    /// Take part in the topic of a room.
+    /// Take part in the topic of a workspace.
     Join(WorkspaceId),
-    /// Stop taking part in the topic of a room.
+    /// Stop taking part in the topic of a workspace.
     Leave(WorkspaceId),
-    /// Publish `msg` on the topic of a room.
+    /// Publish `msg` on the topic of a workspace.
     Publish {
         ws: WorkspaceId,
         msg: Box<NeighbourMsg>,
     },
-    /// Send one window's stream on the topic of the room it is shared in,
+    /// Send one window's stream on the topic of the workspace it is shared in,
     /// to the members that asked to view it and no one else.
     PublishSurfaceTo {
         ws: WorkspaceId,
@@ -500,7 +502,7 @@ pub(crate) enum Outgoing {
     /// Dial a workspace host: an always-on peer that keeps what this
     /// person's devices publish while the others are away.
     Connect(EndpointAddr),
-    /// Redeem an invitation into the workspace the desk made for its room.
+    /// Redeem an invitation into the workspace the desk made for it.
     Enroll(Enrolling),
     /// Hear the person's other devices from now on.
     WatchSiblings,
@@ -522,11 +524,11 @@ pub(crate) enum Outgoing {
     /// joining device only once it asks (an on-demand record, or a part of a
     /// chain behind its head).
     OpenRecord { ws: WorkspaceId, channel: [u8; 32] },
-    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// Ask the host of the joined workspace on `ws` to replay what it retains:
     /// something a message let go earlier waited for has arrived, and the
     /// message is decided again when it comes back.
     Replay(WorkspaceId),
-    /// Say which devices room `ws` admits, and until when each of their
+    /// Say which devices workspace `ws` admits, and until when each of their
     /// certificates holds: they alone send and receive its window streams.
     Roster {
         ws: WorkspaceId,
@@ -537,14 +539,14 @@ pub(crate) enum Outgoing {
 }
 
 /// A workspace this session is joining: the invitation that admits this
-/// device to its room, and the workspace on the desk made for that room,
-/// which is where what the room holds arrives.
+/// device to its workspace, and the workspace on the desk made for it,
+/// which is where what the workspace holds arrives.
 #[derive(Debug)]
 pub struct Enrolling {
-    /// The workspace the desk made for the room.
+    /// The workspace the desk made for it.
     pub workspace: DeskWorkspace,
-    /// The room the invitation grants.
-    pub room: DeskRoom,
+    /// The workspace the invitation grants.
+    pub workspace_id: DeskRoom,
     /// The invitation itself, verified for this person before it got here.
     pub invitation: String,
 }
@@ -553,13 +555,13 @@ pub struct Enrolling {
 #[derive(Debug)]
 pub struct Enrolled {
     pub workspace: DeskWorkspace,
-    pub room: DeskRoom,
-    /// `Ok` once this device holds the room and takes part in it.
+    pub workspace_id: DeskRoom,
+    /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
 }
 
-/// The session's client of the collaboration plane: the rooms of the
-/// workspaces it shows, this person's presence in them, and everyone else's.
+/// The session's client of the collaboration plane: the workspaces it shows,
+/// this person's presence in them, and everyone else's.
 pub struct Client {
     plane: RefCell<Plane>,
     own: RefCell<OwnPresence>,
@@ -579,11 +581,11 @@ pub struct Client {
     surfaces: RefCell<Vec<ReceivedSurface>>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
-    /// This device's rooms, which a join enrolls into: `None` when the
+    /// This device's workspaces, which a join enrolls into: `None` when the
     /// session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane: the governance
-    /// of the rooms' sealed records, and the devices each room admits. What
+    /// of the workspaces' sealed records, and the devices each workspace admits. What
     /// the engine holds, so a session that runs no channel service has none.
     link: Option<Arc<ChannelLink>>,
     /// The person this device belongs to, by their root key, as its
@@ -618,7 +620,7 @@ pub struct Client {
     /// Where this device's actions are served, and how an app here reaches
     /// the person's other devices: `None` until the endpoint has bound.
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
-    /// This device's relays, held back until a room this session takes part
+    /// This device's relays, held back until a workspace this session takes part
     /// in has someone else in it.
     reachability: Reachability,
     /// The thread running the peer actor, stopped when this drops.
@@ -631,11 +633,11 @@ impl std::fmt::Debug for Client {
         f.debug_struct("Client")
             .field("publisher", &plane.publisher)
             .field(
-                "rooms",
+                "workspaces",
                 &plane
-                    .rooms
+                    .workspaces
                     .iter()
-                    .map(|room| room.id.as_str())
+                    .map(|workspace| workspace.id.as_str())
                     .collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
@@ -653,20 +655,20 @@ impl Drop for Client {
 
 impl Client {
     /// Take part in the collaboration plane: bind this device's endpoint,
-    /// start the peer actor, and from then on hear the rooms the session
+    /// start the peer actor, and from then on hear the workspaces the session
     /// joins.
     ///
     /// `identity` is this device's collaboration identity, on whose key the
-    /// endpoint runs: with it, every room is told which device and which
+    /// endpoint runs: with it, every workspace is told which device and which
     /// person is here. Without one — a test, a stand-in session — the
-    /// session is a device nobody certified and stays anonymous in rooms.
+    /// session is a device nobody certified and stays anonymous in workspaces.
     ///
     /// `media` is what the person's settings say about what they play
     /// continuing on their other devices, kept current by the session's
     /// settings watch.
     ///
-    /// The session's channels, when `engine` keeps them, hear the rooms'
-    /// governance on this plane and tell it which devices each room admits:
+    /// The session's channels, when `engine` keeps them, hear the workspaces'
+    /// governance on this plane and tell it which devices each workspace admits:
     /// what they say travels as the plane's own messages.
     ///
     /// # Errors
@@ -750,7 +752,7 @@ impl Client {
         let sync = Self {
             plane: RefCell::new(Plane {
                 publisher,
-                rooms: Vec::new(),
+                workspaces: Vec::new(),
                 active: None,
             }),
             own: RefCell::new(own),
@@ -781,7 +783,7 @@ impl Client {
         // of them published is taken even when this session shows none of
         // their workspaces yet.
         let _ = sync.outgoing.send(Outgoing::WatchSiblings);
-        // The hosts next: a room joined before them is replayed to this
+        // The hosts next: a workspace joined before them is replayed to this
         // device when its host session comes up, never lost.
         for host in hosts {
             let _ = sync.outgoing.send(Outgoing::Connect(host));
@@ -789,7 +791,7 @@ impl Client {
         Ok(sync)
     }
 
-    /// This device's publisher here: the endpoint id every room names it by.
+    /// This device's publisher here: the endpoint id every workspace names it by.
     #[must_use]
     pub fn publisher(&self) -> EndpointId {
         self.plane.borrow().publisher
@@ -801,22 +803,22 @@ impl Client {
         &self.here
     }
 
-    /// This device's rooms, when this session holds any.
+    /// This device's workspaces, when this session holds any.
     #[must_use]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
         self.engine.as_ref()
     }
 
     /// Redeem `request`'s invitation off the loop: this device joins the
-    /// room, takes in what it held before, and takes part in it. What became
+    /// workspace, takes in what it held before, and takes part in it. What became
     /// of it is handed back by [`Self::take_enrolled`].
     ///
     /// # Errors
-    /// The plane takes no enrollment: this session holds no rooms, or the
+    /// The plane takes no enrollment: this session holds no workspaces, or the
     /// plane has stopped.
     pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
         if self.engine.is_none() {
-            return Err("this session keeps no rooms, so there is nothing to enroll into".into());
+            return Err("this session keeps no workspaces to enroll into".into());
         }
         self.outgoing
             .send(Outgoing::Enroll(request))
@@ -835,7 +837,7 @@ impl Client {
     }
 
     /// What this session says of itself: changed here, it is said again in
-    /// the room in front. Whether it changed.
+    /// the workspace in front. Whether it changed.
     pub fn set_own(&self, own: OwnPresence) -> bool {
         if *self.own.borrow() == own {
             return false;
@@ -846,7 +848,7 @@ impl Client {
     }
 
     /// This device joined `call`, or left it (`None`): said again in the
-    /// room in front, so everyone here reads which channel this person is
+    /// workspace in front, so everyone here reads which channel this person is
     /// in beside their face. Whether that changed anything.
     pub fn in_call(&self, call: Option<ui::CallPresence>) -> bool {
         let mut own = self.own.borrow().clone();
@@ -857,7 +859,7 @@ impl Client {
         self.set_own(own)
     }
 
-    /// Follow `tree`'s workspaces: take part in the room of each, leave the
+    /// Follow `tree`'s workspaces: take part in each, leave the
     /// ones gone, and remember which is in front. Whether that changed
     /// anything.
     pub fn follow_desktop(&self, tree: &DesktopTree) -> bool {
@@ -882,8 +884,8 @@ impl Client {
         {
             let mut plane = self.plane.borrow_mut();
             for (ws, id) in &live {
-                if plane.rooms.iter().all(|room| room.ws != *ws) {
-                    plane.rooms.push(Room {
+                if plane.workspaces.iter().all(|workspace| workspace.ws != *ws) {
+                    plane.workspaces.push(Workspace {
                         ws: *ws,
                         id: id.clone(),
                         peers: Vec::new(),
@@ -891,12 +893,12 @@ impl Client {
                     joined.push((*ws, id.clone()));
                 }
             }
-            for room in &plane.rooms {
-                if live.iter().all(|(ws, _)| *ws != room.ws) {
-                    left.push(room.ws);
+            for workspace in &plane.workspaces {
+                if live.iter().all(|(ws, _)| *ws != workspace.ws) {
+                    left.push(workspace.ws);
                 }
             }
-            plane.rooms.retain(|room| !left.contains(&room.ws));
+            plane.workspaces.retain(|held| !left.contains(&held.ws));
             if plane.active != active {
                 plane.active = active;
                 changed = true;
@@ -959,7 +961,7 @@ impl Client {
             return;
         }
         self.keep_personal(&event);
-        // What a room says of its channels' governance is the session's
+        // What a workspace says of its channels' governance is the session's
         // channels' to take in, wherever the message came from.
         if let (Some(link), NetEvent::Msg { msg, .. }) = (&self.link, &event) {
             link.heard(msg);
@@ -1022,9 +1024,9 @@ impl Client {
         std::mem::take(&mut *self.surfaces.borrow_mut())
     }
 
-    /// Send one message of `surface`'s stream on the topic of the room it is
+    /// Send one message of `surface`'s stream on the topic of the workspace it is
     /// shared in, to `viewers` alone: over the authenticated route to each
-    /// of them, never fanned out to the room.
+    /// of them, never fanned out to the workspace.
     pub(crate) fn publish_surface(
         &self,
         ws: WorkspaceId,
@@ -1039,7 +1041,7 @@ impl Client {
     }
 
     /// Say `msg` to `target` alone, as a workspace-control message on the
-    /// topic of the room `ws`.
+    /// topic of the workspace `ws`.
     pub(crate) fn publish_control(&self, ws: WorkspaceId, msg: NeighbourMsg, target: EndpointId) {
         let _ = self.outgoing.send(Outgoing::SendControl {
             ws,
@@ -1048,26 +1050,26 @@ impl Client {
         });
     }
 
-    /// The topic of the room `room`, while this session takes part in it.
+    /// The topic of the workspace `workspace`, while this session takes part in it.
     #[must_use]
-    pub(crate) fn room_topic(&self, room: &str) -> Option<WorkspaceId> {
+    pub(crate) fn workspace_topic(&self, workspace: &str) -> Option<WorkspaceId> {
         self.plane
             .borrow()
-            .rooms
+            .workspaces
             .iter()
-            .find(|held| held.id == room)
+            .find(|held| held.id == workspace)
             .map(|held| held.ws)
     }
 
-    /// The devices heard in `room` beside this one, by publisher and the name
-    /// each goes by: what shows which device a window of the room runs on.
+    /// The devices heard in `workspace` beside this one, by publisher and the name
+    /// each goes by: what shows which device a window of the workspace runs on.
     #[must_use]
-    pub(crate) fn room_devices(&self, room: &str) -> Vec<(EndpointId, String)> {
+    pub(crate) fn workspace_devices(&self, workspace: &str) -> Vec<(EndpointId, String)> {
         self.plane
             .borrow()
-            .rooms
+            .workspaces
             .iter()
-            .find(|held| held.id == room)
+            .find(|held| held.id == workspace)
             .map(|held| {
                 held.peers
                     .iter()
@@ -1257,10 +1259,10 @@ impl Client {
         let plane = self.plane.borrow();
         let own = plane.publisher;
         plane
-            .rooms
+            .workspaces
             .iter()
-            .any(|room| {
-                room.peers
+            .any(|held| {
+                held.peers
                     .iter()
                     .any(|peer| peer.here && peer.publisher != own)
             })
@@ -1276,39 +1278,40 @@ impl Client {
     }
 
     /// Hand the desktop this person and whoever is here with them in the
-    /// room in front.
+    /// workspace in front.
     fn show_here(&self) {
         let (own, members) = {
             let plane = self.plane.borrow();
             let members = plane
                 .active
-                .and_then(|ws| plane.rooms.iter().find(|room| room.ws == ws))
-                .map(Room::members)
+                .and_then(|ws| plane.workspaces.iter().find(|workspace| workspace.ws == ws))
+                .map(Workspace::members)
                 .unwrap_or_default();
             (self.own_member(), members)
         };
         self.here.borrow_mut().set_members(Some(own), Some(members));
     }
 
-    /// Say this person's presence again in the room in front.
+    /// Say this person's presence again in the workspace in front.
     fn say_again(&self) {
         let (ws, id) = {
             let plane = self.plane.borrow();
             let Some(ws) = plane.active else {
                 return;
             };
-            let Some(room) = plane.rooms.iter().find(|room| room.ws == ws) else {
+            let Some(workspace) = plane.workspaces.iter().find(|workspace| workspace.ws == ws)
+            else {
                 return;
             };
-            (ws, room.id.clone())
+            (ws, workspace.id.clone())
         };
         self.say(ws, &id);
         self.said_at.set(Instant::now());
     }
 
-    /// Say all of this person's presence in the room `room`, on its topic
+    /// Say all of this person's presence in the workspace `workspace`, on its topic
     /// `ws`.
-    fn say(&self, ws: WorkspaceId, room: &str) {
+    fn say(&self, ws: WorkspaceId, workspace: &str) {
         let own = self.own.borrow().clone();
         let mut payloads = vec![
             PeerPresencePayload::Arrived,
@@ -1338,9 +1341,9 @@ impl Client {
             let msg = NeighbourMsg::AppPresenceV2 {
                 peer: self.peer_hash(),
                 app_id: DESKTOP_PRESENCE_APP.into(),
-                cluster_id: room.to_owned(),
+                cluster_id: workspace.to_owned(),
                 presence: PeerPresence {
-                    key: room_key(room),
+                    key: workspace_key(workspace),
                     payload,
                 },
                 colour: None,
@@ -1357,13 +1360,13 @@ impl Client {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.plane.borrow().publisher)
     }
 
-    /// This device's handle in a room, as a window's stream names it.
+    /// This device's handle in a workspace, as a window's stream names it.
     #[must_use]
     pub(crate) fn peer(&self) -> neighbour_wire::PeerId {
         self.peer_hash()
     }
 
-    /// Tell the room in front that this person's pointer is over `(x, y)` of
+    /// Tell the workspace in front that this person's pointer is over `(x, y)` of
     /// the tile showing `tab`, in that tile's logical pixels.
     #[allow(
         clippy::cast_possible_truncation,
@@ -1374,12 +1377,12 @@ impl Client {
         let Some(ws) = plane.active else {
             return;
         };
-        let Some(room) = plane.rooms.iter().find(|room| room.ws == ws) else {
+        let Some(workspace) = plane.workspaces.iter().find(|workspace| workspace.ws == ws) else {
             return;
         };
         let key = postcard::to_stdvec(&PresenceKey::Pointer {
             space: PointerSpace::Tile {
-                room: room.id.clone(),
+                room: workspace.id.clone(),
                 tab,
             },
         })
@@ -1387,7 +1390,7 @@ impl Client {
         let msg = NeighbourMsg::AppPresenceV2 {
             peer: tilo_network_actor::behaviour::peer_liveness_handle(&plane.publisher),
             app_id: DESKTOP_PRESENCE_APP.into(),
-            cluster_id: room.id.clone(),
+            cluster_id: workspace.id.clone(),
             presence: PeerPresence {
                 key,
                 payload: PeerPresencePayload::Pointer {
@@ -1418,7 +1421,7 @@ impl Client {
     }
 
     /// Wave at `target`, a member here by their live publisher: said in the
-    /// room in front, where the person it is for hears it once.
+    /// workspace in front, where the person it is for hears it once.
     pub fn wave(&self, target: &str) {
         if target.is_empty() || self.is_own_person(target) {
             return;
@@ -1434,15 +1437,15 @@ impl Client {
         let Some(ws) = plane.active else {
             return;
         };
-        let Some(room) = plane.rooms.iter().find(|room| room.ws == ws) else {
+        let Some(workspace) = plane.workspaces.iter().find(|workspace| workspace.ws == ws) else {
             return;
         };
         let msg = NeighbourMsg::AppPresenceV2 {
             peer: tilo_network_actor::behaviour::peer_liveness_handle(&plane.publisher),
             app_id: DESKTOP_PRESENCE_APP.into(),
-            cluster_id: room.id.clone(),
+            cluster_id: workspace.id.clone(),
             presence: PeerPresence {
-                key: room_key(&room.id),
+                key: workspace_key(&workspace.id),
                 payload: PeerPresencePayload::Wave {
                     seq: wave.seq,
                     target: wave.target,
@@ -1456,22 +1459,22 @@ impl Client {
         });
     }
 
-    /// Everyone whose pointer is over `tab` of `room` now, by publisher. The
+    /// Everyone whose pointer is over `tab` of `workspace` now, by publisher. The
     /// desktop draws each over its own tile for that tab, above the windows.
     #[must_use]
-    pub fn pointers(&self, room: &str, tab: u64) -> Vec<(String, f64, f64)> {
-        self.plane.borrow().pointers(room, tab)
+    pub fn pointers(&self, workspace: &str, tab: u64) -> Vec<(String, f64, f64)> {
+        self.plane.borrow().pointers(workspace, tab)
     }
 
-    /// The calls in progress in every room this session takes part in, as
+    /// The calls in progress in every workspace this session takes part in, as
     /// those in them say: who to join, where.
     #[must_use]
     pub fn calls(&self) -> Vec<LiveCall> {
         self.plane
             .borrow()
-            .rooms
+            .workspaces
             .iter()
-            .flat_map(Room::calls)
+            .flat_map(Workspace::calls)
             .collect()
     }
 
@@ -1581,7 +1584,7 @@ impl Client {
             Self {
                 plane: RefCell::new(Plane {
                     publisher,
-                    rooms: Vec::new(),
+                    workspaces: Vec::new(),
                     active: None,
                 }),
                 own: RefCell::new(own),
@@ -1633,7 +1636,7 @@ impl Client {
 /// This device's collaboration identity: the key and certificate this
 /// session's endpoint runs on, when this machine has been provisioned.
 ///
-/// A session on a machine without one takes part in no room as anybody: it
+/// A session on a machine without one takes part in no workspace as anybody: it
 /// binds a fresh key and stays anonymous until the person sets a device up.
 #[must_use]
 pub fn device_identity() -> Option<HostIdentity> {
@@ -1737,7 +1740,7 @@ fn plane_runtime(
     }
 }
 
-/// What the session's endpoint carries beside its rooms: the channels it
+/// What the session's endpoint carries beside its workspaces: the channels it
 /// runs, and this device's action plane, which answers the person's other
 /// devices on it.
 pub(crate) struct Serving {
@@ -1812,18 +1815,18 @@ fn run(
         };
         while let Some(command) = commands.recv().await {
             let command = match command {
-                // A redemption asks a host, waits for it and takes the room
+                // A redemption asks a host, waits for it and takes the workspace
                 // in: it runs beside this loop, which keeps carrying what the
                 // session says meanwhile.
                 Outgoing::Enroll(request) => {
                     let workspace = request.workspace;
-                    let room = request.room;
+                    let workspace_id = request.workspace_id;
                     let landed = enrollments.clone();
                     let (Some(engine), Some(identity)) = (engine.clone(), identity.clone()) else {
                         let _ = landed.send(Enrolled {
                             workspace,
-                            room,
-                            result: Err("this session joins no rooms".into()),
+                            workspace_id,
+                            result: Err("this session joins no workspaces".into()),
                         });
                         continue;
                     };
@@ -1844,7 +1847,7 @@ fn run(
                         .await;
                         let _ = landed.send(Enrolled {
                             workspace,
-                            room,
+                            workspace_id,
                             result,
                         });
                     });
@@ -1905,7 +1908,7 @@ async fn listening(
     let publisher = endpoint.id();
     let addr = endpoint.addr();
     // Nothing wakes the held-back relays from here: the peer actor does when
-    // it dials a host or a peer, and the session while a room it shows has
+    // it dials a host or a peer, and the session while a workspace it shows has
     // someone else in it (`Client::note_reachability`).
     let reachability = tilo_endpoint_reachability::Reachability::defer(
         &endpoint,
@@ -1915,7 +1918,7 @@ async fn listening(
     );
     // This device's action plane is served on the same endpoint: another of
     // the person's devices reaches what this one publishes here, beside the
-    // rooms' own traffic.
+    // workspaces' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
     // A call's lane is served here too, from the first pass: it refuses every
     // connection until a call installs its carrier, and answers those from
@@ -1957,14 +1960,14 @@ async fn listening(
     })
 }
 
-/// Hear the peer actor: what it says reaches the session, and what a room's
-/// host says after this device joined it — the room's state as it stands, its
+/// Hear the peer actor: what it says reaches the session, and what a workspace's
+/// host says after this device joined it — the workspace's state as it stands, its
 /// people and everything its apps recorded — is taken in where this device's
-/// rooms are kept.
+/// workspaces are kept.
 ///
 /// The replay goes in on a thread of its own, in the order the host said it,
 /// so it never holds up what the session shows, and each run of one session
-/// in one commit, as a host replays a room in one go.
+/// in one commit, as a host replays a workspace in one go.
 fn heard(
     identity: Option<HostIdentity>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
@@ -1998,7 +2001,7 @@ fn heard(
     (events, carrying, attending)
 }
 
-/// Take what hosts replay into the rooms this device holds, as it arrives:
+/// Take what hosts replay into the workspaces this device holds, as it arrives:
 /// each run of one session admitted together and in the order the host said
 /// it, on a blocking thread so no replay holds up the collaboration plane.
 async fn take_in(
@@ -2013,7 +2016,7 @@ async fn take_in(
         }
         let mut run: Vec<native_ingress::Input> = Vec::new();
         for input in waiting {
-            // The channels' governance is between the room's devices: its
+            // The channels' governance is between the workspace's devices: its
             // governor never admits it, and the channel service settles the
             // groups with it instead.
             if link
@@ -2035,13 +2038,13 @@ async fn take_in(
     }
 }
 
-/// Admit one session's inputs, as one commit of the room they belong to.
+/// Admit one session's inputs, as one commit of the workspace they belong to.
 async fn admit(
     inputs: Vec<native_ingress::Input>,
     identity: &HostIdentity,
     link: Option<&ChannelLink>,
 ) {
-    let Some(room) = inputs.first().map(native_ingress::Input::workspace) else {
+    let Some(workspace) = inputs.first().map(native_ingress::Input::workspace) else {
         return;
     };
     let identity = identity.clone();
@@ -2052,7 +2055,7 @@ async fn admit(
     {
         Ok(admitted) => admitted,
         Err(error) => {
-            tracing::debug!(%error, %room, "a room's state was not taken in");
+            tracing::debug!(%error, %workspace, "a workspace's state was not taken in");
             return;
         }
     };
@@ -2063,23 +2066,23 @@ async fn admit(
                 replay_wanted |= report.replay_wanted;
             }
             Err(error) => {
-                tracing::debug!(%error, %room, "a room's state was not taken in");
+                tracing::debug!(%error, %workspace, "a workspace's state was not taken in");
             }
         }
     }
     if let Some(link) = link {
         if replay_wanted {
-            // A message waited on something the room's host sends of its own
+            // A message waited on something the workspace's host sends of its own
             // accord as well, such as the checkpoint a sealed record is
             // founded on: the host replays what it retains, and the message
             // is decided again.
-            link.ask_replay(room);
+            link.ask_replay(workspace);
         }
         if admitted.changed {
-            // The room's governance moved with it: its channels and the
+            // The workspace's governance moved with it: its channels and the
             // devices it admits are read again, and the plane told what it
             // admits now.
-            link.room_changed(room);
+            link.workspace_changed(workspace);
         }
     }
 }
@@ -2175,11 +2178,11 @@ async fn carry_out(
     })
 }
 
-/// Redeem an invitation into the workspace the desk made for its room: this
-/// device becomes a member of the room, takes in what it held before it
+/// Redeem an invitation into the workspace the desk made for its workspace: this
+/// device becomes a member of the workspace, takes in what it held before it
 /// arrived, and takes part in it from then on.
 ///
-/// The room's state arrives as the host's answer to the enrollment: a person
+/// The workspace's state arrives as the host's answer to the enrollment: a person
 /// who joins late reads the whole history, not only what is recorded from
 /// now on.
 async fn redeem(
@@ -2191,21 +2194,21 @@ async fn redeem(
     request: Enrolling,
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
-    let topic = room_topic_id(request.room);
-    // The room is joined as this person, under the identity they keep for
-    // it: a room they select another of their identities for shows that one.
+    let topic = room_topic_id(request.workspace_id);
+    // The workspace is joined as this person, under the identity they keep for
+    // it: a workspace they select another of their identities for shows that one.
     let (selected, _) = identity.current_native_material(topic)?;
     if identity.identity_paths.is_some() {
         let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
             .map_err(|error| format!("this computer's identities cannot be read: {error}"))?;
         registry
             .bind_workspace(
-                &request.room.to_string(),
+                &request.workspace_id.to_string(),
                 &hex::encode(selected.user_public_key),
             )
-            .map_err(|error| format!("the room could not be kept as this person's: {error}"))?;
+            .map_err(|error| format!("the workspace is not kept as this person's: {error}"))?;
         if identity.current_native_material(topic)?.0 != selected {
-            return Err("this computer's identity for the room changed while joining".into());
+            return Err("this computer's identity for the workspace changed while joining".into());
         }
     }
     let owner = engine.owner().clone();
@@ -2224,15 +2227,15 @@ async fn redeem(
     .await
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
     owner.install(&enrollment, std::time::SystemTime::now())?;
-    // The room is held here now: this device takes part in it, so what its
+    // The workspace is held here now: this device takes part in it, so what its
     // people say and record reaches it as it happens, and the devices it
     // admits are told to the plane.
     if let Some(link) = link {
-        link.room_changed(request.room);
+        link.workspace_changed(request.workspace_id);
     }
-    // The room's subscription comes before the session it carries: what the
-    // host says the moment this device joins is the room as it stands, and a
-    // room nobody listens to yet drops it.
+    // The workspace's subscription comes before the session it carries: what the
+    // host says the moment this device joins is the workspace as it stands, and a
+    // workspace nobody listens to yet drops it.
     plane
         .send(NetCmd::JoinWorkspace {
             ws: topic,
@@ -2240,8 +2243,8 @@ async fn redeem(
         })
         .await
         .map_err(|_| "the collaboration plane is gone".to_owned())?;
-    let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.room)
-        .map_err(|error| format!("the room was not taken in: {error}"))?;
+    let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.workspace_id)
+        .map_err(|error| format!("the workspace was not taken in: {error}"))?;
     plane
         .send(NetCmd::NativeConnect(connect, None))
         .await
@@ -2271,11 +2274,11 @@ mod tests {
     use tilo_desktop_model::{RoomId, Workspace};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-    /// The room the tests' only workspace is.
-    const ROOM: &str = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+    /// The workspace the tests' only workspace is.
+    const WORKSPACE: &str = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
 
-    /// A room no test's desktop shows.
-    const OTHER_ROOM: &str = "0a2c4e6f-8b1d-4f3a-9c5e-7d9b1f3a5c7e";
+    /// A workspace no test's desktop shows.
+    const OTHER_WORKSPACE: &str = "0a2c4e6f-8b1d-4f3a-9c5e-7d9b1f3a5c7e";
 
     /// A device's publisher, from a seed: an endpoint id nobody's identity
     /// certifies.
@@ -2283,16 +2286,16 @@ mod tests {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
-    fn topic(room: &str) -> WorkspaceId {
-        room_topic_id(RoomId::parse(room).expect("a room id"))
+    fn topic(workspace: &str) -> WorkspaceId {
+        room_topic_id(RoomId::parse(workspace).expect("a workspace id"))
     }
 
-    /// A desktop showing one workspace, in `room`.
-    fn desk(room: &str) -> DesktopTree {
-        let room = RoomId::parse(room).expect("a room id");
-        let id = tilo_desktop_model::WorkspaceId::of_room(room);
-        assert_eq!(topic(&room.as_uuid().to_string()), id.raw());
-        let workspace = Workspace::in_room(id, room, "Desk");
+    /// A desktop showing one workspace, in `workspace`.
+    fn desk(workspace: &str) -> DesktopTree {
+        let workspace = RoomId::parse(workspace).expect("a workspace id");
+        let id = tilo_desktop_model::WorkspaceId::of_room(workspace);
+        assert_eq!(topic(&workspace.as_uuid().to_string()), id.raw());
+        let workspace = Workspace::in_room(id, workspace, "Desk");
         DesktopTree {
             workspaces: vec![workspace.clone()],
             active: workspace.id,
@@ -2318,19 +2321,19 @@ mod tests {
         (cert, this)
     }
 
-    /// A device's workspace list for `room`, signed by that device.
+    /// A device's workspace list for `workspace`, signed by that device.
     fn list_of(
         device: &DeviceCert,
         signing: &SigningKey,
-        room: &str,
+        workspace: &str,
     ) -> tilo_user_identity::DirectoryUpdate {
         let mut directory = tilo_user_identity::WorkspaceDirectory::new(
             device.user_public_key,
             device.device_public_key,
         );
-        let room = RoomId::parse(room).expect("a room id");
+        let workspace = RoomId::parse(workspace).expect("a workspace id");
         directory
-            .add_room_workspace(room_topic_id(room), &room.to_string(), "Desk")
+            .add_room_workspace(room_topic_id(workspace), &workspace.to_string(), "Desk")
             .expect("a listed workspace");
         let update = directory
             .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -2339,8 +2342,7 @@ mod tests {
         update
     }
 
-    /// A session in `ROOM`'s room with no transport, and what it would have
-    /// said.
+    /// A session in `WORKSPACE` with no transport, and what it would have said.
     fn session(
         label: &str,
         user: Option<u8>,
@@ -2351,7 +2353,7 @@ mod tests {
             ..OwnPresence::default()
         };
         let (sync, said) = Client::offline(device(0xf0), own);
-        sync.follow_desktop(&desk(ROOM));
+        sync.follow_desktop(&desk(WORKSPACE));
         (sync, said)
     }
 
@@ -2363,20 +2365,20 @@ mod tests {
         commands
     }
 
-    /// One presence a peer said, on `room`'s topic.
-    fn presence(from: u8, room: &str, payload: PeerPresencePayload) -> NetEvent {
+    /// One presence a peer said, on `workspace`'s topic.
+    fn presence(from: u8, workspace: &str, payload: PeerPresencePayload) -> NetEvent {
         let from = device(from);
         NetEvent::Msg {
-            ws: topic(room),
+            ws: topic(workspace),
             peer: from,
             membership_epoch: None,
             replayed: false,
             msg: NeighbourMsg::AppPresenceV2 {
                 peer: neighbour_wire::peer_handle(from.as_bytes()),
                 app_id: DESKTOP_PRESENCE_APP.to_owned(),
-                cluster_id: room.to_owned(),
+                cluster_id: workspace.to_owned(),
                 presence: PeerPresence {
-                    key: room_key(room),
+                    key: workspace_key(workspace),
                     payload,
                 },
                 colour: None,
@@ -2385,7 +2387,7 @@ mod tests {
     }
 
     fn here(from: u8) -> NetEvent {
-        presence(from, ROOM, PeerPresencePayload::Arrived)
+        presence(from, WORKSPACE, PeerPresencePayload::Arrived)
     }
 
     /// A device's identity announcement: which person it is a device of,
@@ -2421,7 +2423,7 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
         NetEvent::Msg {
-            ws: topic(ROOM),
+            ws: topic(WORKSPACE),
             peer: from,
             membership_epoch: None,
             replayed: false,
@@ -2433,11 +2435,11 @@ mod tests {
         }
     }
 
-    /// Where a peer's pointer moved, on the tile of `tab` of `room`.
-    fn pointer_moved(from: u8, room: &str, tab: u64, point: (f64, f64)) -> NetEvent {
+    /// Where a peer's pointer moved, on the tile of `tab` of `workspace`.
+    fn pointer_moved(from: u8, workspace: &str, tab: u64, point: (f64, f64)) -> NetEvent {
         let from = device(from);
         NetEvent::Msg {
-            ws: topic(room),
+            ws: topic(workspace),
             peer: from,
             membership_epoch: None,
             replayed: false,
@@ -2446,7 +2448,7 @@ mod tests {
                 user: String::new(),
                 key: serde_json::to_string(&PresenceKey::Pointer {
                     space: PointerSpace::Tile {
-                        room: room.to_owned(),
+                        room: workspace.to_owned(),
                         tab,
                     },
                 })
@@ -2458,10 +2460,10 @@ mod tests {
         }
     }
 
-    fn pointer_cleared(from: u8, room: &str, tab: u64) -> NetEvent {
+    fn pointer_cleared(from: u8, workspace: &str, tab: u64) -> NetEvent {
         let from = device(from);
         NetEvent::Msg {
-            ws: topic(room),
+            ws: topic(workspace),
             peer: from,
             membership_epoch: None,
             replayed: false,
@@ -2469,7 +2471,7 @@ mod tests {
                 peer: neighbour_wire::peer_handle(from.as_bytes()),
                 key: serde_json::to_string(&PresenceKey::Pointer {
                     space: PointerSpace::Tile {
-                        room: room.to_owned(),
+                        room: workspace.to_owned(),
                         tab,
                     },
                 })
@@ -2482,7 +2484,7 @@ mod tests {
     fn a_list_is_kept_only_from_the_device_that_said_it() {
         let (laptop, laptop_key) = certified(0x04, 0x11, "Laptop");
         let (phone, _) = certified(0x04, 0x12, "Phone");
-        let by_laptop = list_of(&laptop, &laptop_key, ROOM);
+        let by_laptop = list_of(&laptop, &laptop_key, WORKSPACE);
 
         let kept = author_of(&[phone.clone(), laptop.clone()], &by_laptop)
             .expect("the laptop's own list is the laptop's");
@@ -2502,7 +2504,7 @@ mod tests {
         sync.hear(hello(1, 0xaa, "Framework 16"));
         sync.hear(here(1));
 
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         let people = sync.show(&mut tree, &|_| None);
         assert_eq!(people.len(), 1);
         assert_eq!(people[0].label, "Framework 16");
@@ -2523,14 +2525,14 @@ mod tests {
         sync.hear(here(1));
         sync.hear(presence(
             1,
-            ROOM,
+            WORKSPACE,
             PeerPresencePayload::Status {
                 text: "  Shipping the roster  ".to_owned(),
                 automatic: false,
             },
         ));
 
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         let people = sync.show(&mut tree, &|_| None);
         assert_eq!(
             people[0].status.as_ref().map(|line| line.text.as_str()),
@@ -2553,11 +2555,11 @@ mod tests {
             state: "available".to_owned(),
             call,
         };
-        sync.hear(presence(1, ROOM, in_voice(Some(voice.encode()))));
+        sync.hear(presence(1, WORKSPACE, in_voice(Some(voice.encode()))));
 
         let calls = sync.calls();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].room, ROOM);
+        assert_eq!(calls[0].workspace, WORKSPACE);
         assert_eq!(calls[0].channel, "c_voice");
         assert_eq!(calls[0].name, "Voice");
         let who: Vec<&str> = calls[0]
@@ -2570,14 +2572,14 @@ mod tests {
         // Someone else in the same channel is in the same call, not another.
         sync.hear(hello(2, 0xbb, "Phone"));
         sync.hear(here(2));
-        sync.hear(presence(2, ROOM, in_voice(Some(voice.encode()))));
+        sync.hear(presence(2, WORKSPACE, in_voice(Some(voice.encode()))));
         let calls = sync.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].people.len(), 2);
 
         // Out of the call, the channel is no one's.
-        sync.hear(presence(1, ROOM, in_voice(None)));
-        sync.hear(presence(2, ROOM, in_voice(None)));
+        sync.hear(presence(1, WORKSPACE, in_voice(None)));
+        sync.hear(presence(2, WORKSPACE, in_voice(None)));
         assert!(sync.calls().is_empty());
     }
 
@@ -2593,9 +2595,9 @@ mod tests {
             state: state.to_owned(),
             call: None,
         };
-        sync.hear(presence(1, ROOM, away("away")));
+        sync.hear(presence(1, WORKSPACE, away("away")));
 
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         let people = sync.show(&mut tree, &|_| None);
         assert_eq!(people[0].availability, ui::Availability::Away);
         assert!(people[0].availability.dims());
@@ -2605,15 +2607,15 @@ mod tests {
 
         // Back at their machine, and heads down: the face lightens, and
         // says what they chose.
-        sync.hear(presence(1, ROOM, away("focusing")));
-        let mut tree = desk(ROOM);
+        sync.hear(presence(1, WORKSPACE, away("focusing")));
+        let mut tree = desk(WORKSPACE);
         sync.show(&mut tree, &|_| None);
         let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
         assert_eq!(rows[0].availability, ui::Availability::Focusing);
         assert!(!rows[0].availability.dims());
     }
 
-    /// A call this device joins is said in the room, so everyone else's
+    /// A call this device joins is said in the workspace, so everyone else's
     /// roster shows this person in that channel.
     #[test]
     fn a_call_this_device_joins_reaches_a_peer_s_roster() {
@@ -2625,14 +2627,14 @@ mod tests {
         };
         assert!(mine.in_call(Some(voice.clone())));
 
-        // A peer's session in the same room, handed everything this device
+        // A peer's session in the same workspace, handed everything this device
         // said there.
         let own = OwnPresence {
             label: "Ada".into(),
             ..OwnPresence::default()
         };
         let (theirs, _theirs_said) = Client::offline(device(0xe0), own);
-        theirs.follow_desktop(&desk(ROOM));
+        theirs.follow_desktop(&desk(WORKSPACE));
         let mut said_the_call = false;
         while let Ok(command) = said.try_recv() {
             let Outgoing::Publish { ws, msg } = command else {
@@ -2657,7 +2659,7 @@ mod tests {
         }
         assert!(said_the_call, "this device said which channel it is in");
 
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         let people = theirs.show(&mut tree, &|_| None);
         assert_eq!(people.len(), 1);
         assert_eq!(
@@ -2682,7 +2684,7 @@ mod tests {
                 msg: *msg,
             });
         }
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         let people = theirs.show(&mut tree, &|_| None);
         assert!(people[0].call.is_none());
     }
@@ -2692,22 +2694,22 @@ mod tests {
         let (sync, _said) = session("Quinten", Some(0x04));
         sync.hear(hello(1, 0xaa, "Framework 16"));
         sync.hear(here(1));
-        assert_eq!(sync.show(&mut desk(ROOM), &|_| None).len(), 1);
+        assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
 
-        sync.hear(presence(1, ROOM, PeerPresencePayload::Left));
-        assert!(sync.show(&mut desk(ROOM), &|_| None).is_empty());
+        sync.hear(presence(1, WORKSPACE, PeerPresencePayload::Left));
+        assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
 
         sync.hear(here(1));
-        assert_eq!(sync.show(&mut desk(ROOM), &|_| None).len(), 1);
+        assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
         sync.hear(NetEvent::PeerLeft {
-            ws: topic(ROOM),
+            ws: topic(WORKSPACE),
             peer: device(1),
             cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
         });
-        assert!(sync.show(&mut desk(ROOM), &|_| None).is_empty());
+        assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
 
-        let mut tree = desk(ROOM);
+        let mut tree = desk(WORKSPACE);
         sync.show(&mut tree, &|_| None);
         assert!(tree.workspaces[0].collaborators.is_empty());
     }
@@ -2756,7 +2758,7 @@ mod tests {
         };
         let (sync, _said) =
             Client::offline_reaching(device(0xf0), own, Vec::new(), reachability.clone());
-        sync.follow_desktop(&desk(ROOM));
+        sync.follow_desktop(&desk(WORKSPACE));
 
         // Nobody else in the workspace this desktop shows: it names no relay,
         // and number 0's directory is told nothing of this device.
@@ -2774,27 +2776,27 @@ mod tests {
         );
 
         // They leave: nothing here needs this device dialable again.
-        sync.hear(presence(1, ROOM, PeerPresencePayload::Left));
+        sync.hear(presence(1, WORKSPACE, PeerPresencePayload::Left));
         assert_eq!(reachability.holders(), (None, None));
 
         // Someone in a workspace this desktop does not show needs nothing
         // of this device.
-        sync.hear(presence(2, OTHER_ROOM, PeerPresencePayload::Arrived));
+        sync.hear(presence(2, OTHER_WORKSPACE, PeerPresencePayload::Arrived));
         assert_eq!(reachability.holders().1, None);
     }
 
     #[test]
-    fn only_the_room_in_front_lists_people() {
+    fn only_the_workspace_in_front_lists_people() {
         let (sync, _said) = session("Quinten", Some(0x04));
         sync.hear(hello(1, 0xaa, "Framework 16"));
         sync.hear(here(1));
 
         let elsewhere = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
         sync.hear(presence(2, elsewhere, PeerPresencePayload::Arrived));
-        assert_eq!(sync.show(&mut desk(ROOM), &|_| None).len(), 1);
+        assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
 
-        // Presence said on this room's topic under another room's name is
-        // that other room's.
+        // Presence said on this workspace's topic under another workspace's name is
+        // that other workspace's.
         let mut foreign = here(3);
         if let NetEvent::Msg { msg, .. } = &mut foreign
             && let NeighbourMsg::AppPresenceV2 { cluster_id, .. } = msg
@@ -2802,7 +2804,7 @@ mod tests {
             *cluster_id = elsewhere.to_owned();
         }
         sync.hear(foreign);
-        assert_eq!(sync.show(&mut desk(ROOM), &|_| None).len(), 1);
+        assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
     }
 
     #[test]
@@ -2815,7 +2817,7 @@ mod tests {
             *app_id = "tilo-notes".to_owned();
         }
         sync.hear(event);
-        assert!(sync.show(&mut desk(ROOM), &|_| None).is_empty());
+        assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
     }
 
     #[test]
@@ -2826,7 +2828,7 @@ mod tests {
             *peer = device(0xf0);
         }
         sync.hear(own);
-        assert!(sync.show(&mut desk(ROOM), &|_| None).is_empty());
+        assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
     }
 
     #[test]
@@ -2837,7 +2839,7 @@ mod tests {
         sync.hear(hello(2, 0xaa, "Phone"));
         sync.hear(here(2));
 
-        let people = sync.show(&mut desk(ROOM), &|_| None);
+        let people = sync.show(&mut desk(WORKSPACE), &|_| None);
         assert_eq!(people.len(), 1);
         assert_eq!(people[0].label, "Framework 16");
     }
@@ -2847,11 +2849,11 @@ mod tests {
         let (sync, _said) = session("Quinten", Some(0x04));
         sync.hear(hello(1, 0x04, "Studio"));
         sync.hear(here(1));
-        assert!(sync.show(&mut desk(ROOM), &|_| None).is_empty());
+        assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
 
         sync.hear(hello(2, 0xbb, "Framework 16"));
         sync.hear(here(2));
-        assert_eq!(sync.show(&mut desk(ROOM), &|_| None).len(), 1);
+        assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
     }
 
     #[test]
@@ -2859,21 +2861,21 @@ mod tests {
         let (sync, _said) = session("Quinten", Some(0x04));
         sync.hear(hello(1, 0xaa, "Framework 16"));
         sync.hear(here(1));
-        assert!(sync.pointers(ROOM, 3).is_empty());
+        assert!(sync.pointers(WORKSPACE, 3).is_empty());
 
-        sync.hear(pointer_moved(1, ROOM, 3, (12.5, 34.5)));
+        sync.hear(pointer_moved(1, WORKSPACE, 3, (12.5, 34.5)));
         assert_eq!(
-            sync.pointers(ROOM, 3),
+            sync.pointers(WORKSPACE, 3),
             vec![(device(1).to_string(), 12.5, 34.5)]
         );
-        assert!(sync.pointers(ROOM, 4).is_empty());
+        assert!(sync.pointers(WORKSPACE, 4).is_empty());
         assert!(
             sync.pointers("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", 3)
                 .is_empty()
         );
 
-        sync.hear(pointer_cleared(1, ROOM, 3));
-        assert!(sync.pointers(ROOM, 3).is_empty());
+        sync.hear(pointer_cleared(1, WORKSPACE, 3));
+        assert!(sync.pointers(WORKSPACE, 3).is_empty());
     }
 
     #[test]
@@ -2884,7 +2886,7 @@ mod tests {
         let me = device(0xf0).to_string();
         sync.hear(presence(
             1,
-            ROOM,
+            WORKSPACE,
             PeerPresencePayload::Wave { seq: 1, target: me },
         ));
         assert!(
@@ -2900,7 +2902,7 @@ mod tests {
         sync.hear(here(2));
         sync.hear(presence(
             2,
-            ROOM,
+            WORKSPACE,
             PeerPresencePayload::Wave {
                 seq: 1,
                 target: device(9).to_string(),
@@ -2953,14 +2955,14 @@ mod tests {
     }
 
     #[test]
-    fn a_host_is_dialled_before_the_rooms_it_carries() {
+    fn a_host_is_dialled_before_the_workspaces_it_carries() {
         let host = device(7);
         let (sync, mut said) = Client::offline_at(
             device(0xf0),
             OwnPresence::default(),
             vec![EndpointAddr::new(host)],
         );
-        sync.follow_desktop(&desk(ROOM));
+        sync.follow_desktop(&desk(WORKSPACE));
         let commands = sent(&mut said);
         let connect = commands
             .iter()
@@ -2969,14 +2971,14 @@ mod tests {
             .iter()
             .position(|command| matches!(command, Outgoing::Join(_)));
         assert_eq!(connect, Some(0), "the host is dialled first");
-        assert_eq!(join, Some(1), "the room is joined after its host");
+        assert_eq!(join, Some(1), "the workspace is joined after its host");
     }
 
     #[test]
     fn taking_part_says_where_this_person_is() {
         let (sync, mut said) = session("Quinten", None);
         let commands = sent(&mut said);
-        assert!(matches!(commands[0], Outgoing::Join(ws) if ws == topic(ROOM)));
+        assert!(matches!(commands[0], Outgoing::Join(ws) if ws == topic(WORKSPACE)));
 
         let published: Vec<(WorkspaceId, Box<NeighbourMsg>)> = commands
             .into_iter()
@@ -2987,7 +2989,7 @@ mod tests {
             .collect();
         assert!(!published.is_empty());
         for (ws, msg) in published {
-            assert_eq!(ws, topic(ROOM));
+            assert_eq!(ws, topic(WORKSPACE));
             let NeighbourMsg::AppPresenceV2 {
                 peer,
                 app_id,
@@ -3003,11 +3005,11 @@ mod tests {
                 neighbour_wire::peer_handle(sync.publisher().as_bytes())
             );
             assert_eq!(app_id, DESKTOP_PRESENCE_APP);
-            assert_eq!(cluster_id, ROOM);
+            assert_eq!(cluster_id, WORKSPACE);
             assert_eq!(
                 postcard::from_bytes::<PresenceKey>(&presence.key).expect("a key"),
                 PresenceKey::Workspace {
-                    id: ROOM.to_owned()
+                    id: WORKSPACE.to_owned()
                 }
             );
         }
@@ -3035,11 +3037,11 @@ mod tests {
     }
 
     #[test]
-    fn leaving_a_workspace_leaves_its_room() {
+    fn leaving_a_workspace_leaves_its_topic() {
         let (sync, mut said) = session("Quinten", None);
         sent(&mut said);
         sync.follow_desktop(&DesktopTree::default());
-        assert!(matches!(sent(&mut said)[0], Outgoing::Leave(ws) if ws == topic(ROOM)));
+        assert!(matches!(sent(&mut said)[0], Outgoing::Leave(ws) if ws == topic(WORKSPACE)));
     }
 
     fn payloads(

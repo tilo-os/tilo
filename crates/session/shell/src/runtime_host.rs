@@ -227,7 +227,7 @@ impl RuntimeServices for Session {
         Self::start_with_identity(root, stage, Some(owner_uid))
     }
 
-    fn room(&self) -> &str {
+    fn workspace(&self) -> &str {
         &self.room
     }
 

@@ -1,19 +1,19 @@
-//! Every room this profile takes part in, as the brokers ask about them: the
-//! profile's own workspace, whose record holds what this profile keeps of
-//! it (the person's grants to apps, effect records), and the rooms it
-//! joined, the profile's own room included once its host placed it.
+//! Every workspace this profile takes part in, as the brokers ask about them:
+//! the profile's own workspace, whose record holds what this profile keeps of
+//! it (the person's grants to apps, effect records), and the workspaces it
+//! joined, the profile's own workspace included once its host placed it.
 use super::{joined::Joined, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 use tilo_identity_host::broker::WorkspaceMembership;
 
-pub(super) struct Rooms {
+pub(super) struct Workspaces {
     pub(super) profile: Arc<ProfileWorkspace>,
     pub(super) joined: Arc<Joined>,
 }
 
-impl Rooms {
+impl Workspaces {
     pub(super) fn new(profile: &Arc<ProfileWorkspace>, joined: &Arc<Joined>) -> Self {
         Self {
             profile: Arc::clone(profile),
@@ -22,10 +22,10 @@ impl Rooms {
     }
 }
 
-impl WorkspaceAuthority for Rooms {
-    /// The profile's own workspaces, then each joined room as its
-    /// governance describes it. Joined rooms are never written to the
-    /// profile's workspace file, so a profile that joined any room reads
+impl WorkspaceAuthority for Workspaces {
+    /// The profile's own workspaces, then each joined workspace as its
+    /// governance describes it. Joined workspaces are never written to the
+    /// profile's workspace file, so a profile that joined any workspace reads
     /// a merged copy; one that joined none borrows its own tree.
     fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
         if self.joined.is_empty() {
@@ -78,7 +78,7 @@ impl WorkspaceAuthority for Rooms {
     }
 }
 
-impl WorkspaceMembership for Rooms {
+impl WorkspaceMembership for Workspaces {
     fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
         let mut found = false;
         WorkspaceMembership::with_workspace(self.profile.as_ref(), workspace, &mut |held| {

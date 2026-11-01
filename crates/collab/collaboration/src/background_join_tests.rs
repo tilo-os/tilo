@@ -65,7 +65,7 @@ fn a_joining_manager_builds_on_its_local_replica_and_takes_the_answer_as_an_even
             route.clone(),
             "notes.notebook",
             automerge::AutoCommit::new().save(),
-            runtime_collab::RoomStatus::Ready,
+            runtime_collab::WorkspaceStatus::Ready,
         )
     };
     assert!(manager.is_joining());
@@ -109,7 +109,7 @@ fn a_joining_manager_builds_on_its_local_replica_and_takes_the_answer_as_an_even
 fn a_joining_manager_follows_the_brokers_room_status() {
     let mut scope = crate::wake::WakeScope::new();
     let wakes = wakes_of(&mut scope);
-    let placing = runtime_collab::RoomStatus::Waiting {
+    let placing = runtime_collab::WorkspaceStatus::Waiting {
         reason: "Placing the workspace on its host".into(),
         detail: None,
     };
@@ -129,7 +129,7 @@ fn a_joining_manager_follows_the_brokers_room_status() {
                 detail: None,
             })
     });
-    broker.set_room(runtime_collab::RoomStatus::Waiting {
+    broker.set_room(runtime_collab::WorkspaceStatus::Waiting {
         reason: "Waiting for the host".into(),
         detail: Some("the host is offline".into()),
     });
@@ -169,7 +169,7 @@ fn a_refused_background_join_says_why() {
             joining_route(),
             "notes.notebook",
             automerge::AutoCommit::new().save(),
-            runtime_collab::RoomStatus::Ready,
+            runtime_collab::WorkspaceStatus::Ready,
         )
     };
     broker.refuse();
@@ -201,7 +201,7 @@ fn a_join_waited_for_off_its_thread_wakes_the_app_it_was_made_for() {
             joining_route(),
             "notes.notebook",
             automerge::AutoCommit::new().save(),
-            runtime_collab::RoomStatus::Ready,
+            runtime_collab::WorkspaceStatus::Ready,
         )
     };
     let join = super::NativeJoin::start(manager).unwrap();
@@ -246,7 +246,7 @@ fn account_custody_taken_while_the_route_joins_answers_once_it_is_admitted() {
             route.clone(),
             "notes.notebook",
             automerge::AutoCommit::new().save(),
-            runtime_collab::RoomStatus::Ready,
+            runtime_collab::WorkspaceStatus::Ready,
         )
     };
     assert!(manager.is_joining(), "the live launch builds while joining");

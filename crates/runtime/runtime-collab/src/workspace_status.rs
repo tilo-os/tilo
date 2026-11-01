@@ -1,9 +1,9 @@
-//! Where a room stands for the apps on this device.
+//! Where a workspace stands for the apps on this device.
 
-/// Where a room stands for the apps on this device: whether an app can open
-/// documents in it now, and if not, why.
+/// Where a workspace stands for the apps on this device: whether an app can
+/// open documents in it now, and if not, why.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum RoomStatus {
+pub enum WorkspaceStatus {
     /// Apps open documents in it.
     #[default]
     Ready,

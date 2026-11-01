@@ -1,6 +1,6 @@
 //! Explicit recovery of this profile's old, unscoped content. Published on
 //! the existing workspace action door, never on the blob socket. An import
-//! creates new room reachability; it does not certify historical ownership.
+//! creates new workspace reachability; it does not certify historical ownership.
 
 use std::sync::Arc;
 
@@ -67,13 +67,14 @@ struct Authority {
 }
 
 fn owner_revision(
-    workspace: &impl tilo_identity_host::broker::WorkspaceMembership,
-    room: &str,
+    membership: &impl tilo_identity_host::broker::WorkspaceMembership,
+    workspace: &str,
     account: &str,
 ) -> anyhow::Result<String> {
-    let room = RoomId::parse(room).ok_or_else(|| anyhow::anyhow!("invalid destination room"))?;
+    let id =
+        RoomId::parse(workspace).ok_or_else(|| anyhow::anyhow!("invalid destination workspace"))?;
     let mut revision = None;
-    workspace.with_workspace(&room, &mut |current| {
+    membership.with_workspace(&id, &mut |current| {
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
             // receipts, layout and delegated grants cannot revoke owner custody.
@@ -99,7 +100,7 @@ impl LegacyImportAuthority for Authority {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace.governs(),
-            "legacy import requires the local room owner"
+            "legacy import requires the local workspace owner"
         );
         anyhow::ensure!(
             self.lease
@@ -148,7 +149,7 @@ impl WorkspaceGovernanceServices for MediaImport {
     }
 
     fn descriptors(&self, workspace: &Workspace) -> Vec<ActionDescriptor> {
-        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.room() {
+        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.workspace() {
             return Vec::new();
         }
         vec![ActionDescriptor {
@@ -160,7 +161,7 @@ impl WorkspaceGovernanceServices for MediaImport {
             action_label: "Import selected legacy media".into(),
             keywords: Vec::new(),
             icon: None,
-            description: Some("Owner only. Creates new reachability in this room from exact resident hashes in this profile's content store; no scan or ownership inference. Up to 128 hashes and 256 MiB. Source store: runtime-profile-content; source room: unscoped.".into()),
+            description: Some("Owner only. Creates new reachability in this workspace from exact resident hashes in this profile's content store; no scan or ownership inference. Up to 128 hashes and 256 MiB. Source store: runtime-profile-content; source workspace: unscoped.".into()),
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Effect,
             contract: ActionContract {
@@ -227,7 +228,7 @@ impl MediaImport {
     )> {
         anyhow::ensure!(
             self.workspace.governs(),
-            "legacy import requires the local room owner"
+            "legacy import requires the local workspace owner"
         );
         anyhow::ensure!(
             invocation.local_device
@@ -254,8 +255,8 @@ impl MediaImport {
         let request: LegacyImportRequest = serde_json::from_str(argument)?;
         anyhow::ensure!(
             request.destination_workspace == invocation.workspace
-                && invocation.workspace == self.workspace.room(),
-            "legacy import destination is not this runtime's owned room"
+                && invocation.workspace == self.workspace.workspace(),
+            "legacy import destination is not this runtime's owned workspace"
         );
         let revision = owner_revision(self.workspace.as_ref(), invocation.workspace, account)?;
         let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.workspace)?;

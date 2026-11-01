@@ -1,9 +1,9 @@
-//! Framework-owned continuity for active calls, meetings, and live rooms.
+//! Framework-owned continuity for active calls, meetings, and live sessions.
 //!
 //! This module is deliberately transport agnostic. It coordinates semantic
-//! room resumption and cutover, but never represents a `PipeWire` node, portal
-//! object, file descriptor, or capture stream. Those are target-local objects
-//! that must be freshly authorized after an accept.
+//! workspace resumption and cutover, but never represents a `PipeWire` node,
+//! portal object, file descriptor, or capture stream. Those are target-local
+//! objects that must be freshly authorized after an accept.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -110,14 +110,14 @@ impl VerifiedAppRegistration {
     }
 }
 
-/// A stable provider/room pair, not a join URL or bearer credential.
+/// A stable provider/workspace pair, not a join URL or bearer credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SemanticRoomLocator {
+pub struct SemanticWorkspaceLocator {
     provider: String,
     room_id: String,
 }
 
-impl SemanticRoomLocator {
+impl SemanticWorkspaceLocator {
     pub fn new(
         provider: impl Into<String>,
         room_id: impl Into<String>,
@@ -131,7 +131,7 @@ impl SemanticRoomLocator {
             || locator.room_id.contains("://")
             || locator.room_id.contains('?')
         {
-            return Err(RealtimeSessionError::InvalidRoomLocator);
+            return Err(RealtimeSessionError::InvalidWorkspaceLocator);
         }
         Ok(locator)
     }
@@ -638,7 +638,7 @@ impl RealtimeFabricOffer {
         self.session_id.valid()
             && valid_identifier(&self.app_id, 256)
             && valid_identifier(&self.workspace_id, 128)
-            && SemanticRoomLocator::new(&self.provider, &self.room_id).is_ok()
+            && SemanticWorkspaceLocator::new(&self.provider, &self.room_id).is_ok()
             && RealtimeMediaSet::from_fabric_bits(self.media_bits).is_ok()
             && self.semantic_position.as_ref().is_none_or(|position| {
                 !position.is_empty()
@@ -657,7 +657,7 @@ impl RealtimeFabricOffer {
     /// into the transport-neutral broker model.
     pub fn intent(&self) -> Result<RealtimeResumeIntent, RealtimeSessionError> {
         let intent = RealtimeResumeIntent {
-            room: SemanticRoomLocator::new(self.provider.clone(), self.room_id.clone())?,
+            room: SemanticWorkspaceLocator::new(self.provider.clone(), self.room_id.clone())?,
             semantic_position: self.semantic_position.clone(),
             media: RealtimeMediaSet::from_fabric_bits(self.media_bits)?,
             controls: self.controls,
@@ -669,7 +669,7 @@ impl RealtimeFabricOffer {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RealtimeResumeIntent {
-    pub room: SemanticRoomLocator,
+    pub room: SemanticWorkspaceLocator,
     /// App-owned semantic state such as "stage" or "breakout-2". It must not
     /// contain a URL, access token, or process-local media identifier.
     pub semantic_position: Option<String>,
@@ -1584,8 +1584,8 @@ fn valid_identifier(value: &str, max: usize) -> bool {
 pub enum RealtimeSessionError {
     #[error("verified app or workspace registration is invalid")]
     InvalidRegistration,
-    #[error("semantic room locator is invalid")]
-    InvalidRoomLocator,
+    #[error("semantic workspace locator is invalid")]
+    InvalidWorkspaceLocator,
     #[error("resume intent is invalid or contains an unsafe locator")]
     InvalidResumeIntent,
     #[error("realtime media set is empty or internally inconsistent")]
@@ -1623,7 +1623,7 @@ mod tests {
 
         fn intent(media: RealtimeMediaSet) -> RealtimeResumeIntent {
             RealtimeResumeIntent {
-                room: SemanticRoomLocator::new("meet", "room-42").unwrap(),
+                room: SemanticWorkspaceLocator::new("meet", "room-42").unwrap(),
                 semantic_position: Some("main-stage".into()),
                 media,
                 controls: RealtimeControlState::default(),
@@ -2040,15 +2040,15 @@ mod tests {
 
         {
             assert_eq!(
-                SemanticRoomLocator::new("meet", "https://meet.invalid/room"),
-                Err(RealtimeSessionError::InvalidRoomLocator)
+                SemanticWorkspaceLocator::new("meet", "https://meet.invalid/room"),
+                Err(RealtimeSessionError::InvalidWorkspaceLocator)
             );
             assert_eq!(
-                SemanticRoomLocator::new("meet", "room?token=secret"),
-                Err(RealtimeSessionError::InvalidRoomLocator)
+                SemanticWorkspaceLocator::new("meet", "room?token=secret"),
+                Err(RealtimeSessionError::InvalidWorkspaceLocator)
             );
             let intent = RealtimeResumeIntent {
-                room: SemanticRoomLocator::new("meet", "safe-room").unwrap(),
+                room: SemanticWorkspaceLocator::new("meet", "safe-room").unwrap(),
                 semantic_position: Some("https://unsafe.invalid/resume".into()),
                 media: FakeCallingApp::audio(),
                 controls: RealtimeControlState::default(),

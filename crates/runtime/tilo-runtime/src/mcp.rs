@@ -25,7 +25,7 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 
 /// Host-configured per-session construction. It receives no client identity,
-/// label, requested room or execution UUID.
+/// label, requested workspace or execution UUID.
 pub type SessionFactory<H> =
     std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
 
@@ -36,7 +36,7 @@ pub struct McpServer<H> {
     /// Shared with the blocking threads synchronous broker work runs on.
     host: std::sync::Arc<H>,
     retire_execution: fn(&H, &Caller),
-    room: String,
+    workspace: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
@@ -561,34 +561,34 @@ pub fn agent_label(agent: &str) -> String {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// An MCP client of `actor`'s on this device, in `room`. The client is
+    /// An MCP client of `actor`'s on this device, in `workspace`. The client is
     /// an agent acting for the person ([`agent_id`]): what it does is the
     /// agent's, for them, within what both the person and the delegation a
     /// device gives its agents allow.
     #[must_use]
-    pub fn new(host: H, room: String, actor: String) -> Self {
+    pub fn new(host: H, workspace: String, actor: String) -> Self {
         let caller = Caller::local_person(actor.clone())
-            .in_room(room.clone())
+            .in_room(workspace.clone())
             .in_new_execution();
         let agent = agent_id(&caller);
         let caller = caller.delegated_to(agent);
-        Self::from_caller(host, room, actor, caller)
+        Self::from_caller(host, workspace, actor, caller)
     }
 
     /// One session of agent `agent_id`, which the host admitted itself into
-    /// `room` (a desktop's agent door, after `person` said so). It acts as
+    /// `workspace` (a desktop's agent door, after `person` said so). It acts as
     /// that agent, for the person who admitted it: the agent stays the
     /// principal, and what it may do is the lesser of what the workspace
     /// grants it and what the person may do, so a revoked membership ends
     /// both at once. Each session is its own fresh execution, retired when
     /// the session drops.
     #[must_use]
-    pub fn for_agent(host: H, room: String, agent_id: &str, person: &str) -> Self {
+    pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
         let caller = Caller::local_agent(agent_id)
-            .in_room(room.clone())
+            .in_room(workspace.clone())
             .acting_for(person)
             .in_new_execution();
-        Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
+        Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
             .with_surface(Surface::Agent)
     }
 
@@ -600,9 +600,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "MCP requires an admitted person execution",
             ));
         };
-        let room = caller
+        let workspace = caller
             .room()
-            .ok_or_else(|| std::io::Error::other("MCP room unavailable"))?
+            .ok_or_else(|| std::io::Error::other("MCP workspace unavailable"))?
             .to_owned();
         if caller.user_public_key().is_none()
             || caller.device_public_key().is_none()
@@ -611,18 +611,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Err(std::io::Error::other("MCP certified execution unavailable"));
         }
         let actor = actor.clone();
-        Ok(Self::from_caller(host, room, actor, caller))
+        Ok(Self::from_caller(host, workspace, actor, caller))
     }
 
-    pub(crate) fn audience_matches(&self, room: &str, actor: &str) -> bool {
-        self.room == room && self.actor == actor
+    pub(crate) fn audience_matches(&self, workspace: &str, actor: &str) -> bool {
+        self.workspace == workspace && self.actor == actor
     }
 
-    fn from_caller(host: H, room: String, actor: String, caller: Caller) -> Self {
+    fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
         Self {
             host: std::sync::Arc::new(host),
             retire_execution: H::retire_execution,
-            room,
+            workspace,
             actor,
             caller,
             run: std::sync::Mutex::new(None),
@@ -1764,7 +1764,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let app_of = |app: &Value| app["app_id"].as_str().map(str::to_owned);
         match (peer_id, app_id, workspace) {
             (None, None, true) => Ok(Addressed {
-                provider: tilo_actions::remote::workspace_provider(&self.room),
+                provider: tilo_actions::remote::workspace_provider(&self.workspace),
                 app_id: None,
             }),
             (Some(peer), None, false) => {

@@ -185,7 +185,7 @@ impl CollaborationManager {
         route: RouteSpec,
         kind: &str,
         history: Vec<u8>,
-        room: runtime_collab::RoomStatus,
+        room: runtime_collab::WorkspaceStatus,
     ) -> (Self, JoiningProbe) {
         let (answer, gate) = tokio::sync::oneshot::channel();
         let (room_status, status) = tokio::sync::watch::channel(Ok(room));

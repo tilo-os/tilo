@@ -202,7 +202,7 @@ fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> 
 /// `from` said `msg` on `to`'s plane in the room: what the plane carries
 /// between the two devices.
 fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
-    let ws = to.sync.room_topic(ROOM).expect("the room's topic");
+    let ws = to.sync.workspace_topic(ROOM).expect("the room's topic");
     to.sync.hear(said(from, ws, msg));
 }
 
@@ -381,7 +381,7 @@ fn allow_input(member: &mut Member, tab: u64, on: bool) {
 /// viewing it does.
 fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
     let event = postcard::to_stdvec(&SharedInput::PointerMotion { x, y }).expect("input");
-    let ws = host.sync.room_topic(ROOM).expect("the room's topic");
+    let ws = host.sync.workspace_topic(ROOM).expect("the room's topic");
     host.sync.hear(NetEvent::Msg {
         ws,
         peer: viewer.sync.publisher(),
@@ -1398,7 +1398,7 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
-    let ws = viewer.sync.room_topic(ROOM).expect("the room's topic");
+    let ws = viewer.sync.workspace_topic(ROOM).expect("the room's topic");
     viewer.sync.hear(NetEvent::Msg {
         ws,
         peer: device(seed),

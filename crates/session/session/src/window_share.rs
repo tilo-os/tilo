@@ -594,7 +594,7 @@ impl WindowShares {
         let mut shared = Vec::new();
         for workspace in &tree.workspaces {
             let room = workspace.policy.workspace.clone();
-            let devices = sync.room_devices(&room);
+            let devices = sync.workspace_devices(&room);
             let owners = owners_of(self.salt, sync.publisher(), &devices);
             for (tab, share) in window_shares(&workspace.policy, &owners, now_ms) {
                 if peer_salt_of(tab) == self.salt {
@@ -753,7 +753,7 @@ impl WindowShares {
                 self.retract(desk, start.tab);
                 continue;
             }
-            let Some(ws) = sync.room_topic(&start.room) else {
+            let Some(ws) = sync.workspace_topic(&start.room) else {
                 t("session-window-share-room-left").clone_into(&mut start.waiting_for);
                 self.starting.push(start);
                 continue;
@@ -867,7 +867,7 @@ impl WindowShares {
             .hosted
             .iter()
             .filter(|(_, hosted)| {
-                !shareable.contains(&hosted.window) || sync.room_topic(&hosted.room).is_none()
+                !shareable.contains(&hosted.window) || sync.workspace_topic(&hosted.room).is_none()
             })
             .map(|(tab, _)| *tab)
             .collect();
@@ -1109,7 +1109,7 @@ impl WindowShares {
                 !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.width)
                     || !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.height)
             })
-            || sync.room_topic(room) != Some(ws)
+            || sync.workspace_topic(room) != Some(ws)
         {
             return false;
         }
@@ -1253,7 +1253,7 @@ impl WindowShares {
                 continue;
             };
             let (room, tab) = key;
-            let Some(ws) = sync.room_topic(&room) else {
+            let Some(ws) = sync.workspace_topic(&room) else {
                 continue;
             };
             let host = watched.host;

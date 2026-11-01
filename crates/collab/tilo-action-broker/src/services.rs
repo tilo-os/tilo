@@ -235,7 +235,7 @@ pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).
 pub type WorkspaceStatusFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::RoomStatus> + Send>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::WorkspaceStatus> + Send>>;
 
 /// Native workspace membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
@@ -276,8 +276,8 @@ pub trait WorkspaceMemberships: Send + Sync {
     /// its join or its placement on its host, or refused, as when no host
     /// holds it and it has no documents to open. A join is held while it
     /// waits and refused with the reason, in place of a failure further in.
-    fn workspace_status(&self, _workspace: &str) -> runtime_collab::RoomStatus {
-        runtime_collab::RoomStatus::Ready
+    fn workspace_status(&self, _workspace: &str) -> runtime_collab::WorkspaceStatus {
+        runtime_collab::WorkspaceStatus::Ready
     }
 
     /// `workspace`'s status once it is no longer `seen`, woken by the change that
@@ -285,7 +285,7 @@ pub trait WorkspaceMemberships: Send + Sync {
     fn workspace_status_change(
         &self,
         workspace: &str,
-        seen: runtime_collab::RoomStatus,
+        seen: runtime_collab::WorkspaceStatus,
     ) -> WorkspaceStatusFuture {
         let now = self.workspace_status(workspace);
         if now == seen {

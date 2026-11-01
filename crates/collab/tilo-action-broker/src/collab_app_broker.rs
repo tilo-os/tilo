@@ -11367,7 +11367,7 @@ pub mod tests {
             let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
             let (client, _end) = runtime_collab::CollabClient::connected_local(stream);
             match client
-                .room_status("5ba25f73-87c5-447f-a5a6-880dc4249a81")
+                .workspace_status("5ba25f73-87c5-447f-a5a6-880dc4249a81")
                 .await
             {
                 Ok(_) => panic!("an unattested launch was answered"),

@@ -1,19 +1,19 @@
-//! The profile's own workspace, placed on the room host this runtime runs.
+//! The profile's own workspace, placed on the workspace host this runtime runs.
 //!
-//! The runtime runs the same room host every device runs
+//! The runtime runs the same workspace host every device runs
 //! ([`HostMode::Device`](tilo_room_host::host::HostMode::Device)), in
-//! process: the host creates the profile's room and issues this device the
-//! invitation its replica redeems ([`RoomHost::place_own_room`]), and from
-//! then on the room is one of the rooms this profile joined, its session
+//! process: the host creates the profile's workspace and issues this device the
+//! invitation its replica redeems ([`RoomHost::place_own_workspace`]), and from
+//! then on the workspace is one of the workspaces this profile joined, its session
 //! carried in process ([`RoomHost::connect_local`]). The host takes part in
-//! the room's channels as this device's one peer, asking this device's own
+//! the workspace's channels as this device's one peer, asking this device's own
 //! channel service for their keys.
 //!
-//! An app's write to the room goes to the host as a commit and is
-//! acknowledged once the host keeps it. A write to a record the room does
+//! An app's write to the workspace goes to the host as a commit and is
+//! acknowledged once the host keeps it. A write to a record the workspace does
 //! not hold yet is taken only in a resource kind the app's installed
 //! manifest declares; in dev mode, an app that is not installed is trusted
-//! with the kind its own build names. The room lets the app author its
+//! with the kind its own build names. The workspace lets the app author its
 //! records first, as the person who placed it there.
 use super::Joined;
 use std::{
@@ -26,7 +26,7 @@ use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCo
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tilo_room_host::host::RoomHost;
 
-/// How long a write waits for the room's session and for its host to keep it.
+/// How long a write waits for the workspace's session and for its host to keep it.
 const KEPT_WITHIN: Duration = Duration::from_secs(10);
 
 /// The resource kinds an installed app declares its records hold; `None`
@@ -34,7 +34,7 @@ const KEPT_WITHIN: Duration = Duration::from_secs(10);
 pub(in crate::standalone) type DeclaredKinds =
     Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 
-/// In which kinds an app may write a record the room does not hold yet.
+/// In which kinds an app may write a record the workspace does not hold yet.
 pub(in crate::standalone) struct RecordCreation {
     pub(in crate::standalone) declared_kinds: DeclaredKinds,
     /// Started with `--dev`: an app that is not installed is a build under
@@ -51,14 +51,14 @@ impl RecordCreation {
     }
 }
 
-/// The room host this profile runs, and what it lets apps create there.
+/// The workspace host this profile runs, and what it lets apps create there.
 pub(super) struct OwnHost {
     host: Arc<RoomHost>,
     creation: RecordCreation,
 }
 
 impl Joined {
-    /// Run `host`, this device's room host, from now on: the rooms it hosts
+    /// Run `host`, this device's workspace host, from now on: the workspaces it hosts
     /// are reached in process, and apps create records there as `creation`
     /// lets them.
     ///
@@ -71,7 +71,7 @@ impl Joined {
     ) -> Result<(), String> {
         self.own_host
             .set(OwnHost { host, creation })
-            .map_err(|_| "this profile runs one room host".into())
+            .map_err(|_| "this profile runs one workspace host".into())
     }
 
     fn room_host(&self) -> Option<&Arc<RoomHost>> {
@@ -82,37 +82,37 @@ impl Joined {
         self.custody.device_signing_key.verifying_key().to_bytes()
     }
 
-    /// Place `room`, the profile's workspace called `name`, on this
+    /// Place `workspace`, the profile's workspace called `name`, on this
     /// device's host and enroll in it, unless this profile holds it
-    /// already: the room is held when this returns, and synced once its
+    /// already: the workspace is held when this returns, and synced once its
     /// session is held ([`Self::hold_session`]).
     ///
     /// # Errors
-    /// No host runs, it refused the room, or the enrollment failed.
+    /// No host runs, it refused the workspace, or the enrollment failed.
     pub(in crate::standalone) async fn place(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         name: &str,
     ) -> Result<(), String> {
-        if self.owner.contains_workspace(room) {
+        if self.owner.contains_workspace(workspace) {
             return Ok(());
         }
         let invitation = self
             .room_host()
-            .ok_or("this profile runs no room host")?
-            .place_own_room(&room.to_string(), name, &self.custody.device_cert)
+            .ok_or("this profile runs no workspace host")?
+            .place_own_room(&workspace.to_string(), name, &self.custody.device_cert)
             .await?;
-        if self.enroll(&invitation).await? != room {
-            return Err("this device's host placed another room".into());
+        if self.enroll(&invitation).await? != workspace {
+            return Err("this device's host placed another workspace".into());
         }
         Ok(())
     }
 
-    /// Whether `room` is hosted by this device's own host.
-    pub(in crate::standalone) fn hosted_here(&self, room: RoomId) -> bool {
+    /// Whether `workspace` is hosted by this device's own host.
+    pub(in crate::standalone) fn hosted_here(&self, workspace: RoomId) -> bool {
         let own = self.own_device();
         self.owner
-            .with_current(room, |view| {
+            .with_current(workspace, |view| {
                 Ok(view
                     .transport_hint()
                     .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
@@ -120,7 +120,7 @@ impl Joined {
             .unwrap_or(false)
     }
 
-    /// How this device reaches a room's host: its own host in process,
+    /// How this device reaches a workspace's host: its own host in process,
     /// every other over the network.
     pub(super) fn reach(&self) -> Reach {
         Reach {
@@ -152,14 +152,14 @@ impl Joined {
         });
         self.reach()
             .join_client(hosted_here, own)
-            .ok_or_else(|| "this device's room host is not running".into())
+            .ok_or_else(|| "this device's workspace host is not running".into())
     }
 
-    /// Commit `request`, an app's write to `room`, a room this device's host
+    /// Commit `request`, an app's write to `workspace`, a workspace this device's host
     /// hosts, at the host: answered once the host keeps it.
     pub(super) async fn commit_hosted(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         request: OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> Result<OwnerCommitReceipt, String> {
@@ -170,13 +170,13 @@ impl Joined {
             envelope,
         } = request.operation
         else {
-            return Err("an app writes documents to its room".into());
+            return Err("an app writes documents to its workspace".into());
         };
         let own = self.own_device();
         if envelope.author.as_bytes() != &own {
             return Err("the document's signer differs from this device".into());
         }
-        let (held, authors, generation) = self.owner.with_current(room, |view| {
+        let (held, authors, generation) = self.owner.with_current(workspace, |view| {
             let now = SystemTime::now();
             let member = view
                 .peer()
@@ -193,7 +193,7 @@ impl Joined {
         let own_host = self
             .own_host
             .get()
-            .ok_or("this profile runs no room host")?;
+            .ok_or("this profile runs no workspace host")?;
         if !held {
             let kind = record_kind
                 .as_deref()
@@ -204,12 +204,12 @@ impl Joined {
         }
         if !authors {
             // This device lets the app author, committed by its own host,
-            // which signs the room's history under this device's key.
+            // which signs the workspace's history under this device's key.
             own_host
                 .host
                 .rooms()
                 .commit_own_membership(
-                    &room.to_string(),
+                    &workspace.to_string(),
                     &self.custody.device_cert,
                     tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
                         app: app.clone(),
@@ -223,7 +223,7 @@ impl Joined {
                 own[0], own[1], own[2], own[3], own[4], own[5], own[6], own[7],
             ]),
             app_id: app,
-            cluster_id: room.to_string(),
+            cluster_id: workspace.to_string(),
             record_id: record,
             envelope,
         };
@@ -240,7 +240,7 @@ impl Joined {
         let deadline = Instant::now()
             .checked_add(KEPT_WITHIN)
             .ok_or("the clock cannot count a write's wait")?;
-        let session = self.live_by(room, deadline).await?;
+        let session = self.live_by(workspace, deadline).await?;
         let (kept, keeping) = tokio::sync::oneshot::channel();
         self.lock_commits().insert(op, kept);
         if let Err(error) = session.commit(op, &payload) {
@@ -253,9 +253,9 @@ impl Joined {
         match answer {
             Ok(Ok(kept)) => kept?,
             Ok(Err(_)) => {
-                return Err("the room's session ended before its host kept the write".into());
+                return Err("the workspace's session ended before its host kept the write".into());
             }
-            Err(_) => return Err("the room's host did not keep the write in time".into()),
+            Err(_) => return Err("the workspace's host did not keep the write in time".into()),
         }
         Ok(OwnerCommitReceipt {
             binding,
@@ -264,24 +264,24 @@ impl Joined {
         })
     }
 
-    /// `room`'s connected session, waited for until `deadline`.
+    /// `workspace`'s connected session, waited for until `deadline`.
     async fn live_by(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         deadline: Instant,
     ) -> Result<Arc<RelayCoeditSession>, String> {
         loop {
             let changed = self.live_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if let Some(session) = self.live(room) {
+            if let Some(session) = self.live(workspace) {
                 return Ok(session);
             }
             if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed)
                 .await
                 .is_err()
             {
-                return Err("the room's session with its host is not up".into());
+                return Err("the workspace's session with its host is not up".into());
             }
         }
     }
@@ -305,23 +305,27 @@ impl Joined {
 
 #[cfg(test)]
 impl Joined {
-    /// `app`'s `record` as this device's host keeps it in `room`: its latest
+    /// `app`'s `record` as this device's host keeps it in `workspace`: its latest
     /// whole write, opened with the channel's keys. Waits on the host: call
     /// it from a thread that may block.
     pub(in crate::standalone) fn test_kept_document(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         app: &str,
         record: &str,
     ) -> Option<Vec<u8>> {
         let host = Arc::clone(self.room_host()?);
-        let ws = super::room_topic(room).ok()?;
+        let ws = super::workspace_topic(workspace).ok()?;
         let retained = tilo_rt::app()
             .handle()
             .block_on(async move { host.room_records().retained(ws).await })
             .ok()?;
         let route = collab_types::ChannelRoute::new(app, record);
-        let keys = self.channel_keys().get()?.record_keys(room, &route)?.ok()?;
+        let keys = self
+            .channel_keys()
+            .get()?
+            .record_keys(workspace, &route)?
+            .ok()?;
         retained.iter().rev().find_map(|kept| {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,

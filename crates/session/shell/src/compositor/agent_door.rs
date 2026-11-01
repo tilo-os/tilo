@@ -379,7 +379,7 @@ fn serve_connection(
             Ok(admitted) => {
                 *joined.borrow_mut() = Some(admitted.presentation);
                 Consent::Admit {
-                    room: admitted.room,
+                    workspace: admitted.room,
                     agent: admitted.agent,
                     person: admitted.person,
                 }

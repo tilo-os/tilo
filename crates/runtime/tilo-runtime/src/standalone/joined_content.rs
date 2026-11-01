@@ -1,9 +1,9 @@
-//! The content a joined room's records reference, on the room's relay
-//! session. This device asks the room for a hash its record lacks with the
-//! room's presence, which the host fans out to every member; a member
+//! The content a joined workspace's records reference, on the workspace's relay
+//! session. This device asks the workspace for a hash its record lacks with the
+//! workspace's presence, which the host fans out to every member; a member
 //! keeping it answers this device alone through the host. Requests from
 //! other members are answered the same way, from what the profile's content
-//! store keeps under the record's room and app.
+//! store keeps under the record's workspace and app.
 
 use super::Joined;
 use neighbour_wire::NeighbourMsg;
@@ -25,24 +25,24 @@ use tilo_peer_state::peer_handle;
 /// Devices whose key this device remembers for an answer.
 const MAX_REMEMBERED_REQUESTERS: usize = 256;
 
-/// Who asked a joined room for content, by the handle their requests name.
+/// Who asked a joined workspace for content, by the handle their requests name.
 #[derive(Default)]
 pub(super) struct Requesters(Mutex<HashMap<(RoomId, ContentPeer), [u8; 32]>>);
 
 impl Requesters {
-    fn remember(&self, room: RoomId, peer: ContentPeer, device: [u8; 32]) {
+    fn remember(&self, workspace: RoomId, peer: ContentPeer, device: [u8; 32]) {
         if let Ok(mut requesters) = self.0.lock() {
             if requesters.len() >= MAX_REMEMBERED_REQUESTERS
-                && !requesters.contains_key(&(room, peer))
+                && !requesters.contains_key(&(workspace, peer))
             {
                 requesters.clear();
             }
-            requesters.insert((room, peer), device);
+            requesters.insert((workspace, peer), device);
         }
     }
 
-    fn device(&self, room: RoomId, peer: ContentPeer) -> Option<[u8; 32]> {
-        self.0.lock().ok()?.get(&(room, peer)).copied()
+    fn device(&self, workspace: RoomId, peer: ContentPeer) -> Option<[u8; 32]> {
+        self.0.lock().ok()?.get(&(workspace, peer)).copied()
     }
 }
 
@@ -80,15 +80,15 @@ impl ContentShelf for ProfileShelf {
     }
 }
 
-/// The joined rooms' relay sessions as the route of their records' content.
+/// The joined workspaces' relay sessions as the route of their records' content.
 struct JoinedPeers(Arc<Joined>);
 
 impl ContentPeers for JoinedPeers {
     fn want(&self, route: &CrdtRoute, hash: &str) {
-        let Some(room) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
             return;
         };
-        let Some(live) = self.0.live(room) else {
+        let Some(live) = self.0.live(workspace) else {
             return;
         };
         let message = NeighbourMsg::RecordContentWant {
@@ -103,11 +103,13 @@ impl ContentPeers for JoinedPeers {
     }
 
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
-        let Some(room) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
             return;
         };
-        let (Some(live), Some(device)) = (self.0.live(room), self.0.requesters.device(room, peer))
-        else {
+        let (Some(live), Some(device)) = (
+            self.0.live(workspace),
+            self.0.requesters.device(workspace, peer),
+        ) else {
             return;
         };
         let message = NeighbourMsg::RecordContentPiece {
@@ -126,11 +128,13 @@ impl ContentPeers for JoinedPeers {
     }
 
     fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
-        let Some(room) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
             return;
         };
-        let (Some(live), Some(device)) = (self.0.live(room), self.0.requesters.device(room, peer))
-        else {
+        let (Some(live), Some(device)) = (
+            self.0.live(workspace),
+            self.0.requesters.device(workspace, peer),
+        ) else {
             return;
         };
         let message = NeighbourMsg::RecordContentLacks {
@@ -145,17 +149,22 @@ impl ContentPeers for JoinedPeers {
         }
     }
 
-    /// The host the room's session is connected to, and the members it
+    /// The host the workspace's session is connected to, and the members it
     /// reports connected: this device reaches them only through it.
     fn sources(&self, route: &CrdtRoute) -> ContentSources {
-        let Some(room) = RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = RoomId::parse(&route.cluster_id) else {
             return ContentSources::default();
         };
         ContentSources {
-            peers: self.0.live_members(room).iter().map(peer_handle).collect(),
+            peers: self
+                .0
+                .live_members(workspace)
+                .iter()
+                .map(peer_handle)
+                .collect(),
             hosts: self
                 .0
-                .live_host(room)
+                .live_host(workspace)
                 .map(|host| peer_handle(&host))
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
@@ -164,7 +173,7 @@ impl ContentPeers for JoinedPeers {
 }
 
 /// The profile's record-content service: its content store, served on
-/// `blob_socket`, and the joined rooms' sessions.
+/// `blob_socket`, and the joined workspaces' sessions.
 pub(in crate::standalone) fn record_content(
     joined: &Arc<Joined>,
     blob_socket: &Path,
@@ -172,7 +181,7 @@ pub(in crate::standalone) fn record_content(
     record_content_on(joined, Arc::new(ProfileShelf(blob_socket.to_path_buf())))
 }
 
-/// The record-content service of `joined`'s rooms over `shelf`.
+/// The record-content service of `joined`'s workspaces over `shelf`.
 pub(super) fn record_content_on(
     joined: &Arc<Joined>,
     shelf: Arc<dyn ContentShelf>,
@@ -187,11 +196,11 @@ impl Joined {
         peer_handle(&self.custody.device_signing_key.verifying_key().to_bytes())
     }
 
-    /// A member of `room` asked it for content, with presence `author`
+    /// A member of `workspace` asked it for content, with presence `author`
     /// published. Returns whether `message` was such a request.
     pub(super) fn content_wanted(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         author: [u8; 32],
         message: &NeighbourMsg,
     ) -> bool {
@@ -206,24 +215,24 @@ impl Joined {
         };
         if *requester != peer_handle(&author)
             || *requester == self.own_handle()
-            || RoomId::parse(cluster_id) != Some(room)
+            || RoomId::parse(cluster_id) != Some(workspace)
         {
             return true;
         }
         let Some(content) = self.content.get().cloned() else {
             return true;
         };
-        self.requesters.remember(room, *requester, author);
+        self.requesters.remember(workspace, *requester, author);
         let route = CrdtRoute::app(app_id.clone(), cluster_id.clone());
         let (peer, hash) = (*requester, hash.clone());
-        // The host admitted the member to the room, which lets it read.
+        // The host admitted the member to the workspace, which lets it read.
         tilo_rt::app().spawn_blocking(move || content.peer_wants(&route, peer, true, &hash));
         true
     }
 
     /// A piece of content another member sent this device through the
     /// host, or word that a device keeps none of what this one asked for.
-    pub(super) fn content_arrived(&self, room: RoomId, from: [u8; 32], frame: &[u8]) {
+    pub(super) fn content_arrived(&self, workspace: RoomId, from: [u8; 32], frame: &[u8]) {
         if let Ok(NeighbourMsg::RecordContentLacks {
             responder,
             requester,
@@ -234,7 +243,7 @@ impl Joined {
         {
             if responder == peer_handle(&from)
                 && requester == self.own_handle()
-                && RoomId::parse(&cluster_id) == Some(room)
+                && RoomId::parse(&cluster_id) == Some(workspace)
                 && let Some(content) = self.content.get().cloned()
             {
                 let route = CrdtRoute::app(app_id, cluster_id);
@@ -257,7 +266,7 @@ impl Joined {
         };
         if responder != peer_handle(&from)
             || requester != self.own_handle()
-            || RoomId::parse(&cluster_id) != Some(room)
+            || RoomId::parse(&cluster_id) != Some(workspace)
         {
             return;
         }

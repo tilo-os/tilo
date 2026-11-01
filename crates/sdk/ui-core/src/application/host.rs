@@ -1474,7 +1474,7 @@ mod native_process_tests {
                     crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
                     "probe",
                     automerge::AutoCommit::new().save(),
-                    runtime_collab::RoomStatus::Ready,
+                    runtime_collab::WorkspaceStatus::Ready,
                 )
             };
             (
@@ -1575,7 +1575,7 @@ mod native_process_tests {
                     crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
                     definition.record_kind.as_str(),
                     automerge::AutoCommit::new().save(),
-                    runtime_collab::RoomStatus::Ready,
+                    runtime_collab::WorkspaceStatus::Ready,
                 )
             };
             let construction = NativeConstruction::enter_component(manager, scope).unwrap();

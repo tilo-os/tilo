@@ -17,7 +17,7 @@ struct Joining {
 /// room in the background. The room's
 /// committed history is the record with `from_room` added by another
 /// device. The room starts as `room`.
-fn joining(room: runtime_collab::RoomStatus) -> Joining {
+fn joining(room: runtime_collab::WorkspaceStatus) -> Joining {
     let definition = crate::application_test_support::runner_probe_definition();
     let temp = tempfile::tempdir().unwrap();
     let room_id = uuid::Uuid::new_v4().to_string();
@@ -104,7 +104,7 @@ impl Joining {
 
 #[test]
 fn an_app_opens_on_its_local_replica_and_its_edits_sync_once_the_broker_answers() {
-    let mut probe = joining(runtime_collab::RoomStatus::Ready);
+    let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
     assert_eq!(
         probe.app.collaboration_state(),
         CollaborationState::Connecting
@@ -151,7 +151,7 @@ fn an_app_opens_on_its_local_replica_and_its_edits_sync_once_the_broker_answers(
 #[test]
 fn the_connecting_line_follows_the_brokers_waiting_and_unreachable_events() {
     let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
-    let mut probe = joining(runtime_collab::RoomStatus::Waiting {
+    let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
         reason: "Placing the workspace on its host".into(),
         detail: None,
     });
@@ -164,7 +164,9 @@ fn the_connecting_line_follows_the_brokers_waiting_and_unreachable_events() {
     ));
 
     // The room is ready: the join goes on, and the line says nothing.
-    probe.broker.set_room(runtime_collab::RoomStatus::Ready);
+    probe
+        .broker
+        .set_room(runtime_collab::WorkspaceStatus::Ready);
     probe.pump_until("the wait to end", |app| {
         app.document_sync_status().is_none()
     });
@@ -174,7 +176,7 @@ fn the_connecting_line_follows_the_brokers_waiting_and_unreachable_events() {
 #[test]
 fn the_connecting_line_shows_while_the_broker_cannot_be_reached() {
     let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
-    let mut probe = joining(runtime_collab::RoomStatus::Waiting {
+    let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
         reason: "Placing the workspace on its host".into(),
         detail: None,
     });
@@ -206,7 +208,7 @@ fn the_connecting_line_shows_while_the_broker_cannot_be_reached() {
 
 #[test]
 fn a_refused_join_leaves_the_app_up_with_its_data_and_the_reason_shown() {
-    let mut probe = joining(runtime_collab::RoomStatus::Ready);
+    let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
     probe.broker.refuse();
     probe.pump_until("the refusal", |app| {
         matches!(app.collaboration_state(), CollaborationState::Offline(_))

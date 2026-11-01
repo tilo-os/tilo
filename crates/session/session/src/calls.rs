@@ -1398,7 +1398,7 @@ mod tests {
             .iter()
             .find(|call| call.channel == CHANNEL)
             .expect("the peer reads the call this person is in");
-        assert_eq!(heard.room, ROOM);
+        assert_eq!(heard.workspace, ROOM);
         assert_eq!(
             heard
                 .people

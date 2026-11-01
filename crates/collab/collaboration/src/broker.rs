@@ -2465,7 +2465,7 @@ struct ConnectedBroker {
 #[cfg(unix)]
 pub struct JoiningProbe {
     answer: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    room: tokio::sync::watch::Sender<Result<runtime_collab::RoomStatus, String>>,
+    room: tokio::sync::watch::Sender<Result<runtime_collab::WorkspaceStatus, String>>,
     sent: Box<dyn Fn() -> usize>,
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -2485,7 +2485,7 @@ impl JoiningProbe {
     /// The reason [`Self::refuse`] gives.
     pub const REFUSAL: &'static str = "fixture join gate dropped";
     /// The broker reports the room as `status` from now on.
-    pub fn set_room(&self, status: runtime_collab::RoomStatus) {
+    pub fn set_room(&self, status: runtime_collab::WorkspaceStatus) {
         let _ = self.room.send(Ok(status));
     }
     /// The broker cannot be asked how the room stands, and why.
@@ -3525,22 +3525,25 @@ async fn report_join_hold(
     channel: &str,
     state: &BridgeState,
 ) {
-    let mut status = client.room_status(channel).await;
+    let mut status = client.workspace_status(channel).await;
     loop {
         match status {
-            Ok(runtime_collab::RoomStatus::Waiting { reason, detail }) => {
+            Ok(runtime_collab::WorkspaceStatus::Waiting { reason, detail }) => {
                 state.set_join_hold(Some(super::JoinHold::RoomWaiting {
                     reason: reason.clone(),
                     detail: detail.clone(),
                 }));
                 status = client
-                    .await_room(
+                    .await_workspace(
                         channel,
-                        &runtime_collab::RoomStatus::Waiting { reason, detail },
+                        &runtime_collab::WorkspaceStatus::Waiting { reason, detail },
                     )
                     .await;
             }
-            Ok(runtime_collab::RoomStatus::Ready | runtime_collab::RoomStatus::Refused(_)) => {
+            Ok(
+                runtime_collab::WorkspaceStatus::Ready
+                | runtime_collab::WorkspaceStatus::Refused(_),
+            ) => {
                 state.set_join_hold(None);
                 return;
             }
@@ -7116,7 +7119,7 @@ mod tests {
         /// The workspace's status as the broker reports it, or why the broker
         /// cannot be asked; without it the host refuses to say.
         pub room_status:
-            Option<tokio::sync::watch::Receiver<Result<runtime_collab::RoomStatus, String>>>,
+            Option<tokio::sync::watch::Receiver<Result<runtime_collab::WorkspaceStatus, String>>>,
         pub committed_reads: Vec<runtime_collab::committed_document::Request>,
         pub media_commands: Vec<runtime_collab::native_media::Request>,
         pub media_active_fixture: bool,
@@ -7556,7 +7559,7 @@ mod tests {
         fn answer(self: &Rc<Self>, request: Operation) -> FakeAnswer {
             match request {
                 Operation::Join(join) => self.join(join),
-                Operation::Room { seen, .. } => {
+                Operation::Workspace { seen, .. } => {
                     let Some(mut status) = self.captures().room_status.clone() else {
                         return answered(Err("the fixture reports no room status".into()));
                     };
@@ -7565,9 +7568,9 @@ mod tests {
                             let now = status.borrow_and_update().clone();
                             match (now, &seen) {
                                 (Err(reason), _) => return Err(reason),
-                                (Ok(now), None) => return Ok(Reply::Room(now)),
+                                (Ok(now), None) => return Ok(Reply::Workspace(now)),
                                 (Ok(now), Some(seen)) if now != *seen => {
-                                    return Ok(Reply::Room(now));
+                                    return Ok(Reply::Workspace(now));
                                 }
                                 (Ok(_), Some(_)) => {}
                             }
