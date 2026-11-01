@@ -141,6 +141,36 @@ fn arrangement(record: &str) -> ArrangementReading {
     }
 }
 
+/// The shell part showing `note` in a place, its reading published, drawn.
+fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) {
+    let (mut part, link) = part_with(reading_with_windows());
+    let arrangement = arrangement(note);
+    link.publish_arrangement(arrangement.clone());
+    assert!(
+        link.follow_places(&arrangement, &service.resources(), |id| service.read(id)),
+        "the place's record has a reading"
+    );
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    (part, link)
+}
+
+/// Run what the shell asked against the note's door, as the session's turn does.
+fn serve(link: &SessionLink, service: &mut RecordService) {
+    link.serve(|ask| {
+        let arguments: Map<String, Json> = ask
+            .arguments
+            .iter()
+            .map(|(name, value)| (name.clone(), Json::String(value.clone())))
+            .collect();
+        service
+            .invoke(&ask.resource, &ask.action, &arguments)
+            .map(drop)
+            .map_err(|error| panic!("the note's door refused {ask:?}: {error:?}"))
+    });
+}
+
 /// The shell's spaces canvas over the arrangement the part holds now.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
@@ -171,8 +201,8 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     host.open_resource(&root, Some(&view)).unwrap()
 }
 
-/// The text input bound to the field `field` of a resource of another app.
-fn input_bound_to<'a>(
+/// The control bound to the field `field` of a resource of another app.
+fn bound_to<'a>(
     node: &'a tilolang_tilo::runtime::UiNode,
     field: &str,
 ) -> Option<&'a tilolang_tilo::runtime::UiNode> {
@@ -183,12 +213,12 @@ fn input_bound_to<'a>(
                 if bound == field && target.ty.contains('#')
         )
     });
-    if node.kind == "ui.TextInput" && bound {
+    if bound {
         return Some(node);
     }
     node.children
         .iter()
-        .find_map(|child| input_bound_to(child, field))
+        .find_map(|child| bound_to(child, field))
 }
 
 /// Every text the tree shows, in its props.
@@ -212,16 +242,8 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     let (mut service, meta) = notebook();
     let note = note(&mut service, &meta, "Groceries");
 
-    let (mut part, link) = part_with(reading_with_windows());
+    let (mut part, link) = showing(&service, &note);
     let arrangement = arrangement(&note);
-    link.publish_arrangement(arrangement.clone());
-    assert!(
-        link.follow_places(&arrangement, &service.resources(), |id| service.read(id)),
-        "the place's record has a reading"
-    );
-    for _ in 0..4 {
-        part.prepare_frame();
-    }
 
     let view = canvas(&part);
     let title_field = field_id(&meta, "Note", "title");
@@ -230,7 +252,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
         "the place shows the note: {:#?}",
         view.tree()
     );
-    let title = input_bound_to(view.tree(), &title_field)
+    let title = bound_to(view.tree(), &title_field)
         .unwrap_or_else(|| panic!("the place shows the note's editor: {:#?}", view.tree()));
     assert_eq!(
         view.edit(&title.key, &Value::text("Groceries and lemons"))
@@ -240,17 +262,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     assert!(link.has_asks(), "the edit is asked of the note's door");
 
     // The edit went to the note's door, as the session's turn runs what the shell asked.
-    link.serve(|ask| {
-        let arguments: Map<String, Json> = ask
-            .arguments
-            .iter()
-            .map(|(name, value)| (name.clone(), Json::String(value.clone())))
-            .collect();
-        service
-            .invoke(&ask.resource, &ask.action, &arguments)
-            .map(drop)
-            .map_err(|error| panic!("the note's door refused {ask:?}: {error:?}"))
-    });
+    serve(&link, &mut service);
     assert_eq!(
         service.read(&note).unwrap()[&title_field],
         json!("Groceries and lemons"),
@@ -267,5 +279,55 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
         texts(view.tree()).contains(&"Groceries and lemons".to_owned()),
         "{:#?}",
         view.tree()
+    );
+}
+
+#[test]
+fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
+    let (part, _link) = part_with(reading_with_windows());
+    let host = part.instance.host().expect("the shell runs");
+    // The apps the shell's views compose are other apps' here: what the shell's runtime runs of
+    // them reads their records from the session, and the shell's record holds none of theirs.
+    for app in ["so.tilo.lang.chat", NOTES_APP, "so.tilo.lang.tasks"] {
+        assert!(
+            host.package(app).is_none(),
+            "`{app}` runs as the shell's own package, keeping a copy of its records"
+        );
+    }
+    assert_eq!(
+        host.packages()
+            .iter()
+            .map(|package| package.meta.app.clone())
+            .collect::<Vec<_>>(),
+        vec![host.packages().last().unwrap().meta.app.clone()],
+        "the shell runs its own package alone"
+    );
+}
+
+#[test]
+fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
+    let (mut service, meta) = notebook();
+    let note = note(&mut service, &meta, "Groceries");
+    let (part, link) = showing(&service, &note);
+
+    let view = canvas(&part);
+    let body_field = field_id(&meta, "Note", "body");
+    let body = bound_to(view.tree(), &body_field)
+        .unwrap_or_else(|| panic!("the place shows the note's body: {:#?}", view.tree()));
+    let written = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(
+        "Lemons, two of them",
+    ));
+    assert_eq!(
+        view.edit(&body.key, &written).unwrap(),
+        tilolang_tilo::runtime::EditOutcome::Applied
+    );
+    serve(&link, &mut service);
+
+    let reading = service.read(&note).unwrap();
+    assert!(
+        reading[&body_field]
+            .to_string()
+            .contains("Lemons, two of them"),
+        "the note the notes app reads has the body written in the place: {reading:#}"
     );
 }

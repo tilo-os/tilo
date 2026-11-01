@@ -135,6 +135,42 @@ pub struct Live {
     pub end: Option<TurnEnd>,
 }
 
+/// What one entry of a run's conversation is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Said {
+    /// Words: the person's sentence to the agent, or the agent's prose between its steps.
+    Prose { text: String },
+    /// A program someone ran in the run, with what came of it, as a
+    /// `tilo_reference::ProgramStep`.
+    Step { step: serde_json::Value },
+}
+
+/// One entry of a run's conversation (shell.md §8.1, "The transcript is steps").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    /// Its number in the run, from 1, never reused: what a follower keys it by when older
+    /// entries are let go.
+    pub seq: u64,
+    /// Who said or ran it: the person by their id, or the agent as `agent:<id>`.
+    pub author: String,
+    /// When, Unix milliseconds.
+    pub at_ms: i64,
+    #[serde(flatten)]
+    pub said: Said,
+}
+
+impl Entry {
+    /// Whether an agent said or ran it, rather than a person.
+    #[must_use]
+    pub fn by_agent(&self) -> bool {
+        self.author.starts_with(AGENT_PREFIX)
+    }
+}
+
+/// What an agent's author id in a run's conversation begins with.
+pub const AGENT_PREFIX: &str = "agent:";
+
 /// One run of an ask, as the session publishes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
@@ -176,6 +212,11 @@ pub struct Run {
     /// keeping it, as a `tilo_reference::ResourceAt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<serde_json::Value>,
+    /// Its conversation, oldest first: what the person asked and told it, what its agent said,
+    /// and every program either of them ran, in the order they happened; the last ones of
+    /// them. `said`, `steps` and `programs` are read out of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcript: Vec<Entry>,
     /// The model turn it streams now, while it goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<Live>,

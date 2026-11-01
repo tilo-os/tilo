@@ -445,6 +445,23 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "count",
+          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0. The button keeps room for it, so it never covers the control beside it. The label says the count to assistive technology.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "dot",
+          "doc": "Something new behind it without a number: a dot on its icon's corner.",
+          "type": "bool"
+        },
+        {
+          "name": "alert",
+          "doc": "It needs the person: the count or the dot in the warning tone, not in your colour.",
+          "type": "bool"
         }
       ],
       "events": [

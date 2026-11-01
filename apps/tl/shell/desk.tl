@@ -10,21 +10,45 @@
 /// session's chrome decides. Nothing here draws a window: the desk's windows are the
 /// compositor's, behind this view.
 view desk(d: Desk) {
+    desk_around(d, .none, fill)
+}
+
+/// The desk, with the window in front of `front` filling the room between its bar and its
+/// dock when there is one. On a compact output, where a desk of windows standing where they
+/// were left would show their corners cut off, the traditional desktop shows the window the
+/// person is in that way, and the dock takes its own room at the foot rather than standing
+/// over the window, as a phone's does.
+view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
+    let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
                 bar_on_edge(s, d)
             }
             if d.here == "none" or d.here == "desk" {
-                at_rest(d)
+                if let a = front {
+                    stack(gap: .tight, fill) {
+                        at_rest(d)
+                        front_window(a, fill)
+                    }
+                } else {
+                    at_rest(d)
+                }
             } else {
                 scroll(fill) {
                     surface(d)
                 }
             }
+            if docked {
+                row(align: .center, distribute: .center) {
+                    ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
+                        dock(s, d)
+                    }
+                }
+            }
         }
-        if dock_shows(s, d) {
+        if dock_shows(s, d) and not docked {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
                     ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
@@ -126,5 +150,9 @@ view surface(d: Desk) {
         workspaces(d, fill)
     } else if d.here == "composer" {
         composer(d, fill)
+    } else if d.here == "conversation" {
+        if let r = d.runs.last() {
+            conversation(r, fill)
+        }
     }
 }

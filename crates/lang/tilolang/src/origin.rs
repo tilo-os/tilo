@@ -272,6 +272,116 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.tray_item>",
                 "The running applications' tray items, in the order they registered.",
             ),
+            field(
+                "runs",
+                "Collection<session.run>",
+                "The runs of what the person asked the session's agents, oldest first.",
+            ),
+            field(
+                "run_entries",
+                "Collection<session.run_entry>",
+                "Each run's conversation, entry by entry, naming the run it is of, oldest \
+                 first.",
+            ),
+            field(
+                "entry_refs",
+                "Collection<session.entry_ref>",
+                "What each program of a run's conversation printed and changed, naming the \
+                 entry it is of, in the program's order.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.run",
+        doc: "A run of what the person asked one of the session's agents: the conversation the \
+              agent and the person have in it.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The run's id, as its resource `agent-run:<id>` names it.",
+            ),
+            field("title", "Text", "What was asked, in a line."),
+            field("agent", "Text", "The agent it asked, by its id."),
+            field(
+                "phase",
+                "Text",
+                "Where it is: `approved`, `accepted`, `planning`, `executing`, `waiting`, \
+                 `done`, `failed` or `stopped`.",
+            ),
+            field("active", "Bool", "Whether it is still going."),
+            field(
+                "live",
+                "Text",
+                "What its agent says now, as the model streams it; empty between turns.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.run_entry",
+        doc: "One entry of a run's conversation: what the person or the agent said, or a \
+              program either of them ran, with what came of it.",
+        derived: true,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The entry, as `<run>/<number>`; its number never changes.",
+            ),
+            field("run", "Text", "The run it is of, by its key."),
+            field("seq", "Int", "Its number in the run, from 1."),
+            field(
+                "author",
+                "Text",
+                "Who said or ran it: the person by their id, or the agent as `agent:<id>`.",
+            ),
+            field("by_agent", "Bool", "Whether the agent said or ran it."),
+            field(
+                "step",
+                "Bool",
+                "Whether it is a program, rather than words.",
+            ),
+            field("text", "Text", "The words, or the program as it ran."),
+            field(
+                "outcome",
+                "Text",
+                "How a program ended: `done`, `rejected`, `preview`, `asked` or `failed`; \
+                 empty for words.",
+            ),
+            field(
+                "answer",
+                "Text",
+                "What a program answered, as tilolang, a line per line.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.entry_ref",
+        doc: "A resource a program of a run's conversation printed (a reference) or changed \
+              (an undo row).",
+        derived: true,
+        fields: &[
+            field("key", "Text", "As `<entry>/<number>`."),
+            field("entry", "Text", "The entry it is of, by its key."),
+            field(
+                "changed",
+                "Bool",
+                "Whether the program changed it, rather than printed it.",
+            ),
+            field(
+                "resource",
+                "Text",
+                "The resource, by its id in its app, as the arrangement's `place` takes it.",
+            ),
+            field("app_id", "Text", "The app that keeps it, by its id."),
+            field("type_kind", "Text", "Its type, as its app publishes it."),
+            field("label", "Text", "What it is called."),
+            field(
+                "change",
+                "Text",
+                "What changed it, as its app labels the action; empty for a reference.",
+            ),
         ],
     },
     OriginKind {

@@ -388,3 +388,66 @@ fn a_run_records_the_programs_it_ran_and_the_view_it_answered_with() {
     assert_eq!(answer["app"], "so.tilo.notes");
     assert_eq!(answer["id"], "n-1", "the view it answered with");
 }
+
+#[test]
+fn a_runs_transcript_keeps_what_was_said_and_run_in_the_order_it_happened() {
+    let runs = runs(&["claude"]);
+    let asked = runs.ask(ask("Tidy the notes", "claude")).unwrap();
+    let before = runs.revision();
+    runs.absorb_report(
+        ROOM,
+        &asked.issue,
+        1,
+        &runtime_collab::TaskRunUpdate::Progress {
+            message: "Looking at the notes first".into(),
+            presentation: None,
+        },
+    );
+    runs.record_step("next", program("find(notes.Note)"))
+        .unwrap();
+    runs.send_message("next", "Leave the drafts").unwrap();
+    runs.absorb_report(
+        ROOM,
+        &asked.issue,
+        1,
+        &runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Tidied four notes".into(),
+        },
+    );
+    assert_ne!(runs.revision(), before, "a reader sees the runs moved");
+
+    let run = runs.reading("next").unwrap();
+    let said: Vec<(u64, &str, String)> = run
+        .transcript
+        .iter()
+        .map(|entry| {
+            let what = match &entry.said {
+                wire::Said::Prose { text } => text.clone(),
+                wire::Said::Step { step } => {
+                    format!("> {}", step["program"].as_str().unwrap())
+                }
+            };
+            (entry.seq, entry.author.as_str(), what)
+        })
+        .collect();
+    assert_eq!(
+        said,
+        vec![
+            (1, "ada", "Tidy the notes".to_owned()),
+            (2, "agent:claude", "Looking at the notes first".to_owned()),
+            (3, "agent:claude", "> find(notes.Note)".to_owned()),
+            (4, "ada", "Leave the drafts".to_owned()),
+            (5, "agent:claude", "Tidied four notes".to_owned()),
+        ],
+        "the person's words, the agent's prose and its program, in order"
+    );
+    assert!(!run.transcript[0].by_agent());
+    assert!(run.transcript[1].by_agent());
+    // What a follower read before stays read out of the transcript.
+    assert_eq!(run.said.as_deref(), Some("Tidied four notes"));
+    assert_eq!(
+        run.steps,
+        vec!["Looking at the notes first", "Tidied four notes"]
+    );
+    assert_eq!(run.programs.len(), 1);
+}

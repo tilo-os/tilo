@@ -983,6 +983,23 @@ impl Host {
         Ok(package)
     }
 
+    /// Load the package of an app this host does not run, trusted: its views draw resources of
+    /// that app from the readings the session hands in ([`tilolang_runtime::Runtime::set_reading`]),
+    /// and what they change is sent to those resources' doors through the runtime's invoker.
+    /// The store keeps none of its records, so the package is not among [`Self::packages`];
+    /// its code is decided by the host's authority as the app's own, as a loaded package's is.
+    ///
+    /// # Errors
+    /// The module does not link.
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: &Meta) -> Result<(), HostError> {
+        let id = self
+            .inner
+            .runtime
+            .load_foreign_package(wasm, meta.clone())?;
+        self.inner.authority.load(&id, meta);
+        Ok(())
+    }
+
     /// Every loaded package.
     #[must_use]
     pub fn packages(&self) -> Vec<Package> {
