@@ -1,12 +1,12 @@
 //! Shares a member gives: one record, or one item of it, shared with the
-//! room ([`tilo_action_policy::share`]).
+//! workspace ([`tilo_action_policy::share`]).
 //!
 //! A share is grants on the shared node, written by the sharer's own device
 //! and checked by every receiver like any membership change
 //! ([`super::membership`]): it gives only what the sharer holds, on one
 //! node, as theirs; a window only from the device it runs on
 //! ([`window_is_the_writers`]); and it ends only by its sharer or by one
-//! who may revoke in the room.
+//! who may revoke in the workspace.
 
 use std::collections::BTreeMap;
 
@@ -30,7 +30,7 @@ pub fn share_of(grant: &GrantId) -> Option<&str> {
         .map(|(share, _)| share)
 }
 
-/// Whether `device` (hex) may share `node` of the room `room` holds as the
+/// Whether `device` (hex) may share `node` of the workspace `workspace` holds as the
 /// share `share`, as far as windows go ([`tilo_desktop_model::window_share`]):
 /// a window is shared only under its own share id, what a Tilo app's window
 /// shows only under that window's, and either only by the device that
@@ -41,7 +41,7 @@ pub fn share_of(grant: &GrantId) -> Option<&str> {
 /// # Errors
 /// Why the device may not share it.
 pub fn window_is_the_writers(
-    room: Option<&AutoCommit>,
+    workspace: Option<&AutoCommit>,
     device: &str,
     share: &str,
     node: &TreePath,
@@ -54,11 +54,11 @@ pub fn window_is_the_writers(
         // The window's own node: under its share id, or as what the window
         // shows when that is its app's own record as a whole.
         (Some(tab), Some((named, _))) if named == tab => tab,
-        // What a window shows: any one resource of the room.
+        // What a window shows: any one resource of the workspace.
         (None, Some((tab, true))) => tab,
         _ => return Err("a window is shared under its own share id".into()),
     };
-    let host = room
+    let host = workspace
         .map(tilo_desktop_model::window_share::device_salts)
         .and_then(|owners| owners.get(&tilo_desktop_model::peer_salt_of(tab)).cloned());
     if host.as_deref() != Some(device) {
@@ -67,10 +67,10 @@ pub fn window_is_the_writers(
     Ok(())
 }
 
-/// The grants `person`, writing from `device` (hex) on the room `doc`, gives
+/// The grants `person`, writing from `device` (hex) on the workspace `doc`, gives
 /// by sharing `node` with `access` as `share`, once each check a receiver
 /// makes holds: they are neither banned nor restricted, the node is one
-/// record or item of the room, a window is theirs to share, and they hold
+/// record or item of the workspace, a window is theirs to share, and they hold
 /// all it gives.
 ///
 /// # Errors
@@ -83,7 +83,7 @@ pub fn share_grants(
     access: ShareAccess,
 ) -> Result<Vec<Grant>, String> {
     if policy.is_blocked(person) || policy.restricted_until(person, cx).is_some() {
-        return Err("you can't share in this room right now".into());
+        return Err("you can't share in this workspace right now".into());
     }
     let grants = share::share_grants(&policy.workspace, person, share, node, access)
         .map_err(|refusal| refusal.to_string())?;
@@ -93,7 +93,7 @@ pub fn share_grants(
 }
 
 /// The share grants `person` may end of `share` in `policy`: those they gave,
-/// or all of them when they may revoke in the room.
+/// or all of them when they may revoke in the workspace.
 #[must_use]
 pub fn ended_by(
     policy: &WorkspacePolicy,
@@ -114,7 +114,7 @@ pub fn ended_by(
 }
 
 /// The share grants a member's batch gives and ends, from `held` to
-/// `wanted` on the room `at`, each checked as [`share_grants`] and
+/// `wanted` on the workspace `at`, each checked as [`share_grants`] and
 /// [`ended_by`] would make it for `person` writing from `device`.
 ///
 /// # Errors

@@ -1,9 +1,9 @@
-//! Delegated agents as governed members of a room.
+//! Delegated agents as governed members of a workspace.
 //!
 //! An agent is a device of its person: its own key, a certificate the
 //! person's root signed, and a root-signed [`Delegation`] naming the
-//! device an agent, how it is shown, the rooms and apps it may act in and
-//! until when. The room's governor admits it as a governed identity that
+//! device an agent, how it is shown, the workspaces and apps it may act in and
+//! until when. The workspace's governor admits it as a governed identity that
 //! carries that delegation ([`PeerGovernanceMut::admit_agent`](crate::PeerGovernanceMut::admit_agent)), so every member
 //! knows the device, the person it acts for, and its window: its changes
 //! are signed by its own key and attributed to it, never to the device that
@@ -11,13 +11,13 @@
 //!
 //! The rule every member applies, in one place ([`GovernedDelegateRow::acting`]):
 //! an agent identity acts only while its delegation verifies against the
-//! certificate's own root, names that device and this room, is inside its
+//! certificate's own root, names that device and this workspace, is inside its
 //! validity window, and the governor has not withdrawn it. It acts with its
 //! person's grants bounded by its delegation
 //! ([`tilo_action_policy::roles::agent_delegation`]): an agent writes where
 //! its person may write and governs nothing. Outside its window the
 //! identity stays on the roster, so the history it wrote stays attributed,
-//! but it is no reader of the room's channels and no op of it is admitted.
+//! but it is no reader of the workspace's channels and no op of it is admitted.
 
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
-use super::{GovernedIdentity, Role, SigningKey, SystemTime, err, now_ns, room};
+use super::{GovernedIdentity, Role, SigningKey, SystemTime, err, now_ns, workspace};
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -53,9 +53,9 @@ pub enum DelegateInactive {
     /// The delegation names another device.
     #[error("the delegate's delegation names another device")]
     OtherDevice,
-    /// The delegation does not name this room.
-    #[error("the delegate is not delegated this room")]
-    OtherRoom,
+    /// The delegation does not name this workspace.
+    #[error("the delegate is not delegated this workspace")]
+    OtherWorkspace,
     /// A bot row without its installation, an installation that is not the
     /// delegation's, or an agent row carrying one.
     #[error("the delegation does not match its installation")]
@@ -66,12 +66,12 @@ pub enum DelegateInactive {
 }
 
 impl GovernedDelegateRow {
-    /// Whether the agent whose certificate is `cert` acts in `room` at
+    /// Whether the agent whose certificate is `cert` acts in `workspace` at
     /// `now_ns`: the one rule (see the module documentation).
     pub(crate) fn acting(
         &self,
         cert: &DeviceCert,
-        room: &str,
+        workspace: &str,
         now_ns: u64,
     ) -> Result<(), DelegateInactive> {
         if self.withdrawn_at_ns.is_some_and(|at| at <= now_ns) {
@@ -84,10 +84,10 @@ impl GovernedDelegateRow {
         delegation
             .verify(&cert.user_public_key, now_ns)
             .map_err(|_| DelegateInactive::Delegation)?;
-        let workspace = tilo_workspace_join::room_workspace_id(room)
-            .map_err(|_| DelegateInactive::OtherRoom)?;
+        let workspace = tilo_workspace_join::room_workspace_id(workspace)
+            .map_err(|_| DelegateInactive::OtherWorkspace)?;
         if !delegation.permits_workspace(workspace) {
-            return Err(DelegateInactive::OtherRoom);
+            return Err(DelegateInactive::OtherWorkspace);
         }
         match (&delegation.delegate, &self.installation) {
             (Delegate::Agent { .. }, None) => Ok(()),
@@ -103,12 +103,16 @@ impl GovernedDelegateRow {
 }
 
 impl GovernedIdentity {
-    /// Whether this identity may act in `room` at `now_ns` as far as its
+    /// Whether this identity may act in `workspace` at `now_ns` as far as its
     /// delegation goes. Every identity that is no delegate passes.
-    pub(crate) fn delegate_acting(&self, room: &str, now_ns: u64) -> Result<(), DelegateInactive> {
-        self.delegate
-            .as_ref()
-            .map_or(Ok(()), |row| row.acting(&self.device_cert, room, now_ns))
+    pub(crate) fn delegate_acting(
+        &self,
+        workspace: &str,
+        now_ns: u64,
+    ) -> Result<(), DelegateInactive> {
+        self.delegate.as_ref().map_or(Ok(()), |row| {
+            row.acting(&self.device_cert, workspace, now_ns)
+        })
     }
 }
 
@@ -118,7 +122,7 @@ pub(crate) fn agent_role(role: Role) -> Role {
     agent_policy::role(role, agent_policy::ROLE_CAP)
 }
 
-/// One delegated agent on a room's roster.
+/// One delegated agent on a workspace's roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernedAgent {
     /// The agent's own device key, which signs everything it writes.
@@ -136,7 +140,7 @@ pub struct GovernedAgent {
     pub expires_at_ns: u64,
     /// When the governor withdrew it, if it did.
     pub withdrawn_at_ns: Option<u64>,
-    /// Whether it acts in the room at the time the roster was read.
+    /// Whether it acts in the workspace at the time the roster was read.
     pub acting: bool,
 }
 
@@ -151,14 +155,14 @@ pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
 }
 
 impl PeerGovernance<'_> {
-    /// The certificate and delegation of agent `device` as this room's
+    /// The certificate and delegation of agent `device` as this workspace's
     /// governance records them, and when it was withdrawn: what a governor
-    /// decides an agent's place in the room from again.
+    /// decides an agent's place in the workspace from again.
     pub fn governed_agent(
         self,
         device: &[u8; 32],
     ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
-        let doc = self.peer.core.room_doc.as_ref()?;
+        let doc = self.peer.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
         let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
         let agent = identity.delegate?;
@@ -169,19 +173,19 @@ impl PeerGovernance<'_> {
             agent.withdrawn_at_ns,
         ))
     }
-    /// Every delegated agent on this room's roster, acting or not at `now`.
+    /// Every delegated agent on this workspace's roster, acting or not at `now`.
     pub fn governed_agents(self, now: SystemTime) -> Result<Vec<GovernedAgent>, String> {
         let doc = self
             .peer
             .core
-            .room_doc
+            .workspace_doc
             .as_ref()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let mut agents = Vec::new();
         for bytes in doc.policy().identities.values() {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
             let acting = identity
-                .delegate_acting(&self.peer.core.room, now_ns(now))
+                .delegate_acting(&self.peer.core.workspace, now_ns(now))
                 .is_ok();
             let Some(agent) = identity.delegate else {
                 continue;
@@ -205,11 +209,11 @@ impl PeerGovernance<'_> {
     }
 }
 impl PeerGovernanceMut<'_> {
-    /// Admit the certified agent device `cert` to this room as a delegated
-    /// agent of its person, bound to `delegation`. Only the pinned room
+    /// Admit the certified agent device `cert` to this workspace as a delegated
+    /// agent of its person, bound to `delegation`. Only the pinned workspace
     /// authority may, and only an agent of the authority's own person: one
     /// whose certificate holds no capability and whose delegation verifies
-    /// against that root, names this device and this room, and is current.
+    /// against that root, names this device and this workspace, and is current.
     /// A newer delegation of the same agent replaces the one recorded; a
     /// withdrawn agent is never admitted again, and a person's ordinary
     /// device never becomes an agent (nor an agent an ordinary device).
@@ -228,7 +232,7 @@ impl PeerGovernanceMut<'_> {
         self.peer.require_governance_writer(key, now)?;
         if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN && cert.user_public_key != self.peer.core.owner
         {
-            return Err("only the room owner's agents are admitted".into());
+            return Err("only the workspace owner's agents are admitted".into());
         }
         if !holds_no_power(&cert) {
             return Err("an agent's certificate holds no capability".into());
@@ -252,16 +256,16 @@ impl PeerGovernanceMut<'_> {
             withdrawn_at_ns: None,
             installation: None,
         };
-        row.acting(&cert, &self.peer.core.room, now_ns(now))
+        row.acting(&cert, &self.peer.core.workspace, now_ns(now))
             .map_err(|reason| reason.to_string())?;
         let doc = self
             .peer
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let id = hex::encode(cert.device_public_key);
-        let prior = room::governance_of(Some(&doc))
+        let prior = workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
             .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
@@ -310,7 +314,7 @@ impl PeerGovernanceMut<'_> {
         };
         self.peer.put_identity(doc, &identity, key, now)
     }
-    /// Withdraw the agent `device` from this room as the pinned authority
+    /// Withdraw the agent `device` from this workspace as the pinned authority
     /// `key`: from `now` on it reads and writes nothing here, and its
     /// earlier changes stay attributed to it. Returns whether governance
     /// changed: `false` for a device that is not on the roster, or was
@@ -330,10 +334,10 @@ impl PeerGovernanceMut<'_> {
         let doc = self
             .peer
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
-        let Some(bytes) = room::governance_of(Some(&doc))
+            .ok_or("workspace governance missing")?;
+        let Some(bytes) = workspace::governance_of(Some(&doc))
             .identities
             .get(&hex::encode(device))
             .cloned()

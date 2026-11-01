@@ -1,5 +1,5 @@
 //! One logical current-policy projection; destination storage owns its budget.
-use super::read::{self, GovernanceEntry, ReadError, RoomRead};
+use super::read::{self, GovernanceEntry, ReadError, WorkspaceRead};
 use crate::cached_document::PolicyData;
 
 pub(crate) trait Destination {
@@ -14,7 +14,7 @@ pub(crate) trait Destination {
     }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
 }
-pub(crate) fn project<R: RoomRead, D: Destination>(
+pub(crate) fn project<R: WorkspaceRead, D: Destination>(
     read: &R,
     destination: &mut D,
 ) -> Result<(), ReadError<D::Error>> {

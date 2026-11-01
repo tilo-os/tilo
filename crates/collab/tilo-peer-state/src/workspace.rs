@@ -1,4 +1,4 @@
-//! Room-policy leaves shared by the shell and certified browser peer.
+//! Workspace-policy leaves shared by the shell and certified browser peer.
 mod admit;
 mod adopt;
 pub mod base;
@@ -11,14 +11,15 @@ pub(crate) mod read;
 pub mod saved_shortcut;
 pub mod share;
 pub use admit::{
-    AdmittedRoom, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes, check_candidate,
+    AdmittedWorkspace, Standing, WorkspaceAdmission, WorkspaceRefusal, Writer,
+    admit_workspace_changes, check_candidate,
 };
-pub use adopt::adopt_room;
+pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-pub use saved_shortcut::{proven_saver, room_revocations, sign_saved_shortcut};
+pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
-/// Every governed value a room document records, exactly as stored.
+/// Every governed value a workspace document records, exactly as stored.
 ///
 /// Member, grant and identity rows are the raw blobs the document holds, not their
 /// decoded form: equality is the byte-exact comparison
@@ -26,12 +27,12 @@ use tilo_automerge::ReadTyped as _;
 /// undecodable (or re-encoded) row past it. Decoded views of the same document
 /// state live on its cache (`crate::cached_document::CachedDocument::policy`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoomGovernance {
+pub struct WorkspaceGovernance {
     /// The structural owner's person key (`owner`).
     pub owner: Option<String>,
     /// `members.*`: JSON role blobs keyed by person.
     pub members: BTreeMap<String, Vec<u8>>,
-    /// `members_joined_v1.*`: when the room admitted each member, Unix
+    /// `members_joined_v1.*`: when the workspace admitted each member, Unix
     /// milliseconds as JSON, keyed by person.
     pub members_joined: BTreeMap<String, Vec<u8>>,
     /// `grants.*`: JSON `Grant` blobs keyed by grant id.
@@ -49,7 +50,7 @@ pub struct RoomGovernance {
     /// The governed media policy, by value.
     pub media: media::MediaGovernanceValue,
 }
-impl RoomGovernance {
+impl WorkspaceGovernance {
     fn absent() -> Self {
         Self {
             owner: None,
@@ -67,11 +68,11 @@ impl RoomGovernance {
 }
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
+pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let Some(doc) = doc else {
-        return RoomGovernance::absent();
+        return WorkspaceGovernance::absent();
     };
-    let mut governance = RoomGovernance::absent();
+    let mut governance = WorkspaceGovernance::absent();
     // The legacy public output is unqualified owned data. The same borrowed
     // traversal serves bounded destinations that pay for each output copy.
     let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
@@ -108,7 +109,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
     governance
 }
 
-/// The certificate and revocations one [`RoomGovernance::identities`] row
+/// The certificate and revocations one [`WorkspaceGovernance::identities`] row
 /// carries, for a reader outside admission that judges the identity history
 /// (a relay's historical retention proof) without the rest of the row.
 #[derive(Clone, Debug)]
@@ -118,7 +119,7 @@ pub struct IdentityRow {
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
-/// Decode one [`RoomGovernance::identities`] row exactly as admission does.
+/// Decode one [`WorkspaceGovernance::identities`] row exactly as admission does.
 pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
     Ok(IdentityRow {
@@ -127,7 +128,7 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     })
 }
 
-/// Whether the invitation `invite_id` was redeemed in the room whose
+/// Whether the invitation `invite_id` was redeemed in the workspace whose
 /// admitted document `doc` is. An invitation is redeemed once.
 #[must_use]
 pub fn invitation_redeemed(doc: &AutoCommit, invite_id: &[u8; 32]) -> bool {
@@ -166,13 +167,13 @@ pub(crate) fn invitation_receipts(
     }
     Ok(receipts)
 }
-/// Every bot of the room `doc` governs, by name: each installed bot that
+/// Every bot of the workspace `doc` governs, by name: each installed bot that
 /// was not withdrawn, and each request of a member that no installed bot
 /// answers yet. A requested bot the host installed is one bot, marked as
 /// requested, so taking the request back is how it is removed. Rows that do
 /// not decode are skipped.
 #[must_use]
-pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
+pub fn workspace_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
     let requests = crate::state::bot_requests_in(doc);
     let mut bots: Vec<tilo_desktop_model::WorkspaceBot> = governance_of(Some(doc))
         .identities
@@ -232,7 +233,7 @@ pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
     bots
 }
 
-/// The room's name and authority as `candidate` records them, for the room
+/// The workspace's name and authority as `candidate` records them, for the workspace
 /// it declares. Rows that do not decode are skipped.
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
@@ -240,10 +241,10 @@ pub fn extract_governed_fields(
     #[cfg(test)]
     POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let text = |key: &str| candidate.str_at(&ROOT, key);
-    let room = text("room").unwrap_or_default();
+    let workspace = text("room").unwrap_or_default();
     (
         text("name"),
-        tilo_desktop_model::projection::room_policy_of(candidate, &room),
+        tilo_desktop_model::projection::room_policy_of(candidate, &workspace),
     )
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
@@ -265,7 +266,7 @@ pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<Aut
     .map_err(|e| e.to_string())?;
     Ok(candidate)
 }
-pub fn declared_room_mismatches(candidate: &AutoCommit, room: uuid::Uuid) -> bool {
+pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uuid) -> bool {
     let declared = match candidate.get(ROOT, "room").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
             ScalarValue::Str(value) => uuid::Uuid::parse_str(value).ok(),
@@ -273,7 +274,7 @@ pub fn declared_room_mismatches(candidate: &AutoCommit, room: uuid::Uuid) -> boo
         },
         _ => None,
     };
-    declared.is_some_and(|declared| declared != room)
+    declared.is_some_and(|declared| declared != workspace)
 }
 /// Whether `after` carries the governance `before` does, compared by value: a
 /// peer echoing governance it learned re-states it under its own actor, which
@@ -287,7 +288,7 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
         && settings_of(before) == settings_of(Some(after))
 }
 
-/// The room's settings as stored: its name and its saved grant sets.
+/// The workspace's settings as stored: its name and its saved grant sets.
 /// Whatever a key holds counts, so a value of another shape than a writer
 /// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
@@ -449,13 +450,13 @@ pub fn effect_slices_kept(
         .all(|(slice, _)| own(slice))
 }
 
-/// What one who only reads a room may still change in it: their own effect
+/// What one who only reads a workspace may still change in it: their own effect
 /// receipts and history anchors ([`effect_slices_kept`]), and its grants,
 /// as the shares they give ([`share`], decided as membership).
 const READER_WRITES: [&str; 3] = [EFFECT_RECEIPTS, EFFECT_HISTORY, "grants"];
 
 /// Whether `after` differs from `before` only in what one who only reads
-/// the room may change in it ([`READER_WRITES`]).
+/// the workspace may change in it ([`READER_WRITES`]).
 #[must_use]
 pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     use automerge::{Prop, patches::PatchAction};
@@ -529,7 +530,7 @@ pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bo
 }
 
 /// Record every effect receipt `doc` carries in `ledger`, the receipts this
-/// peer has admitted for the room's lifetime. A receipt the ledger already holds
+/// peer has admitted for the workspace's lifetime. A receipt the ledger already holds
 /// byte-for-byte costs one comparison; a new one is decoded once (an unreadable
 /// receipt is not evidence and is not recorded) and stored as received, never
 /// re-encoded. Ledger rows written in the older re-encoded form are compared
@@ -538,12 +539,12 @@ pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bo
 ///
 /// # Errors
 ///
-/// [`RoomRefusal::ReceiptImmutable`] when `doc` rewrites a receipt the ledger
+/// [`WorkspaceRefusal::ReceiptImmutable`] when `doc` rewrites a receipt the ledger
 /// holds; `ledger` may then be partly updated and must be discarded.
 pub(crate) fn admit_receipts(
     ledger: &mut BTreeMap<String, Vec<u8>>,
     doc: &AutoCommit,
-) -> Result<(), RoomRefusal> {
+) -> Result<(), WorkspaceRefusal> {
     visit_receipt_bytes(doc, |key, bytes| {
         let Some(prior) = ledger.get(key) else {
             if decode_receipt(bytes).is_some() {
@@ -558,7 +559,7 @@ pub(crate) fn admit_receipts(
             return Ok(());
         };
         if decode_receipt(prior).is_none_or(|prior| prior != value) {
-            return Err(RoomRefusal::ReceiptImmutable);
+            return Err(WorkspaceRefusal::ReceiptImmutable);
         }
         ledger.insert(key.to_owned(), bytes.to_vec());
         Ok(())

@@ -1,9 +1,9 @@
-//! Reading an admitted room document into its workspace, the same way on
+//! Reading an admitted workspace document into its workspace, the same way on
 //! every host.
 use automerge::AutoCommit;
 use tilo_desktop_model::{Workspace, projection};
 
-/// Take what an admitted room document says about its workspace: name,
+/// Take what an admitted workspace document says about its workspace: name,
 /// policy, sandbox, presets, bots, tasks, shortcuts, schedule claims and
 /// effect receipts. Returns whether the workspace changed.
 ///
@@ -11,10 +11,10 @@ use tilo_desktop_model::{Workspace, projection};
 /// absent from the document, so carrying the local list over would let it
 /// survive. Two things the document cannot take away: an owner (a document
 /// that names none leaves it) and a schedule claim this device holds for a
-/// shortcut the room still has. Effect receipts are the document's, plus
+/// shortcut the workspace still has. Effect receipts are the document's, plus
 /// those of `kept` it omits: a receiver with no receipt ledger of its own
 /// passes the receipts it already projected, which are immutable.
-pub fn adopt_room(
+pub fn adopt_workspace(
     workspace: &mut Workspace,
     doc: &AutoCommit,
     kept: &[tilo_desktop_model::WorkspaceEffectReceipt],
@@ -47,7 +47,7 @@ pub fn adopt_room(
         &mut workspace.presets,
         projection::workspace_presets_of(doc),
     );
-    changed |= replace(&mut workspace.bots, super::room_bots_of(doc));
+    changed |= replace(&mut workspace.bots, super::workspace_bots_of(doc));
 
     let shortcuts = projection::workspace_shortcuts_of(doc);
     let mut claims = projection::schedule_claims_of(doc);
@@ -109,7 +109,7 @@ fn replace<T: PartialEq>(held: &mut T, next: T) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::adopt_room;
+    use super::adopt_workspace;
     use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
     use tilo_desktop_model::{Workspace, WorkspaceId, projection};
 
@@ -128,7 +128,7 @@ mod tests {
         })
     }
 
-    fn room_doc(workspace: &Workspace) -> AutoCommit {
+    fn workspace_doc(workspace: &Workspace) -> AutoCommit {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
         doc.put(ROOT, "name", "Garden").unwrap();
@@ -136,13 +136,13 @@ mod tests {
     }
 
     #[test]
-    fn a_room_document_brings_its_name_and_shortcuts_and_keeps_the_owner() {
+    fn a_workspace_document_brings_its_name_and_shortcuts_and_keeps_the_owner() {
         let mut workspace = Workspace::new(WorkspaceId(7), "Old");
         workspace.policy.owner = Some("owner".into());
-        let mut doc = room_doc(&workspace);
+        let mut doc = workspace_doc(&workspace);
         projection::project_workspace_shortcuts(&mut doc, &[shortcut("water")]).unwrap();
 
-        assert!(adopt_room(&mut workspace, &doc, &[]));
+        assert!(adopt_workspace(&mut workspace, &doc, &[]));
         assert_eq!(workspace.name, "Garden");
         assert_eq!(workspace.policy.owner.as_deref(), Some("owner"));
         assert_eq!(
@@ -154,17 +154,17 @@ mod tests {
             ["water"]
         );
         assert!(
-            !adopt_room(&mut workspace, &doc, &[]),
+            !adopt_workspace(&mut workspace, &doc, &[]),
             "nothing changed twice"
         );
     }
 
     #[test]
-    fn a_shortcut_the_room_no_longer_has_goes() {
+    fn a_shortcut_the_workspace_no_longer_has_goes() {
         let mut workspace = Workspace::new(WorkspaceId(7), "Garden");
         workspace.shortcuts = vec![shortcut("water")];
-        let doc = room_doc(&workspace);
-        assert!(adopt_room(&mut workspace, &doc, &[]));
+        let doc = workspace_doc(&workspace);
+        assert!(adopt_workspace(&mut workspace, &doc, &[]));
         assert!(workspace.shortcuts.is_empty());
     }
 }

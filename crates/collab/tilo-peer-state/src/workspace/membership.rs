@@ -1,13 +1,13 @@
 //! Governance changes a member's device writes itself.
 //!
-//! A room's members, their roles, the grants on it, the devices each member
+//! A workspace's members, their roles, the grants on it, the devices each member
 //! holds it on and its own settings (its name, saved grant sets and its
 //! apps' sandbox capabilities) are changed by actions, under the action
 //! policy (`tilo_action_policy::WorkspacePolicy`). The owner's devices write
-//! every part of the room's governance; anyone else writes only these, and
+//! every part of the workspace's governance; anyone else writes only these, and
 //! only what their own grants let them.
 //!
-//! A batch is judged where its writer made it: against the room as it stood
+//! A batch is judged where its writer made it: against the workspace as it stood
 //! at the batch's own dependencies, not the receiver's latest state. Every
 //! receiver holding the same changes reaches the same answer, whichever
 //! order they arrived in: a change made before its writer lost a grant
@@ -18,7 +18,7 @@
 //! grants. Each must be allowed to the writer, and together they must give
 //! exactly the membership the batch wrote. Grants a saved grant set expands
 //! to are its assigner's when they may assign that set ([`assignments`]).
-//! The room's settings are checked each by the action that governs it
+//! The workspace's settings are checked each by the action that governs it
 //! ([`settings`], [`sandbox`]). A share's grants are its sharer's, given
 //! and ended as [`super::share`] decides. Anything else the batch changes in
 //! governance is the owner's.
@@ -36,7 +36,7 @@ use tilo_action_policy::{
     Change, Context, Grant, GrantId, Role, WorkspacePolicy, roles, roles::governance,
 };
 
-use super::{RoomGovernance, governance_of};
+use super::{WorkspaceGovernance, governance_of};
 use crate::state::{GovernedIdentity, RedemptionReceipt};
 
 /// How far ahead of a receiver's clock an admission may say it was made:
@@ -71,7 +71,7 @@ impl std::fmt::Display for MembershipRefusal {
     }
 }
 
-/// The room document after each of `changes`, in the order the batch applies
+/// The workspace document after each of `changes`, in the order the batch applies
 /// them: a batch is judged change by change, where its writer made each.
 ///
 /// # Errors
@@ -98,7 +98,7 @@ fn stages(at: &AutoCommit, changes: &[Vec<u8>]) -> Result<Vec<AutoCommit>, Membe
     Ok(stages)
 }
 
-/// The room as `changes`' writer saw it, and with the changes on it: `before`
+/// The workspace as `changes`' writer saw it, and with the changes on it: `before`
 /// at the dependencies the batch names outside itself.
 ///
 /// # Errors
@@ -130,12 +130,12 @@ pub fn position(
 
 /// Whether `person`, from their device `device` (hex; `foreign` when it is
 /// not one of theirs), may make the governance change from `at` to `after`
-/// in `room`.
+/// in `workspace`.
 ///
 /// # Errors
 /// The first refusal that applies.
 pub fn authorize(
-    room: &str,
+    workspace: &str,
     (person, device, foreign): (&[u8; 32], &str, bool),
     at: &AutoCommit,
     batch: &[Vec<u8>],
@@ -151,17 +151,17 @@ pub fn authorize(
     {
         return Err(MembershipRefusal::NotMembership);
     }
-    let held = tilo_desktop_model::projection::room_policy_of(at, room);
-    let wanted = tilo_desktop_model::projection::room_policy_of(after, room);
+    let held = tilo_desktop_model::projection::room_policy_of(at, workspace);
+    let wanted = tilo_desktop_model::projection::room_policy_of(after, workspace);
     let stages = stages(at, batch)?;
     let actor = hex::encode(person);
     let bound = roles::foreign_device_bound();
     let authority = held.person_on_device(&actor, foreign, &bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
     let writer = (actor.as_str(), &authority, &cx);
-    settings(room, at, after, &held, writer)?;
+    settings(workspace, at, after, &held, writer)?;
     sandbox(&before, &written, &held, writer)?;
-    let assigned = assignments(room, at, &held, &wanted, writer)?;
+    let assigned = assignments(workspace, at, &held, &wanted, writer)?;
     let (shared, unshared) = super::share::changed(
         (at, &held, &wanted),
         (actor.as_str(), device, &authority, &cx),
@@ -177,9 +177,9 @@ pub fn authorize(
     let mut previous_document = at.clone();
     let mut previous = held.clone();
     for stage in &stages {
-        let stage_policy = tilo_desktop_model::projection::room_policy_of(stage, room);
+        let stage_policy = tilo_desktop_model::projection::room_policy_of(stage, workspace);
         let admitted = redemptions(
-            room,
+            workspace,
             &previous,
             &stage_policy,
             &governance_of(Some(&previous_document)),
@@ -227,15 +227,15 @@ pub fn authorize(
 }
 
 /// The invitation `signed`, redeemed by `joiner` at `at_ns`, when it admits
-/// them to `room` as `policy` stands: it verifies and has not expired then,
-/// names this room and, when narrowed, the joiner, and its issuer is a member
+/// them to `workspace` as `policy` stands: it verifies and has not expired then,
+/// names this workspace and, when narrowed, the joiner, and its issuer is a member
 /// who may invite with its role.
 ///
 /// # Errors
 /// The first of those that does not hold.
 pub fn invitation_admits(
     policy: &tilo_action_policy::WorkspacePolicy,
-    room: &str,
+    workspace: &str,
     signed: &[u8],
     joiner: [u8; 32],
     at_ns: u64,
@@ -249,8 +249,8 @@ pub fn invitation_admits(
     )
     .map_err(refused)?;
     let grant = join.grant().clone();
-    if grant.room != room {
-        return Err(refused("it is for another room".into()));
+    if grant.room != workspace {
+        return Err(refused("it is for another workspace".into()));
     }
     let issuer = hex::encode(grant.issuer.user_public_key);
     let bound = roles::foreign_device_bound();
@@ -272,17 +272,17 @@ pub fn invitation_admits(
 
 /// The people the batch admits through invitations, each with the role
 /// their invitation gives and the device that redeemed it. Every receipt
-/// the batch adds to the room's ledger must be one: the invitation it
-/// carries admits its joiner at the time the room records them joining
+/// the batch adds to the workspace's ledger must be one: the invitation it
+/// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
-/// the room gives them its role. A receipt the room holds stays as it is,
+/// the workspace gives them its role. A receipt the workspace holds stays as it is,
 /// so a spent invitation stays spent.
 fn redemptions(
-    room: &str,
+    workspace: &str,
     held: &WorkspacePolicy,
     wanted: &WorkspacePolicy,
-    before: &RoomGovernance,
-    written: &RoomGovernance,
+    before: &WorkspaceGovernance,
+    written: &WorkspaceGovernance,
     now_ns: u64,
 ) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
     let malformed = |error: String| MembershipRefusal::Malformed(error);
@@ -323,7 +323,8 @@ fn redemptions(
                     "{person} is admitted in the future"
                 )));
             }
-            let grant = invitation_admits(held, room, &signed, receipt.user_public_key, at_ns)?;
+            let grant =
+                invitation_admits(held, workspace, &signed, receipt.user_public_key, at_ns)?;
             let role: Role = grant.role.into();
             if grant.role != receipt.role || wanted.role_of(&person) != Some(role) {
                 return Err(MembershipRefusal::Refused(format!(
@@ -358,7 +359,7 @@ fn redemptions(
             invited.insert(person, (role, device));
         }
     }
-    // A receipt the room held stays as it is, so a spent invitation stays
+    // A receipt the workspace held stays as it is, so a spent invitation stays
     // spent, whichever change of the batch would take it back.
     for (invite, values) in &before.invitation_receipts {
         let kept = written.invitation_receipts.get(invite);
@@ -367,7 +368,7 @@ fn redemptions(
             .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
         {
             return Err(MembershipRefusal::Refused(format!(
-                "the redemption of invitation {invite} is the room's record"
+                "the redemption of invitation {invite} is the workspace's record"
             )));
         }
     }
@@ -375,7 +376,7 @@ fn redemptions(
 }
 
 /// Every governance part a member never writes is the same in both.
-fn only_membership_differs(before: &RoomGovernance, written: &RoomGovernance) -> bool {
+fn only_membership_differs(before: &WorkspaceGovernance, written: &WorkspaceGovernance) -> bool {
     before.owner == written.owner
         && before.coverage == written.coverage
         && before.media == written.media
@@ -389,12 +390,12 @@ type Writer<'a> = (
     &'a Context<'a>,
 );
 
-/// The room's name and saved grant sets, as the batch changes them: the name
-/// a valid one, given by someone who governs the room (a Moderator or above,
-/// or one granted its settings) when it shares its members' layout, as a room
+/// The workspace's name and saved grant sets, as the batch changes them: the name
+/// a valid one, given by someone who governs the workspace (a Moderator or above,
+/// or one granted its settings) when it shares its members' layout, as a workspace
 /// behind a public door does not; the grant sets by one granted its settings.
 fn settings(
-    room: &str,
+    workspace: &str,
     at: &AutoCommit,
     after: &AutoCommit,
     held: &WorkspacePolicy,
@@ -417,7 +418,7 @@ fn settings(
             .is_some_and(|role| role >= Role::Moderator);
         if !(governs || settles) || room_layout(at) == RoomLayout::Personal {
             return Err(MembershipRefusal::Refused(format!(
-                "renaming room {room} is not the writer's"
+                "renaming workspace {workspace} is not the writer's"
             )));
         }
         let named = match automerge::ReadDoc::get(after, automerge::ROOT, ROOM_NAME_KEY) {
@@ -429,13 +430,13 @@ fn settings(
         };
         named
             .as_deref()
-            .ok_or_else(|| "the room's name is not text".to_owned())
-            .and_then(|name| crate::workspace_membership::valid_room_name(name).map(drop))
+            .ok_or_else(|| "the workspace's name is not text".to_owned())
+            .and_then(|name| crate::workspace_membership::valid_workspace_name(name).map(drop))
             .map_err(MembershipRefusal::Malformed)?;
     }
     if held_presets != presets && !settles {
         return Err(MembershipRefusal::Refused(
-            "the room's grant sets are not the writer's to change".into(),
+            "the workspace's grant sets are not the writer's to change".into(),
         ));
     }
     Ok(())
@@ -443,10 +444,10 @@ fn settings(
 
 /// The sandbox capabilities the batch records or takes back: each recorded
 /// one lasting past a restart and recorded as the writer's, who may grant in
-/// the room; each taken back by one who may revoke there.
+/// the workspace; each taken back by one who may revoke there.
 fn sandbox(
-    before: &RoomGovernance,
-    written: &RoomGovernance,
+    before: &WorkspaceGovernance,
+    written: &WorkspaceGovernance,
     held: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
@@ -482,20 +483,20 @@ fn sandbox(
     Ok(())
 }
 
-/// The grants the batch adds that assign one of the room's saved grant sets
+/// The grants the batch adds that assign one of the workspace's saved grant sets
 /// (`preset:<id>:<set>:<rule>`), written by someone who may assign that set
 /// by a grant on it ([`tilo_desktop_model::preset_assign_node`]) and given
-/// by them: each one of the set's rules placed in this room, no more than
-/// they hold. Any other grant is left to the room's grant rule.
+/// by them: each one of the set's rules placed in this workspace, no more than
+/// they hold. Any other grant is left to the workspace's grant rule.
 fn assignments(
-    room: &str,
+    workspace: &str,
     at: &AutoCommit,
     held: &WorkspacePolicy,
     wanted: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<Vec<Grant>, MembershipRefusal> {
     let presets = tilo_desktop_model::projection::workspace_presets_of(at);
-    let room_node = tilo_action_policy::TreePath::room(room);
+    let workspace_node = tilo_action_policy::TreePath::room(workspace);
     let mut assigned = Vec::new();
     for grant in &wanted.grants {
         if held.grants.iter().any(|kept| kept.id == grant.id) {
@@ -518,7 +519,7 @@ fn assignments(
         };
         let on_set = authority
             .decide(
-                &tilo_desktop_model::preset_assign_node(room, &preset.name),
+                &tilo_desktop_model::preset_assign_node(workspace, &preset.name),
                 roles::GOVERNANCE_KIND,
                 cx,
             )
@@ -532,7 +533,7 @@ fn assignments(
             .ok()
             .and_then(|index| preset.rules.get(index));
         if !rule.is_some_and(|rule| {
-            grant.node == room_node.join(&rule.node)
+            grant.node == workspace_node.join(&rule.node)
                 && grant.kinds == rule.kinds
                 && grant.answer == rule.answer
         }) || grant.granted_by != tilo_action_policy::Subject::Person(actor.to_owned())
@@ -648,7 +649,7 @@ fn sorted(grants: &[Grant]) -> Vec<&Grant> {
 }
 
 /// The devices the batch admits or removes: each a device of a member of
-/// the room as written — or of one the batch admitted and removed again —
+/// the workspace as written — or of one the batch admitted and removed again —
 /// and the writer's own, one an invitation admits, a further device of
 /// someone already a member, or one they may admit.
 fn identities(
@@ -656,7 +657,7 @@ fn identities(
     wanted: &WorkspacePolicy,
     invited: &BTreeMap<String, (Role, String)>,
     (actor, authority, cx): (&str, &tilo_action_policy::Authority<'_>, &Context<'_>),
-    (before, written): (&RoomGovernance, &RoomGovernance),
+    (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
 ) -> Result<(), MembershipRefusal> {
     let person_of = |bytes: &[u8]| {
         serde_json::from_slice::<GovernedIdentity>(bytes)
@@ -710,7 +711,7 @@ fn identities(
             )));
         }
     }
-    // An owner's role is the room's, never a membership change.
+    // An owner's role is the workspace's, never a membership change.
     if wanted.members.values().any(|role| *role == Role::Owner)
         && held.members.values().all(|role| *role != Role::Owner)
     {

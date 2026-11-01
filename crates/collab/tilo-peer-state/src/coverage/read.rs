@@ -1,5 +1,5 @@
 //! The governed-checkpoint coverage check.
-use crate::room::read::{ReadError, RoomRead, RoomValue, Selection};
+use crate::workspace::read::{ReadError, Selection, WorkspaceRead, WorkspaceValue};
 use std::collections::BTreeMap;
 
 pub(crate) trait CoverageRowView {
@@ -51,14 +51,14 @@ pub(crate) enum Governed {
 /// any. A checkpoint older than coverage whose body the document has not
 /// admitted (`covered`, per hex author) is arriving; one that differs from
 /// coverage it already admitted is refused.
-pub(crate) fn governed_snapshot_matches<R: RoomRead, D: CoverageDecode>(
-    room: Option<&R>,
+pub(crate) fn governed_snapshot_matches<R: WorkspaceRead, D: CoverageDecode>(
+    workspace: Option<&R>,
     (app, record): (&str, &str),
     covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
     decoder: &D,
 ) -> Result<Governed, CoverageMatchError<D::Error>> {
-    let (Some(snapshot), Some(room)) = (snapshot, room) else {
+    let (Some(snapshot), Some(workspace)) = (snapshot, workspace) else {
         return Ok(Governed::Current);
     };
     let mut governed = Governed::Current;
@@ -80,36 +80,41 @@ pub(crate) fn governed_snapshot_matches<R: RoomRead, D: CoverageDecode>(
             == Some(record.as_bytes())
     };
     let mut routed = false;
-    let v2 = room.visit_property(&room.root(), super::FIELD_V2, Selection::Winner, |value| {
-        let RoomValue::Object { object, .. } = value else {
-            return Ok(());
-        };
-        let keys = room.visit_keys(&object, |key| {
-            if routed || !is_route(key) {
+    let v2 = workspace.visit_property(
+        &workspace.root(),
+        super::FIELD_V2,
+        Selection::Winner,
+        |value| {
+            let WorkspaceValue::Object { object, .. } = value else {
                 return Ok(());
-            }
-            let inner = room.visit_property(&object, key, Selection::Winner, |entry| {
-                let RoomValue::Bytes(bytes) = entry else {
+            };
+            let keys = workspace.visit_keys(&object, |key| {
+                if routed || !is_route(key) {
                     return Ok(());
-                };
-                let row = decoder
-                    .decode_row(bytes)
-                    .map_err(CoverageMatchError::Decode)?;
-                routed = true;
-                resolve(&row)
+                }
+                let inner = workspace.visit_property(&object, key, Selection::Winner, |entry| {
+                    let WorkspaceValue::Bytes(bytes) = entry else {
+                        return Ok(());
+                    };
+                    let row = decoder
+                        .decode_row(bytes)
+                        .map_err(CoverageMatchError::Decode)?;
+                    routed = true;
+                    resolve(&row)
+                });
+                match inner {
+                    Ok(_) | Err(ReadError::Malformed) => Ok(()),
+                    Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
+                    Err(ReadError::Visitor(error)) => Err(error),
+                }
             });
-            match inner {
+            match keys {
                 Ok(_) | Err(ReadError::Malformed) => Ok(()),
                 Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
                 Err(ReadError::Visitor(error)) => Err(error),
             }
-        });
-        match keys {
-            Ok(_) | Err(ReadError::Malformed) => Ok(()),
-            Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
-            Err(ReadError::Visitor(error)) => Err(error),
-        }
-    });
+        },
+    );
     match v2 {
         Ok(_) | Err(ReadError::Malformed) => Ok(governed),
         Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),

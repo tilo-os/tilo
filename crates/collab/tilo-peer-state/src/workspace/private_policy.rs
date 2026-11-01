@@ -36,9 +36,9 @@ impl Error {
                 Rule::GrantMissing => "missing private policy grant",
                 Rule::GrantInvalid => "invalid private policy grant",
                 Rule::Nonpersistent => "nonpersistent governed private policy grant",
-                Rule::OwnerAmbiguous => "ambiguous canonical room/owner",
+                Rule::OwnerAmbiguous => "ambiguous canonical workspace/owner",
                 Rule::OwnerInvalid => "invalid canonical owner",
-                Rule::OwnerRoot => "owner differs from the room's owner root",
+                Rule::OwnerRoot => "owner differs from the workspace's owner root",
                 Rule::MediaUnreadable => "unreadable governed media policy",
                 Rule::Read => "private policy read failed",
             }
@@ -48,7 +48,7 @@ impl Error {
     }
 }
 pub(crate) struct Metadata<'a, I, J> {
-    pub(crate) room: &'a str,
+    pub(crate) workspace: &'a str,
     pub(crate) owner: &'a [u8; 32],
     pub(crate) certificates: I,
     pub(crate) revocations: J,
@@ -58,7 +58,7 @@ pub(crate) struct LegacyBasis {
     pub(crate) expiries: Vec<u64>,
 }
 use super::media::fingerprint::FingerprintRead;
-use super::read::{self, Capacity, ReadError, RoomValue};
+use super::read::{self, Capacity, ReadError, WorkspaceValue};
 use automerge::{ObjType, ReadDoc};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::BTreeMap;
@@ -83,7 +83,7 @@ trait PrivateRead: FingerprintRead {
         &self,
         object: &Self::Object,
         key: &str,
-        visitor: impl for<'a> FnMut(RoomValue<'a, Self::Object>) -> Result<(), Error>,
+        visitor: impl for<'a> FnMut(WorkspaceValue<'a, Self::Object>) -> Result<(), Error>,
     ) -> Result<usize, Error>;
 }
 impl PrivateRead for LegacyRead<'_, AutoCommit> {
@@ -91,7 +91,7 @@ impl PrivateRead for LegacyRead<'_, AutoCommit> {
         &self,
         object: &Self::Object,
         key: &str,
-        mut visitor: impl for<'a> FnMut(RoomValue<'a, Self::Object>) -> Result<(), Error>,
+        mut visitor: impl for<'a> FnMut(WorkspaceValue<'a, Self::Object>) -> Result<(), Error>,
     ) -> Result<usize, Error> {
         let values = self.0.get_all(object, key).map_err(Error::Legacy)?;
         let count = values.len();
@@ -117,7 +117,7 @@ fn grants<R: PrivateRead, D: Decode>(
 ) -> Result<Vec<u64>, Error> {
     let mut object = None;
     let count = read.all(&read.root(), "grants", |value| {
-        if let RoomValue::Object {
+        if let WorkspaceValue::Object {
             kind: ObjType::Map,
             object: found,
         } = value
@@ -137,7 +137,7 @@ fn grants<R: PrivateRead, D: Decode>(
             // first conflicting value happens to contain malformed bytes.
             let mut bytes_shape = false;
             let count = read.all(&object, key, |value| {
-                bytes_shape = matches!(value, RoomValue::Bytes(_));
+                bytes_shape = matches!(value, WorkspaceValue::Bytes(_));
                 Ok(())
             })?;
             if count != 1 {
@@ -148,7 +148,7 @@ fn grants<R: PrivateRead, D: Decode>(
             }
             let mut seen = false;
             read.all(&object, key, |value| {
-                let RoomValue::Bytes(bytes) = value else {
+                let WorkspaceValue::Bytes(bytes) = value else {
                     return Err(rule(Rule::GrantInvalid));
                 };
                 seen = true;
@@ -179,25 +179,25 @@ fn grants<R: PrivateRead, D: Decode>(
 }
 fn canonical_owner<R: PrivateRead>(
     read: &R,
-    room: &str,
+    workspace: &str,
     owner: &[u8; 32],
 ) -> Result<String, Error> {
-    let expected = crate::room::key_hex::KeyHex::new(owner);
+    let expected = crate::workspace::key_hex::KeyHex::new(owner);
     let mut is_string = false;
     let mut owner_is_root = false;
     let owners = read.all(&read.root(), "owner", |value| {
-        if let RoomValue::Str(value) = value {
+        if let WorkspaceValue::Str(value) = value {
             is_string = true;
             owner_is_root = value.as_bytes() == expected.as_bytes();
         }
         Ok(())
     })?;
-    let mut matches_room = false;
-    let room_count = read.all(&read.root(), "room", |value| {
-        matches_room = matches!(value,RoomValue::Str(value) if value==room);
+    let mut matches_workspace = false;
+    let workspace_count = read.all(&read.root(), "room", |value| {
+        matches_workspace = matches!(value,WorkspaceValue::Str(value) if value==workspace);
         Ok(())
     })?;
-    if owners != 1 || room_count != 1 || !matches_room {
+    if owners != 1 || workspace_count != 1 || !matches_workspace {
         return Err(rule(Rule::OwnerAmbiguous));
     }
     if !is_string {
@@ -208,7 +208,7 @@ fn canonical_owner<R: PrivateRead>(
     }
     let mut owner = None;
     read.all(&read.root(), "owner", |value| {
-        let RoomValue::Str(value) = value else {
+        let WorkspaceValue::Str(value) = value else {
             return Err(rule(Rule::OwnerInvalid));
         };
         owner = Some(value.to_owned());
@@ -239,7 +239,7 @@ where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    let owner = canonical_owner(read, meta.room, meta.owner)?;
+    let owner = canonical_owner(read, meta.workspace, meta.owner)?;
     let mut grants = BTreeMap::new();
     let mut members = BTreeMap::new();
     let mut peers = BTreeMap::new();
@@ -299,7 +299,7 @@ where
     let mut hash = blake3::Hasher::new_derive_key("Tilo agent governance revision v1");
     crate::postcard_sink::hash_into(
         &(
-            meta.room,
+            meta.workspace,
             meta.owner,
             owner.as_str(),
             members,
@@ -314,15 +314,15 @@ where
         usize::MAX,
     )
     .map_err(Error::Encoding)?;
-    let text = crate::room::key_hex::KeyHex::new(hash.finalize().as_bytes());
+    let text = crate::workspace::key_hex::KeyHex::new(hash.finalize().as_bytes());
     work.text(text.as_str()).map_err(resource)
 }
 pub(crate) fn legacy_owner(
     read: &LegacyRead<'_, AutoCommit>,
-    room: &str,
+    workspace: &str,
     owner: &[u8; 32],
 ) -> Result<String, Error> {
-    canonical_owner(read, room, owner)
+    canonical_owner(read, workspace, owner)
 }
 pub(crate) fn legacy_revision<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,

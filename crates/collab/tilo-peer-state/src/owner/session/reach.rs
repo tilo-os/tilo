@@ -1,5 +1,5 @@
-//! Reaching a room's host: this device's own host in process, a host's
-//! HTTPS routes, or its iroh endpoint. Every holder of a room's session
+//! Reaching a workspace's host: this device's own host in process, a host's
+//! HTTPS routes, or its iroh endpoint. Every holder of a workspace's session
 //! reaches its host, and renews this device's membership with it, through
 //! [`Reach`].
 use super::{Connect, DialError};
@@ -14,11 +14,11 @@ use tilo_relay_session::{
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// This device's own room host, running in this process: a room placed on
+/// This device's own workspace host, running in this process: a workspace placed on
 /// this device is joined through it, as an endpoint cannot dial itself.
 pub trait OwnHost: Send + Sync {
     /// The host's workspace-join exchange, for enrolling in and renewing
-    /// membership of its rooms.
+    /// membership of its workspaces.
     fn join_service(&self) -> Arc<dyn LocalJoinService>;
     /// An in-process member session as `cert`, through the handshake a
     /// remote member's dial takes.
@@ -30,7 +30,7 @@ pub trait OwnHost: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<RelayClient, ClientError>> + Send + '_>>;
 }
 
-/// How this device reaches a room's host.
+/// How this device reaches a workspace's host.
 #[derive(Clone)]
 pub struct Reach {
     /// This device's endpoint, keyed by its device key.
@@ -51,7 +51,7 @@ impl Reach {
     /// The hint does not authenticate for `ws`, the host authenticates as
     /// another certificate or speaks another peer protocol version
     /// ([`DialError::PeerVersion`]), the connection fails or takes over 10
-    /// seconds, only a certified host is reached over HTTPS, and a room
+    /// seconds, only a certified host is reached over HTTPS, and a workspace
     /// hosted here fails while this device's host does not run.
     pub async fn session(
         &self,
@@ -72,7 +72,7 @@ impl Reach {
             let host = self
                 .own_host
                 .as_ref()
-                .ok_or("this device's room host is not running")?;
+                .ok_or("this device's workspace host is not running")?;
             host.connect_local(cert, key, revocations).await?
         } else {
             let probing = (probe && self.https.is_none()).then(|| cert.clone());
@@ -140,9 +140,9 @@ impl Reach {
             .map_err(|error| DialError::Failed(error.to_string()))
     }
 
-    /// The workspace-join exchange with a room's host as this device,
+    /// The workspace-join exchange with a workspace's host as this device,
     /// `own`: with this device's own host in process when it is the host
-    /// (`hosted_here`), else over HTTPS or iroh. `None` for a room hosted
+    /// (`hosted_here`), else over HTTPS or iroh. `None` for a workspace hosted
     /// here while this device's host does not run.
     #[must_use]
     pub fn join_client(&self, hosted_here: bool, own: [u8; 32]) -> Option<WorkspaceJoinClient> {
@@ -156,27 +156,27 @@ impl Reach {
         })
     }
 
-    /// Prove this device's membership of `connect`'s room with the renewal
+    /// Prove this device's membership of `connect`'s workspace with the renewal
     /// of the certificate its record holds, when custody holds one
     /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
     /// renewed.
     ///
     /// # Errors
-    /// The room is not held here, its host cannot be reached or refuses.
+    /// The workspace is not held here, its host cannot be reached or refuses.
     pub async fn renew(&self, connect: &Connect, identity: &HostIdentity) -> Result<bool, String> {
-        let room = connect.room();
+        let workspace = connect.workspace();
         let own = identity.device_cert.device_public_key;
-        let hosted_here = connect.owner().with_current(room, |view| {
+        let hosted_here = connect.owner().with_current(workspace, |view| {
             Ok(super::hosted_by(view.transport_hint()?, &own))
         })?;
         let client = self
             .join_client(hosted_here, own)
-            .ok_or("this device's room host is not running")?;
+            .ok_or("this device's workspace host is not running")?;
         crate::owner::enroll::renew_membership(
             client,
             identity.clone(),
             connect.owner().clone(),
-            room,
+            workspace,
         )
         .await
     }

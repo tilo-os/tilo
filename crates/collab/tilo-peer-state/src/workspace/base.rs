@@ -1,5 +1,5 @@
 //! A member admitted later must not receive what was withdrawn before, and
-//! an Automerge change keeps every value it ever wrote. So a room document
+//! an Automerge change keeps every value it ever wrote. So a workspace document
 //! starts over at each admission from a base, its state in one change with no
 //! history; members adopt it and build on it, and keep what came before.
 use automerge::transaction::Transactable as _;
@@ -395,23 +395,23 @@ mod tests {
         automerge::Change::try_from(bytes).unwrap()
     }
 
-    /// A governor's room before and after a base, as `GovernedRoom::commit`
+    /// A governor's workspace before and after a base, as `GovernedWorkspace::commit`
     /// makes it: the base is the governor's first change, and its history
     /// goes on under the same actor.
-    struct RebasedRoom {
-        /// The room before the base.
+    struct RebasedWorkspace {
+        /// The workspace before the base.
         old: AutoCommit,
         /// The changes of the history the base replaced.
         history: Vec<Vec<u8>>,
         /// The base, one change.
         base: Vec<Vec<u8>>,
-        /// The room after the base and its new history.
+        /// The workspace after the base and its new history.
         based: AutoCommit,
         /// The new history's changes after the base.
         new_history: Vec<Vec<u8>>,
     }
 
-    fn rebased_room() -> RebasedRoom {
+    fn rebased_workspace() -> RebasedWorkspace {
         let governor = ActorId::from(vec![7; 32]);
         let mut old = AutoCommit::new().with_actor(governor.clone());
         for (key, value) in [("name", "Team"), ("invited", "grace"), ("grace", "invited")] {
@@ -427,7 +427,7 @@ mod tests {
             based.commit();
         }
         let new_history = changes(&mut based, &heads);
-        RebasedRoom {
+        RebasedWorkspace {
             old,
             history,
             base,
@@ -444,13 +444,13 @@ mod tests {
     /// old one is dropped, waiting or arriving.
     #[test]
     fn a_change_of_the_history_a_base_replaced_never_holds_back_the_governors_next() {
-        let RebasedRoom {
+        let RebasedWorkspace {
             old,
             history,
             base,
             based,
             new_history,
-        } = rebased_room();
+        } = rebased_workspace();
         let old_third = vec![history[2].clone()];
         let seq = |bytes: &Vec<u8>| change(bytes).seq();
         assert_eq!(
@@ -497,12 +497,12 @@ mod tests {
     /// early.
     #[test]
     fn a_change_of_the_bases_history_ahead_of_its_parent_applies_once_the_parent_arrives() {
-        let RebasedRoom {
+        let RebasedWorkspace {
             base,
             based,
             new_history,
             ..
-        } = rebased_room();
+        } = rebased_workspace();
         let member = take(None, &base);
 
         let ahead = take(Some(&member), &new_history[1..]);

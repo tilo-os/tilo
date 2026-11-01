@@ -14,7 +14,7 @@ const MAX_PAGE: usize = 100;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectContact {
     pub public_key: String,
-    /// The name the room keeps for the person; never one of their devices'
+    /// The name the workspace keeps for the person; never one of their devices'
     /// labels.
     pub display_name: Option<String>,
     /// Whether a conversation between the caller and this person holds
@@ -75,7 +75,10 @@ pub struct DirectMessageReceipt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pair {
-    room: RoomId,
+    /// Files written before the engine's vocabulary named the workspace carry
+    /// `room`; the key stays so they read back.
+    #[serde(rename = "room")]
+    workspace: RoomId,
     people: [String; 2],
     messages: Vec<DirectMessage>,
 }
@@ -87,7 +90,7 @@ struct Invocation {
     body_hash: [u8; 32],
     message_id: String,
 }
-/// Private owner-file envelope. Never include this in a room document or relay.
+/// Private owner-file envelope. Never include this in a workspace document or relay.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateDirectConversationStore {
@@ -123,9 +126,9 @@ fn text_valid(text: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn pair_id(room: RoomId, people: &[String; 2]) -> Result<String, String> {
-    let bytes =
-        serde_json::to_vec(&("private-person-pair-v1", room, people)).map_err(|e| e.to_string())?;
+fn pair_id(workspace: RoomId, people: &[String; 2]) -> Result<String, String> {
+    let bytes = serde_json::to_vec(&("private-person-pair-v1", workspace, people))
+        .map_err(|e| e.to_string())?;
     Ok(format!("direct_{}", blake3::hash(&bytes).to_hex()))
 }
 fn message_id(conversation: &str, invocation: uuid::Uuid) -> String {
@@ -149,7 +152,7 @@ impl PrivateDirectConversationStore {
             for person in &pair.people {
                 validate_key(person)?;
             }
-            if pair.people[0] >= pair.people[1] || pair_id(pair.room, &pair.people)? != *id {
+            if pair.people[0] >= pair.people[1] || pair_id(pair.workspace, &pair.people)? != *id {
                 return Err("private conversation identity mismatch".into());
             }
             count = count
@@ -283,7 +286,7 @@ fn contacts(
         .map(|m| {
             let person = key(m.user_public_key);
             // A device's label ("Browser", "Primary device") never names
-            // its person, even where the room recorded it as their name.
+            // its person, even where the workspace recorded it as their name.
             let display_name = m.display_name.filter(|name| {
                 !certificates.iter().any(|cert| {
                     cert.user_public_key == m.user_public_key
@@ -305,7 +308,7 @@ fn contacts(
 }
 fn authorized_pair(
     view: &NativeCommittedView,
-    room: RoomId,
+    workspace: RoomId,
     peer: &str,
     authority: &CallerAuthority,
     now: SystemTime,
@@ -320,11 +323,11 @@ fn authorized_pair(
     }
     let mut people = [key(cert.user_public_key), peer.into()];
     people.sort();
-    Ok((pair_id(room, &people)?, people))
+    Ok((pair_id(workspace, &people)?, people))
 }
 fn ensure_pair(
     store: &mut PrivateDirectConversationStore,
-    room: RoomId,
+    workspace: RoomId,
     id: &str,
     people: [String; 2],
 ) -> Result<(), String> {
@@ -335,7 +338,7 @@ fn ensure_pair(
         store.pairs.insert(
             id.into(),
             Pair {
-                room,
+                workspace,
                 people,
                 messages: Vec::new(),
             },
@@ -351,14 +354,14 @@ impl NativeWorkspaceOwner {
     /// Refuses stale certificates, unavailable custody, or an unauthorized pair.
     pub fn subscribe_direct_conversation(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         peer: &str,
         authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
         let _turn = self.0.mutation.lock();
-        let (id, count) = self.with_current(room, |view| {
-            let (id, _) = authorized_pair(view, room, peer, authority, now)?;
+        let (id, count) = self.with_current(workspace, |view| {
+            let (id, _) = authorized_pair(view, workspace, peer, authority, now)?;
             let pair = view
                 .record
                 .private_direct_conversations
@@ -382,11 +385,11 @@ impl NativeWorkspaceOwner {
     /// Refuses stale or delegated callers and unavailable current membership.
     pub fn direct_contacts(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<Vec<DirectContact>, String> {
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             let cert = caller(view, authority, now)?;
             view.record.private_direct_conversations.validate()?;
             contacts(view, cert.user_public_key, now)
@@ -398,14 +401,14 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid keys, or unavailable durable custody.
     pub fn open_direct_conversation(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         now: SystemTime,
     ) -> Result<DirectConversation, String> {
         let _turn = self.0.mutation.lock();
-        let (mut candidate, id, people) = self.with_current(room, |view| {
-            let (id, people) = authorized_pair(view, room, peer_public_key, authority, now)?;
+        let (mut candidate, id, people) = self.with_current(workspace, |view| {
+            let (id, people) = authorized_pair(view, workspace, peer_public_key, authority, now)?;
             view.record.private_direct_conversations.validate()?;
             Ok((view.clone(), id, people))
         })?;
@@ -417,7 +420,7 @@ impl NativeWorkspaceOwner {
         {
             ensure_pair(
                 &mut candidate.record.private_direct_conversations,
-                room,
+                workspace,
                 &id,
                 people,
             )?;
@@ -426,10 +429,10 @@ impl NativeWorkspaceOwner {
                 .generation
                 .checked_add(1)
                 .ok_or("owner generation exhausted")?;
-            self.publish_room(room, candidate, None)?;
+            self.publish_workspace(workspace, candidate, None)?;
         }
         self.read_direct_conversation(
-            room,
+            workspace,
             peer_public_key,
             authority,
             DirectConversationPage::default(),
@@ -441,14 +444,14 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid cursors, or unavailable custody.
     pub fn read_direct_conversation(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         page: DirectConversationPage,
         now: SystemTime,
     ) -> Result<DirectConversation, String> {
-        self.with_current(room, |view| {
-            let (id, _) = authorized_pair(view, room, peer_public_key, authority, now)?;
+        self.with_current(workspace, |view| {
+            let (id, _) = authorized_pair(view, workspace, peer_public_key, authority, now)?;
             let store = &view.record.private_direct_conversations;
             store.validate()?;
             store.conversation(&id, peer_public_key, page)
@@ -460,7 +463,7 @@ impl NativeWorkspaceOwner {
     /// Refuses unauthorized pairs, invalid payloads, conflicting invocation IDs, or full custody.
     pub fn send_direct_message(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         peer_public_key: &str,
         authority: &CallerAuthority,
         request: DirectMessageSend,
@@ -471,8 +474,8 @@ impl NativeWorkspaceOwner {
             return Err("nil private message invocation".into());
         }
         let _turn = self.0.mutation.lock();
-        let (mut candidate, id, people) = self.with_current(room, |view| {
-            let (id, people) = authorized_pair(view, room, peer_public_key, authority, now)?;
+        let (mut candidate, id, people) = self.with_current(workspace, |view| {
+            let (id, people) = authorized_pair(view, workspace, peer_public_key, authority, now)?;
             Ok((view.clone(), id, people))
         })?;
         let store = &mut candidate.record.private_direct_conversations;
@@ -498,7 +501,7 @@ impl NativeWorkspaceOwner {
         if store.invocations.len() >= MAX_MESSAGES {
             return Err("private message capacity exhausted; no messages dropped".into());
         }
-        ensure_pair(store, room, &id, people)?;
+        ensure_pair(store, workspace, &id, people)?;
         let pair = store.pairs.get_mut(&id).ok_or("private pair absent")?;
         let message = DirectMessage {
             id: message_id(&id, request.invocation),
@@ -530,7 +533,7 @@ impl NativeWorkspaceOwner {
             .generation
             .checked_add(1)
             .ok_or("owner generation exhausted")?;
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         // A failed durable publication, or an idempotent retry, never signals.
         if let Some(sender) = self.0.direct_changes.lock().get(&id) {
             sender.send_replace(message.sequence);
@@ -554,7 +557,7 @@ mod tests {
         _directory: tempfile::TempDir,
         path: std::path::PathBuf,
         owner: NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         governor: DeviceCert,
         key: SigningKey,
         now: SystemTime,
@@ -576,7 +579,7 @@ mod tests {
                 _directory: directory,
                 path,
                 owner,
-                room: RoomId::parse(crate::owner::testing::ROOM).unwrap(),
+                workspace: RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
                 governor,
                 key,
                 now: SystemTime::now(),
@@ -591,12 +594,14 @@ mod tests {
             let _turn = self.owner.0.mutation.lock();
             let mut candidate = self
                 .owner
-                .with_current(self.room, |view| Ok(view.clone()))
+                .with_current(self.workspace, |view| Ok(view.clone()))
                 .unwrap();
             change(&mut candidate.peer);
             candidate.record.peer = candidate.peer.durable().unwrap();
             candidate.record.generation = candidate.record.generation.checked_add(1).unwrap();
-            self.owner.publish_room(self.room, candidate, None).unwrap();
+            self.owner
+                .publish_workspace(self.workspace, candidate, None)
+                .unwrap();
         }
         fn member(&self, seed: u8, role: MemberRole) -> DeviceCert {
             self.member_device(seed, seed.checked_add(1).unwrap(), role, None)
@@ -627,15 +632,15 @@ mod tests {
             let ns = crate::owner::testing::ns(self.now).unwrap();
             let hint = self
                 .owner
-                .with_current(self.room, |v| Ok(v.transport_hint()?.clone()))
+                .with_current(self.workspace, |v| Ok(v.transport_hint()?.clone()))
                 .unwrap();
             let signed = join::issue_invitation(
                 join::InviteGrant {
                     workspace_id: tilo_relay_protocol::room_workspace_id(
-                        crate::owner::testing::ROOM,
+                        crate::owner::testing::WORKSPACE,
                     )
                     .unwrap(),
-                    room: crate::owner::testing::ROOM.into(),
+                    room: crate::owner::testing::WORKSPACE.into(),
                     issuer: self.governor.clone(),
                     role,
                     nonce: [device_seed; 16],
@@ -683,7 +688,7 @@ mod tests {
             text: &str,
         ) -> Result<DirectMessageReceipt, String> {
             self.owner.send_direct_message(
-                self.room,
+                self.workspace,
                 &key(peer.user_public_key),
                 &self.person(),
                 DirectMessageSend {
@@ -706,7 +711,7 @@ mod tests {
             fixture
                 .owner
                 .subscribe_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &public_key,
                     &fixture.person(),
                     fixture.now
@@ -715,12 +720,17 @@ mod tests {
         );
         fixture
             .owner
-            .open_direct_conversation(fixture.room, &public_key, &fixture.person(), fixture.now)
+            .open_direct_conversation(
+                fixture.workspace,
+                &public_key,
+                &fixture.person(),
+                fixture.now,
+            )
             .unwrap();
         let mut changes = fixture
             .owner
             .subscribe_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &public_key,
                 &fixture.person(),
                 fixture.now,
@@ -746,11 +756,11 @@ mod tests {
         assert_eq!(*changes.borrow_and_update(), 1);
         fixture.send(&peer, id, "persisted").unwrap();
         assert!(!changes.has_changed().unwrap());
-        // The other endpoint sees the same count, not a public room event.
+        // The other endpoint sees the same count, not a public workspace event.
         let reverse = fixture
             .owner
             .subscribe_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(fixture.governor.user_public_key),
                 &CallerAuthority::Person { caller: peer },
                 fixture.now,
@@ -761,7 +771,7 @@ mod tests {
             fixture
                 .owner
                 .subscribe_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &public_key,
                     &CallerAuthority::Person { caller: other },
                     fixture.now
@@ -779,7 +789,7 @@ mod tests {
         };
         let public_before = fixture
             .owner
-            .with_current(fixture.room, |v| {
+            .with_current(fixture.workspace, |v| {
                 Ok((
                     v.peer.durable()?,
                     crate::owner::testing::entries(v)?,
@@ -814,7 +824,7 @@ mod tests {
         let opened = fixture
             .owner
             .open_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(peer.user_public_key),
                 &fixture.person(),
                 fixture.now,
@@ -823,7 +833,7 @@ mod tests {
         let reverse = fixture
             .owner
             .read_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(fixture.governor.user_public_key),
                 &authority,
                 DirectConversationPage::default(),
@@ -834,7 +844,7 @@ mod tests {
         assert_eq!(reverse.messages, vec![receipt.message.clone()]);
         let public_after = fixture
             .owner
-            .with_current(fixture.room, |v| {
+            .with_current(fixture.workspace, |v| {
                 Ok((
                     v.peer.durable()?,
                     crate::owner::testing::entries(v)?,
@@ -854,7 +864,7 @@ mod tests {
         let reopened = crate::owner::open_file(&fixture.path).unwrap();
         let retained = reopened
             .read_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(peer.user_public_key),
                 &fixture.person(),
                 DirectConversationPage::default(),
@@ -877,7 +887,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &unrelated,
                     DirectConversationPage::default(),
@@ -889,7 +899,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &receipt.conversation_id,
                     &unrelated,
                     DirectConversationPage::default(),
@@ -909,14 +919,14 @@ mod tests {
             assert!(
                 fixture
                     .owner
-                    .direct_contacts(fixture.room, &authority, fixture.now)
+                    .direct_contacts(fixture.workspace, &authority, fixture.now)
                     .is_err()
             );
             assert!(
                 fixture
                     .owner
                     .open_direct_conversation(
-                        fixture.room,
+                        fixture.workspace,
                         &key(peer.user_public_key),
                         &authority,
                         fixture.now
@@ -927,7 +937,7 @@ mod tests {
                 fixture
                     .owner
                     .read_direct_conversation(
-                        fixture.room,
+                        fixture.workspace,
                         &key(peer.user_public_key),
                         &authority,
                         DirectConversationPage::default(),
@@ -939,7 +949,7 @@ mod tests {
                 fixture
                     .owner
                     .send_direct_message(
-                        fixture.room,
+                        fixture.workspace,
                         &key(peer.user_public_key),
                         &authority,
                         DirectMessageSend {
@@ -954,7 +964,7 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .direct_contacts(fixture.room, &fixture.person(), fixture.now)
+                .direct_contacts(fixture.workspace, &fixture.person(), fixture.now)
                 .unwrap()
                 .iter()
                 .any(|c| c.public_key == key(peer.user_public_key))
@@ -977,7 +987,7 @@ mod tests {
             let opened = fixture
                 .owner
                 .open_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(fixture.governor.user_public_key),
                     &person,
                     fixture.now,
@@ -986,7 +996,7 @@ mod tests {
             let saved = fixture
                 .owner
                 .send_direct_message(
-                    fixture.room,
+                    fixture.workspace,
                     &key(fixture.governor.user_public_key),
                     &person,
                     DirectMessageSend {
@@ -1009,18 +1019,18 @@ mod tests {
         reason: &str,
     ) {
         let owner = &fixture.owner;
-        let room = fixture.room;
+        let workspace = fixture.workspace;
         let now = fixture.now;
         assert!(
             owner
-                .direct_contacts(room, authority, now)
+                .direct_contacts(workspace, authority, now)
                 .err()
                 .unwrap()
                 .contains(reason)
         );
         assert!(
             owner
-                .open_direct_conversation(room, peer, authority, now)
+                .open_direct_conversation(workspace, peer, authority, now)
                 .err()
                 .unwrap()
                 .contains(reason)
@@ -1028,7 +1038,7 @@ mod tests {
         assert!(
             owner
                 .read_direct_conversation(
-                    room,
+                    workspace,
                     peer,
                     authority,
                     DirectConversationPage::default(),
@@ -1040,7 +1050,7 @@ mod tests {
         );
         assert!(
             owner
-                .subscribe_direct_conversation(room, peer, authority, now)
+                .subscribe_direct_conversation(workspace, peer, authority, now)
                 .err()
                 .unwrap()
                 .contains(reason)
@@ -1049,7 +1059,7 @@ mod tests {
             assert!(
                 owner
                     .send_direct_message(
-                        room,
+                        workspace,
                         peer,
                         authority,
                         DirectMessageSend {
@@ -1075,7 +1085,7 @@ mod tests {
         fixture
             .owner
             .send_direct_message(
-                fixture.room,
+                fixture.workspace,
                 &peer,
                 &local_authority,
                 DirectMessageSend {
@@ -1088,7 +1098,7 @@ mod tests {
         let foreign = fixture.member_device_bound(77, 80, MemberRole::Editor, None, true);
         fixture
             .owner
-            .with_current(fixture.room, |view| {
+            .with_current(fixture.workspace, |view| {
                 assert!(view.peer().certificates().contains(&foreign));
                 let member = view
                     .peer()
@@ -1113,7 +1123,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &peer,
                     &local_authority,
                     DirectConversationPage::default(),
@@ -1124,14 +1134,19 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .subscribe_direct_conversation(fixture.room, &peer, &local_authority, fixture.now,)
+                .subscribe_direct_conversation(
+                    fixture.workspace,
+                    &peer,
+                    &local_authority,
+                    fixture.now,
+                )
                 .is_ok()
         );
         assert!(
             fixture
                 .owner
                 .send_direct_message(
-                    fixture.room,
+                    fixture.workspace,
                     &peer,
                     &local_authority,
                     DirectMessageSend {
@@ -1179,7 +1194,7 @@ mod tests {
             "Task delegate",
             [1, 2, 3],
             DelegateScope {
-                rooms: vec![fixture.room.to_string()],
+                rooms: vec![fixture.workspace.to_string()],
                 apps: vec![],
             },
             ns.saturating_sub(1),
@@ -1229,7 +1244,7 @@ mod tests {
             fixture
                 .owner
                 .subscribe_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     fixture.now
@@ -1240,7 +1255,7 @@ mod tests {
             fixture
                 .owner
                 .open_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     fixture.now
@@ -1251,7 +1266,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     DirectConversationPage::default(),
@@ -1263,7 +1278,7 @@ mod tests {
             fixture
                 .owner
                 .direct_contacts(
-                    fixture.room,
+                    fixture.workspace,
                     &CallerAuthority::Person { caller: peer },
                     fixture.now
                 )
@@ -1290,7 +1305,7 @@ mod tests {
             fixture
                 .owner
                 .subscribe_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &forged,
                     fixture.now
@@ -1300,7 +1315,7 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .direct_contacts(fixture.room, &forged, fixture.now)
+                .direct_contacts(fixture.workspace, &forged, fixture.now)
                 .is_err()
         );
         let mut entry = tilo_user_identity::RevocationEntry {
@@ -1335,7 +1350,7 @@ mod tests {
             fixture
                 .owner
                 .open_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     fixture.now
@@ -1346,7 +1361,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     DirectConversationPage::default(),
@@ -1357,7 +1372,7 @@ mod tests {
         assert!(
             !fixture
                 .owner
-                .direct_contacts(fixture.room, &fixture.person(), fixture.now)
+                .direct_contacts(fixture.workspace, &fixture.person(), fixture.now)
                 .unwrap()
                 .iter()
                 .any(|c| c.public_key == key(peer.user_public_key))
@@ -1366,7 +1381,7 @@ mod tests {
             fixture
                 .owner
                 .direct_contacts(
-                    fixture.room,
+                    fixture.workspace,
                     &CallerAuthority::Person { caller: peer },
                     fixture.now
                 )
@@ -1386,15 +1401,15 @@ mod tests {
                 now,
             )
             .unwrap();
-        let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
+        let workspace = RoomId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let authority = owner
-            .with_current(room, |v| {
+            .with_current(workspace, |v| {
                 Ok(CallerAuthority::Person {
                     caller: v.device().clone(),
                 })
             })
             .unwrap();
-        assert!(owner.direct_contacts(room, &authority, now).is_err());
+        assert!(owner.direct_contacts(workspace, &authority, now).is_err());
     }
 
     #[test]
@@ -1404,7 +1419,7 @@ mod tests {
         let peer = fixture.member(79, MemberRole::Editor);
         let before = fixture
             .owner
-            .with_current(fixture.room, |v| {
+            .with_current(fixture.workspace, |v| {
                 serde_json::to_vec(&v.record.private_direct_conversations)
                     .map_err(|e| e.to_string())
             })
@@ -1419,7 +1434,7 @@ mod tests {
         );
         let after = fixture
             .owner
-            .with_current(fixture.room, |v| {
+            .with_current(fixture.workspace, |v| {
                 serde_json::to_vec(&v.record.private_direct_conversations)
                     .map_err(|e| e.to_string())
             })
@@ -1438,10 +1453,10 @@ mod tests {
         let peer = fixture.member(85, MemberRole::Editor);
         let (id, people) = fixture
             .owner
-            .with_current(fixture.room, |v| {
+            .with_current(fixture.workspace, |v| {
                 authorized_pair(
                     v,
-                    fixture.room,
+                    fixture.workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     fixture.now,
@@ -1451,10 +1466,10 @@ mod tests {
         let turn = fixture.owner.0.mutation.lock();
         let mut candidate = fixture
             .owner
-            .with_current(fixture.room, |v| Ok(v.clone()))
+            .with_current(fixture.workspace, |v| Ok(v.clone()))
             .unwrap();
         let store = &mut candidate.record.private_direct_conversations;
-        ensure_pair(store, fixture.room, &id, people).unwrap();
+        ensure_pair(store, fixture.workspace, &id, people).unwrap();
         for index in 0..MAX_MESSAGES {
             let uuid = uuid::Uuid::from_u128(index as u128 + 1);
             let mid = message_id(&id, uuid);
@@ -1486,14 +1501,14 @@ mod tests {
                 format!("{index:064x}"),
             ];
             people.sort();
-            let id = pair_id(fixture.room, &people).unwrap();
-            ensure_pair(store, fixture.room, &id, people).unwrap();
+            let id = pair_id(fixture.workspace, &people).unwrap();
+            ensure_pair(store, fixture.workspace, &id, people).unwrap();
         }
         store.validate().unwrap();
         candidate.record.generation += 1;
         fixture
             .owner
-            .publish_room(fixture.room, candidate, None)
+            .publish_workspace(fixture.workspace, candidate, None)
             .unwrap();
         drop(turn);
         assert!(
@@ -1506,7 +1521,7 @@ mod tests {
             fixture
                 .owner
                 .open_direct_conversation(
-                    fixture.room,
+                    fixture.workspace,
                     &key(another.user_public_key),
                     &fixture.person(),
                     fixture.now
@@ -1516,7 +1531,7 @@ mod tests {
         let page = fixture
             .owner
             .read_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(peer.user_public_key),
                 &fixture.person(),
                 DirectConversationPage {
@@ -1544,7 +1559,7 @@ mod tests {
             fixture
                 .owner
                 .send_direct_message(
-                    fixture.room,
+                    fixture.workspace,
                     &key(fixture.governor.user_public_key),
                     &reverse,
                     DirectMessageSend {
@@ -1570,7 +1585,7 @@ mod tests {
         let page = fixture
             .owner
             .read_direct_conversation(
-                fixture.room,
+                fixture.workspace,
                 &key(peer.user_public_key),
                 &fixture.person(),
                 DirectConversationPage {
@@ -1587,7 +1602,7 @@ mod tests {
                 fixture
                     .owner
                     .read_direct_conversation(
-                        fixture.room,
+                        fixture.workspace,
                         &key(peer.user_public_key),
                         &fixture.person(),
                         DirectConversationPage {
@@ -1599,13 +1614,13 @@ mod tests {
                     .is_err()
             );
         }
-        let other_room = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        let other_workspace = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
         let mut people = [
             key(fixture.governor.user_public_key),
             key(peer.user_public_key),
         ];
         people.sort();
-        let other = pair_id(other_room, &people).unwrap();
+        let other = pair_id(other_workspace, &people).unwrap();
         assert_ne!(saved.conversation_id, other);
         assert_ne!(
             message_id(&saved.conversation_id, invocation),
@@ -1615,7 +1630,7 @@ mod tests {
             fixture
                 .owner
                 .read_direct_conversation(
-                    other_room,
+                    other_workspace,
                     &key(peer.user_public_key),
                     &fixture.person(),
                     DirectConversationPage::default(),

@@ -1,6 +1,6 @@
 //! The record in a file of its own. The caller holds exclusive access to
 //! the file's directory. A host that keeps state of its own derived from
-//! the record (its workspaces of the rooms) follows each publication
+//! the record (its workspaces of the workspaces) follows each publication
 //! through a [`FileHost`].
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
@@ -28,8 +28,8 @@ pub fn owner_file_of(state: &Path) -> PathBuf {
 /// What a host that keeps state derived from the record does around each
 /// publication of it.
 pub trait FileHost: std::any::Any + Send + Sync {
-    /// The room a local workspace is, where the host has workspaces.
-    fn slot_room(&self, _slot: WorkspaceId) -> Option<RoomId> {
+    /// The workspace a local slot is, where the host has slots.
+    fn slot_workspace(&self, _slot: WorkspaceId) -> Option<RoomId> {
         None
     }
     /// Run `write`, which makes `next` durable and installs it, with
@@ -66,7 +66,7 @@ pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
             if bytes.len() > MAX_AUTHORITY_BYTES {
-                return Err("joined-room record exceeds its cap".into());
+                return Err("joined-workspace record exceeds its cap".into());
             }
             serde_json::from_slice(&bytes).map_err(|e| e.to_string())
         }
@@ -130,7 +130,7 @@ pub fn open_file_with(
 
 /// Make a record this build rewrote on open durable where it was read.
 ///
-/// The rewrite changes no room and no workspace, only the form of records
+/// The rewrite changes neither a workspace nor its relay workspace, only the form of records
 /// already there, so it goes straight to the file rather than through a
 /// publication of the store: nothing a host follows has changed.
 fn write_migrated(path: &Path, next: &NativeAuthorityStorage) -> Result<(), String> {
@@ -158,12 +158,12 @@ impl Store for FileStore {
         self.healthy.load(Ordering::Acquire)
     }
 
-    fn uncertain(&self, room: RoomId) -> bool {
-        self.uncertain.read().contains(&room)
+    fn uncertain(&self, workspace: RoomId) -> bool {
+        self.uncertain.read().contains(&workspace)
     }
 
-    fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId> {
-        self.host.slot_room(slot)
+    fn slot_workspace(&self, slot: WorkspaceId) -> Option<RoomId> {
+        self.host.slot_workspace(slot)
     }
 
     fn publish(
@@ -173,7 +173,7 @@ impl Store for FileStore {
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         if !self.healthy() {
-            return Err("joined-room store is fenced after an uncertain publication".into());
+            return Err("joined-workspace store is fenced after an uncertain publication".into());
         }
         preflight_storage(next)?;
         self.host
@@ -202,7 +202,7 @@ impl FileStore {
             }
             Err(error) => {
                 if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
-                    self.uncertain.write().extend(next.rooms());
+                    self.uncertain.write().extend(next.workspaces());
                     self.healthy.store(false, Ordering::Release);
                 }
                 Err(error.into_io_error().to_string())

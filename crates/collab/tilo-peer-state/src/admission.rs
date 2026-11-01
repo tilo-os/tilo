@@ -42,7 +42,7 @@ impl From<&str> for AdmissionError {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct AdmissionKey {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub record: String,
     pub author: [u8; 32],
@@ -55,8 +55,8 @@ pub struct DocumentAdmission {
     pub(crate) operation_id: [u8; 32],
 }
 impl DocumentAdmission {
-    pub fn room(&self) -> &str {
-        &self.key.room
+    pub fn workspace(&self) -> &str {
+        &self.key.workspace
     }
     pub fn app(&self) -> &str {
         &self.key.app
@@ -74,7 +74,7 @@ impl DocumentAdmission {
         self.operation_id
     }
     pub(crate) fn from_op(
-        room: &str,
+        workspace: &str,
         app: &str,
         record: &str,
         op: &collab_types::SignedOp,
@@ -83,7 +83,7 @@ impl DocumentAdmission {
             .map_err(|e| AdmissionError::Rejected(e.to_string()))?;
         Ok(Self {
             key: AdmissionKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 app: app.into(),
                 record: record.into(),
                 author: *op.author.as_bytes(),
@@ -113,7 +113,7 @@ pub enum MissingPrerequisite {
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Governance => "the room's governance",
+            Self::Governance => "the workspace's governance",
             Self::Certificate => "its author's certificate",
             Self::RecordCheckpoint => "its record's checkpoint",
             Self::CheckpointCoverage => "the governance covering its checkpoint",
@@ -127,8 +127,8 @@ impl std::fmt::Display for MissingPrerequisite {
 }
 
 /// An app message the prerequisite queue let go unapplied: what it was and
-/// what it waited for. Never applied, so nothing of it entered the room; the
-/// room's host still retains it.
+/// what it waited for. Never applied, so nothing of it entered the workspace; the
+/// workspace's host still retains it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DroppedInput {
     pub author: [u8; 32],
@@ -149,7 +149,7 @@ pub enum DropReason {
     Superseded,
     /// It is larger than the queue holds at all.
     TooLarge,
-    /// Decided again when its place was needed, the room refuses it now.
+    /// Decided again when its place was needed, the workspace refuses it now.
     Refused(String),
 }
 
@@ -230,7 +230,7 @@ impl std::ops::DerefMut for AdmissionReport {
 /// One writer of one record: whose writes a compaction's mark covers.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct WriterKey {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub record: String,
     pub author: [u8; 32],
@@ -238,7 +238,7 @@ pub(crate) struct WriterKey {
 impl WriterKey {
     fn of(key: &AdmissionKey) -> Self {
         Self {
-            room: key.room.clone(),
+            workspace: key.workspace.clone(),
             app: key.app.clone(),
             record: key.record.clone(),
             author: key.author,
@@ -247,7 +247,7 @@ impl WriterKey {
     /// This writer's write at `sequence`.
     pub(crate) fn at(&self, sequence: u64) -> AdmissionKey {
         AdmissionKey {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             app: self.app.clone(),
             record: self.record.clone(),
             author: self.author,
@@ -259,7 +259,7 @@ impl WriterKey {
 /// Compact positive evidence only. Never evicted to meet a quota.
 ///
 /// Every admission copies the peer it is decided in, and the index grows
-/// with every write a room keeps: its settled entries are shared between
+/// with every write a workspace keeps: its settled entries are shared between
 /// copies, so a copy costs the few entries since they last settled, not the
 /// whole index. The settled entries also keep their encoding: a durable
 /// copy of the index each governance change re-encodes only the entries
@@ -273,7 +273,7 @@ impl WriterKey {
 /// mark covers is already decided, whatever its bytes, so it is ignored;
 /// above the mark the evidence stays exact. The index then grows with the
 /// writes since the last compaction and with the writers, not with every
-/// write the room ever kept.
+/// write the workspace ever kept.
 #[derive(Clone, Default)]
 pub(crate) struct ExactAdmissions {
     settled: std::sync::Arc<Settled>,
@@ -383,13 +383,13 @@ impl ExactAdmissions {
     /// index; it is unchanged then.
     pub(crate) fn cover(
         &mut self,
-        (room, app, record): (&str, &str, &str),
+        (workspace, app, record): (&str, &str, &str),
         covers: impl IntoIterator<Item = ([u8; 32], u64)>,
     ) -> Result<(), AdmissionError> {
         let mut next = self.clone();
         for (author, sequence) in covers {
             let writer = WriterKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 app: app.into(),
                 record: record.into(),
                 author,
@@ -399,7 +399,7 @@ impl ExactAdmissions {
                 continue;
             }
             let key = |sequence| AdmissionKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 app: app.into(),
                 record: record.into(),
                 author,
@@ -525,7 +525,7 @@ impl ExactAdmissions {
         }
         // Bound string lengths before counting the unchanged canonical key.
         let names = op
-            .room()
+            .workspace()
             .len()
             .saturating_add(op.app().len())
             .saturating_add(op.record().len());
@@ -582,7 +582,7 @@ mod tests {
     fn delivery_admission_index_bounds_and_duplicate_decode_are_fail_closed() {
         let fact = DocumentAdmission {
             key: AdmissionKey {
-                room: String::new(),
+                workspace: String::new(),
                 app: String::new(),
                 record: "x".repeat(MAX_EXACT_ADMISSION_BYTES - 100),
                 author: [0; 32],
@@ -621,7 +621,7 @@ mod tests {
     fn a_cover_folds_entries_into_a_mark_that_only_rises() {
         let admission = |author: u8, sequence: u64, id: u8| DocumentAdmission {
             key: AdmissionKey {
-                room: "room".into(),
+                workspace: "room".into(),
                 app: "app".into(),
                 record: "record".into(),
                 author: [author; 32],
@@ -676,7 +676,7 @@ mod tests {
     fn a_copy_shares_settled_admissions_and_encodes_one_ordered_index() {
         let admission = |sequence: u64| DocumentAdmission {
             key: AdmissionKey {
-                room: "room".into(),
+                workspace: "room".into(),
                 app: "app".into(),
                 record: "record".into(),
                 author: [u8::try_from(sequence % 7).unwrap(); 32],

@@ -1,8 +1,8 @@
-//! Installed bots as governed members of a room.
+//! Installed bots as governed members of a workspace.
 //!
 //! Installing writes three things in one governed change: the bot device's
 //! identity carrying its installation, the bot's grants (its program's rules
-//! held to this room, plus the deny on governance), and the program bytes.
+//! held to this workspace, plus the deny on governance), and the program bytes.
 //! Every member then reads what runs and enforces the grants with the code
 //! it already has. Updates, renewals and every later bot command are
 //! governed changes too; none of them is host-local state.
@@ -23,11 +23,11 @@ use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
 /// The governed map that keeps bot programs, by BLAKE3 hex.
 const PROGRAMS: &str = "bot_programs_v1";
-/// The governed map that keeps the bots the room asks its host to run, by
+/// The governed map that keeps the bots the workspace asks its host to run, by
 /// directory entry.
 const REQUESTS: &str = "bot_requests_v1";
 
-/// A bot the room asks its host to run, as the room keeps the request.
+/// A bot the workspace asks its host to run, as the workspace keeps the request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestedBot {
     /// The directory entry and version asked for.
@@ -38,7 +38,7 @@ pub struct RequestedBot {
     pub requested_at_ns: u64,
 }
 
-/// One installed bot on a room's roster.
+/// One installed bot on a workspace's roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledBot {
     /// Its governed row.
@@ -50,7 +50,7 @@ pub struct InstalledBot {
     /// When this device row was withdrawn: uninstalled, or moved to a new
     /// key.
     pub withdrawn_at_ns: Option<u64>,
-    /// Whether it acts in the room at the time the roster was read.
+    /// Whether it acts in the workspace at the time the roster was read.
     pub acting: bool,
 }
 
@@ -68,9 +68,9 @@ impl StatePeer {
     pub(super) fn bot_identities(&self) -> Result<Vec<GovernedIdentity>, String> {
         let doc = self
             .core
-            .room_doc
+            .workspace_doc
             .as_ref()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let mut out = Vec::new();
         for bytes in doc.policy().identities.values() {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
@@ -113,16 +113,16 @@ impl StatePeer {
         }
     }
 
-    /// The grants installation `id` holds in the room now.
+    /// The grants installation `id` holds in the workspace now.
     pub(super) fn bot_grants(&self, id: &str, now: SystemTime) -> Result<Vec<Grant>, String> {
         let _ = now;
         let policy = self
             .core
-            .room_doc
+            .workspace_doc
             .as_ref()
-            .ok_or("room governance missing")?
+            .ok_or("workspace governance missing")?
             .policy()
-            .room_policy(&self.core.room);
+            .workspace_policy(&self.core.workspace);
         let prefix = bot::grant_prefix(id);
         Ok(policy
             .grants
@@ -171,8 +171,8 @@ impl StatePeer {
         let cx = Context::at_time(now);
         let bound = roles::foreign_device_bound();
         let id = install.installation.id.as_str().to_owned();
-        let room = self.core.room.clone();
-        let grants = program_grants(&room, install, &member.policy, &cx)?;
+        let workspace = self.core.workspace.clone();
+        let grants = program_grants(&workspace, install, &member.policy, &cx)?;
 
         let live = self.live_bot(&id)?;
         let mut identity = match (&live, &install.device) {
@@ -187,14 +187,14 @@ impl StatePeer {
                     .map_err(|refusal| refusal.to_string())?;
                 let mut row = self.check_bot_device(device, &id, &member.person, now)?;
                 row.installation = Some(install.installation.clone());
-                row.acting(&device.cert, &room, now_ns(now))
+                row.acting(&device.cert, &workspace, now_ns(now))
                     .map_err(|reason| reason.to_string())?;
                 if self
                     .core
                     .certificates
                     .contains_key(&device.cert.device_public_key)
                 {
-                    return Err("the bot's device is already in this room".into());
+                    return Err("the bot's device is already in this workspace".into());
                 }
                 GovernedIdentity {
                     device_cert: device.cert.clone(),
@@ -289,7 +289,7 @@ impl StatePeer {
         let mut fresh = self.check_bot_device(&renewal.device, id, &member.person, now)?;
         fresh.installation = Some(installation);
         fresh
-            .acting(&renewal.device.cert, &self.core.room, now_ns(now))
+            .acting(&renewal.device.cert, &self.core.workspace, now_ns(now))
             .map_err(|reason| reason.to_string())?;
         let same_device =
             renewal.device.cert.device_public_key == live.device_cert.device_public_key;
@@ -309,7 +309,7 @@ impl StatePeer {
                 .certificates
                 .contains_key(&renewal.device.cert.device_public_key)
             {
-                return Err("the bot's new device is already in this room".into());
+                return Err("the bot's new device is already in this workspace".into());
             }
             let mut withdrawn = live;
             if let Some(old) = withdrawn.delegate.as_mut() {
@@ -336,7 +336,7 @@ impl StatePeer {
         )
     }
 
-    /// Write `write` into this room's governance in one commit, as the
+    /// Write `write` into this workspace's governance in one commit, as the
     /// pinned authority `key`, and take it in as every member will.
     pub(super) fn put_bot_change(
         &mut self,
@@ -347,14 +347,14 @@ impl StatePeer {
         self.require_governance_writer(key, now)?;
         let mut doc = self
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
         let identities = governed_map(&doc, "peer_identities_v1")?;
         let names = governed_map(&doc, "peers")?;
         let grants = governed_map(&doc, "grants")?;
-        doc.set_actor(self.room_actor_of(key));
+        doc.set_actor(self.workspace_actor_of(key));
         for identity in &write.identities {
             let id = hex::encode(identity.device_cert.device_public_key);
             doc.put(
@@ -372,8 +372,8 @@ impl StatePeer {
             }
         }
         for grant in &write.grant {
-            if grant.node.room_id() != Some(self.core.room.as_str()) {
-                return Err(format!("grant {:?} names another room", grant.id));
+            if grant.node.room_id() != Some(self.core.workspace.as_str()) {
+                return Err(format!("grant {:?} names another workspace", grant.id));
             }
             doc.put(
                 &grants,
@@ -406,7 +406,7 @@ impl StatePeer {
     }
 }
 impl StatePeer {
-    /// Ask the room's host to run directory bot `request`, as `caller`, who
+    /// Ask the workspace's host to run directory bot `request`, as `caller`, who
     /// must be able to install bots here. Asking again for the same entry
     /// replaces the version asked for.
     pub(super) fn apply_request_bot(
@@ -418,11 +418,11 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::INSTALL_BOT, now)?;
         if let Some(program) = &request.program {
-            // The host runs a developer's program as the room's root, so the
+            // The host runs a developer's program as the workspace's root, so the
             // person asking must hold everything it asks for themselves.
             let shortcut = parse_program(program.as_bytes()).map_err(|error| error.to_string())?;
             let grants = bot::grants(
-                &self.core.room,
+                &self.core.workspace,
                 &request.entry,
                 &member.person,
                 &shortcut.grant,
@@ -480,11 +480,11 @@ impl StatePeer {
         self.require_governance_writer(key, now)?;
         let mut doc = self
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(self.room_actor_of(key));
+        doc.set_actor(self.workspace_actor_of(key));
         let requests = match doc.get(ROOT, REQUESTS).map_err(err)? {
             Some((_, map)) => map,
             None => doc.put_object(ROOT, REQUESTS, ObjType::Map).map_err(err)?,
@@ -505,28 +505,28 @@ impl StatePeer {
 }
 
 impl PeerGovernance<'_> {
-    /// Every bot the room asks its host to run, by entry.
+    /// Every bot the workspace asks its host to run, by entry.
     #[must_use]
     pub fn bot_requests(self) -> Vec<RequestedBot> {
         self.peer
             .core
-            .room_doc
+            .workspace_doc
             .as_ref()
             .map_or_else(Vec::new, |doc| requests_in(&**doc))
     }
 
-    /// The room's request for directory entry `entry`, if it stands.
+    /// The workspace's request for directory entry `entry`, if it stands.
     #[must_use]
     pub fn bot_request(self, entry: &str) -> Option<RequestedBot> {
-        let doc = self.peer.core.room_doc.as_ref()?;
+        let doc = self.peer.core.workspace_doc.as_ref()?;
         let (_, requests) = doc.get(ROOT, REQUESTS).ok()??;
         read_request(&**doc, &requests, entry)
     }
 
-    /// The program installation rows name by `hash`, as the room keeps it.
+    /// The program installation rows name by `hash`, as the workspace keeps it.
     #[must_use]
     pub fn bot_program(self, hash: &str) -> Option<String> {
-        let doc = self.peer.core.room_doc.as_ref()?;
+        let doc = self.peer.core.workspace_doc.as_ref()?;
         let (_, programs) = doc.get(ROOT, PROGRAMS).ok()??;
         match doc.get(&programs, hash).ok()?? {
             (automerge::Value::Scalar(value), _) => match value.as_ref() {
@@ -536,7 +536,7 @@ impl PeerGovernance<'_> {
             _ => None,
         }
     }
-    /// Every installed bot on this room's roster, acting or not at `now`,
+    /// Every installed bot on this workspace's roster, acting or not at `now`,
     /// withdrawn rows included so history stays attributed.
     pub fn installations(self, now: SystemTime) -> Result<Vec<InstalledBot>, String> {
         let mut out = Vec::new();
@@ -685,14 +685,14 @@ impl StatePeer {
         let mut fresh = self.check_bot_device(&adoption.device, id, &member.person, now)?;
         fresh.installation = Some(installation);
         fresh
-            .acting(&adoption.device.cert, &self.core.room, now_ns(now))
+            .acting(&adoption.device.cert, &self.core.workspace, now_ns(now))
             .map_err(|reason| reason.to_string())?;
         if self
             .core
             .certificates
             .contains_key(&adoption.device.cert.device_public_key)
         {
-            return Err("the bot's new device is already in this room".into());
+            return Err("the bot's new device is already in this workspace".into());
         }
         // The adopter answers for the bot from now on, so its grant must sit
         // within what the adopter may do, and names them as its grantor.
@@ -732,11 +732,11 @@ impl StatePeer {
     }
 }
 
-/// The grants `install`'s program gives its bot in `room`, checked: the
+/// The grants `install`'s program gives its bot in `workspace`, checked: the
 /// program matches its hash, parses, names nothing its steps do not use,
 /// and gives the bot no more than its installer holds in `policy` now.
 fn program_grants(
-    room: &str,
+    workspace: &str,
     install: &BotInstall,
     policy: &WorkspacePolicy,
     cx: &Context<'_>,
@@ -753,7 +753,7 @@ fn program_grants(
     }
     let installed_by = &install.installation.installed_by;
     let grants = bot::grants(
-        room,
+        workspace,
         install.installation.id.as_str(),
         installed_by,
         &shortcut.grant,
@@ -771,7 +771,7 @@ fn program_grants(
 
 /// The request kept under `entry` in `requests`, if it reads as one for
 /// that entry: a row naming another entry than its key is not trusted.
-/// Every bot request room document `doc` keeps, by entry.
+/// Every bot request workspace document `doc` keeps, by entry.
 pub(crate) fn requests_in(doc: &impl ReadDoc) -> Vec<RequestedBot> {
     let Ok(Some((_, requests))) = doc.get(ROOT, REQUESTS) else {
         return Vec::new();

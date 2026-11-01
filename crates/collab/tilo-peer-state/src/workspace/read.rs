@@ -1,4 +1,4 @@
-//! Shared room traversal over any Automerge document reader.
+//! Shared workspace traversal over any Automerge document reader.
 
 pub(crate) mod collections;
 
@@ -9,7 +9,7 @@ pub(crate) enum Selection {
     All,
 }
 
-pub(crate) enum RoomValue<'a, O> {
+pub(crate) enum WorkspaceValue<'a, O> {
     Object { kind: ObjType, object: O },
     Bytes(&'a [u8]),
     Str(&'a str),
@@ -45,7 +45,7 @@ impl<E> ReadError<ReadError<E>> {
 }
 
 /// Callbacks borrow each scalar for the duration of the call.
-pub(crate) trait RoomRead {
+pub(crate) trait WorkspaceRead {
     type Object;
     fn root(&self) -> Self::Object;
     fn visit_keys<E>(
@@ -59,7 +59,7 @@ pub(crate) trait RoomRead {
         object: &Self::Object,
         key: &str,
         selection: Selection,
-        visitor: impl for<'a> FnMut(RoomValue<'a, Self::Object>) -> Result<(), E>,
+        visitor: impl for<'a> FnMut(WorkspaceValue<'a, Self::Object>) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>>;
 }
 
@@ -74,18 +74,18 @@ pub(crate) enum GovernanceEntry<'a> {
     Identity { key: &'a str, bytes: &'a [u8] },
 }
 
-pub(crate) fn visit_governance_entries<R: RoomRead, E>(
+pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     read: &R,
     mut visitor: impl for<'a> FnMut(GovernanceEntry<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
     let root = read.root();
     let owner = read.visit_property(&root, "owner", Selection::Winner, |value| {
-        if let RoomValue::Str(value) = value {
+        if let WorkspaceValue::Str(value) = value {
             visitor(GovernanceEntry::Owner(value))?;
         }
         Ok(())
     });
-    // Match the existing room projection's ignored lookup errors. Capacity
+    // Match the existing workspace projection's ignored lookup errors. Capacity
     // and visitor failures are never turned into absent policy.
     if let Err(error) = owner
         && !matches!(error, ReadError::Malformed)
@@ -104,7 +104,7 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
             .visit_property(&root, field, Selection::Winner, |value| {
                 // Map-key lookup ignores malformed sequence containers: a
                 // List or Text here reads as absent, as it always has.
-                if let RoomValue::Object {
+                if let WorkspaceValue::Object {
                     kind: ObjType::Map | ObjType::Table,
                     object,
                 } = value
@@ -113,22 +113,22 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
                         let property =
                             read.visit_property(&object, key, Selection::Winner, |value| {
                                 match (kind, value) {
-                                    (0, RoomValue::Bytes(bytes)) => {
+                                    (0, WorkspaceValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::Grant { key, bytes })
                                     }
-                                    (3, RoomValue::Bytes(bytes)) => {
+                                    (3, WorkspaceValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::Member { key, bytes })
                                     }
-                                    (4, RoomValue::Bytes(bytes)) => {
+                                    (4, WorkspaceValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::Sandbox { key, bytes })
                                     }
-                                    (5, RoomValue::Bytes(bytes)) => {
+                                    (5, WorkspaceValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::MemberJoined { key, bytes })
                                     }
-                                    (1, RoomValue::Str(name)) => {
+                                    (1, WorkspaceValue::Str(name)) => {
                                         visitor(GovernanceEntry::Peer { key, name })
                                     }
-                                    (2, RoomValue::Bytes(bytes)) => {
+                                    (2, WorkspaceValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::Identity { key, bytes })
                                     }
                                     _ => Ok(()),
@@ -155,7 +155,7 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
 
 pub(crate) struct LegacyRead<'a, D: ReadDoc>(pub(crate) &'a D);
 
-impl<D: ReadDoc> RoomRead for LegacyRead<'_, D> {
+impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
     type Object = ObjId;
     fn root(&self) -> Self::Object {
         automerge::ROOT
@@ -179,7 +179,7 @@ impl<D: ReadDoc> RoomRead for LegacyRead<'_, D> {
         object: &ObjId,
         key: &str,
         selection: Selection,
-        mut visitor: impl for<'a> FnMut(RoomValue<'a, ObjId>) -> Result<(), E>,
+        mut visitor: impl for<'a> FnMut(WorkspaceValue<'a, ObjId>) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>> {
         match selection {
             Selection::Winner => match self.0.get(object, key).map_err(|_| ReadError::Malformed)? {
@@ -207,24 +207,24 @@ impl<D: ReadDoc> RoomRead for LegacyRead<'_, D> {
 pub(super) fn visit_legacy_value<E>(
     value: Value<'_>,
     object: ObjId,
-    visitor: &mut impl for<'a> FnMut(RoomValue<'a, ObjId>) -> Result<(), E>,
+    visitor: &mut impl for<'a> FnMut(WorkspaceValue<'a, ObjId>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
     let value = match value {
         Value::Object(kind) => {
-            return visitor(RoomValue::Object { kind, object }).map_err(ReadError::Visitor);
+            return visitor(WorkspaceValue::Object { kind, object }).map_err(ReadError::Visitor);
         }
         Value::Scalar(value) => value,
     };
     let view = match value.as_ref() {
-        ScalarValue::Bytes(bytes) => RoomValue::Bytes(bytes),
-        ScalarValue::Str(value) => RoomValue::Str(value),
-        ScalarValue::Boolean(value) => RoomValue::Boolean(*value),
-        _ => RoomValue::Other,
+        ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
+        ScalarValue::Str(value) => WorkspaceValue::Str(value),
+        ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
+        _ => WorkspaceValue::Other,
     };
     visitor(view).map_err(ReadError::Visitor)
 }
 
-pub(crate) fn strict_map<R: RoomRead>(
+pub(crate) fn strict_map<R: WorkspaceRead>(
     read: &R,
     parent: &R::Object,
     key: &str,
@@ -232,7 +232,7 @@ pub(crate) fn strict_map<R: RoomRead>(
     use super::media::MediaPolicyError;
     let mut result = None;
     read.visit_property(parent, key, Selection::All, |value| match value {
-        RoomValue::Object {
+        WorkspaceValue::Object {
             kind: ObjType::Map,
             object,
         } if result.is_none() => {
@@ -244,7 +244,7 @@ pub(crate) fn strict_map<R: RoomRead>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Conflict))
 }
 
-pub(crate) fn strict_string<R: RoomRead>(
+pub(crate) fn strict_string<R: WorkspaceRead>(
     read: &R,
     parent: &R::Object,
     key: &str,
@@ -252,7 +252,7 @@ pub(crate) fn strict_string<R: RoomRead>(
     use super::media::MediaPolicyError;
     let mut result: Option<String> = None;
     read.visit_property(parent, key, Selection::All, |value| {
-        let RoomValue::Str(value) = value else {
+        let WorkspaceValue::Str(value) = value else {
             return Err(ReadError::Visitor(MediaPolicyError::Malformed));
         };
         match &result {
@@ -268,7 +268,7 @@ pub(crate) fn strict_string<R: RoomRead>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
 }
 
-pub(crate) fn strict_bytes<R: RoomRead>(
+pub(crate) fn strict_bytes<R: WorkspaceRead>(
     read: &R,
     parent: &R::Object,
     key: &str,
@@ -276,7 +276,7 @@ pub(crate) fn strict_bytes<R: RoomRead>(
     use super::media::MediaPolicyError;
     let mut result: Option<Vec<u8>> = None;
     read.visit_property(parent, key, Selection::All, |value| {
-        let RoomValue::Bytes(value) = value else {
+        let WorkspaceValue::Bytes(value) = value else {
             return Err(ReadError::Visitor(MediaPolicyError::Malformed));
         };
         match &result {
@@ -307,12 +307,12 @@ pub(crate) fn legacy_policy_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room::media::MediaPolicyError;
+    use crate::workspace::media::MediaPolicyError;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn room_read_adapter_returns_the_actual_single_map_identity() {
+    fn workspace_read_adapter_returns_the_actual_single_map_identity() {
         let mut document = AutoCommit::new();
         let object = document.put_object(ROOT, "channels", ObjType::Map).unwrap();
         document.commit();
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn room_read_adapter_refuses_absent_or_non_map_values() {
+    fn workspace_read_adapter_refuses_absent_or_non_map_values() {
         let mut document = AutoCommit::new();
         assert_eq!(
             strict_map(&LegacyRead(&document), &ROOT, "channels"),
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn room_read_adapter_refuses_actual_concurrent_map_objects() {
+    fn workspace_read_adapter_refuses_actual_concurrent_map_objects() {
         let mut first = AutoCommit::new();
         let mut second = first.fork();
         first.put_object(ROOT, "channels", ObjType::Map).unwrap();
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn room_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields() {
+    fn workspace_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields() {
         use automerge::transaction::Transactable;
         for kind in [ObjType::List, ObjType::Text] {
             let mut doc = automerge::AutoCommit::new();
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn room_read_adapter_governance_preserves_scalar_and_conflicting_container_winners() {
+    fn workspace_read_adapter_governance_preserves_scalar_and_conflicting_container_winners() {
         use automerge::transaction::Transactable;
         let mut scalar = automerge::AutoCommit::new();
         scalar.put(automerge::ROOT, "owner", "owner").unwrap();

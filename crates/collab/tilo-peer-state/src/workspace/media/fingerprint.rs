@@ -1,9 +1,9 @@
 //! Existing governed-value fingerprints.
-use crate::room::read::{LegacyRead, ReadError, RoomRead};
+use crate::workspace::read::{LegacyRead, ReadError, WorkspaceRead};
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::fmt::Write;
 
-pub(crate) trait FingerprintRead: RoomRead {
+pub(crate) trait FingerprintRead: WorkspaceRead {
     fn visit_media_fingerprints<E>(
         &self,
         visitor: impl FnMut([u8; 32]) -> Result<(), E>,

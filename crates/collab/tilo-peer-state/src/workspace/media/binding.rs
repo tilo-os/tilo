@@ -1,6 +1,8 @@
 //! Exact Chat binding data, read from any admitted document.
-use super::{CallPhaseV1, ChatCallBindingV1, MediaPolicyError, RoomMediaV1, read::Error};
-use crate::room::read::{self, LegacyRead, ReadError, RoomRead, RoomValue, Selection};
+use super::{CallPhaseV1, ChatCallBindingV1, MediaPolicyError, WorkspaceMediaV1, read::Error};
+use crate::workspace::read::{
+    self, LegacyRead, ReadError, Selection, WorkspaceRead, WorkspaceValue,
+};
 use automerge::{ObjId, ReadDoc};
 
 pub(crate) struct Binding {
@@ -47,7 +49,7 @@ fn visit_error(error: ReadError<Error>) -> Error {
         ReadError::Visitor(error) => error,
     }
 }
-trait ObjectIdWrite: RoomRead {
+trait ObjectIdWrite: WorkspaceRead {
     // None means the exact ID cannot fit the binding's existing byte limit.
     // Defer that semantic rejection until after workspace lookup, as legacy.
     fn object_id(&self, object: &Self::Object, sink: &mut [u8]) -> Result<Option<usize>, Error>;
@@ -97,22 +99,22 @@ fn resolve<R: ObjectIdWrite>(
     app: &str,
     record: &str,
     channel: &str,
-    room: &R,
+    workspace: &R,
 ) -> Result<Binding, Error> {
     // Chat keeps its channels as a collection: each entry holds its order
     // key and, under `v`, the channel itself. Two devices that made the same
-    // channel (a room's first `#voice`) each created the collection, the
+    // channel (a workspace's first `#voice`) each created the collection, the
     // entry and its value; the document keeps every copy and every replica
     // reads the same winner at each level, as Chat itself does.
-    let channels = winner_map(room, &room.root(), "channels")?;
-    let entry = winner_map(room, &channels, channel)?;
-    let object = winner_map(room, &entry, "v")?;
-    if read::strict_string(room, &object, "kind").map_err(strict_error)? != "voice" {
+    let channels = winner_map(workspace, &workspace.root(), "channels")?;
+    let entry = winner_map(workspace, &channels, channel)?;
+    let object = winner_map(workspace, &entry, "v")?;
+    if read::strict_string(workspace, &object, "kind").map_err(strict_error)? != "voice" {
         return Err(policy(MediaPolicyError::Binding));
     }
-    let count = room
+    let count = workspace
         .visit_property(&object, "archived", Selection::All, |value| {
-            if matches!(value, RoomValue::Boolean(false)) {
+            if matches!(value, WorkspaceValue::Boolean(false)) {
                 Ok(())
             } else {
                 Err(policy(MediaPolicyError::Binding))
@@ -126,7 +128,7 @@ fn resolve<R: ObjectIdWrite>(
     let record = record.to_owned();
     let channel = channel.to_owned();
     let mut buffer = [0; super::MAX_OBJECT_BYTES];
-    let length = room.object_id(&object, &mut buffer)?;
+    let length = workspace.object_id(&object, &mut buffer)?;
     let object_text = length
         .map(|length| {
             buffer
@@ -136,7 +138,7 @@ fn resolve<R: ObjectIdWrite>(
         })
         .transpose()?;
     let object_copy = object_text.map(str::to_owned);
-    let workspace = former_workspace(room, &object)?;
+    let workspace = former_workspace(workspace, &object)?;
     let object = object_copy.ok_or_else(|| policy(MediaPolicyError::Binding))?;
     validate_fields(&app, &record, &channel, &object, &workspace).map_err(policy)?;
     Ok(Binding {
@@ -159,7 +161,7 @@ pub(super) fn resolve_legacy(
     resolve(app, record, channel, &LegacyRead(doc)).map_err(super::read::legacy_error)
 }
 fn validate_selected(
-    policy_value: &RoomMediaV1,
+    policy_value: &WorkspaceMediaV1,
     app: &str,
     record: &str,
     mut resolve: impl FnMut(&str) -> Result<Binding, Error>,
@@ -176,7 +178,7 @@ fn validate_selected(
     Ok(())
 }
 pub(super) fn validate_legacy(
-    policy_value: &RoomMediaV1,
+    policy_value: &WorkspaceMediaV1,
     app: &str,
     record: &str,
     doc: &impl ReadDoc,
@@ -187,36 +189,42 @@ pub(super) fn validate_legacy(
     .map_err(super::read::legacy_error)
 }
 /// The winning map value of `key` under `parent`.
-fn winner_map<R: RoomRead>(room: &R, parent: &R::Object, key: &str) -> Result<R::Object, Error> {
+fn winner_map<R: WorkspaceRead>(
+    workspace: &R,
+    parent: &R::Object,
+    key: &str,
+) -> Result<R::Object, Error> {
     let mut result = None;
-    room.visit_property(parent, key, Selection::Winner, |value| match value {
-        RoomValue::Object {
-            kind: automerge::ObjType::Map,
-            object,
-        } => {
-            result = Some(object);
-            Ok(())
-        }
-        _ => Err(policy(MediaPolicyError::Binding)),
-    })
-    .map_err(visit_error)?;
+    workspace
+        .visit_property(parent, key, Selection::Winner, |value| match value {
+            WorkspaceValue::Object {
+                kind: automerge::ObjType::Map,
+                object,
+            } => {
+                result = Some(object);
+                Ok(())
+            }
+            _ => Err(policy(MediaPolicyError::Binding)),
+        })
+        .map_err(visit_error)?;
     result.ok_or_else(|| policy(MediaPolicyError::Binding))
 }
 
 /// The workspace a channel of a chat that still had workspaces named, or
-/// empty: Chat runs in its room and its channels name none. A value that is
+/// empty: Chat runs in its workspace and its channels name none. A value that is
 /// present but no text is malformed.
-fn former_workspace<R: RoomRead>(room: &R, object: &R::Object) -> Result<String, Error> {
+fn former_workspace<R: WorkspaceRead>(workspace: &R, object: &R::Object) -> Result<String, Error> {
     let mut result = None;
-    room.visit_property(object, "workspace", Selection::All, |value| match value {
-        RoomValue::Str(text) if result.as_deref().is_none_or(|prior| prior == text) => {
-            result = Some(text.to_owned());
-            Ok(())
-        }
-        RoomValue::Str(_) => Err(policy(MediaPolicyError::Conflict)),
-        _ => Err(policy(MediaPolicyError::Malformed)),
-    })
-    .map_err(visit_error)?;
+    workspace
+        .visit_property(object, "workspace", Selection::All, |value| match value {
+            WorkspaceValue::Str(text) if result.as_deref().is_none_or(|prior| prior == text) => {
+                result = Some(text.to_owned());
+                Ok(())
+            }
+            WorkspaceValue::Str(_) => Err(policy(MediaPolicyError::Conflict)),
+            _ => Err(policy(MediaPolicyError::Malformed)),
+        })
+        .map_err(visit_error)?;
     Ok(result.unwrap_or_default())
 }
 

@@ -1,4 +1,4 @@
-//! One relay co-edit session for an enrolled room: dialing the host its
+//! One relay co-edit session for an enrolled workspace: dialing the host its
 //! enrollment pins and holding the session ([`hold`]), admitting what
 //! arrives with closed relay provenance, and sending what the owner holds
 //! in outgoing custody.
@@ -22,37 +22,39 @@ use tilo_identity_host::custody::HostIdentity;
 use tilo_relay_session::RelayCoeditSession;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// An enrolled room to hold a session for.
+/// An enrolled workspace to hold a session for.
 #[derive(Clone)]
 pub struct Connect {
     owner: NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
 }
 impl std::fmt::Debug for Connect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("NativeConnect").field(&self.room).finish()
+        f.debug_tuple("NativeConnect")
+            .field(&self.workspace)
+            .finish()
     }
 }
 impl Connect {
     /// # Errors
-    /// `room` has no committed enrollment.
-    pub fn new(owner: NativeWorkspaceOwner, room: RoomId) -> Result<Self, String> {
-        owner.with_current(room, |_| Ok(()))?;
-        Ok(Self { owner, room })
+    /// `workspace` has no committed enrollment.
+    pub fn new(owner: NativeWorkspaceOwner, workspace: RoomId) -> Result<Self, String> {
+        owner.with_current(workspace, |_| Ok(()))?;
+        Ok(Self { owner, workspace })
     }
     #[must_use]
-    pub fn room(&self) -> RoomId {
-        self.room
+    pub fn workspace(&self) -> RoomId {
+        self.workspace
     }
-    /// What a session for this room must be pinned to now: the host hint,
+    /// What a session for this workspace must be pinned to now: the host hint,
     /// this device's certificate, the revocations to dial with and the
     /// owner's continuity.
     pub fn material(
         &self,
         identity: &HostIdentity,
     ) -> Result<(TransportHint, DeviceCert, RevocationList, u64), String> {
-        self.owner.with_current(self.room, |view| {
-            let (cert, entries) = identity.current_native_material(view.workspace())?;
+        self.owner.with_current(self.workspace, |view| {
+            let (cert, entries) = identity.current_native_material(view.workspace_id())?;
             if &cert != view.device() {
                 return Err("native relay custody differs from enrollment".into());
             }
@@ -77,22 +79,22 @@ impl Connect {
             ))
         })
     }
-    /// The hosts the room's governor named besides itself
-    /// ([`crate::room_hosts_of`]), in the order governance holds
+    /// The hosts the workspace's governor named besides itself
+    /// ([`crate::workspace_hosts_of`]), in the order governance holds
     /// them: where a member's session goes while the governor is out of
-    /// reach. A host the room revoked, or one naming this device, is left
+    /// reach. A host the workspace revoked, or one naming this device, is left
     /// out.
     ///
     /// # Errors
-    /// The room is not held here.
+    /// The workspace is not held here.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
-        self.owner.with_current(self.room, |view| {
+        self.owner.with_current(self.workspace, |view| {
             let governor = view.transport_hint()?.host.device_public_key;
             let revocations = view.peer().revocations();
             Ok(view
                 .peer()
                 .governance()
-                .room_hosts()
+                .workspace_hosts()
                 .into_iter()
                 .filter(|hint| {
                     let device = hint.host.device_public_key;
@@ -107,11 +109,11 @@ impl Connect {
     }
 
     /// The host to dial after `after` (the first when `None`) among
-    /// [`Self::hosts`]: where the room's session goes next while its
+    /// [`Self::hosts`]: where the workspace's session goes next while its
     /// governor is out of reach. `None` once every host was tried.
     ///
     /// # Errors
-    /// The room is not held here.
+    /// The workspace is not held here.
     pub fn next_host(
         &self,
         own: &[u8; 32],
@@ -124,33 +126,33 @@ impl Connect {
         Ok(hosts.into_iter().nth(next))
     }
 
-    /// Whether this device is the room's host itself: the host its
-    /// enrollment pins is this very device. Such a room is never dialled.
+    /// Whether this device is the workspace's host itself: the host its
+    /// enrollment pins is this very device. Such a workspace is never dialled.
     /// This device holds the host's copy, so there is nothing to catch up on
     /// and nobody else to reach.
     #[must_use]
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
-            .with_current(self.room, |view| {
-                let (cert, _) = identity.current_native_material(view.workspace())?;
+            .with_current(self.workspace, |view| {
+                let (cert, _) = identity.current_native_material(view.workspace_id())?;
                 Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
             })
             .unwrap_or(false)
     }
-    /// The renewal of the certificate the room's record holds, when this
+    /// The renewal of the certificate the workspace's record holds, when this
     /// device's custody holds one: the device proves its membership with it
     /// ([`crate::owner::enroll::renew_membership`]) before its sessions dial again,
     /// as [`Self::material`] refuses custody that differs from the record.
     ///
     /// # Errors
-    /// The room is not held here or custody cannot be read.
+    /// The workspace is not held here or custody cannot be read.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
-        self.owner.with_current(self.room, |view| {
-            let (cert, _) = identity.current_native_material(view.workspace())?;
+        self.owner.with_current(self.workspace, |view| {
+            let (cert, _) = identity.current_native_material(view.workspace_id())?;
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
         })
     }
-    /// The owner of the room's record.
+    /// The owner of the workspace's record.
     #[must_use]
     pub fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
@@ -159,7 +161,7 @@ impl Connect {
 /// A live session's pin; closed when the session ends.
 ///
 /// The pin is the host it reached and the certificate it authenticated
-/// with. The owner's continuity moves with any security change of the room,
+/// with. The owner's continuity moves with any security change of the workspace,
 /// another member joining included; the session follows it in place once
 /// this device's own standing was checked again ([`Connect::material`]),
 /// rather than ending and redialling every member for one person's join.
@@ -167,7 +169,7 @@ pub struct Scope {
     connect: Connect,
     hint: TransportHint,
     /// The host the session reached: the governor `hint` names, or a host
-    /// the room's governance names while the governor is out of reach.
+    /// the workspace's governance names while the governor is out of reach.
     via: TransportHint,
     device: DeviceCert,
     /// The owner continuity the session last validated against.
@@ -181,7 +183,7 @@ impl Scope {
     pub fn new(connect: Connect, hint: TransportHint, device: DeviceCert, continuity: u64) -> Self {
         Self::via(connect, hint.clone(), hint, device, continuity)
     }
-    /// A session pinned to the room's governor `hint` that reached the host
+    /// A session pinned to the workspace's governor `hint` that reached the host
     /// `via` instead.
     #[must_use]
     pub fn via(
@@ -203,8 +205,8 @@ impl Scope {
         }
     }
     #[must_use]
-    pub fn room(&self) -> RoomId {
-        self.connect.room
+    pub fn workspace(&self) -> RoomId {
+        self.connect.workspace
     }
     /// Whether this session is still pinned to this material: the same host
     /// and certificate. `continuity` is the owner's current one, which the
@@ -225,7 +227,7 @@ impl Scope {
     pub fn host(&self) -> &TransportHint {
         &self.via
     }
-    /// Whether this session reached the room's governor itself.
+    /// Whether this session reached the workspace's governor itself.
     #[must_use]
     pub fn reaches_governor(&self) -> bool {
         self.via == self.hint
@@ -278,34 +280,36 @@ impl Scope {
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native refresh scope changed".into());
         }
-        self.connect.owner.with_current(self.connect.room, |view| {
-            if view.device() != &self.device
-                || view.transport_hint()? != &self.hint
-                || view.continuity() != self.continuity()
-            {
-                return Err("native refresh current owner changed".into());
-            }
-            view.peer()
-                .permissions(self.device.device_public_key, std::time::SystemTime::now())
-                .map_err(|error| error.to_string())?;
-            let mut last = self
-                .refresh_sent
-                .lock()
-                .map_err(|_| "native refresh cadence poisoned")?;
-            let now = std::time::Instant::now();
-            if last
-                .is_some_and(|sent| now.saturating_duration_since(sent) < Duration::from_secs(30))
-            {
-                return Ok(());
-            }
-            session
-                .request_checkpoint_refresh()
-                .map_err(|error| error.to_string())?;
-            *last = Some(now);
-            Ok(())
-        })
+        self.connect
+            .owner
+            .with_current(self.connect.workspace, |view| {
+                if view.device() != &self.device
+                    || view.transport_hint()? != &self.hint
+                    || view.continuity() != self.continuity()
+                {
+                    return Err("native refresh current owner changed".into());
+                }
+                view.peer()
+                    .permissions(self.device.device_public_key, std::time::SystemTime::now())
+                    .map_err(|error| error.to_string())?;
+                let mut last = self
+                    .refresh_sent
+                    .lock()
+                    .map_err(|_| "native refresh cadence poisoned")?;
+                let now = std::time::Instant::now();
+                if last.is_some_and(|sent| {
+                    now.saturating_duration_since(sent) < Duration::from_secs(30)
+                }) {
+                    return Ok(());
+                }
+                session
+                    .request_checkpoint_refresh()
+                    .map_err(|error| error.to_string())?;
+                *last = Some(now);
+                Ok(())
+            })
     }
-    /// Compact the sealed record histories of this room that have used most
+    /// Compact the sealed record histories of this workspace that have used most
     /// of their bound into one checkpoint each, through `open` and `seal`,
     /// this device's channel keys, so the compactions publish with the
     /// device's own custody (see
@@ -326,7 +330,7 @@ impl Scope {
             return Err("native compaction scope changed".into());
         }
         self.connect.owner.compact_outgoing(
-            self.connect.room,
+            self.connect.workspace,
             &identity.device_signing_key,
             open,
             seal,
@@ -385,7 +389,7 @@ impl Scope {
         // Reconciliation may persist a genuine authorized successor. Its
         // failure must not erase or prevent other fresh retained frames.
         if let Err(error) = self.connect.owner.reconcile_outgoing(
-            self.connect.room,
+            self.connect.workspace,
             &identity.device_signing_key,
             std::time::SystemTime::now(),
         ) {
@@ -393,7 +397,7 @@ impl Scope {
         }
         if let Some(reseal) = reseal
             && let Err(error) = self.connect.owner.renew_outgoing(
-                self.connect.room,
+                self.connect.workspace,
                 &identity.device_signing_key,
                 reseal,
                 std::time::SystemTime::now(),
@@ -402,7 +406,7 @@ impl Scope {
             tracing::debug!(%error, "native sealed write renewal blocked");
         }
         self.connect.owner.with_outgoing(
-            self.connect.room,
+            self.connect.workspace,
             std::time::SystemTime::now(),
             |view, outgoing| {
                 if view.device() != &self.device
@@ -411,7 +415,7 @@ impl Scope {
                 {
                     return Err("native publication authority changed".into());
                 }
-                let (selected, _) = identity.current_native_material(view.workspace())?;
+                let (selected, _) = identity.current_native_material(view.workspace_id())?;
                 if &selected != view.device() {
                     return Err("native publication custody changed".into());
                 }
@@ -439,7 +443,7 @@ impl Scope {
                             }
                             // A checkpoint leaves as one: this device's sealed
                             // compaction of a record, which covers the writes
-                            // before it, and the room's own governance
+                            // before it, and the workspace's own governance
                             // checkpoint. The store then keeps it as the whole
                             // of what this author retained there. A cleartext
                             // snapshot never reaches here: the governor's
@@ -468,15 +472,15 @@ pub struct Input {
 impl std::fmt::Debug for Input {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeRelayInput")
-            .field("room", &self.scope.connect.room)
+            .field("workspace", &self.scope.connect.workspace)
             .field("retained", &self.retained)
             .finish_non_exhaustive()
     }
 }
 impl Input {
     #[must_use]
-    pub fn room(&self) -> RoomId {
-        self.scope.connect.room
+    pub fn workspace(&self) -> RoomId {
+        self.scope.connect.workspace
     }
     #[must_use]
     pub fn author(&self) -> [u8; 32] {
@@ -497,7 +501,7 @@ impl Input {
         self.scope
             .connect
             .owner
-            .with_current(self.room(), |view| Ok(view.generation()))
+            .with_current(self.workspace(), |view| Ok(view.generation()))
     }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
@@ -580,16 +584,16 @@ impl Input {
                 (origin, input.msg.clone())
             })
             .collect();
-        first
-            .scope
-            .connect
-            .owner
-            .receive_batch(first.room(), batch, std::time::SystemTime::now())
+        first.scope.connect.owner.receive_batch(
+            first.workspace(),
+            batch,
+            std::time::SystemTime::now(),
+        )
     }
     /// The app write `report` took in from another device, for this
     /// device's apps: `None` for anything else, a write the owner neither
     /// accepted nor already held, this device's own write, a write naming
-    /// another room, or an author without standing.
+    /// another workspace, or an author without standing.
     #[must_use]
     pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
         if !matches!(
@@ -609,7 +613,7 @@ impl Input {
         else {
             return None;
         };
-        if cluster_id != &self.room().to_string() {
+        if cluster_id != &self.workspace().to_string() {
             return None;
         }
         Some(AppWrite {
@@ -622,15 +626,18 @@ impl Input {
             envelope: (**envelope).clone(),
         })
     }
-    /// The author's current standing in the room: the room's policy, and
+    /// The author's current standing in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
-        self.scope.connect.owner.with_current(self.room(), |view| {
-            view.peer()
-                .permissions(self.author, std::time::SystemTime::now())
-                .map(crate::MemberAuthority::standing)
-                .map_err(|error| error.to_string())
-        })
+        self.scope
+            .connect
+            .owner
+            .with_current(self.workspace(), |view| {
+                view.peer()
+                    .permissions(self.author, std::time::SystemTime::now())
+                    .map(crate::MemberAuthority::standing)
+                    .map_err(|error| error.to_string())
+            })
     }
 }
 
@@ -649,14 +656,14 @@ pub struct AppWrite {
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
-    /// The author's standing in the room.
+    /// The author's standing in the workspace.
     pub author: tilo_action_policy::Standing,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,
 }
 
-/// Why dialing a room's host did not give a session.
+/// Why dialing a workspace's host did not give a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialError {
     /// The host speaks peer protocol `theirs`, not this device's: they do
@@ -672,8 +679,8 @@ pub enum DialError {
     /// [`UNANSWERED_BEFORE_PROBE`] of these in a row, a probe tells which.
     NoAnswer(String),
     /// The host admits nobody of this device's person any more: they were
-    /// removed (a public room prunes guests away for long), and joining
-    /// again, where the room lets them, admits them anew. Dialing again
+    /// removed (a public workspace prunes guests away for long), and joining
+    /// again, where the workspace lets them, admits them anew. Dialing again
     /// changes nothing until then.
     NotAdmitted,
     /// Anything else, in words for the log; dialing again may succeed.
@@ -735,7 +742,7 @@ impl From<tilo_relay_session::ClientError> for DialError {
     }
 }
 
-/// How many dials in a row the room's host may close without answering
+/// How many dials in a row the workspace's host may close without answering
 /// before a dial asks whether it predates versioned handshakes.
 pub const UNANSWERED_BEFORE_PROBE: u32 = 3;
 
@@ -791,8 +798,8 @@ mod dial_error_tests {
             )),
             DialError::Failed(_)
         ));
-        // A person the room removed is told apart, so the device can join
-        // again through the room's door.
+        // A person the workspace removed is told apart, so the device can join
+        // again through the workspace's door.
         assert_eq!(
             DialError::from(ClientError::Https(tilo_relay_client::LinkError::Denied(
                 tilo_relay_protocol::web::SessionRefusal::NotAdmitted

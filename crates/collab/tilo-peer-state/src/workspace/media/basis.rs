@@ -1,8 +1,8 @@
 //! The security-basis algorithm.
 use super::{MediaPolicyError, read::Error};
-use crate::room::read::collections::Collections;
-use crate::room::read::{self, Capacity, LegacyRead, ReadError, RoomRead};
 use crate::state::GovernedIdentity;
+use crate::workspace::read::collections::Collections;
+use crate::workspace::read::{self, Capacity, LegacyRead, ReadError, WorkspaceRead};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_action_policy::{Grant, Role};
@@ -44,11 +44,11 @@ fn visit_error(error: ReadError<Error>) -> Error {
 }
 
 pub(super) fn legacy(
-    room: &automerge::AutoCommit,
+    workspace: &automerge::AutoCommit,
     extra: &[RevocationEntry],
 ) -> Result<[u8; 32], MediaPolicyError> {
     project(
-        &LegacyRead(room),
+        &LegacyRead(workspace),
         &Legacy,
         extra,
         &mut Work {
@@ -62,94 +62,100 @@ pub(super) fn legacy(
     clippy::too_many_lines,
     reason = "one canonical basis projection, in wire order"
 )]
-fn project<'a, R: RoomRead, D: Decode>(
-    room: &R,
+fn project<'a, R: WorkspaceRead, D: Decode>(
+    workspace: &R,
     decoder: &D,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
 ) -> Result<[u8; 32], Error> {
-    let owner = read::strict_string(room, &room.root(), "owner").map_err(strict_error)?;
+    let owner = read::strict_string(workspace, &workspace.root(), "owner").map_err(strict_error)?;
     let owner_key = super::canonical_key(&owner).map_err(policy)?;
-    let grant_map = read::strict_map(room, &room.root(), "grants").map_err(strict_error)?;
+    let grant_map =
+        read::strict_map(workspace, &workspace.root(), "grants").map_err(strict_error)?;
     let mut grants = BTreeMap::new();
-    room.visit_keys(&grant_map, |key| {
-        let bytes = read::strict_bytes(room, &grant_map, key).map_err(strict_error)?;
-        let value = decoder.grant(&bytes)?;
-        let encoded = work.encoded(&value)?;
-        let key = work.text(key)?;
-        work.tree_entry::<String, Vec<u8>>()?;
-        grants.insert(key, encoded);
-        Ok(())
-    })
-    .map_err(visit_error)?;
-    let member_map = read::strict_map(room, &room.root(), "members").map_err(strict_error)?;
+    workspace
+        .visit_keys(&grant_map, |key| {
+            let bytes = read::strict_bytes(workspace, &grant_map, key).map_err(strict_error)?;
+            let value = decoder.grant(&bytes)?;
+            let encoded = work.encoded(&value)?;
+            let key = work.text(key)?;
+            work.tree_entry::<String, Vec<u8>>()?;
+            grants.insert(key, encoded);
+            Ok(())
+        })
+        .map_err(visit_error)?;
+    let member_map =
+        read::strict_map(workspace, &workspace.root(), "members").map_err(strict_error)?;
     let mut members = BTreeMap::new();
-    room.visit_keys(&member_map, |key| {
-        let bytes = read::strict_bytes(room, &member_map, key).map_err(strict_error)?;
-        let role = decoder.member(&bytes)?;
-        let key = work.text(key)?;
-        work.tree_entry::<String, Role>()?;
-        members.insert(key, role);
-        Ok(())
-    })
-    .map_err(visit_error)?;
-    let peers = read::strict_map(room, &room.root(), "peers").map_err(strict_error)?;
+    workspace
+        .visit_keys(&member_map, |key| {
+            let bytes = read::strict_bytes(workspace, &member_map, key).map_err(strict_error)?;
+            let role = decoder.member(&bytes)?;
+            let key = work.text(key)?;
+            work.tree_entry::<String, Role>()?;
+            members.insert(key, role);
+            Ok(())
+        })
+        .map_err(visit_error)?;
+    let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
     let mut roster = BTreeSet::new();
-    room.visit_keys(&peers, |key| {
-        read::strict_string(room, &peers, key).map_err(strict_error)?;
-        let device = super::canonical_key(key).map_err(policy)?;
-        work.tree_entry::<[u8; 32], ()>()?;
-        roster.insert(device);
-        Ok(())
-    })
-    .map_err(visit_error)?;
-    let identities =
-        read::strict_map(room, &room.root(), "peer_identities_v1").map_err(strict_error)?;
+    workspace
+        .visit_keys(&peers, |key| {
+            read::strict_string(workspace, &peers, key).map_err(strict_error)?;
+            let device = super::canonical_key(key).map_err(policy)?;
+            work.tree_entry::<[u8; 32], ()>()?;
+            roster.insert(device);
+            Ok(())
+        })
+        .map_err(visit_error)?;
+    let identities = read::strict_map(workspace, &workspace.root(), "peer_identities_v1")
+        .map_err(strict_error)?;
     let mut rows = BTreeMap::new();
     let mut certificates = BTreeMap::new();
     let mut revocations = Vec::new();
-    room.visit_keys(&identities, |key| {
-        let bytes = read::strict_bytes(room, &identities, key).map_err(strict_error)?;
-        let row = &decoder.identity(&bytes)?;
-        let device = super::canonical_key(key).map_err(policy)?;
-        if device != row.device_cert.device_public_key {
-            return Err(policy(MediaPolicyError::Binding));
-        }
-        tilo_user_identity::verify_device_cert(&row.device_cert)
-            .map_err(|_| policy(MediaPolicyError::Binding))?;
-        let mut admissions = BTreeSet::new();
-        for proof in row.admission.iter().chain(&row.admissions) {
-            if proof.device_public_key != device
-                || proof.user_public_key != row.device_cert.user_public_key
-            {
+    workspace
+        .visit_keys(&identities, |key| {
+            let bytes = read::strict_bytes(workspace, &identities, key).map_err(strict_error)?;
+            let row = &decoder.identity(&bytes)?;
+            let device = super::canonical_key(key).map_err(policy)?;
+            if device != row.device_cert.device_public_key {
                 return Err(policy(MediaPolicyError::Binding));
             }
-            let bytes = work.encoded(proof)?;
-            work.tree_entry::<Vec<u8>, ()>()?;
-            admissions.insert(bytes);
-        }
-        for entry in &row.revocations {
-            if entry.user_public_key != row.device_cert.user_public_key {
-                return Err(policy(MediaPolicyError::Binding));
+            tilo_user_identity::verify_device_cert(&row.device_cert)
+                .map_err(|_| policy(MediaPolicyError::Binding))?;
+            let mut admissions = BTreeSet::new();
+            for proof in row.admission.iter().chain(&row.admissions) {
+                if proof.device_public_key != device
+                    || proof.user_public_key != row.device_cert.user_public_key
+                {
+                    return Err(policy(MediaPolicyError::Binding));
+                }
+                let bytes = work.encoded(proof)?;
+                work.tree_entry::<Vec<u8>, ()>()?;
+                admissions.insert(bytes);
             }
-            work.push(&mut revocations, entry.clone())?;
-        }
-        work.tree_entry::<[u8; 32], [u8; 32]>()?;
-        certificates.insert(device, row.device_cert.user_public_key);
-        let cert = DeviceCert {
-            user_public_key: row.device_cert.user_public_key,
-            device_public_key: row.device_cert.device_public_key,
-            device_label: work.text(&row.device_cert.device_label)?,
-            capabilities: row.device_cert.capabilities.clone(),
-            issued_at_ns: row.device_cert.issued_at_ns,
-            expires_at_ns: row.device_cert.expires_at_ns,
-            signature: row.device_cert.signature,
-        };
-        work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>)>()?;
-        rows.insert(device, (cert, admissions));
-        Ok(())
-    })
-    .map_err(visit_error)?;
+            for entry in &row.revocations {
+                if entry.user_public_key != row.device_cert.user_public_key {
+                    return Err(policy(MediaPolicyError::Binding));
+                }
+                work.push(&mut revocations, entry.clone())?;
+            }
+            work.tree_entry::<[u8; 32], [u8; 32]>()?;
+            certificates.insert(device, row.device_cert.user_public_key);
+            let cert = DeviceCert {
+                user_public_key: row.device_cert.user_public_key,
+                device_public_key: row.device_cert.device_public_key,
+                device_label: work.text(&row.device_cert.device_label)?,
+                capabilities: row.device_cert.capabilities.clone(),
+                issued_at_ns: row.device_cert.issued_at_ns,
+                expires_at_ns: row.device_cert.expires_at_ns,
+                signature: row.device_cert.signature,
+            };
+            work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>)>()?;
+            rows.insert(device, (cert, admissions));
+            Ok(())
+        })
+        .map_err(visit_error)?;
     if !certificates.values().any(|root| *root == owner_key)
         || roster
             .iter()
@@ -190,7 +196,7 @@ fn project<'a, R: RoomRead, D: Decode>(
         revocations.insert(entry.revoked_device_public_key, entry);
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo-room-media-auth-basis-v1\0");
+    hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
     crate::postcard_sink::hash_into(
         &(owner_key, members, grants, roster, rows, revocations),
         &mut hasher,

@@ -1,12 +1,12 @@
-//! The room's own settings: its name, its saved grant sets and their
+//! The workspace's own settings: its name, its saved grant sets and their
 //! assignment, the actions its apps may use of each other and its apps'
-//! sandbox capabilities, which every member reads from the room's
+//! sandbox capabilities, which every member reads from the workspace's
 //! governance document ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::room_sandbox_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
-//! key; the room's admission decides it against the writer's own grants
-//! where they made it (`room::membership`), here and on every device that
+//! key; the workspace's admission decides it against the writer's own grants
+//! where they made it (`workspace::membership`), here and on every device that
 //! receives it.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
@@ -17,7 +17,7 @@ use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
-    /// Make `change` to the room's settings as `caller`, signed by `key`,
+    /// Make `change` to the workspace's settings as `caller`, signed by `key`,
     /// the caller's own device. Answers whether governance changed.
     pub(super) fn apply_settings_change(
         &mut self,
@@ -36,11 +36,12 @@ impl StatePeer {
         let refused = |error: &dyn std::fmt::Display| error.to_string();
         match change {
             SettingsChange::Rename { name } => {
-                let name = crate::workspace_membership::valid_room_name(name)?.to_owned();
-                if self.governance().room_name().as_deref() == Some(name.as_str()) {
+                let name = crate::workspace_membership::valid_workspace_name(name)?.to_owned();
+                if self.governance().workspace_name().as_deref() == Some(name.as_str()) {
                     return Ok(false);
                 }
-                self.governance_mut().author_room_name(&name, key, now)?;
+                self.governance_mut()
+                    .author_workspace_name(&name, key, now)?;
                 Ok(true)
             }
             SettingsChange::SavePreset { preset } => {
@@ -78,7 +79,7 @@ impl StatePeer {
                 if action.target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID {
                     return Err("governing the workspace is granted to people, not apps".into());
                 }
-                // Enough for any action that at most changes the room
+                // Enough for any action that at most changes the workspace
                 // undoably: an outside effect still asks.
                 let grant = Grant::new(
                     format!("app-action:{}", uuid::Uuid::new_v4().simple()),
@@ -120,22 +121,22 @@ impl StatePeer {
         }
     }
 
-    /// The room's governance as a workspace reads it: its name, policy,
+    /// The workspace's governance as a workspace reads it: its name, policy,
     /// sandbox and grant sets.
     fn settings_workspace(&self) -> Result<tilo_desktop_model::Workspace, String> {
         let doc = self
             .core
-            .room_doc
+            .workspace_doc
             .as_deref()
-            .ok_or("room governance missing")?;
-        let room = tilo_desktop_model::ids::RoomId::parse(&self.core.room)
-            .ok_or("the room is not a UUID")?;
+            .ok_or("workspace governance missing")?;
+        let workspace = tilo_desktop_model::ids::RoomId::parse(&self.core.workspace)
+            .ok_or("the workspace is not a UUID")?;
         let mut workspace = tilo_desktop_model::Workspace::in_room(
             tilo_desktop_model::ids::WorkspaceId(0),
-            room,
+            workspace,
             String::new(),
         );
-        crate::room::adopt_room(&mut workspace, doc, &[]);
+        crate::workspace::adopt_workspace(&mut workspace, doc, &[]);
         Ok(workspace)
     }
 }
@@ -161,7 +162,7 @@ fn app_action_grants(
 
 /// Record `capability` in `workspace`'s sandbox as granted `by` a member,
 /// under an id of its own when it came without one. One that ends with a
-/// session or a single use is never written into the room.
+/// session or a single use is never written into the workspace.
 fn grant_sandbox(
     workspace: &mut tilo_desktop_model::Workspace,
     capability: &collab_types::caps::CapOverride,
@@ -169,7 +170,7 @@ fn grant_sandbox(
 ) -> Result<(), String> {
     if !capability.persists_across_restart() {
         return Err(
-            "a capability that ends with a session or a single use is never written into the room"
+            "a capability that ends with a session or a single use is never written into the workspace"
                 .into(),
         );
     }
@@ -182,12 +183,12 @@ fn grant_sandbox(
 }
 
 impl PeerGovernance<'_> {
-    /// The grant sets the room has saved, as its governance records them.
+    /// The grant sets the workspace has saved, as its governance records them.
     #[must_use]
     pub fn governed_presets(self) -> Vec<tilo_action_policy::Preset> {
         self.peer
             .core
-            .room_doc
+            .workspace_doc
             .as_deref()
             .map(projection::workspace_presets_of)
             .unwrap_or_default()
@@ -195,7 +196,7 @@ impl PeerGovernance<'_> {
 }
 
 impl PeerGovernanceMut<'_> {
-    /// Make the room's saved grant sets `presets`, written by `key`. A set
+    /// Make the workspace's saved grant sets `presets`, written by `key`. A set
     /// grants nothing itself; assigning it writes grants.
     /// Answers whether governance changed.
     ///
@@ -213,7 +214,7 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Make the room's sandbox capabilities `sandbox`, written by `key`.
+    /// Make the workspace's sandbox capabilities `sandbox`, written by `key`.
     /// Answers whether governance changed.
     ///
     /// # Errors
@@ -230,7 +231,7 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Write `edit` into the room's governance document as `key`, and
+    /// Write `edit` into the workspace's governance document as `key`, and
     /// admit it the way every member admits it.
     pub(super) fn author(
         self,
@@ -242,11 +243,11 @@ impl PeerGovernanceMut<'_> {
         let mut doc = self
             .peer
             .core
-            .room_doc
+            .workspace_doc
             .clone()
-            .ok_or("room governance missing")?;
+            .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(self.peer.room_actor_of(key));
+        doc.set_actor(self.peer.workspace_actor_of(key));
         edit(&mut doc).map_err(err)?;
         doc.commit();
         if doc.get_heads() == before {
@@ -263,7 +264,7 @@ mod tests {
     use tilo_desktop_model::projection::ROOM_NAME_KEY;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-    const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
 
     /// A device of the person whose root is `[11; 32]`.
     fn device(seed: u8) -> (DeviceCert, SigningKey) {
@@ -282,14 +283,14 @@ mod tests {
         (cert, device)
     }
 
-    /// The room as its governor, the owner's device `[12; 32]`, holds it;
+    /// The workspace as its governor, the owner's device `[12; 32]`, holds it;
     /// the owner's other device `[13; 32]` is on its roster.
     fn governor() -> (DeviceCert, SigningKey, StatePeer) {
         let (cert, device) = device(12);
         let now = SystemTime::now();
         let roster = vec![cert.clone(), self::device(13).0];
         let mut peer = StatePeer::new(
-            ROOM,
+            WORKSPACE,
             cert.clone(),
             roster.clone(),
             RevocationList::new(),
@@ -297,7 +298,7 @@ mod tests {
         )
         .unwrap();
         peer.install_seed(
-            super::super::workspace_seed(ROOM, &cert, &roster, "Room").unwrap(),
+            super::super::workspace_seed(WORKSPACE, &cert, &roster, "Workspace").unwrap(),
             &device,
             now,
         )
@@ -318,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn the_governor_saves_the_rooms_grant_sets_and_members_read_them() {
+    fn the_governor_saves_the_workspaces_grant_sets_and_members_read_them() {
         let (_, key, mut peer) = governor();
         let now = SystemTime::now();
         assert!(
@@ -343,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn any_device_of_the_owner_writes_the_rooms_sandbox() {
+    fn any_device_of_the_owner_writes_the_workspaces_sandbox() {
         let (_, _, mut peer) = governor();
         let other = SigningKey::from_bytes(&[13; 32]);
         peer.governance_mut()
@@ -357,7 +358,7 @@ mod tests {
         );
     }
 
-    /// A change `key` makes to the room: `field` set to `value`, delivered
+    /// A change `key` makes to the workspace: `field` set to `value`, delivered
     /// as that device's.
     fn write(
         peer: &mut StatePeer,
@@ -365,7 +366,7 @@ mod tests {
         field: &str,
         value: ScalarValue,
     ) -> Result<(), String> {
-        let mut doc = peer.admitted_room().unwrap().clone();
+        let mut doc = peer.admitted_workspace().unwrap().clone();
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
@@ -380,7 +381,7 @@ mod tests {
         peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
-                room: ROOM.into(),
+                room: WORKSPACE.into(),
                 changes,
             },
             SystemTime::now(),
@@ -389,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn any_device_of_the_owner_renames_the_room_and_rewrites_its_grant_sets() {
+    fn any_device_of_the_owner_renames_the_workspace_and_rewrites_its_grant_sets() {
         let (_, key, mut peer) = governor();
         let (_, other) = device(13);
         write(
@@ -406,7 +407,7 @@ mod tests {
             ScalarValue::Str("Mine".into()),
         )
         .unwrap();
-        assert_eq!(peer.governance().room_name().as_deref(), Some("Mine"));
+        assert_eq!(peer.governance().workspace_name().as_deref(), Some("Mine"));
         write(
             &mut peer,
             &key,
@@ -414,6 +415,6 @@ mod tests {
             ScalarValue::Str("Ours".into()),
         )
         .unwrap();
-        assert_eq!(peer.governance().room_name().as_deref(), Some("Ours"));
+        assert_eq!(peer.governance().workspace_name().as_deref(), Some("Ours"));
     }
 }

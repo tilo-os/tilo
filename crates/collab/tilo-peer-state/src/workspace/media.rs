@@ -29,9 +29,9 @@ pub const MAX_RESULT_BYTES: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RoomMediaV1 {
+pub struct WorkspaceMediaV1 {
     pub version: u8,
-    pub room: [u8; 16],
+    pub workspace: [u8; 16],
     pub authorization_revision: u64,
     pub authorization_basis: [u8; 32],
     #[serde(deserialize_with = "calls_map")]
@@ -121,7 +121,7 @@ pub fn validate_transition(
     before: Option<&AutoCommit>,
     after: &AutoCommit,
     mode: TransitionMode,
-) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
+) -> Result<Option<WorkspaceMediaV1>, MediaPolicyError> {
     let previous = before.map(parse).transpose()?.flatten();
     let current = parse(after)?;
     validate_policy_transition(previous.as_ref(), current.as_ref(), mode)?;
@@ -151,7 +151,7 @@ pub fn validate_transition(
 /// Observed revocation sequence floors by (user root, revoked device).
 type RevocationFloors = BTreeMap<([u8; 32], [u8; 32]), u64>;
 fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyError> {
-    // A joined peer can project its room before its first governed snapshot.
+    // A joined peer can project its workspace before its first governed snapshot.
     // Absence carries no observed floor; present evidence remains strictly
     // decoded, including legacy documents that have no media policy yet.
     if doc
@@ -218,7 +218,7 @@ pub fn refresh_authorization(
 /// Validate every active binding selecting this exact admitted app/record route.
 /// Unrelated routes and ended tombstones carry no Chat mutation restriction.
 pub fn validate_bound_chat_change(
-    policy: &RoomMediaV1,
+    policy: &WorkspaceMediaV1,
     app: &str,
     record: &str,
     candidate: &impl ReadDoc,
@@ -264,12 +264,12 @@ fn strict_bytes(
         .map_err(super::read::legacy_policy_error)
 }
 
-/// Canonical encoding of a validated room media policy.
+/// Canonical encoding of a validated workspace media policy.
 ///
 /// # Errors
 ///
 /// Returns a [`MediaPolicyError`] if the policy is invalid or cannot be encoded.
-pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
+pub fn encode(value: &WorkspaceMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
     validate(value)?;
     let bytes = canonical_bytes(value).map_err(|_| MediaPolicyError::Malformed)?;
     if bytes.len() > MAX_POLICY_BYTES {
@@ -278,16 +278,16 @@ pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
     Ok(bytes)
 }
 /// Strict data parsing only: the caller still verifies writer, security basis and current authority.
-pub fn parse(doc: &AutoCommit) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
+pub fn parse(doc: &AutoCommit) -> Result<Option<WorkspaceMediaV1>, MediaPolicyError> {
     read::parse(&super::read::LegacyRead(doc), &read::LegacyPolicy).map_err(read::legacy_error)
 }
 
-/// Structural validation of a room media policy.
-pub fn validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
+/// Structural validation of a workspace media policy.
+pub fn validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError> {
     if value.version != 1 {
         return Err(MediaPolicyError::UnsupportedVersion);
     }
-    if value.room == [0; 16] {
+    if value.workspace == [0; 16] {
         return Err(MediaPolicyError::Binding);
     }
     if value.authorization_revision == 0 {
@@ -370,8 +370,8 @@ fn lower_hex(value: &str) -> bool {
 /// Structural fences only. In particular, the basis digest must independently be derived from
 /// the current committed security inputs; accepting two matching claims is not that derivation.
 pub fn validate_policy_transition(
-    before: Option<&RoomMediaV1>,
-    after: Option<&RoomMediaV1>,
+    before: Option<&WorkspaceMediaV1>,
+    after: Option<&WorkspaceMediaV1>,
     mode: TransitionMode,
 ) -> Result<(), MediaPolicyError> {
     if let Some(before) = before {
@@ -397,7 +397,7 @@ pub fn validate_policy_transition(
         }
         return Ok(());
     };
-    if before.room != after.room {
+    if before.workspace != after.workspace {
         return Err(MediaPolicyError::Binding);
     }
     counter_transition(
@@ -706,15 +706,15 @@ impl fmt::Display for MediaPolicyError {
 impl std::error::Error for MediaPolicyError {}
 
 #[cfg(test)]
-mod room_media_tests {
+mod workspace_media_tests {
     use super::*;
     use automerge::{ActorId, ObjType, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
 
-    fn policy() -> RoomMediaV1 {
-        RoomMediaV1 {
+    fn policy() -> WorkspaceMediaV1 {
+        WorkspaceMediaV1 {
             version: 1,
-            room: [1; 16],
+            workspace: [1; 16],
             authorization_revision: 1,
             authorization_basis: [3; 32],
             calls: BTreeMap::from([(
@@ -739,7 +739,7 @@ mod room_media_tests {
         }
     }
 
-    fn room() -> AutoCommit {
+    fn workspace() -> AutoCommit {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", uuid::Uuid::from_bytes([1; 16]).to_string())
             .unwrap();
@@ -747,7 +747,7 @@ mod room_media_tests {
         doc
     }
 
-    fn raw(doc: &mut AutoCommit, value: &RoomMediaV1) {
+    fn raw(doc: &mut AutoCommit, value: &WorkspaceMediaV1) {
         doc.put(
             ROOT,
             FIELD,
@@ -757,13 +757,13 @@ mod room_media_tests {
         doc.commit();
     }
 
-    fn edited(mut edit: impl FnMut(&mut RoomMediaV1)) -> RoomMediaV1 {
+    fn edited(mut edit: impl FnMut(&mut WorkspaceMediaV1)) -> WorkspaceMediaV1 {
         let mut value = policy();
         edit(&mut value);
         value
     }
 
-    fn governed_legacy_room() -> (AutoCommit, ed25519_dalek::SigningKey, String) {
+    fn governed_legacy_workspace() -> (AutoCommit, ed25519_dalek::SigningKey, String) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
         let mut certificate = tilo_user_identity::DeviceCert {
@@ -776,7 +776,7 @@ mod room_media_tests {
             signature: [0; 64],
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-        let changes = crate::state::seed_room(
+        let changes = crate::state::seed_workspace(
             &uuid::Uuid::from_bytes([1; 16]).to_string(),
             &certificate,
             std::slice::from_ref(&certificate),
@@ -789,7 +789,7 @@ mod room_media_tests {
         )
     }
 
-    fn enable_media(doc: &mut AutoCommit) -> RoomMediaV1 {
+    fn enable_media(doc: &mut AutoCommit) -> WorkspaceMediaV1 {
         let mut value = policy();
         value.authorization_basis = security_basis(doc, &[]).unwrap();
         raw(doc, &value);
@@ -798,10 +798,10 @@ mod room_media_tests {
 
     #[test]
     fn legacy_identity_absence_permits_first_media_checkpoint() {
-        // A joined shell guest can project its room id before receiving the
+        // A joined shell guest can project its workspace id before receiving the
         // owner's governance. No identity map has existed in this projection.
-        let before = room();
-        let (mut after, _, _) = governed_legacy_room();
+        let before = workspace();
+        let (mut after, _, _) = governed_legacy_workspace();
         let value = enable_media(&mut after);
         assert_eq!(
             validate_transition(Some(&before), &after, TransitionMode::Admission),
@@ -811,18 +811,18 @@ mod room_media_tests {
 
     #[test]
     fn legacy_identity_present_malformed_or_conflicting_evidence_is_rejected() {
-        let (mut after, _, _) = governed_legacy_room();
+        let (mut after, _, _) = governed_legacy_workspace();
         let value = enable_media(&mut after);
         assert_eq!(
             validate_transition(None, &after, TransitionMode::Restore),
             Ok(Some(value))
         );
-        let mut scalar = room();
+        let mut scalar = workspace();
         scalar.put(ROOT, "peer_identities_v1", "not a map").unwrap();
-        let mut list = room();
+        let mut list = workspace();
         list.put_object(ROOT, "peer_identities_v1", ObjType::List)
             .unwrap();
-        let mut left = room();
+        let mut left = workspace();
         let mut right = left.fork();
         left.put_object(ROOT, "peer_identities_v1", ObjType::Map)
             .unwrap();
@@ -831,7 +831,7 @@ mod room_media_tests {
             .unwrap();
         left.merge_incoming(&mut right).unwrap();
         assert_eq!(left.get_all(ROOT, "peer_identities_v1").unwrap().len(), 2);
-        let (mut row, _, device) = governed_legacy_room();
+        let (mut row, _, device) = governed_legacy_workspace();
         let identities = row.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         row.put(&identities, device, "not identity bytes").unwrap();
         for before in [&scalar, &list, &left, &row] {
@@ -841,7 +841,7 @@ mod room_media_tests {
 
     #[test]
     fn legacy_identity_revocation_floor_survives_media_bootstrap() {
-        let (mut before, root, device) = governed_legacy_room();
+        let (mut before, root, device) = governed_legacy_workspace();
         let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
         let mut row: crate::state::GovernedIdentity =
             serde_json::from_slice(&strict_bytes(&before, &identities, &device).unwrap()).unwrap();
@@ -870,7 +870,7 @@ mod room_media_tests {
             Ok(Some(expected)),
         );
         // A self-consistent first media checkpoint cannot erase a revocation
-        // observed while the room was still legacy/disabled, or delay its floor.
+        // observed while the workspace was still legacy/disabled, or delay its floor.
         revoked.revoked_at_ns = 20;
         tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
         for revocations in [Vec::new(), vec![revoked]] {
@@ -898,13 +898,13 @@ mod room_media_tests {
     #[test]
     fn canonical_policy_round_trips_and_bound_route_is_exact() {
         let value = policy();
-        let mut doc = room();
+        let mut doc = workspace();
         doc.put(ROOT, FIELD, ScalarValue::Bytes(encode(&value).unwrap()))
             .unwrap();
         assert_eq!(parse(&doc), Ok(Some(value)));
         for changed in [
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.notes".into()),
-            edited(|v| v.room = [2; 16]),
+            edited(|v| v.workspace = [2; 16]),
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_object = "_root".into()),
         ] {
             raw(&mut doc, &changed);
@@ -917,7 +917,7 @@ mod room_media_tests {
         for changed in [
             edited(|v| v.version = 2),
             edited(|v| v.authorization_revision = 0),
-            edited(|v| v.room = [0; 16]),
+            edited(|v| v.workspace = [0; 16]),
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().epoch = 0),
             edited(|v| {
                 let call = v.calls.remove(&[7; 32]).unwrap();
@@ -943,7 +943,7 @@ mod room_media_tests {
             }),
         ] {
             assert!(encode(&changed).is_err());
-            let mut doc = room();
+            let mut doc = workspace();
             raw(&mut doc, &changed);
             assert!(parse(&doc).is_err());
         }
@@ -951,7 +951,7 @@ mod room_media_tests {
 
     #[test]
     fn malformed_conflicting_and_trailing_values_are_never_legacy_absence() {
-        let mut doc = room();
+        let mut doc = workspace();
         doc.put(ROOT, FIELD, "bad").unwrap();
         assert!(parse(&doc).is_err());
         doc.put_object(ROOT, FIELD, ObjType::Map).unwrap();
@@ -960,7 +960,7 @@ mod room_media_tests {
         bytes.push(0);
         doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
         assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
-        let mut left = room();
+        let mut left = workspace();
         let mut right = left.fork();
         left.set_actor(ActorId::from(vec![1]));
         right.set_actor(ActorId::from(vec![2]));
@@ -972,7 +972,7 @@ mod room_media_tests {
 
     #[test]
     fn identical_governed_values_collapse_without_actor_authority() {
-        let mut left = room();
+        let mut left = workspace();
         let mut right = left.fork();
         left.set_actor(ActorId::from(vec![1]));
         right.set_actor(ActorId::from(vec![2]));
@@ -984,7 +984,7 @@ mod room_media_tests {
 
     #[test]
     fn unknown_hidden_shapes_and_changed_policy_are_governed() {
-        let before = room();
+        let before = workspace();
         let mut after = before.clone();
         raw(&mut after, &policy());
         assert_ne!(
@@ -1027,11 +1027,11 @@ mod room_media_tests {
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "bad\0key".into()),
         ] {
             assert!(encode(&value).is_err());
-            let mut doc = room();
+            let mut doc = workspace();
             raw(&mut doc, &value);
             assert!(parse(&doc).is_err());
         }
-        let mut doc = room();
+        let mut doc = workspace();
         doc.put(ROOT, FIELD, ScalarValue::Bytes(vec![0; 256 * 1024 + 1]))
             .unwrap();
         assert_eq!(parse(&doc), Err(MediaPolicyError::Capacity));
@@ -1042,7 +1042,7 @@ mod room_media_tests {
         let mut value = policy();
         value.calls.insert([8; 32], value.calls[&[7; 32]].clone());
         assert!(encode(&value).is_err());
-        let mut doc = room();
+        let mut doc = workspace();
         raw(&mut doc, &value);
         assert!(parse(&doc).is_err());
         // Map ABI is length followed by key/value pairs; descending keys are noncanonical.
@@ -1248,7 +1248,7 @@ mod room_media_tests {
             }
             value.calls.insert([key; 32], call);
         }
-        let mut doc = room();
+        let mut doc = workspace();
         raw(&mut doc, &value);
         assert_eq!(parse(&doc), Ok(Some(value.clone())));
         value.calls.get_mut(&[5; 32]).unwrap().denied.insert(
@@ -1270,7 +1270,7 @@ mod room_media_tests {
         for _ in 0..2 {
             bytes.extend(postcard::to_allocvec(&([7u8; 32], &call)).unwrap());
         }
-        let mut doc = room();
+        let mut doc = workspace();
         doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
         assert_eq!(parse(&doc), Err(MediaPolicyError::Malformed));
     }
@@ -1279,8 +1279,8 @@ mod room_media_tests {
         postcard::to_allocvec(&(1u8, [1u8; 16], 1u64, [3u8; 32], calls)).unwrap()
     }
 
-    fn parse_wire(bytes: Vec<u8>) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
-        let mut doc = room();
+    fn parse_wire(bytes: Vec<u8>) -> Result<Option<WorkspaceMediaV1>, MediaPolicyError> {
+        let mut doc = workspace();
         doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes)).unwrap();
         parse(&doc)
     }
