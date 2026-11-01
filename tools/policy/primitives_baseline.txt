@@ -83,7 +83,6 @@ glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/desktop/src/workspace_settings.rs
 glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
 glyph-join 1 crates/session/messaging-service/src/service/sms.rs
-glyph-join 1 crates/session/session/src/desk_resource.rs
 glyph-join 1 crates/session/session/src/directory.rs
 glyph-join 1 crates/session/session/src/people.rs
 glyph-join 1 crates/session/sheets/src/shortcut_guide.rs
