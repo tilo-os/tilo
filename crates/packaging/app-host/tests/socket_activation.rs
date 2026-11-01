@@ -5,6 +5,7 @@ use std::{
     },
     process::{Command, Stdio},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn activation_child(
     listener: &std::os::unix::net::UnixListener,
@@ -47,7 +48,9 @@ fn activation_child(
             Ok(())
         });
     }
-    let child = command.spawn().expect("spawn socket-activated app host");
+    let child = command
+        .spawn_locked()
+        .expect("spawn socket-activated app host");
     drop(inherited);
     child
 }

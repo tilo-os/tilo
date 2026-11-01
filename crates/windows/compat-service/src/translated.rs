@@ -672,6 +672,7 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     #[allow(
@@ -691,7 +692,7 @@ mod tests {
                 .args(["--exact", "translated::tests::exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children", "--nocapture"])
                 .env(CHILD, "1")
                 .stdout(File::create(&log).unwrap())
-                .status().unwrap();
+                .status_locked().unwrap();
             let stdout = std::fs::read_to_string(&log).unwrap();
             assert!(status.success(), "{stdout}");
             // libtest exits 0 when `--exact` selects nothing; require the child ran.
@@ -734,8 +735,10 @@ mod tests {
             || advisory_lock::FileLock::try_shared(File::open(temporary.path()).unwrap());
         // Killed on drop, so a failing assertion cannot leave it holding the
         // harness's stderr open after this process exits.
-        let mut existing =
-            ManagedChild::new(Command::new("/bin/sleep").arg("30").spawn().unwrap(), false);
+        let mut existing = ManagedChild::new(
+            Command::new("/bin/sleep").arg("30").spawn_locked().unwrap(),
+            false,
+        );
         // acquire bypasses only the production single-thread check: the reexec
         // harness has an idle main thread and exactly this one test worker.
         let descendants = PreparationChildren::acquire().unwrap();
@@ -755,7 +758,7 @@ mod tests {
             ])
             .arg(&script)
             .arg(&pid_file)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success());
         // Starting three processes is not what this test measures; on a
@@ -873,7 +876,7 @@ mod tests {
                 .env("FEX_INTERPRETER_INSTALLED", "1")
                 .env("XDG_RUNTIME_DIR", "/run/user/1000");
             configure_environment(&mut child);
-            let output = child.output().unwrap();
+            let output = child.output_locked().unwrap();
             assert!(output.status.success());
             let environment = String::from_utf8(output.stdout).unwrap();
             assert!(
@@ -921,7 +924,10 @@ mod tests {
 
     fn sleeping_server() -> ManagedChild {
         ManagedChild::new(
-            Command::new("/bin/sleep").arg("3600").spawn().unwrap(),
+            Command::new("/bin/sleep")
+                .arg("3600")
+                .spawn_locked()
+                .unwrap(),
             false,
         )
     }
@@ -953,7 +959,7 @@ mod tests {
         {
             let (read, write) = readiness_pipe().unwrap();
             drop(write);
-            let mut server = Command::new("/bin/true").spawn().unwrap();
+            let mut server = Command::new("/bin/true").spawn_locked().unwrap();
             server.wait().unwrap();
             let error =
                 wait_for_ready(&read, &mut server, tilo_test_env::hang_bound()).unwrap_err();

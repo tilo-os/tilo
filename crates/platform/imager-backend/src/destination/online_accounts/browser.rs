@@ -343,6 +343,7 @@ fn stop(browser: &mut Option<Child>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn launch_uses_only_the_approved_installed_browser_route() {
@@ -430,7 +431,7 @@ mod tests {
         let mut browser = Some(
             Command::new("/usr/bin/true")
                 .process_group(0)
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let result = startup(
@@ -447,7 +448,7 @@ mod tests {
             Command::new("/usr/bin/sleep")
                 .arg("30")
                 .process_group(0)
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let result = startup(

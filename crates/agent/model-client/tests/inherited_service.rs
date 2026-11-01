@@ -9,6 +9,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_model_client::{ClientError, Frame, Request, Response, read_frame, write_frame};
 
@@ -111,7 +112,7 @@ fn run_child(test: &str, case: &str) {
             Ok(())
         });
     }
-    let child = command.spawn().unwrap();
+    let child = command.spawn_locked().unwrap();
     drop(app);
     let peer = std::thread::spawn(move || {
         let mut requests = 0;

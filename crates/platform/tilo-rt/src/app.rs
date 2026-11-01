@@ -150,12 +150,49 @@ impl AppRuntime {
     /// # Errors
     ///
     /// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] from a
-    /// runtime context, where waiting would stall the tasks that thread is
-    /// meant to run.
+    /// runtime context of this crate's, where waiting would stall the tasks
+    /// that thread is meant to run.
+    ///
+    /// A thread inside another runtime's context (a library's or a test's
+    /// own runtime, which this crate cannot tell from that runtime's blocking
+    /// pool) waits as any synchronous call there does: tokio's own
+    /// `block_on` would panic there, so the caller parks while this runtime's
+    /// thread drives the sockets and timers.
     pub fn block_on<F: Future>(&self, future: F) -> Result<F::Output, Error> {
         crate::check_may_block()?;
         let _driving = crate::Driving::enter();
+        if Handle::try_current().is_ok() {
+            let _app = self.handle.enter();
+            return Ok(park_on(future));
+        }
         Ok(self.handle.block_on(future))
+    }
+}
+
+/// Poll `future` on the calling thread, parking it between wakes.
+fn park_on<F: Future>(future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::thread::Thread;
+
+    struct Unpark(Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        std::thread::park();
     }
 }
 
@@ -247,5 +284,24 @@ mod tests {
             release.send(()).unwrap();
             runtime.block_on(blocked).unwrap().unwrap();
         }
+    }
+
+    /// A synchronous call made inside another runtime's context, as a test
+    /// on its own runtime builds a desktop that reads the machine's radios,
+    /// waits for its answer with the app runtime's drivers, and tokio's
+    /// "runtime within a runtime" refusal never reaches it.
+    #[test]
+    fn a_caller_inside_another_runtime_waits_with_the_app_drivers() {
+        let foreign = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let seen = foreign.block_on(async {
+            app().block_on(async {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                7
+            })
+        });
+        assert_eq!(seen.unwrap(), 7);
     }
 }

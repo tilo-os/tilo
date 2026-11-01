@@ -441,6 +441,16 @@ impl DesktopNotifications {
         self.host().clear_history();
     }
 
+    /// Clear every notice the desk lists, the banners still up with the ones retired into the
+    /// centre: the banners retire into the centre first, so one Undo brings all of them back.
+    pub fn clear_all(&self) {
+        let banners: Vec<u64> = self.log().active().iter().map(|n| n.id).collect();
+        for id in banners {
+            self.log.retire_active(id);
+        }
+        self.host().clear_history();
+    }
+
     /// Bring back what the last Clear all took.
     pub fn undo_clear(&self) {
         self.host().undo_clear();

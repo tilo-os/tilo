@@ -296,6 +296,7 @@ fn domains(text: &str) -> std::io::Result<Vec<SettingsDomain>> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     fn app() -> InstalledRef {
         InstalledRef {
             reference: "app/org.tilo.Settings/x86_64/stable".into(),
@@ -411,7 +412,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let deadline = tilo_test_env::hang_deadline();
         loop {

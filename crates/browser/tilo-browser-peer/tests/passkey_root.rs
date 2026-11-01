@@ -15,6 +15,7 @@
 mod support;
 
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -65,7 +66,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut lines = BufReader::new(browser.stdout.take().unwrap()).lines();
     let first = tilo_test_env::within("the page to create the identity", lines.next_line())

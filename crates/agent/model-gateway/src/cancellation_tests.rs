@@ -2,6 +2,7 @@
 use super::*;
 use crate::transport::{FdTransport, Transport};
 use std::os::fd::AsFd;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 fn delta(text: &str, finish: &serde_json::Value) -> String {
@@ -191,7 +192,7 @@ fn native_stop_disconnects_provider_and_second_inference_succeeds() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "service::cancellation_tests::native_stop_disconnects_provider_and_second_inference_succeeds", "--nocapture"])
         .env_clear().env("PATH", root.path()).env("XDG_CONFIG_HOME", root.path())
-        .env(MARKER, "1").output().unwrap();
+        .env(MARKER, "1").output_locked().unwrap();
     assert!(
         output.status.success(),
         "{} {}",

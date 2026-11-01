@@ -836,6 +836,7 @@ pub(crate) fn splice_output(argv: &mut Vec<String>) {
 mod tests {
     use super::*;
     use std::{io::Read, os::unix::process::CommandExt};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn signed_capture_runtime(root: &Path) -> (PathBuf, runtime_bundle::Identity) {
         use std::os::unix::fs::PermissionsExt;
@@ -848,7 +849,7 @@ mod tests {
         let runtime = root.join("runtime");
         let dependency_output = std::process::Command::new("ldd")
             .args(["/usr/bin/bwrap", "/usr/bin/tar"])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(dependency_output.status.success());
         let text = String::from_utf8(dependency_output.stdout).unwrap();
@@ -1077,7 +1078,7 @@ mod tests {
                 Ok(())
             });
         }
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(
             output.status.success(),
             "actual confinement unavailable or violated: {}",

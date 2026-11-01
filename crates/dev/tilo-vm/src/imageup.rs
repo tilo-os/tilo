@@ -1046,6 +1046,7 @@ pub fn layout_bytes(layout: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
 
@@ -1660,7 +1661,7 @@ mod tests {
         let script = count_staged_entry_script(&"ef".repeat(64));
         let status = std::process::Command::new("sh")
             .args(["-n", "-c", &script])
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success(), "{script}");
     }

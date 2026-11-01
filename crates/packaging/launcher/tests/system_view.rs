@@ -29,6 +29,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::capabilities::CapabilityPlan;
 use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
@@ -58,7 +59,7 @@ fn the_view_exposes_exactly_what_per_path_binds_did() {
             "--test-threads=1",
         ])
         .env(INNER_ENV, "1")
-        .output()
+        .output_locked()
         .expect("unshare(1) runs the comparison in a user namespace of its own");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -274,7 +275,7 @@ fn listing(argv: &[String]) -> BTreeMap<String, String> {
             "--nocapture",
             "--test-threads=1",
         ])
-        .output()
+        .output_locked()
         .unwrap();
     // SAFETY: our copy, no longer needed.
     unsafe { libc::close(fd) };

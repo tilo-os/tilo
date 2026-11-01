@@ -33,6 +33,7 @@ workspace-hack = { version = "0.1" }
 libc.workspace = true
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 
 # Issues the extension a picked path is granted with, as the runtime does.

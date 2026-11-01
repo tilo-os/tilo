@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use accounts::{
     Account, AccountId, AccountStore, CommandRefresher, HandoffCredentialSource, HandoffStore,
@@ -103,7 +104,7 @@ fn helper_publishes_a_valid_access_token_but_never_the_refresh_token() {
     let output = std::process::Command::new(helper())
         .args(["refresh", id.as_str(), "--config-root"])
         .arg(&root)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success());
     let streams = format!(
@@ -148,7 +149,7 @@ fn helper_exit_codes_reach_the_daemon_as_typed_errors() {
     let status = std::process::Command::new(helper())
         .args(["refresh", "missing", "--config-root"])
         .arg(&root)
-        .status()
+        .status_locked()
         .unwrap();
     assert_eq!(status.code(), Some(accounts::handoff::exit::FAILED));
 }
@@ -160,7 +161,7 @@ fn capability_probe_runs_without_creating_custody_and_rejects_extra_arguments() 
         .arg("capabilities")
         .env("HOME", directory.path())
         .env("XDG_CONFIG_HOME", directory.path().join("config"))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -171,7 +172,7 @@ fn capability_probe_runs_without_creating_custody_and_rejects_extra_arguments() 
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     let refused = std::process::Command::new(helper())
         .args(["capabilities", "--config-root", "ignored"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(refused.status.code(), Some(64));
     assert!(refused.stdout.is_empty());

@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Host programs the scripts use.
 const PROGRAMS: &[&str] = &["bash", "mkdir", "chmod", "chown", "ln", "cat", "rm"];
@@ -161,7 +162,7 @@ fn which(program: &str) -> Option<PathBuf> {
 fn libraries(program: &Path) -> Option<Vec<PathBuf>> {
     let out = std::process::Command::new("ldd")
         .arg(program)
-        .output()
+        .output_locked()
         .ok()?;
     let text = String::from_utf8(out.stdout).ok()?;
     Some(

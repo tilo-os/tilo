@@ -1230,7 +1230,7 @@ mod tests {
                         "everyone allow add_file,add_subdirectory,delete_child"
                     ])
                     .arg(&parent)
-                    .status()
+                    .status_locked()
                     .unwrap()
                     .success()
             );
@@ -1248,7 +1248,7 @@ mod tests {
             let (temp, source, _) = fixture();
             let parent = temp.path().canonicalize().unwrap().join("acl-parent");
             fs::create_dir(&parent).unwrap();
-            assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status().unwrap().success());
+            assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status_locked().unwrap().success());
             assert!(
                 copy_folder(
                     &source,
@@ -1273,7 +1273,7 @@ mod tests {
                         "everyone allow read,readattr,readextattr,readsecurity"
                     ])
                     .arg(&parent)
-                    .status()
+                    .status_locked()
                     .unwrap()
                     .success()
             );

@@ -4,6 +4,7 @@ use std::{
     os::{fd::AsRawFd, unix::fs::PermissionsExt},
     process::{Child, Command as Process, Stdio},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Live(PathBuf);
 impl Drop for Live {
@@ -23,7 +24,7 @@ fn query(path: &Path, sql: &str) -> String {
     let output = Process::new("sqlite3")
         .arg(path)
         .arg(sql)
-        .output()
+        .output_locked()
         .expect("real SQLite CLI required");
     assert!(
         output.status.success(),
@@ -106,7 +107,7 @@ while True:
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut ready = String::new();
     std::io::BufReader::new(child.stdout.take().unwrap())

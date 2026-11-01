@@ -233,9 +233,10 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
 struct Status {
     version: u32,
     pid: u32,
-    /// The workspace the daemon serves. A daemon started before the field
-    /// was called this answers `room`, which is read as the same.
-    #[serde(alias = "room")]
+    /// The workspace the daemon serves. The probe answers it as `room`, the
+    /// name launchers and scripts outside this crate read; `workspace` is
+    /// read as the same.
+    #[serde(rename = "room", alias = "workspace")]
     workspace: String,
 }
 

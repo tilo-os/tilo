@@ -13,6 +13,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::{net::UnixStream, process::CommandExt};
 use std::process::{Command, Stdio};
 use tilo_model_client::{Frame, Request, Response, read_frame, write_frame};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn answer(duplicate: bool) -> ModelResponse {
     let call = Content::ToolCall(ToolCall {
@@ -140,7 +141,7 @@ fn synchronous_stream_validates_finals_and_drains_poisoned_turns() {
                 Ok(())
             });
         }
-        let process = command.spawn().unwrap();
+        let process = command.spawn_locked().unwrap();
         drop(app);
         let serving = std::thread::spawn(move || {
             let request: Frame<Request> = read_frame(&mut peer).unwrap();

@@ -254,8 +254,8 @@ impl AppHandler {
 impl AppHandler {
     /// Tell the app how far the compositor's input reached it: what the person did in the
     /// window's bar after that input runs now, in its place among the window's own input.
+    #[cfg(target_os = "linux")]
     fn follow_handled_input(&mut self) {
-        #[cfg(target_os = "linux")]
         if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
             self.app.input_handled(serial);
         }
@@ -3883,6 +3883,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         event: WindowEvent,
     ) {
         // What the person did in the window's bar before this input runs first.
+        #[cfg(target_os = "linux")]
         self.follow_handled_input();
         // Wheel deltas reported in one wake route as one event; anything
         // else routes the waiting sum first.
@@ -4043,6 +4044,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         // The wake's input is all handled: what the person did in the bar after it runs.
+        #[cfg(target_os = "linux")]
         self.follow_handled_input();
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();

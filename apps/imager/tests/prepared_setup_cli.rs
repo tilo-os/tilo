@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn default_and_selected_setup_modes_reject_incomplete_transport() {
@@ -14,7 +15,7 @@ fn default_and_selected_setup_modes_reject_incomplete_transport() {
         let output = Command::new(tilo_test_env::package_binary!("tilo-prepared-setup"))
             .args(&arguments)
             .stdin(Stdio::null())
-            .output()
+            .output_locked()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
         assert!(output.stdout.is_empty(), "{arguments:?}");
@@ -36,7 +37,7 @@ fn installed_consumer_modes_accept_no_path_or_receipt_input() {
         let output = Command::new(tilo_test_env::package_binary!("tilo-prepared-setup"))
             .args([mode, extra, "/tmp"])
             .stdin(Stdio::null())
-            .output()
+            .output_locked()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{mode}");
         assert!(output.stdout.is_empty(), "{mode}");

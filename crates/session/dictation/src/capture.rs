@@ -33,7 +33,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// What `pw-record` is asked for, whatever an app or a caller would rather
 /// have: a recognizer wants 16 kHz mono samples and nothing else.
 const FORMAT_ARGS: [&str; 6] = [
-    "--rate", "16000", "--channels", "1", "--channel-map", "mono",
+    "--rate",
+    "16000",
+    "--channels",
+    "1",
+    "--channel-map",
+    "mono",
 ];
 
 /// The source a dictation records from, named by `PipeWire` itself so that a
@@ -233,6 +238,7 @@ fn default_source() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -312,7 +318,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let pid = libc::pid_t::try_from(child.id()).unwrap();
         assert!(child.try_wait().unwrap().is_none());

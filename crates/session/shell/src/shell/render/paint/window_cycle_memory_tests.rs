@@ -21,6 +21,7 @@
 )]
 
 use std::time::Instant;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -205,7 +206,7 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
         let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
             .env(HEAP_TRIM_CHILD, "1")
-            .output()
+            .output_locked()
             .expect("the child test runs");
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);

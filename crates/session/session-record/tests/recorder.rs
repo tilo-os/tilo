@@ -16,6 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_session_record::recorder::LOG_LIMIT;
 
@@ -58,7 +59,7 @@ fn the_record_persists_while_the_session_runs_and_keeps_the_last_bytes() {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("recorder");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -110,7 +111,7 @@ fn the_relay_keeps_running_while_storage_refuses_every_publication() {
         .args([log.to_str().expect("path"), "now", "1", "/usr/bin/shell"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("recorder");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -145,7 +146,7 @@ fn asked_to_finish_the_recorder_publishes_what_it_relayed_without_end_of_input()
         .args([log.to_str().expect("path"), "now", "7", "/usr/bin/shell"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("recorder");
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
@@ -159,7 +160,7 @@ fn asked_to_finish_the_recorder_publishes_what_it_relayed_without_end_of_input()
     assert_eq!(relayed, last);
     let signalled = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
-        .status()
+        .status_locked()
         .expect("kill");
     assert!(signalled.success());
     // The input stays open: the recorder finishes on the request alone.
@@ -177,7 +178,7 @@ fn run(args: &[&str], input: &[u8]) -> Vec<u8> {
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("recorder");
     let mut stdout = child.stdout.take().expect("stdout");
     let reader = std::thread::spawn(move || {
@@ -243,7 +244,7 @@ fn the_event_record_keeps_its_own_bound_and_a_bad_invocation_is_refused() {
     let status = Command::new(recorder())
         .args(["a", "b"])
         .stdin(Stdio::null())
-        .status()
+        .status_locked()
         .expect("recorder");
     assert_eq!(status.code(), Some(2));
 }

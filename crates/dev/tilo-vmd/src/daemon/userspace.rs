@@ -447,6 +447,7 @@ mod tests {
     use crate::apply::RecordingApply;
     use std::process::Command;
     use std::sync::{Arc, Mutex};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     use tilo_vm_protocol::{
         BaseInfo, DEVICE_SLOT, Owner, SlotKind, USERSPACE_COMPONENTS, UserspaceApply,
         UserspaceMember, manifest::Manifest,
@@ -764,7 +765,7 @@ mod tests {
         let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", mount])
             .args(["--setenv", SUBJECT, root.as_str(), "--setenv", "TMPDIR", mount])
             .arg(std::env::current_exe().unwrap()).args(["daemon::userspace::tests::userspace_cohort_admits_all_imports_and_preserves_one_owner_transition", "--exact", "--nocapture"])
-            .output().unwrap();
+            .output_locked().unwrap();
         assert!(
             output.status.success(),
             "{}{}",

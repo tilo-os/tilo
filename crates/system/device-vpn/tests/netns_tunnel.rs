@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use device_vpn::fdpass::{read_line_with_fd, write_line_with_fd};
 use device_vpn::net::Ipv4Net;
@@ -49,7 +50,7 @@ fn ip(args: &str) {
     let program = Config::default().ip;
     let status = Command::new(&program)
         .args(args.split_whitespace())
-        .status()
+        .status_locked()
         .unwrap_or_else(|error| panic!("{} {args}: {error}", program.display()));
     assert!(status.success(), "ip {args}: {status}");
 }
@@ -171,7 +172,7 @@ fn spawn_role(role: &str, socket: &Path, state: &Path) -> Child {
         .env(SOCKET, socket)
         .env(STATE, state)
         .stdin(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap_or_else(|error| panic!("unshare: {error}"))
 }
 

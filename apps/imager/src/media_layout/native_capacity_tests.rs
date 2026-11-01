@@ -13,6 +13,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 const CHILD: &str = "TILO_NATIVE_MIGRATION_FORMAT_CHILD";
 const TEST: &str = "media_layout::native_capacity_tests::fixed_migration_ext4_floor_matches_actual_native_capacity";
 const LOOP_GET_STATUS64: libc::c_ulong = 0x4c05;
@@ -52,7 +53,7 @@ fn run(command: &mut Command) -> io::Result<Vec<u8>> {
     command
         .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::from(diagnostics.try_clone()?));
-    let mut child = command.spawn()?;
+    let mut child = command.spawn_locked()?;
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
         if let Some(status) = child.try_wait()? {

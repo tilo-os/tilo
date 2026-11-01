@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{fs::MetadataExt, net::UnixListener, process::CommandExt};
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn consumes_systemd_listener_without_unlinking_or_rebinding() {
@@ -42,7 +43,7 @@ fn consumes_systemd_listener_without_unlinking_or_rebinding() {
             Ok(())
         });
     }
-    let mut child = command.spawn().expect("spawn socket-activated ush");
+    let mut child = command.spawn_locked().expect("spawn socket-activated ush");
     drop(inherited);
     drop(listener);
 

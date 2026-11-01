@@ -9,6 +9,7 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_user_identity::IdentityPaths;
 
@@ -23,7 +24,7 @@ fn enroll(umask: &str, args: &[&std::ffi::OsStr]) -> String {
         .arg(format!("umask {umask} && exec \"$0\" \"$@\""))
         .arg(enroll_binary())
         .args(args)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

@@ -2,6 +2,7 @@ use super::{
     Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Replica, Seed,
     common, enrol, record_provider, start_browser,
 };
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 mod scrollback;
@@ -72,7 +73,7 @@ pub async fn run() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap()).lines();

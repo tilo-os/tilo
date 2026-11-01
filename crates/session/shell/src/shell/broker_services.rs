@@ -55,50 +55,35 @@ pub(crate) struct NativeOwnerCommitService {
     sealed_writes: Option<SealedWrites>,
     /// The channels a pending read of a sealed record waits on for keys.
     key_watches: Arc<std::sync::Mutex<std::collections::HashSet<collab_types::ChannelId>>>,
-    writes: OwnerWrites,
+    /// The broker's commits into the owner, through this session's tree and
+    /// network ([`NativeOwnerCustody`]).
+    commits: tilo_action_broker::owner_commits::NativeOwnerCommits,
 }
 
 /// The collaboration broker's admitted ops and durable history.
 type SealedWrites = Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>;
 
-/// Where the owner's commits run. A commit waits for the disk (opening the
-/// owner, the state file's data and directory syncs), which on a loaded disk
-/// takes seconds, and its future is awaited on the broker's single-threaded
-/// loop, which answers every peer action, catalogue and liveness probe. So a
-/// commit runs on a blocking thread instead, and the loop goes on answering
-/// while it waits. Commits still run one at a time, in the order they were
-/// asked for: the turn is held until the write is done, also when the future
-/// awaiting it is dropped (a dropped wait never cancels a started commit).
-#[derive(Clone, Default)]
-struct OwnerWrites(Arc<tokio::sync::Mutex<()>>);
-impl OwnerWrites {
-    async fn run<T: Send + 'static>(
-        self,
-        write: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        let turn = self.0.lock_owned().await;
-        tokio::task::spawn_blocking(move || {
-            let written = write();
-            drop(turn);
-            written
-        })
-        .await
-        .map_err(|_| "native owner commit ended without an outcome".to_string())?
-    }
-}
 impl NativeOwnerCommitService {
     pub(crate) fn new(
         tree: WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
     ) -> Self {
+        let owner = owner_source::OwnerSource::new(&tree, network.as_ref());
+        let commits = tilo_action_broker::owner_commits::NativeOwnerCommits::new(Arc::new(
+            NativeOwnerCustody {
+                tree: tree.clone(),
+                owner: owner.clone(),
+                network: network.clone(),
+            },
+        ));
         Self {
-            owner: owner_source::OwnerSource::new(&tree, network.as_ref()),
+            owner,
             tree,
             network,
             history_keys: None,
             sealed_writes: None,
             key_watches: Arc::default(),
-            writes: OwnerWrites::default(),
+            commits,
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
@@ -119,57 +104,75 @@ impl NativeOwnerCommitService {
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_workspace(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().commits_native_documents(room))
+        self.commits.requires_workspace(room)
     }
-    /// A held room's effect receipts are this device's own to record in it,
-    /// whichever model its records follow.
     fn records_effects(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().projects_room(room))
+        self.commits.records_effects(room)
     }
     fn health(&self) -> Result<(), String> {
-        self.opened_owner("native durable owner unavailable")?
-            .health()
+        self.commits.health()
     }
     fn commit(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
     ) -> tilo_peer_state::owner_commit::CommitFuture {
-        let owner = self.owner.clone();
-        let network = self.network.clone();
-        let writes = self.writes.clone();
-        Box::pin(writes.run(move || {
-            let owner = owner
-                .resolve()
-                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room =
-                super::state::RoomId::parse(&request.workspace).ok_or("invalid native room")?;
-            let now = std::time::SystemTime::now();
-            if !matches!(
-                request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
-            ) {
-                if let Some(network) = network.as_ref() {
-                    network.check_native_custody(&owner, room)?;
-                }
-                return owner.commit_document(request, now);
-            }
-            // A receipt is this device's own, recorded in its person's slice
-            // of the room with its own key and published as its own change.
-            let key = match network.as_ref() {
-                Some(network) => network.native_signing_key_of(&owner, room)?,
-                None => {
-                    tilo_identity_host::broker::trusted_current_device(&request.workspace)
-                        .map_err(|error| format!("this device's key is unavailable: {error}"))?
-                        .0
-                }
-            };
-            let receipt = owner.commit_effect_receipt(&request, &key, now)?;
-            if let Some(network) = network {
-                network.schedule_native_owner_publication(room);
-            }
-            Ok(receipt)
-        }))
+        self.commits.commit(request)
+    }
+}
+
+/// What the owner's commits ask of this session: its tree says which rooms
+/// it commits, its network holds custody and publishes. Without a network,
+/// the device's own trusted key signs and nothing is published.
+struct NativeOwnerCustody {
+    tree: WorkspaceTreeHandle,
+    owner: owner_source::OwnerSource,
+    network: Option<Arc<super::network::ShellNetwork>>,
+}
+
+impl tilo_action_broker::owner_commits::OwnerCustody for NativeOwnerCustody {
+    fn commits_documents(&self, room: super::state::RoomId) -> bool {
+        self.tree.read().commits_native_documents(room)
+    }
+    fn projects_room(&self, room: super::state::RoomId) -> bool {
+        self.tree.read().projects_room(room)
+    }
+    fn opened_owner(
+        &self,
+        unavailable: &str,
+    ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.opened(unavailable)
+    }
+    fn resolve_owner(&self) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.resolve()
+    }
+    fn check_custody(
+        &self,
+        owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+        room: super::state::RoomId,
+    ) -> Result<(), String> {
+        match self.network.as_ref() {
+            Some(network) => network.check_native_custody(owner, room),
+            None => Ok(()),
+        }
+    }
+    fn signing_key(
+        &self,
+        owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+        room: super::state::RoomId,
+    ) -> Result<ed25519_dalek::SigningKey, String> {
+        match self.network.as_ref() {
+            Some(network) => network.native_signing_key_of(owner, room),
+            None => Ok(
+                tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                    .map_err(|error| format!("this device's key is unavailable: {error}"))?
+                    .0,
+            ),
+        }
+    }
+    fn schedule_publication(&self, room: super::state::RoomId) {
+        if let Some(network) = self.network.as_ref() {
+            network.schedule_native_owner_publication(room);
+        }
     }
 }
 

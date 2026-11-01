@@ -17,6 +17,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 const PACKAGE: &str = "so.tilo.imager.home-export";
 struct Authority;
 impl ServiceAuthority for Authority {
@@ -66,7 +67,7 @@ fn signed_runtime(root: &Path) -> (PathBuf, String) {
         std::process::Command::new("strip")
             .arg("--strip-debug")
             .arg(&launcher)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );
@@ -76,7 +77,7 @@ fn signed_runtime(root: &Path) -> (PathBuf, String) {
     for executable in [&launcher, &bwrap, &PathBuf::from("/usr/bin/tar")] {
         let output = std::process::Command::new("ldd")
             .arg(executable)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
@@ -376,7 +377,7 @@ fn signed_original_source_reader_drops_source_groups_only_after_namespace_confin
             .args(["--mount", "--propagation", "private"])
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", "capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement", "--nocapture"])
-            .env(CHILD, "1").status().unwrap();
+            .env(CHILD, "1").status_locked().unwrap();
         assert!(
             result.success(),
             "actual original-reader confinement is unavailable or violated"

@@ -4,6 +4,8 @@ use super::{
 };
 use serde_json::json;
 use std::{ffi::OsString, io::BufReader, path::PathBuf};
+#[cfg(target_os = "linux")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -40,7 +42,7 @@ fn admission_profile_uses_readonly_existing_directories_without_repair_or_provis
         .arg("--")
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", "mcp_process::tests::admission_profile_uses_readonly_existing_directories_without_repair_or_provisioning", "--nocapture"])
-        .output().expect("the native admission integration test requires working bubblewrap");
+        .output_locked().expect("the native admission integration test requires working bubblewrap");
     assert!(
         output.status.success(),
         "{}\n{}",

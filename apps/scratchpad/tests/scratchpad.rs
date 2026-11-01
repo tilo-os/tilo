@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use scratchpad::{Note, Scratchpad};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::prelude::*;
 
 /// Replace the note's text, as the editor's field edit does.
@@ -22,7 +23,7 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
         .arg("--shots")
         .arg(&output)
         .args(["--viewport", "640x480", "--text-scale", "2"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         result.status.success(),
