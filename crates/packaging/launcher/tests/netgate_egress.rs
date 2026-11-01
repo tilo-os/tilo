@@ -46,6 +46,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
 use launcher::sandbox::NetGateBind;
@@ -515,7 +516,7 @@ fn run_probe(
         cmd.env_remove(ENV_RELAY);
     }
 
-    let output = cmd.output().expect("spawn bwrap");
+    let output = cmd.output_locked().expect("spawn bwrap");
     report_from(&output)
 }
 
@@ -592,7 +593,7 @@ fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
             ])
             .env("TILO_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
             .env("TILO_NETGATE_PROOF_PORT", host_port.to_string())
-            .output()
+            .output_locked()
             .expect("spawn bwrap");
 
         let report = ProbeReport {
@@ -1039,7 +1040,7 @@ fn run_device_local_probe(
         None => cmd.env_remove(ENV_SOCKET),
     };
 
-    let output = cmd.output().expect("spawn bwrap");
+    let output = cmd.output_locked().expect("spawn bwrap");
     report_from(&output)
 }
 

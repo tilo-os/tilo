@@ -165,6 +165,7 @@ impl ResourceApp for MonitorShell {
 mod tests {
     use super::*;
     use crate::prefs::MonitorPreferences;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
 
@@ -400,7 +401,7 @@ mod tests {
         // A process this test owns, so a kill reaches nothing else.
         let mut child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("start a child process");
         app.effect(&MonitorEffect::Refresh).unwrap();
         let id = row_id(child.id());

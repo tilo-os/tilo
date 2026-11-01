@@ -10,6 +10,7 @@ use cloud_source_gdrive::{DriveConfig, GDrive, Url};
 use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, ROOT_INO};
 use fs::cloud::{CloudVolume, VolumeConfig};
 use std::{io::Read, path::Path, sync::Arc, time::Duration};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn config(root: Option<&ItemId>) -> DriveConfig {
     let endpoint = std::env::var("TILO_RYSTIC_GDRIVE_URL")
@@ -109,7 +110,7 @@ fn seed_import_file(fixture: &Fixture) -> ItemId {
             "{}/_rystic/seed",
             config(None).api.trim_end_matches('/')
         ))
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "setup seed failed");
     ItemId::new(id)

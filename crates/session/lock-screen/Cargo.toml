@@ -17,6 +17,7 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 tempfile.workspace = true

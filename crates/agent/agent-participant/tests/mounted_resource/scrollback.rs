@@ -12,6 +12,7 @@
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
 use super::super::{common, enrol, record_provider, start_browser};
 use tilo_peer_state::join::MemberRole;
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 /// Short messages each part keeps in `#general`: more than a view, so the
@@ -57,7 +58,7 @@ pub async fn run(bundle: &str) {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap()).lines();

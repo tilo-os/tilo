@@ -7,6 +7,7 @@ use tilo_identity_host::{
     device_fleet::DeviceFleet,
     enrolled_transport::{AuthenticatedEnrolledDevice, EnrolledDevice},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, IdentityPaths, RevocationReason, persist};
 const PASSWORD: &[u8] = b"synthetic retained anchor native fixture password";
 const TEST: &str = "setup::prepared_setup::installed_person::native_tests::authenticated_native_seed_revocations_and_certificate_custody";
@@ -303,7 +304,7 @@ fn authenticated_native_seed_revocations_and_certificate_custody() {
             Ok(())
         });
     }
-    let status = command.status().unwrap();
+    let status = command.status_locked().unwrap();
     assert!(
         status.success(),
         "actual root enrolled-import anchor qualification failed: {status}"

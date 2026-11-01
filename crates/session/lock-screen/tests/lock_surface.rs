@@ -20,6 +20,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, Screenshot, StackPolicy};
 
@@ -226,7 +227,7 @@ fn open() -> (Compositor, Child, tempfile::TempDir) {
         });
     }
     command.env("WAYLAND_SOCKET", "3");
-    let screen = command.spawn().expect("lock screen process");
+    let screen = command.spawn_locked().expect("lock screen process");
     // The child has its own copy: this one would only keep the connection's
     // other end open after the lock screen is gone.
     drop(client);

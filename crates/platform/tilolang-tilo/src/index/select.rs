@@ -286,7 +286,7 @@ impl View<'_> {
                 .unwrap_or(false)
         });
         Ok(Some(Listing::paged(Rc::new(
-            Filtered::new(run, keep, end.saturating_sub(start)).locating(locate),
+            Filtered::new(run, keep).locating(locate),
         ))))
     }
 

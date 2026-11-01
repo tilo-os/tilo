@@ -14,6 +14,7 @@
 pub mod compute;
 
 use std::path::PathBuf;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Endpoint, presets};
@@ -308,7 +309,7 @@ pub fn in_own_process(test: &str) -> bool {
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(OWN_PROCESS, test)
         .stderr(std::process::Stdio::inherit())
-        .output()
+        .output_locked()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!("{stdout}");

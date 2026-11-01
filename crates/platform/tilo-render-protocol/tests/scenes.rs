@@ -337,6 +337,7 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
                 blur_px: 12.0,
                 sampling: 0,
                 cell_px: 0.0,
+                refraction: [10.0, 25.0, 12.0, 0.1],
                 ground: [0.9, 0.9, 0.9, 1.0],
                 below: content.encoding().clone(),
             },
@@ -359,6 +360,12 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
     assert_eq!(frame.scroll_copies[0].dy, -40);
     assert_eq!(frame.layers.len(), 1);
     assert_eq!(frame.backdrops.len(), 1);
+    // The lens travels: a service that dropped it would draw a bent
+    // surface straight.
+    assert_eq!(
+        frame.backdrops[0].refraction.map(f32::to_bits),
+        [10.0_f32, 25.0, 12.0, 0.1].map(f32::to_bits)
+    );
     assert!(checked.cost.paths > 20);
 }
 

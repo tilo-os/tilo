@@ -1031,6 +1031,8 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -1207,7 +1209,7 @@ mod tests {
                 .arg("--ignored")
                 .arg("--test-threads=1")
                 .env("TILO_SECCOMP_THREAD_PROBE", "1")
-                .status()
+                .status_locked()
                 .expect("run clean seccomp probe process");
             assert_eq!(
                 status.code(),

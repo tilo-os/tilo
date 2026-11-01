@@ -12,6 +12,7 @@
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::apps::EndPolicy;
 use crate::end::PidfdSignaller;
@@ -810,7 +811,7 @@ fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
 fn real_child(root: &Path, cgroup: &str, uid: u32) -> (std::process::Child, u64) {
     let child = std::process::Command::new("sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let real = std::fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
     let started_at = crate::probe::parse_stat(child.id(), &real)

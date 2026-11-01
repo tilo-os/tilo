@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_install_helpers::dev_ssh::{Host, apply};
 
@@ -39,7 +40,7 @@ fn keygen(path: &Path) {
     let status = Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-f"])
         .arg(path)
-        .status()
+        .status_locked()
         .expect("ssh-keygen must be installed to check the keys as the installer does");
     assert!(status.success());
 }
@@ -262,7 +263,7 @@ fn installer_requires_dev_self_install() {
 fn usage_errors_exit_2() {
     let output = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
         .args(["--etc", "/nonexistent"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
@@ -272,7 +273,7 @@ fn usage_errors_exit_2() {
     );
     let refused = Command::new(tilo_test_env::package_binary!("tilo-install-dev-ssh"))
         .args(["--etc", "/nonexistent", "--user", "x", "--key=/k"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(refused.status.code(), Some(1));
     assert_eq!(

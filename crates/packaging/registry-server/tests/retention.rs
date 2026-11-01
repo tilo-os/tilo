@@ -15,6 +15,7 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
@@ -144,7 +145,7 @@ impl Registry {
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(args)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

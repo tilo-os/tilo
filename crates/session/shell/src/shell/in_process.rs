@@ -822,6 +822,7 @@ pub type SharedInProcessApps = Rc<RefCell<InProcessApps>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     include!("in_process_files_clipboard_tests.rs");
     include!("in_process_publication_tests.rs");
 
@@ -894,7 +895,7 @@ mod tests {
             .env("TILO_IDENTITY_ROOT", environment.join("identity"))
             .stdout(std::fs::File::create(&log).unwrap())
             .stderr(std::process::Stdio::inherit())
-            .status()
+            .status_locked()
             .unwrap();
         let output = std::fs::read_to_string(&log).unwrap();
         assert!(status.success(), "{output}");

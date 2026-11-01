@@ -1,5 +1,6 @@
 use super::*;
 use std::{os::unix::fs::FileExt, process::Command};
+use tilo_test_env::SpawnUnderEnvLock as _;
 const IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 fn field(raw: &mut [u8], start: usize, value: &[u8]) {
@@ -98,7 +99,7 @@ fn production_provision_preserves_payload_and_matches_native_partition_reader() 
     let output = Command::new("sfdisk")
         .arg("--json")
         .arg(path)
-        .output()
+        .output_locked()
         .expect("native partition reader (util-linux sfdisk)");
     assert!(
         output.status.success(),

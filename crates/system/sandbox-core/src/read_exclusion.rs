@@ -241,6 +241,7 @@ mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn exclusion_prepares_inside_outer_policy_without_ancestor_directory_reads() {
@@ -309,7 +310,7 @@ mod tests {
                     "sh",
                 ])
                 .arg(&root)
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(output.status.success());
             assert_eq!(output.stdout, b"ordinary engine data");
@@ -321,7 +322,7 @@ mod tests {
         fs::write(root.path().join("allowed"), b"ordinary engine data").unwrap();
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "read_exclusion::tests::exclusion_prepares_inside_outer_policy_without_ancestor_directory_reads", "--nocapture"])
-            .env(ROOT, root.path()).output().unwrap();
+            .env(ROOT, root.path()).output_locked().unwrap();
         assert!(
             output.status.success(),
             "layered production policy failed: {}{}",

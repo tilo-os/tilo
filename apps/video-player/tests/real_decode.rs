@@ -22,6 +22,7 @@
 )]
 
 use std::path::{Path, PathBuf};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::time::Duration;
 
 use media::{MediaEngine, Source};
@@ -62,7 +63,7 @@ fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     cmd.arg(format!("location=\"{location}\""));
-    let ok = match cmd.status() {
+    let ok = match cmd.status_locked() {
         Ok(status) => status.success(),
         Err(error) => {
             eprintln!("could not launch GStreamer fixture encoder: {error}");

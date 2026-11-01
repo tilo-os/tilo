@@ -15,6 +15,7 @@ use std::{
     os::unix::ffi::OsStringExt,
     os::unix::fs::MetadataExt,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use collab_types::{Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs::namespace::ROOT_INO;
@@ -149,7 +150,7 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     let _ = std::process::Command::new("fusermount3")
         .args(["-u", "-q", "-z", "--"])
         .arg(&mount)
-        .status();
+        .status_locked();
     tilo_test_env::require_capability!(
         FuseControl,
         abort.is_some(),
@@ -235,7 +236,7 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
             let _ = std::process::Command::new("fusermount3")
                 .args(["-u", "-q", "-z", "--"])
                 .arg(&mount)
-                .status();
+                .status_locked();
         }
         Err(error) => panic!("stopping the session failed: {error}"),
     }
@@ -2487,7 +2488,7 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
                         .args(["--clear-groups", "stat", "-c", "%u:%g"])
                         .arg(home)
                         .arg(home.join(".config"))
-                        .output()
+                        .output_locked()
                         .expect("setpriv runs");
                     assert!(
                         out.status.success(),
@@ -2525,7 +2526,7 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
                     .arg("/var/workspace")
                     .args(["--setenv", "HOME", "/var/workspace", "--chdir", "/"])
                     .args(["sh", "-c", r#"stat -c %U "$HOME" "$HOME/.config"; id -un"#])
-                    .output()
+                    .output_locked()
                     .expect("bwrap runs");
                 let text = String::from_utf8_lossy(&out.stdout);
                 assert!(

@@ -18,6 +18,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_client::RegistryClient;
@@ -39,7 +40,7 @@ fn run(data_dir: &Path, arguments: &[&str]) -> serde_json::Value {
         .arg("--data-dir")
         .arg(data_dir)
         .args(arguments)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -238,7 +239,7 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
                 .args(["sign-delegated-snapshot", "--channel-key-file"])
                 .arg(&channel_key)
                 .args(["--valid-for-seconds", "3600"])
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(
                 output.status.success(),

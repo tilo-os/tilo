@@ -18,6 +18,7 @@ use super::*;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[path = "tests/allocations.rs"]
 mod allocations;
 #[path = "tests/fresh_admin.rs"]
@@ -48,7 +49,7 @@ fn acl(path: &std::path::Path, entries: &str) {
         Command::new("setfacl")
             .args(["-m", entries])
             .arg(path)
-            .status()
+            .status_locked()
             .expect("setfacl is a required qualification tool")
             .success()
     );
@@ -321,7 +322,7 @@ fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
     let parent_before = Command::new("getfacl")
         .arg("-cpn")
         .arg(temp.path())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(parent_before.status.success());
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
@@ -330,14 +331,14 @@ fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
     let parent_after = Command::new("getfacl")
         .arg("-cpn")
         .arg(temp.path())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(parent_after.status.success());
     assert_eq!(parent_after.stdout, parent_before.stdout);
     let child = Command::new("getfacl")
         .arg("-cpn")
         .arg(temp.path().join("sender"))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(child.status.success());
     let child = String::from_utf8(child.stdout).unwrap();

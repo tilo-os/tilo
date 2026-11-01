@@ -37,6 +37,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
@@ -1108,7 +1110,7 @@ impl LspClient {
             .arg("--list")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("spawn inert test executable");
         let mut child = child;
         let stdin = child.stdin.take().expect("piped stdin");

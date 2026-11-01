@@ -54,16 +54,30 @@ pub enum Sampling {
 }
 
 /// How the backdrop is bent and filtered where a part shows it.
+///
+/// The bend is a convex lens along the shape's rounded edge: within `band`
+/// of the edge, each pixel shows what lies below a point moved toward the
+/// shape's inside, along the normal of its rounded outline, by up to
+/// `refraction` at the edge and easing to none at the band's inner side.
+/// Inside the band the backdrop shows straight.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Lens {
     /// Displacement at the shape's rim, logical pixels, easing to none a
-    /// rim's width in: a thick lens. `0` shows the backdrop straight.
+    /// band's width in: a thick lens. `0` shows the backdrop straight.
     pub refraction: f32,
     /// How the sample is filtered.
     pub sampling: Sampling,
     /// The cell's side in logical pixels, for [`Sampling::Blocky`]; ignored
     /// otherwise.
     pub cell: f32,
+    /// The width of the band along the rim the bend eases across, logical
+    /// pixels; `0` is two and a half times `refraction`. A lens that states
+    /// a band shows what lies below even unbent and unblurred.
+    pub band: f32,
+    /// How far apart the bend sets red and blue at the rim, as a fraction
+    /// of the bend (`0` none, the stock): the slight colour fringe of real
+    /// glass.
+    pub dispersion: f32,
 }
 
 /// What a path is filled or stroked with.

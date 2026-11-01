@@ -6,6 +6,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 const SELECTOR: &str = "setup::journey::portable_source_native::mounted_permission::native_tests::actual_mounted_permission_controller_preserves_original_grant_and_refuses_stale_and_wrong_answers";
 struct Binding(CString);
 impl Binding {
@@ -152,7 +153,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", SELECTOR, "--nocapture"])
             .env(CHILD, &marker)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let deadline = tilo_test_env::hang_deadline();
         loop {

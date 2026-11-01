@@ -378,3 +378,201 @@ fn the_part_stands_in_the_band_the_shell_records_dock_names() {
     );
     assert_eq!(part.widgets.placement().size, (1280, 32));
 }
+
+/// The overview over a window on each of `strips`, the first window's on the first strip.
+fn overview_with(strips: &[&str]) -> DeskReading {
+    DeskReading {
+        here: "overview".to_owned(),
+        windows: strips
+            .iter()
+            .enumerate()
+            .map(|(at, strip)| WindowReading {
+                key: (at + 7).to_string(),
+                title: format!("Window {at}"),
+                origin_app: "so.tilo.notes".to_owned(),
+                icon: "app_window".to_owned(),
+                strip: (*strip).to_owned(),
+                workspace: "Desk".to_owned(),
+                recency: i64::try_from(at).unwrap(),
+                focused: at == 0,
+                preview: "none".to_owned(),
+            })
+            .collect(),
+        ..reading()
+    }
+}
+
+/// A window's menu runs the item pressed wherever the menu stands: past the end of what the
+/// overview lays out (one strip, the menu hanging below it), and over the next strip's window
+/// (two strips), which is drawn later and so asked first. Either way the press is the menu's.
+#[test]
+fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
+    let _settled = ui::motion::testing::settled();
+    for strips in [&["Main"][..], &["Main", "Research"][..]] {
+        let (mut part, link) = part_with(overview_with(strips));
+        for _ in 0..6 {
+            part.prepare_frame();
+            part.draw();
+        }
+        click(&mut part, "This window");
+        for _ in 0..6 {
+            part.prepare_frame();
+            part.draw();
+        }
+        click(&mut part, "Close");
+        assert_eq!(
+            link.asked.borrow().front().cloned(),
+            Some(Ask {
+                resource: "desktop:tab:7".to_owned(),
+                action: "close".to_owned(),
+                arguments: BTreeMap::new(),
+            }),
+            "with strips {strips:?}"
+        );
+        assert!(
+            part.control_bounds("Close").is_none(),
+            "the menu closed with strips {strips:?}"
+        );
+    }
+}
+
+/// Type `text` into the field that has the keyboard, a key at a time.
+fn type_into(part: &mut ShellPart, text: &str) {
+    for letter in text.chars() {
+        for pressed in [true, false] {
+            let key = tilo_compositor::HostKey {
+                keycode: 0,
+                pressed,
+                repeat: false,
+                keysym: u32::from(letter),
+                unmodified_keysym: u32::from(letter),
+                text: pressed.then_some(letter),
+                modifiers: tilo_compositor::KeyModifiers::default(),
+            };
+            tilo_compositor::SurfaceHost::key(part, &key);
+            part.prepare_frame();
+        }
+    }
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+}
+
+#[test]
+fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(DeskReading {
+        here: "workspaces".to_owned(),
+        ..reading()
+    });
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let (_, _, width, _) = part
+        .control_bounds("Name")
+        .expect("the surface shows its field");
+    assert!(
+        width >= 100.0,
+        "the name field is wide enough to type in: {width}"
+    );
+    click(&mut part, "Name");
+    type_into(&mut part, "studio");
+    click(&mut part, "Create");
+    assert!(part.refusals().is_empty(), "{:?}", part.refusals());
+    assert_eq!(
+        link.asked
+            .borrow()
+            .front()
+            .map(|ask| (ask.action.clone(), ask.arguments.clone())),
+        Some((
+            "new-workspace".to_owned(),
+            BTreeMap::from([("name".to_owned(), "studio".to_owned())]),
+        )),
+    );
+}
+
+#[test]
+fn every_letter_typed_into_the_launcher_reaches_its_search() {
+    // Once something is typed, the launcher's footer and body change; the panel keeps its
+    // header's field through that, so the next letter lands in the same field.
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(DeskReading {
+        here: "launcher".to_owned(),
+        ..reading()
+    });
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    click(&mut part, "Query");
+    for letter in "quarterly".chars() {
+        for pressed in [true, false] {
+            let key = tilo_compositor::HostKey {
+                keycode: 0,
+                pressed,
+                repeat: false,
+                keysym: u32::from(letter),
+                unmodified_keysym: u32::from(letter),
+                text: pressed.then_some(letter),
+                modifiers: tilo_compositor::KeyModifiers::default(),
+            };
+            tilo_compositor::SurfaceHost::key(&mut part, &key);
+            part.prepare_frame();
+        }
+    }
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    click(&mut part, "Search everywhere for quarterly");
+    assert_eq!(
+        link.asked.borrow().front().cloned(),
+        Some(Ask {
+            resource: "desktop:desk".to_owned(),
+            action: "open-search".to_owned(),
+            arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
+        }),
+    );
+}
+
+/// A part told its display only after it settled (the session's first frames can run before
+/// its output is known) lays its bar out at the display's width: the strip, which a narrow bar
+/// gives way, stands on a wide one though nothing of the desk changed since.
+#[test]
+fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
+    let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+    let app = packages.last().unwrap().meta.app.clone();
+    let link = Rc::new(SessionLink::default());
+    link.publish(reading());
+    let mut part = ShellPart::new(
+        ShellIdentity {
+            app: &app,
+            packages,
+            person: "Pat",
+            link: Rc::clone(&link),
+            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+            seed: true,
+        },
+        32,
+        1.0,
+        std::sync::Arc::new(|| {}),
+        None,
+    );
+    // It settles with no display: nothing more is due.
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    assert!(!part.due(), "the part settled");
+    part.outputs_changed(&[(0, 0, 1280, 800)]);
+    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.control_bounds("Main").is_some(),
+        "a wide bar names the strip: {:?}",
+        crate::Published::accessible_labels(&mut part)
+    );
+}

@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const OBSERVE_ENDPOINT: &str = r"
 import os, pathlib, stat, sys
@@ -28,7 +29,7 @@ fn completed_audio_commands_reap_their_private_daemon_and_preserve_status() {
         let output = Command::new("bash")
             .arg(root.join("tools/with-headless-audio.sh"))
             .args(["python3", "-c", OBSERVE_ENDPOINT, &status.to_string()])
-            .output()
+            .output_locked()
             .expect("run the production wrapper with its real PulseAudio daemon");
         assert_eq!(
             output.status.code(),
@@ -53,7 +54,7 @@ fn completed_audio_commands_reap_their_private_daemon_and_preserve_status() {
         if same_process && surviving.as_deref() == Some("pulseaudio\n") {
             Command::new("kill")
                 .args(["-TERM", &pid.to_string()])
-                .status()
+                .status_locked()
                 .expect("clean the leaked daemon after recording the failure");
         }
         assert!(

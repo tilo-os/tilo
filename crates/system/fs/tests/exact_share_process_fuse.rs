@@ -21,6 +21,7 @@ use std::sync::{
     mpsc::{self, Receiver},
 };
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use fs::availability::{EvictionDecision, EvictionRequirements};
@@ -72,7 +73,7 @@ impl MountedProcess {
             .arg(&self.mount)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status_locked();
         let deadline = tilo_test_env::hang_deadline();
         while self.child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::park_timeout(Duration::from_millis(10));
@@ -194,7 +195,7 @@ fn spawn_mounted(command: &mut Command, mount: &Path) -> MountedProcess {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let (output, logs) = capture_lines(&mut child);
     MountedProcess {
@@ -227,7 +228,7 @@ fn spawn_recipient(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     writeln!(child.stdin.take().unwrap(), "{uri}").unwrap();
     let (output, logs) = capture_lines(&mut child);
@@ -377,7 +378,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .status_locked()
             .expect("mandatory test requires fusermount3")
             .success()
     );

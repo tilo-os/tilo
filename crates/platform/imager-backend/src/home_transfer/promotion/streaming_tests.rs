@@ -6,6 +6,7 @@ use std::os::unix::{
     ffi::OsStringExt,
     fs::{MetadataExt, OpenOptionsExt},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyPlan {
@@ -462,7 +463,7 @@ fn segmented_plan_actual_process_crashes_preserve_source_and_recover_committed_r
             .env(ROOT, fixture.path())
             .env("TILO_JOURNAL_BOUNDARY", boundary)
             .env("TILO_JOURNAL_BOUNDARY_COUNT", "1")
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let deadline = tilo_test_env::hang_deadline();
         let status = loop {

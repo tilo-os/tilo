@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tilo_app_cli::{PackagePlatform, PackageRequest, native_sdk::SdkSelection};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn copy_sources(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -59,7 +60,7 @@ fn dependencies(root: &Path, binary: &Path, toolkit: &Path, std: &Path) -> Vec<P
         .arg(toolkit)
         .arg(toolkit.parent().unwrap())
         .arg(std)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -96,7 +97,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
             "starter",
         ])
         .current_dir(&root)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         created.status.success(),
@@ -129,7 +130,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
     let std_output = Command::new("rustc")
         .args(["--print", "target-libdir"])
         .current_dir(&app)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(std_output.status.success());
     let std = PathBuf::from(std::str::from_utf8(&std_output.stdout).unwrap().trim());
@@ -269,7 +270,7 @@ fn generated_app_packages_only_with_its_actual_signed_native_sdk() {
         .args(["--headless-drive", &drive.to_string()])
         .current_dir(&fixture.app)
         .env("LD_LIBRARY_PATH", fixture.selection.bundle.join("lib"))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         behavior.status.success(),

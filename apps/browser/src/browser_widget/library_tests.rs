@@ -4,6 +4,7 @@
 
 use super::tests::{bookmarked, layout_at, synced};
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::tilo_actions::OperationKind;
 use ui::webview::WebViewEngine;
 
@@ -425,7 +426,7 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
             .env("TILO_TEST_PRIVATE_ROOT", &root)
             .env("TILO_TEST_FILTER_LIST_URL", url)
             .env("TILO_TEST_FILTER_LOADER_DONE", &done)
-            .output()
+            .output_locked()
             .unwrap();
         server.join().unwrap();
         let remained = root.exists();

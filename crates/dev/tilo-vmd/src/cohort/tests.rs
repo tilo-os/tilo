@@ -2,6 +2,7 @@ use super::*;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use tilo_app_package::{Manifest, SigningIdentity};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn elf(needed: &[&str], foreign: bool) -> Vec<u8> {
     let mut bytes = launcher::loader_preflight::elf_fixture(needed, None);
@@ -575,7 +576,7 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
                 "--exact",
                 "--nocapture",
             ])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

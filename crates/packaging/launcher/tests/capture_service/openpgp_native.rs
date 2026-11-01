@@ -10,7 +10,7 @@ fn command(program: &str, args: &[&str]) -> Vec<u8> {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LC_ALL", "C")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -242,7 +242,7 @@ fn signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key
         "the OpenPGP capsule runs as root in a mount namespace of its own"
     );
     if std::env::var_os(CHILD).is_none() {
-        let result = Command::new("/usr/bin/unshare").args(["--mount", "--propagation", "private"]).arg(std::env::current_exe().unwrap()).args(["--exact", "capture_service::openpgp_native::signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key", "--nocapture"]).env(CHILD, "1").status().unwrap();
+        let result = Command::new("/usr/bin/unshare").args(["--mount", "--propagation", "private"]).arg(std::env::current_exe().unwrap()).args(["--exact", "capture_service::openpgp_native::signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key", "--nocapture"]).env(CHILD, "1").status_locked().unwrap();
         assert!(
             result.success(),
             "native OpenPGP capsule qualification unavailable or failed"

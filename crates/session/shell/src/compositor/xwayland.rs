@@ -1770,6 +1770,7 @@ fn push_u16(buffer: &mut Vec<u8>, value: u16) {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     struct Fixture {
         _root: tempfile::TempDir,
@@ -1796,7 +1797,7 @@ mod tests {
     fn sleeper() -> Result<(Child, KeyboardSettings, Option<ResourcePublish>), String> {
         let child = Command::new("/usr/bin/sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .map_err(|error| error.to_string())?;
         Ok((child, KeyboardSettings::default(), None))
     }

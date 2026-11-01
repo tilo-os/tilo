@@ -400,6 +400,8 @@ fn clear_directory(directory: &File, depth: usize) -> io::Result<()> {
 pub(super) mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(feature = "signal-profile-native-test")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Re-execute the actual test in a private mount namespace. The production
     /// RAM check remains unchanged; unavailable namespace/mount capability is
@@ -423,7 +425,7 @@ pub(super) mod tests {
             .arg(std::env::current_exe().unwrap())
             .args([test, "--exact", "--nocapture"])
             .env(MARKER, "1")
-            .output().unwrap();
+            .output_locked().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

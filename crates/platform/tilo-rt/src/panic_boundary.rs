@@ -91,6 +91,7 @@ pub fn message(payload: &(dyn std::any::Any + Send)) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn a_panic_inside_the_boundary_returns_and_the_marker_follows_the_scope() {
@@ -161,7 +162,7 @@ mod tests {
                     "--test-threads=1",
                 ])
                 .env(FIXTURE, scenario)
-                .output()
+                .output_locked()
                 .expect("fixture child")
         };
         let isolated = run("isolated");

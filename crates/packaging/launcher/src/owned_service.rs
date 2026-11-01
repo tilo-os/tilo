@@ -1248,6 +1248,7 @@ impl Drop for ServiceChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     #[test]
     fn stopping_enrollment_child_preserves_parent_but_parent_retirement_stops_new_children() {
         let owner = Arc::new(());
@@ -1354,7 +1355,7 @@ mod tests {
                 });
             }
             owner.before_spawn().unwrap();
-            let child = command.spawn().unwrap();
+            let child = command.spawn_locked().unwrap();
             let outer = child.id();
             owner.child_created();
             let observed = owner.clone();
@@ -1500,7 +1501,7 @@ mod tests {
             });
         }
         owner.before_spawn().unwrap();
-        let child = command.spawn().unwrap();
+        let child = command.spawn_locked().unwrap();
         owner.child_created();
         let observed = owner.clone();
         let worker = std::thread::spawn(move || observed.supervise(child));
@@ -1543,7 +1544,9 @@ mod tests {
 
     #[test]
     fn outer_process_wait_without_verified_init_never_mints_cleanup_receipt() {
-        let child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let child = std::process::Command::new("/bin/true")
+            .spawn_locked()
+            .unwrap();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut service = ServiceChild {
             child,

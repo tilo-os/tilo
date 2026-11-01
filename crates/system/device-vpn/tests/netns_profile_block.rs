@@ -26,6 +26,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use device_vpn::profile::{Activity, Intent, Switch, block_for};
 use device_vpn::protocol::{Envelope, PROTOCOL_VERSION, ProfileBlock, Request, Response};
@@ -50,7 +51,7 @@ fn run(program: &Path, args: &str) -> bool {
         .args(args.split_whitespace())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap_or_else(|error| panic!("{} {args}: {error}", program.display()))
         .success()
 }
@@ -323,7 +324,7 @@ fn crashing(role: &str, test: &str, state: &Path) {
         .env(ROLE, role)
         .env(STATE, state)
         .stdin(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap();
     assert!(!status.success(), "the {role} died");
 }
@@ -525,7 +526,7 @@ fn in_namespace(role: &str) {
         .env(ROLE, role)
         .env(STATE, dir.path())
         .stdin(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap_or_else(|error| panic!("unshare: {error}"));
     assert!(status.success(), "the {role} namespace failed: {status}");
 }

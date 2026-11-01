@@ -1,6 +1,7 @@
 use super::*;
 use std::io::Write;
 use std::os::windows::ffi::OsStringExt;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
 
 fn fixture() -> (tempfile::TempDir, Directory) {
@@ -130,7 +131,7 @@ fn private_file_denies_a_distinct_native_principal() {
         ])
         .env(CHILD, root.path().join("secret"))
         .env(OWNER, acl::Principal::current().unwrap().sid_text())
-        .status()
+        .status_locked()
         .unwrap();
     assert!(
         status.success(),

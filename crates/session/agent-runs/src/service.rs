@@ -97,6 +97,16 @@ impl Service for Served {
                 resource, action,
             )));
         };
+        // The conversation's view operation answers the run, as reading it does.
+        if action == OPEN_CONVERSATION {
+            let run = self.0.reading(id).ok_or_else(|| {
+                DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action))
+            })?;
+            return Ok(Started::Done(tilo_actions::ActionOutput {
+                value: Some(reading(&run)),
+                resources: Vec::new(),
+            }));
+        }
         match decode::<RunAction>(&published, resource, action, arguments)? {
             RunAction::SendMessage { text } => {
                 self.0.send_message(id, &text)?;
@@ -161,10 +171,50 @@ fn present(run: &wire::Run) -> ResourcePresentation {
     }
 }
 
-/// The resource of one run, with its actions.
+/// The shell, whose conversation view (shell.md §8.1) a run is shown through: a run placed on
+/// the canvas is a place the shell draws, as the arrangement derives a place's app from its
+/// resource's.
+pub const SHELL_APP: &str = "so.tilo.shell";
+/// The run's one view: the conversation, the agent chat and the REPL over it.
+pub const CONVERSATION_VIEW: &str = "conversation";
+/// The view operation that names the conversation: reading the run, which is what the view
+/// draws. Showing it is the arrangement's, never this action's.
+pub const OPEN_CONVERSATION: &str = "open-conversation";
+
+/// The view operation [`OPEN_CONVERSATION`], as the resource publishes it.
+#[expect(
+    clippy::expect_used,
+    reason = "a unit operation always serializes to JSON"
+)]
+fn open_conversation() -> tilo_actions::ActionSpec {
+    tilo_actions::ActionSpec::typed_operation(
+        OPEN_CONVERSATION,
+        "Open the conversation".to_owned(),
+        String::new(),
+        tilo_actions::OperationKind::View,
+        RUN_KIND,
+        Vec::new(),
+        |_| {
+            tilo_actions::EncodedAction::encode_operation(RUN_KIND, &OPEN_CONVERSATION)
+                .expect("a view operation always serializes")
+        },
+    )
+}
+
+/// The resource of one run, with its actions, shown by the shell as its conversation.
 fn resource(run: &wire::Run) -> ResourceSpec {
     let mut resource = ResourceSpec::new(wire::run(&run.id), RUN_KIND, run.title.clone())
-        .with_presentation(present(run));
+        .with_presentation(present(run))
+        .with_action(open_conversation())
+        .with_view(
+            tilo_actions::ResourceViewSpec::new(
+                CONVERSATION_VIEW,
+                "Conversation",
+                OPEN_CONVERSATION,
+            )
+            .with_primary(true),
+        );
+    resource.app_id = Some(SHELL_APP.to_owned());
     resource.actions.extend(RunAction::specs());
     if !run.phase.active() {
         for action in ["send-message", "stop-run"] {

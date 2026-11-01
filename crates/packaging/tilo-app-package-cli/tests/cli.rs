@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn bin_path() -> PathBuf {
     // CARGO_BIN_EXE_<name> is injected by cargo at build time
@@ -91,7 +92,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
                 "-o",
                 tapp.to_str().unwrap(),
             ])
-            .output()
+            .output_locked()
             .expect("run tilo-app-package pack");
         assert!(
             out.status.success(),
@@ -103,7 +104,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
 
         let out = Command::new(bin_path())
             .args(["verify", tapp.to_str().unwrap()])
-            .output()
+            .output_locked()
             .expect("run tilo-app-package verify");
         assert!(
             out.status.success(),
@@ -142,7 +143,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
                 "-o",
                 tapp.to_str().unwrap(),
             ])
-            .output()
+            .output_locked()
             .expect("run tilo-app-package pack");
         assert!(!out.status.success(), "oversized tapp unexpectedly packed");
         assert!(
@@ -176,12 +177,12 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
                 "-o",
                 tapp.to_str().unwrap(),
             ])
-            .status()
+            .status_locked()
             .expect("pack");
 
         let out = Command::new(bin_path())
             .args(["inspect", tapp.to_str().unwrap()])
-            .output()
+            .output_locked()
             .expect("inspect");
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -213,7 +214,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
                 "-o",
                 tapp.to_str().unwrap(),
             ])
-            .status()
+            .status_locked()
             .unwrap();
 
         let dest = workdir.path().join("dest");
@@ -224,7 +225,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
                 dest.to_str().unwrap(),
                 tapp.to_str().unwrap(),
             ])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success(), "unpack: {out:?}");
         assert!(dest.join("bin/hello").exists());
@@ -262,7 +263,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "-o",
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(packed.status.success(), "pack: {packed:?}");
 
@@ -279,7 +280,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "add",
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(emitted.status.success(), "entry: {emitted:?}");
     let x86_request: registry_types::EntryChangeRequest =
@@ -314,7 +315,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "-o",
             aarch_tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(packed.status.success(), "aarch64 pack: {packed:?}");
     let emitted = Command::new(bin_path())
@@ -330,7 +331,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "add",
             aarch_tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(emitted.status.success(), "aarch64 entry: {emitted:?}");
     let aarch_request: registry_types::EntryChangeRequest =
@@ -362,7 +363,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             previous.to_str().unwrap(),
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(retry.status.success(), "idempotent update: {retry:?}");
     let retried: registry_types::EntryChangeRequest =
@@ -403,7 +404,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             previous.to_str().unwrap(),
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         metadata_update.status.success(),
@@ -442,7 +443,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             previous.to_str().unwrap(),
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!invalid_metadata.status.success());
 
@@ -457,13 +458,13 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "update",
             tapp.to_str().unwrap(),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!missing_previous.status.success());
 }
 
 fn run(args: &[&str]) -> std::process::Output {
-    let out = Command::new(bin_path()).args(args).output().unwrap();
+    let out = Command::new(bin_path()).args(args).output_locked().unwrap();
     assert!(
         out.status.success(),
         "{args:?}: stdout={:?} stderr={:?}",
@@ -522,7 +523,7 @@ fn cli_packs_a_macos_build_and_emits_its_registry_request() {
                 "add",
                 &path("hello-macos.tapp"),
             ])
-            .output()
+            .output_locked()
             .unwrap()
     };
     let emitted = entry("macos", "aarch64");
@@ -621,7 +622,10 @@ mode = "off"
             args.extend(["--objects".into(), path("release")]);
         }
         args.push(path("release/runtime.tapp"));
-        Command::new(bin_path()).args(&args).output().unwrap()
+        Command::new(bin_path())
+            .args(&args)
+            .output_locked()
+            .unwrap()
     };
     let emitted = entry_args(true);
     assert!(emitted.status.success(), "entry: {emitted:?}");
@@ -684,7 +688,7 @@ impl AttestFixture {
             .arg(&publisher)
             .arg("--output")
             .arg(&original)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),
@@ -739,7 +743,7 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
     let before = std::fs::read(&fixture.original).unwrap();
     let output = fixture
         .command(&fixture.original, &destination, "prefix:so.tilo.example")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -825,7 +829,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     let destination = fixture.dir.path().join("attested.tapp");
     let output = fixture
         .command(&fixture.original, &destination, "prefix:foreign.")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success());
     assert!(!destination.exists());
@@ -834,7 +838,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     assert!(
         !fixture
             .command(&fixture.original, &destination, "all")
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()
@@ -848,7 +852,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
             .arg(&fixture.original)
             .arg("--output")
             .arg(&thin)
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()
@@ -856,7 +860,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     assert!(
         !fixture
             .command(&thin, &destination, "all")
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()
@@ -866,7 +870,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     assert!(
         !fixture
             .command(&fixture.original, &destination, "all")
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()
@@ -875,7 +879,7 @@ fn cli_attest_refuses_foreign_publisher_scope_partial_and_existing_output() {
     assert!(
         !fixture
             .command(&fixture.original, &fixture.original, "all")
-            .output()
+            .output_locked()
             .unwrap()
             .status
             .success()
@@ -929,7 +933,7 @@ fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
     std::fs::write(&other, b"not a package").unwrap();
     let out = Command::new(bin_path())
         .args(["compress", other.to_str().unwrap()])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!out.status.success());
     assert!(!workdir.path().join("notes.txt.zst").exists());
@@ -974,7 +978,7 @@ fn bot_entry_signs_the_canonical_program() {
         .args(["--package-id", "so.tilo.bots.echo", "--version", "1.0.0"])
         .args(["--connector", "so.tilo.discord"])
         .arg(&file)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("<package id>@<min version>"));
