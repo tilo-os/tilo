@@ -193,6 +193,7 @@ pub(crate) fn start_action_plane(
             sync.engine().map(|engine| engine.keys()),
             roster,
             options.questions.clone(),
+            sync.own().user,
         );
         service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
         service

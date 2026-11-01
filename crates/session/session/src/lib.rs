@@ -2932,6 +2932,9 @@ impl Session {
         let video = self.display_sheet.video_stream();
         self.projection_video
             .follow(&mut self.compositor, video.as_ref());
+        // A call shares the same pass: it takes the frame when it wants one,
+        // and a locked desktop hands it nothing.
+        crate::calls::share_screen(&mut self.compositor);
         self.follow_shell()?;
         self.follow_slot_views()?;
         self.settle()?;

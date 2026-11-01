@@ -18142,6 +18142,7 @@ dependencies = [
  "tilo-seal",
  "tilo-test-env",
  "tokio",
+ "tracing",
  "workspace-hack",
 ]
 
