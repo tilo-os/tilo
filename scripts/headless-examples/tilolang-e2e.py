@@ -509,13 +509,13 @@ def presented(session: Session, app: str) -> bool:
 
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
     """The session's own workspace is hosted by this device: its apps wait on no other host
-    (the room syncs with nothing, or with this device's own workspace host, which is there
+    (it syncs with nothing, or with this device's own workspace host, which is there
     already), and each shows its own state at once."""
-    room = session.active_room()
-    told = session.room_sync(room)
-    if told["state"] not in (None, "synced"):
-        raise Failed(f"the session's own workspace waits on a host: {told}")
-    return {"room": room, "state": told["state"],
+    told = session.control_json("state-dump")["workspace_sync"]
+    waiting = [workspace for workspace in told if workspace["state"] not in (None, "synced")]
+    if waiting:
+        raise Failed(f"the session's own workspace waits on a host: {waiting}")
+    return {"workspace_sync": told,
             "snapshots": snapshots(session, windows, out, "first-")}
 
 
@@ -594,7 +594,7 @@ def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: s
     log = open(out / f"session-{tag}.log", "w")
     proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                             env={**os.environ, "RUST_LOG": os.environ.get(
-        "RUST_LOG", "warn,tilo::launch_latency=info,tilo::workspace_sync=info")})
+        "RUST_LOG", "warn,tilo::launch_latency=info,tilo_network_actor::workspace_sync=info")})
     until("the session", lambda: ready.is_file() or proc.poll() is not None, 300, 0.5)
     if proc.poll() is not None:
         raise Failed(f"the session ended ({proc.returncode}); see {out / f'session-{tag}.log'}")
