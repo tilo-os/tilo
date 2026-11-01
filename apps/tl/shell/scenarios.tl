@@ -615,9 +615,7 @@ scenario "the agents on the bar" {
     d.agents.insert(Agent(key: "claude", name: "Claude", state: "done", doing: "Tidied the launch notes"))
     seed(shell)
     let s = shell
-    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) {
-        show_part(s, part, true)
-    }
+    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) { show_part(s, part, true) }
 }
 
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.
