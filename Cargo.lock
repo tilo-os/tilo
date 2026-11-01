@@ -22985,6 +22985,7 @@ dependencies = [
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-service",
  "tilo-ui",
  "tilolang",
  "tilolang-runtime",
