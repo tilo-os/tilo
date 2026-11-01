@@ -151,13 +151,13 @@ scenario "the notification centre" {
     d.workspace = "Studio"
     d.here = "centre"
     d.unread = 9
-    d.notices.insert(Notice(key: "n7", title: "Screenshot ready", body: "The capture is in Pictures.", origin_app: "Capture Studio", group: "Capture Studio", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n7", title: "Screenshot ready", body: "The capture is in Pictures.", origin_app: "Capture Studio", group: "Capture Studio", kind: "info", read: true))
     d.notices.insert(Notice(key: "n8", title: "Ada replied in Chat", body: "Let's ship Friday.", origin_app: "Chat", group: "Chat", kind: "info", read: false))
     d.notices.insert(Notice(key: "n9", title: "Your laptop is at 12%", body: "Plug it in to finish the backup.", origin_app: "Power", group: "Power", kind: "warning", read: true))
-    d.notices.insert(Notice(key: "n10", title: "Fieldwork filed 40 threads", body: "The mailbox is tidy.", origin_app: "Fieldwork", group: "Fieldwork", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n10", title: "Fieldwork filed 40 threads", body: "The mailbox is tidy.", origin_app: "Fieldwork", group: "Fieldwork", kind: "info", read: true))
     d.notices.insert(Notice(key: "n11", title: "New member in Studio", body: "Sam Okafor joined.", origin_app: "Studio", group: "Studio", kind: "info", read: true))
     d.notices.insert(Notice(key: "n12", title: "The release board moved to Review", body: "Jo moved 6 tasks.", origin_app: "Release 4.2", group: "Release 4.2", kind: "info", read: false))
-    d.notices.insert(Notice(key: "n13", title: "Backup finished", body: "12 GB of changes are safe.", origin_app: "Settings", group: "Settings", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n13", title: "Backup finished", body: "12 GB of changes are safe.", origin_app: "Settings", group: "Settings", kind: "info", read: true))
     d.notices.insert(Notice(key: "n14", title: "Calendar: Standup in 10 minutes", body: "Studio room.", origin_app: "Calendar", group: "Calendar", kind: "info", read: false))
     d.notices.insert(Notice(key: "n15", title: "Fieldwork is waiting for you", body: "It asks which folder to archive.", origin_app: "Fieldwork", group: "Fieldwork", kind: "warning", read: false, wants_reply: true))
     seed_notices(d)
@@ -166,6 +166,30 @@ scenario "the notification centre" {
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "open", label: "Open the run"))
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
     d.notice_actions.insert(NoticeAction(notice: "n15", key: "open", label: "Answer"))
+}
+
+/// The centre with nothing new: every notice read, so its header says so and no row carries a
+/// mark, and one group's choices with it.
+scenario "the notification centre, all read" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.workspace = "Studio"
+    d.here = "centre"
+    d.unread = 0
+    d.notices.insert(Notice(key: "n1", title: "Mia mentioned you in Release planning", body: "Can you check the launch date?", origin_app: "Notes", group: "Notes", kind: "info", read: true))
+    d.notices.insert(Notice(key: "n2", title: "Three threads filed", body: "Fieldwork filed 3 threads into Receipts.", origin_app: "Fieldwork", group: "Fieldwork", kind: "info", read: true))
+    d.notices.insert(Notice(key: "n3", title: "Release 4.2 moved to Review", body: "Jo moved the board on.", origin_app: "Tasks", group: "Tasks", kind: "info", read: true))
+    d.notice_actions.insert(NoticeAction(notice: "n1", key: "open", label: "Reply"))
+    d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
+}
+
+/// The centre with nothing in it: what a person sees after Clear all.
+scenario "an empty notification centre" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.workspace = "Studio"
+    d.here = "centre"
+    d.unread = 0
 }
 
 /// The composer with two tasks running and one done, and what they did.

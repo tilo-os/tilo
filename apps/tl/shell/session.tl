@@ -85,19 +85,21 @@ action see_work(who: Text) (icon: .list, label: "What they are working on") {
     outside("session.run", ("see-work", who))
 }
 
-/// Runs one of a notification's actions on it.
+/// Runs one of a notification's choices: the desk's `act-on-notice`, naming the notice and the
+/// key its sender gave the choice. What any action on the desk is: attributed, checked and
+/// undoable.
 action notice_action(n: Notice, key: Text) (icon: .check, label: "Act on it") {
-    outside("session.notify", ("invoke", n.key, key))
+    outside("session.notify", ("session:desk", "act-on-notice", ("notice", n.key), ("action", key)))
 }
 
-/// Closes a notification.
+/// Closes a notification: the desk's `dismiss-notice`.
 action dismiss_notice(n: Notice) (icon: .x, label: "Dismiss") {
-    outside("session.notify", ("dismiss", n.key))
+    outside("session.notify", ("session:desk", "dismiss-notice", ("notice", n.key)))
 }
 
-/// Clears every notification in the centre, which Undo puts back.
+/// Clears every notification in the centre, which Undo puts back: the desk's `clear-notices`.
 action clear_notices(d: Desk) (icon: .trash, label: "Clear all") {
-    outside("session.notify", ("clear", ""))
+    outside("session.notify", ("session:desk", "clear-notices"))
 }
 
 /// Asks the agent `agent` about `subject`, with what was typed.

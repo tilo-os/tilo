@@ -1895,6 +1895,16 @@ impl Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
     fn follow_shell(&mut self) -> Result<(), Error> {
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(());
+        };
+        // The shell's views draw the centre over the desk, so while it is up the person is
+        // looking at what the notices say: they are read, as they are while the panel's own
+        // centre shows them. The bell's count, the centre's header and its rows read the one
+        // set, so they never disagree. It is the same surface the views read (`d.here`).
+        if shell.surface() == surfaces::Surface::Centre.name() {
+            self.shared.notices.mark_read();
+        }
         let Some(shell) = self.shell.as_mut() else {
             return Ok(());
         };
