@@ -1,6 +1,6 @@
 //! Closed relay provenance for rooms installed by the native durable owner.
 //!
-//! The session itself is `tilo_joined_room::session`'s; this actor keeps one
+//! The session itself is `tilo_peer_state::owner::session`'s; this actor keeps one
 //! route per enrolled room, dials it again when its pin changes and runs
 //! the connected session's pump beside every other host session. A room
 //! hosted on this device is not dialled: its session goes to this device's
@@ -12,20 +12,15 @@ use super::{
 };
 use crate::local_host::LocalHost;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-pub use tilo_joined_room::session::{Connect, Input, Scope};
 use tilo_peer_state::join::TransportHint;
+pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
+use tilo_peer_state::owner::session::{DialError, Holder, Link, OwnHost, Reach};
 
 struct Route {
     connect: Connect,
-    /// The host's HTTPS routes, for a host that publishes no iroh address.
-    https: Option<super::HttpsRoute>,
-    serial: u64,
-    pending: Option<tokio::task::JoinHandle<()>>,
-    /// Dials in a row the host closed without answering this device's
-    /// hello: a refusal, or a host from before versioned handshakes. Past
-    /// [`tilo_joined_room::session::UNANSWERED_BEFORE_PROBE`] the next one
-    /// probes which.
-    unanswered: u32,
+    /// What the room's hold shares with this actor.
+    link: Arc<Link>,
+    hold: tokio::task::JoinHandle<()>,
     /// The room's host is this device's own: its session stays in process.
     local: bool,
 }
@@ -34,15 +29,12 @@ pub const NOT_CONNECTED: &str = "the governed room is not connected";
 
 impl Drop for Route {
     fn drop(&mut self) {
-        if let Some(task) = &self.pending {
-            task.abort();
-        }
+        self.hold.abort();
     }
 }
 #[derive(Default)]
 pub(super) struct Routes {
     entries: HashMap<u64, Route>,
-    serial: u64,
 }
 impl Routes {
     pub(super) fn contains(&self, ws: u64) -> bool {
@@ -64,91 +56,89 @@ impl Routes {
     pub(super) fn establishing(&self, ws: u64) -> bool {
         self.entries
             .get(&ws)
-            .is_some_and(|route| route.pending.is_some())
+            .is_some_and(|route| route.link.establishing())
     }
-    /// Whether the room on topic `ws` is hosted on this device.
-    pub(super) fn is_local(&self, ws: u64) -> bool {
-        self.entries.get(&ws).is_some_and(|route| route.local)
-    }
-}
-
-/// Prove this device's membership of `connect`'s room with its renewed
-/// certificate ([`tilo_joined_room::enroll::renew_membership`]), over the
-/// route its sessions take; the next heartbeat dials with it.
-/// A route whose custody no longer matches its room: when the device's
-/// certificate was renewed, it proves its membership with the renewal and
-/// dials once the room holds it.
-fn renew_route(
-    route: &mut Route,
-    endpoint: &iroh::Endpoint,
-    identity: &super::HostIdentity,
-    local_host: Option<&LocalHost>,
-) {
-    let renewed = matches!(route.connect.renewal(identity), Ok(Some(_)));
-    if renewed
-        && route
-            .pending
-            .as_ref()
-            .is_some_and(|task| !task.is_finished())
-    {
-        return;
-    }
-    if let Some(task) = route.pending.take() {
-        task.abort();
-    }
-    if renewed {
-        route.pending = renew(
-            route.connect.clone(),
-            route.https.clone(),
-            endpoint.clone(),
-            identity.clone(),
-            local_host,
-        );
+    /// Dial the room on topic `ws` again now.
+    pub(super) fn retry(&self, ws: u64) {
+        if let Some(route) = self.entries.get(&ws) {
+            route.link.retry();
+        }
     }
 }
 
-fn renew(
-    connect: Connect,
-    https: Option<super::HttpsRoute>,
+/// One room's session, held for this actor: each session up, and each
+/// dial that failed, is answered to it.
+struct NativeHolder {
+    ws: u64,
     endpoint: iroh::Endpoint,
-    identity: super::HostIdentity,
-    local_host: Option<&LocalHost>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let room = connect.room();
-    // A room hosted here renews with this device's own host, in process.
-    let own = identity.device_cert.device_public_key;
-    let hosted_here = connect
-        .owner()
-        .with_current(room, |view| {
-            Ok(tilo_joined_room::session::hosted_by(
-                view.transport_hint()?,
-                &own,
-            ))
+    https: Option<super::HttpsRoute>,
+    local_host: Option<LocalHost>,
+    tx: tokio::sync::mpsc::Sender<InternalEvent>,
+}
+
+impl Holder for NativeHolder {
+    fn reach(&self) -> Reach {
+        Reach {
+            endpoint: self.endpoint.clone(),
+            https: self
+                .https
+                .as_ref()
+                .map(|super::HttpsRoute(http)| Arc::clone(http)),
+            own_host: self
+                .local_host
+                .as_ref()
+                .and_then(LocalHost::get)
+                .map(|host| host as Arc<dyn OwnHost>),
+        }
+    }
+
+    /// Dials follow the heartbeat ([`ActorState::retry_native_routes`]).
+    fn paces_itself(&self) -> bool {
+        false
+    }
+
+    fn dial_failed(
+        &self,
+        via: TransportHint,
+        governor: bool,
+        error: DialError,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let _ = self
+                .tx
+                .send(InternalEvent::NativeDialFailed {
+                    ws: self.ws,
+                    via: Box::new(via),
+                    governor,
+                    error,
+                })
+                .await;
         })
-        .unwrap_or(false);
-    let client = match (https, hosted_here) {
-        (_, true) => local_host?.join_client(own)?,
-        (Some(super::HttpsRoute(http)), false) => {
-            tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, None)
-        }
-        (None, false) => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
-    };
-    Some(tokio::spawn(async move {
-        match tilo_joined_room::enroll::renew_membership(
-            client,
-            identity,
-            connect.owner().clone(),
-            room,
-        )
-        .await
-        {
-            Ok(true) => tracing::info!(%room, "renewed this device's certificate in the room"),
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(%room, %error, "this device's renewed certificate was not taken");
+    }
+
+    fn run(
+        &self,
+        session: RelayCoeditSession,
+        scope: Arc<Scope>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let (held, ended) = tokio::sync::oneshot::channel();
+            if self
+                .tx
+                .send(InternalEvent::NativeHostConnected {
+                    ws: self.ws,
+                    session: Box::new(session),
+                    scope,
+                    held,
+                })
+                .await
+                .is_ok()
+            {
+                // Over once the actor lets the session go.
+                let _ = ended.await;
             }
-        }
-    }))
+        })
+    }
 }
 
 /// The connected relay session of the joined room on topic `ws`.
@@ -162,22 +152,6 @@ pub(super) fn native_session(
 }
 
 impl ActorState {
-    /// Whether this device's own host serves the room on topic `ws`, on the
-    /// route it has or the material it would join by: its session then stays
-    /// in process, and nothing it commits is carried over the network.
-    fn host_governs_here(&self, ws: u64) -> bool {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return false;
-        };
-        self.native_routes.entries.get(&ws).is_some_and(|route| {
-            route
-                .connect
-                .material(identity)
-                .is_ok_and(|(hint, cert, ..)| {
-                    tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
-                })
-        })
-    }
     /// Admit authenticated governance through the same durable owner before
     /// replayed app state can stall the compositor's event drain. This actor
     /// awaits one blocking admission at a time; the live scope still
@@ -359,45 +333,12 @@ impl ActorState {
         }
         self.tell_unsynced(ws);
     }
-    /// Send `request` to the governor of the governed room on topic `ws`,
-    /// opening the room's private lane on first use.
-    pub(super) fn governor_action(
-        &mut self,
-        ws: u64,
-        room: uuid::Uuid,
-        request: Box<super::governor_lane::Request>,
-    ) {
-        let Some(runtime) = self
-            .host_sessions
-            .iter_mut()
-            .find_map(|((topic, _), runtime)| {
-                (*topic == ws
-                    && runtime
-                        .native_scope
-                        .as_ref()
-                        .is_some_and(|scope| scope.reaches_governor()))
-                .then_some(runtime)
-            })
-        else {
-            let _ = request.reply.send(Err(NOT_CONNECTED.into()));
-            return;
-        };
-        runtime
-            .governor
-            .get_or_insert_with(|| super::governor_lane::Lane::open(runtime.session.clone(), room))
-            .send(*request);
-    }
-
     pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
         let ws = crate::room_topic_id(connect.room());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
         self.host_sessions.retain(|(topic, _), _| *topic != ws);
-        let Some(serial) = self.native_routes.serial.checked_add(1) else {
-            return;
-        };
-        self.native_routes.serial = serial;
         // A room pinned to this device, on a device that runs no host of its
         // own, has no host to reach: its apps' empty states are their own
         // from the start, as in a workspace that syncs with no host. With a
@@ -430,20 +371,38 @@ impl ActorState {
                 tracing::warn!(ws, %error, "the room's held sealed writes cannot be read");
             }
         }
+        let link = Arc::new(Link::default());
+        // The hold's first dial starts on its own task: until it reports
+        // back, the room has a session being established, not none.
+        link.dialling();
+        let holder = NativeHolder {
+            ws,
+            endpoint: self.endpoint.clone(),
+            https,
+            local_host: self.local_host.clone(),
+            tx: self.internal_tx.clone(),
+        };
+        let hold = tokio::spawn({
+            let (connect, link) = (connect.clone(), Arc::clone(&link));
+            let identity = self.host_identity.clone();
+            async move {
+                tilo_peer_state::owner::session::hold(connect, identity, &holder, &link).await;
+            }
+        });
         self.native_routes.entries.insert(
             ws,
             Route {
                 connect,
-                https,
-                serial: self.native_routes.serial,
-                pending: None,
-                unanswered: 0,
+                link,
+                hold,
                 local: false,
             },
         );
         self.tell_unsynced(ws);
         self.retry_native_routes();
     }
+    /// Let go of each room's sessions no longer pinned to its material, and
+    /// have every room's hold dial again: the heartbeat paces the dials.
     pub(super) fn retry_native_routes(&mut self) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -467,225 +426,65 @@ impl ActorState {
             if let Err(error) = &material {
                 tracing::debug!(%error, ws, "native room custody unusable for its host");
             }
-            if material.is_err() {
-                self.host_sessions.retain(|(topic, _), _| *topic != ws);
-                renew_route(route, &self.endpoint, identity, self.local_host.as_ref());
-                continue;
-            }
+            route.local = material.as_ref().is_ok_and(|(hint, cert, ..)| {
+                tilo_peer_state::owner::session::hosted_by(hint, &cert.device_public_key)
+            });
             let hosts = route
                 .connect
                 .hosts(&identity.device_cert.device_public_key)
                 .unwrap_or_default();
-            // A session with another host of the room stands in for the
-            // governor's until the governor's own is up again: it is dialled
-            // here, at the heartbeat, like any session that ended.
-            if keeps_pinned_session(&mut self.host_sessions, ws, &material, &hosts)
-                || route
-                    .pending
-                    .as_ref()
-                    .is_some_and(|task| !task.is_finished())
-            {
-                continue;
-            }
-            let Ok((hint, cert, revocations, _)) = material else {
-                continue;
-            };
-            route.local = tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key);
-            let key = identity.device_signing_key.clone();
-            let member = Member {
-                cert,
-                key,
-                revocations,
-            };
-            if route.local {
-                // This device's own host serves the room: its session stays
-                // in process.
-                route.pending = join_local(
-                    self.local_host.as_ref(),
-                    ws,
-                    route.serial,
-                    hint,
-                    member,
-                    self.internal_tx.clone(),
-                );
-                continue;
-            }
-            // Over iroh a host from before versioned handshakes closes the
-            // stream on this device's hello without a word, as a refusal
-            // does: after a few, ask it the way such a host reads.
-            let probe = route.https.is_none()
-                && route.unanswered >= tilo_joined_room::session::UNANSWERED_BEFORE_PROBE;
-            route.pending = Some(spawn_dial(Dial {
-                ws,
-                serial: route.serial,
-                via: hint.clone(),
-                hint,
-                member,
-                https: route.https.clone(),
-                probe,
-                endpoint: self.endpoint.clone(),
-                tx: self.internal_tx.clone(),
-            }));
+            drop_unpinned_sessions(&mut self.host_sessions, ws, &material, &hosts);
+            route.link.retry();
         }
     }
 
-    /// The session of the room on topic `ws` with the host `scope` reached
-    /// ended: with no other session of the room up, dial the next host the
-    /// room's governance names, now.
-    pub(super) fn native_session_closed(&mut self, ws: u64, scope: &Scope) {
-        if self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
-            return;
-        }
-        // A room this device's own host serves is joined again in process,
-        // now: no heartbeat runs for it, and until it is, nothing the host
-        // commits reaches this device's view of the room.
-        if self.native_routes.is_local(ws) || self.host_governs_here(ws) {
-            self.retry_native_routes();
-            return;
-        }
-        let after = (!scope.reaches_governor()).then(|| scope.host().clone());
-        self.fail_over(ws, after.as_ref());
-    }
-
-    /// Dial the host the room on topic `ws` names after `after` (the first
-    /// one when `None`) in its governance, the governor left out: the room
-    /// stays in step through it while its governor is out of reach. With no
-    /// host left, the next heartbeat dials the governor again and starts
-    /// over when that fails.
-    fn fail_over(&mut self, ws: u64, after: Option<&TransportHint>) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        let Some(route) = self.native_routes.entries.get_mut(&ws) else {
-            return;
-        };
-        if route.local
-            || route
-                .pending
-                .as_ref()
-                .is_some_and(|task| !task.is_finished())
-        {
-            return;
-        }
-        let Ok((hint, cert, revocations, _)) = route.connect.material(identity) else {
-            return;
-        };
-        let Ok(hosts) = route.connect.hosts(&cert.device_public_key) else {
-            return;
-        };
-        let next = after
-            .and_then(|after| hosts.iter().position(|host| host == after))
-            .map_or(0, |index| index.saturating_add(1));
-        let Some(via) = hosts.into_iter().nth(next) else {
-            if after.is_some() {
-                tracing::info!(
-                    ws,
-                    "no other host of the room answers; the next heartbeat dials its governor"
-                );
-            }
-            return;
-        };
-        tracing::info!(
-            ws,
-            host = %hex::encode(via.host.device_public_key),
-            "the room's governor is out of reach; dialling another of its hosts"
-        );
-        route.pending = Some(spawn_dial(Dial {
-            ws,
-            serial: route.serial,
-            hint,
-            via,
-            member: Member {
-                cert,
-                key: identity.device_signing_key.clone(),
-                revocations,
-            },
-            https: None,
-            probe: false,
-            endpoint: self.endpoint.clone(),
-            tx: self.internal_tx.clone(),
-        }));
-    }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one dial's outcome: the pins it is checked against, failing over, and the session set up"
-    )]
-    pub(super) fn native_host_connected(
-        &mut self,
+    /// A dial of `via`, the room's governor or another of its hosts, failed.
+    pub(super) fn native_dial_failed(
+        &self,
         ws: u64,
-        serial: u64,
-        (hint, via): (TransportHint, TransportHint),
-        certificate: DeviceCert,
-        result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
+        via: &TransportHint,
+        governor: bool,
+        error: DialError,
     ) {
-        self.tally.note(if via == hint {
+        self.tally.note(if governor {
             "NativeGovernorDial"
         } else {
             "NativeHostDial"
         });
-        let Some(route) = self
-            .native_routes
-            .entries
-            .get_mut(&ws)
-            .filter(|route| route.serial == serial)
-        else {
+        if !self.native_routes.contains(ws) {
+            return;
+        }
+        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(via) else {
             return;
         };
-        route.pending = None;
+        dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
+    }
+
+    /// The room on topic `ws`'s hold reached a host: its session runs here
+    /// until `held` is let go with it.
+    pub(super) fn native_host_connected(
+        &mut self,
+        ws: u64,
+        session: RelayCoeditSession,
+        scope: Arc<Scope>,
+        held: tokio::sync::oneshot::Sender<()>,
+    ) {
+        let governor = scope.reaches_governor();
+        self.tally.note(if governor {
+            "NativeGovernorDial"
+        } else {
+            "NativeHostDial"
+        });
+        let Some(route) = self.native_routes.entries.get(&ws) else {
+            return;
+        };
         let local = route.local;
         // The host is reachable again: a certificate renewal that failed
         // meanwhile tries again.
-        if result.is_ok() {
-            tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
-        }
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        // The room's security may have moved on while dialling (another
-        // member joined): the session is still this device's as long as its
-        // host and certificate are, and its standing checks out now.
-        let Some(continuity) =
-            route
-                .connect
-                .material(identity)
-                .ok()
-                .and_then(|(current, device, _, generation)| {
-                    (current == hint && device == certificate).then_some(generation)
-                })
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(scope.host())
         else {
             return;
-        };
-        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&via) else {
-            return;
-        };
-        let governor = via == hint;
-        if governor {
-            route.unanswered = match &*result {
-                Err(tilo_joined_room::session::DialError::NoAnswer(_)) => {
-                    route.unanswered.saturating_add(1)
-                }
-                _ => 0,
-            };
-        }
-        let connect = route.connect.clone();
-        let session = match *result {
-            Ok(session) => session,
-            Err(error) => {
-                // A host that did not answer stands for one out of reach: the
-                // room goes on through its next host. One that refused this
-                // device, or speaks another version, is said.
-                let unreachable = matches!(
-                    error,
-                    tilo_joined_room::session::DialError::NoAnswer(_)
-                        | tilo_joined_room::session::DialError::Failed(_)
-                );
-                dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
-                let up = self.host_sessions.keys().any(|(topic, _)| *topic == ws);
-                if unreachable && !up {
-                    self.fail_over(ws, (!governor).then_some(&via));
-                }
-                return;
-            }
         };
         let host = payload.endpoint_addr.id;
         if governor {
@@ -700,7 +499,6 @@ impl ActorState {
         } else if self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
             return;
         }
-        let scope = Arc::new(Scope::via(connect, hint, via, certificate, continuity));
         let session = Arc::new(session);
         let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let pump = spawn_host_pump(
@@ -750,10 +548,10 @@ impl ActorState {
             HostRuntime {
                 replaying,
                 actions: None,
-                governor: None,
                 session,
                 pump,
                 native_scope: Some(scope),
+                native_held: Some(held),
                 local,
             },
         );
@@ -763,8 +561,8 @@ impl ActorState {
 
 /// Drop topic `ws`'s host sessions not pinned to its room's current
 /// `material`, or reaching a host the room no longer names among its
-/// `hosts`, and answer whether a session with its governor is left.
-fn keeps_pinned_session(
+/// `hosts`.
+fn drop_unpinned_sessions(
     sessions: &mut HashMap<(u64, iroh::EndpointId), HostRuntime>,
     ws: u64,
     material: &Result<
@@ -777,7 +575,7 @@ fn keeps_pinned_session(
         String,
     >,
     hosts: &[TransportHint],
-) -> bool {
+) {
     sessions.retain(|(topic, _), runtime| {
         *topic != ws
             || runtime.native_scope.as_ref().is_some_and(|scope| {
@@ -789,126 +587,6 @@ fn keeps_pinned_session(
                     && (scope.reaches_governor() || hosts.contains(scope.host()))
             })
     });
-    sessions.iter().any(|((topic, _), runtime)| {
-        *topic == ws
-            && runtime
-                .native_scope
-                .as_ref()
-                .is_some_and(|scope| scope.reaches_governor())
-    })
-}
-
-/// One dial of a room's host: `via`, the governor `hint` names or another
-/// host of the room, as `member`.
-struct Dial {
-    ws: u64,
-    serial: u64,
-    hint: TransportHint,
-    via: TransportHint,
-    member: Member,
-    https: Option<super::HttpsRoute>,
-    probe: bool,
-    endpoint: iroh::Endpoint,
-    tx: tokio::sync::mpsc::Sender<InternalEvent>,
-}
-
-/// Dial `dial`'s host and answer the actor what came of it.
-fn spawn_dial(dial: Dial) -> tokio::task::JoinHandle<()> {
-    let Dial {
-        ws,
-        serial,
-        hint,
-        via,
-        member,
-        https,
-        probe,
-        endpoint,
-        tx,
-    } = dial;
-    let Member {
-        cert,
-        key,
-        revocations,
-    } = member;
-    tokio::spawn(async move {
-        let expected_device = cert.clone();
-        let probing = (probe, endpoint.clone(), expected_device.clone());
-        let result = match https {
-            Some(super::HttpsRoute(http)) => {
-                tilo_joined_room::session::dial_https(http, ws, &via, cert, key, revocations).await
-            }
-            None => {
-                tilo_joined_room::session::dial(endpoint, ws, &via, cert, key, revocations).await
-            }
-        };
-        let result = match result {
-            Err(tilo_joined_room::session::DialError::NoAnswer(reason)) if probing.0 => {
-                match tilo_joined_room::session::probe_version(&probing.1, &via, &probing.2).await {
-                    Some(theirs) => {
-                        Err(tilo_joined_room::session::DialError::PeerVersion { theirs })
-                    }
-                    None => Err(tilo_joined_room::session::DialError::NoAnswer(reason)),
-                }
-            }
-            result => result,
-        };
-        let _ = tx
-            .send(InternalEvent::NativeHostConnected {
-                ws,
-                serial,
-                hint: Box::new(hint),
-                via: Box::new(via),
-                certificate: expected_device,
-                result: Box::new(result),
-            })
-            .await;
-    })
-}
-
-/// This device as a member of a room: its certificate for the room, the
-/// key it signs with, and the revocations it presents.
-struct Member {
-    cert: DeviceCert,
-    key: ed25519_dalek::SigningKey,
-    revocations: tilo_user_identity::RevocationList,
-}
-
-/// Join the room on topic `ws`, hosted by this device's own host, as
-/// `member`: over the host's in-process carrier, through the handshake and
-/// session a remote member's dial takes, answering as a dial does. `None`
-/// until the host opens: there is nothing to join yet, and its opening asks
-/// again ([`super::NetCmd::LocalHostReady`]).
-fn join_local(
-    local_host: Option<&LocalHost>,
-    ws: u64,
-    serial: u64,
-    hint: TransportHint,
-    member: Member,
-    tx: tokio::sync::mpsc::Sender<InternalEvent>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let host = local_host.and_then(LocalHost::get)?;
-    Some(tokio::spawn(async move {
-        let Member {
-            cert,
-            key,
-            revocations,
-        } = member;
-        let own_device = cert.device_public_key;
-        let result = match host.connect_local(cert.clone(), key, revocations).await {
-            Ok(client) => tilo_joined_room::session::join_local(client, ws, &hint, own_device),
-            Err(error) => Err(tilo_joined_room::session::DialError::from(error)),
-        };
-        let _ = tx
-            .send(InternalEvent::NativeHostConnected {
-                ws,
-                serial,
-                via: Box::new(hint.clone()),
-                hint: Box::new(hint),
-                certificate: cert,
-                result: Box::new(result),
-            })
-            .await;
-    }))
 }
 
 /// What a failed dial of the joined room on topic `ws`, whose host is
@@ -917,13 +595,13 @@ fn dial_refused(
     subscribers: &HashMap<u64, tokio::sync::mpsc::Sender<super::NetEvent>>,
     ws: u64,
     host: iroh::EndpointId,
-    error: tilo_joined_room::session::DialError,
+    error: DialError,
 ) {
     match error {
         // The room's host speaks another peer protocol version: the room
         // cannot sync until one side updates, which the person is told,
         // rather than holding a room that silently stays empty.
-        tilo_joined_room::session::DialError::PeerVersion { theirs } => {
+        DialError::PeerVersion { theirs } => {
             tracing::warn!(
                 ws,
                 theirs,
@@ -936,7 +614,7 @@ fn dial_refused(
         // The room removed this device's person: dialing again changes
         // nothing until they join again, which the shell does through the
         // room's door where it has one.
-        tilo_joined_room::session::DialError::NotAdmitted => {
+        DialError::NotAdmitted => {
             tracing::warn!(ws, "the room's host admits this device's person no longer");
             if let Some(subscriber) = subscribers.get(&ws) {
                 let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });

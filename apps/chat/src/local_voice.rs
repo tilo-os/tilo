@@ -191,7 +191,7 @@ impl LocalVoice {
             }
             Command::Leave => {
                 self.channel = None;
-                // Who else is in the room's calls stays as heard.
+                // Who else is in the workspace's calls stays as heard.
                 let rosters = std::mem::take(&mut self.snapshot.rosters);
                 self.snapshot = Snapshot::unavailable();
                 self.snapshot.state = State::Ended;
@@ -435,7 +435,7 @@ impl LocalVoice {
     }
 
     /// The service's answer to the watch `request_id`: everything when no
-    /// newer intent is in flight, else only what the room says (who is in
+    /// newer intent is in flight, else only what the workspace says (who is in
     /// each call, who talks), which no local intent changes.
     fn complete_watch(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
         let before = self.snapshot.clone();
@@ -542,7 +542,7 @@ impl LocalVoice {
             State::Unavailable | State::Idle | State::Ended
         ) {
             // A call that ended for a reason (refused, never granted, ended
-            // by the room) keeps its card, which says why.
+            // by the workspace) keeps its card, which says why.
             let explained = snapshot.state == State::Ended && snapshot.issue.is_some();
             if snapshot.state != State::Unavailable && !explained {
                 self.channel = None;
@@ -786,7 +786,7 @@ impl crate::app::ChatApp {
     }
 
     /// Whose camera and screen the call this person is in shows now, as the
-    /// room says, this person's own camera among them while it is on.
+    /// workspace says, this person's own camera among them while it is on.
     fn showing_pictures(&self) -> BTreeSet<(String, PictureSource)> {
         let mut showing = BTreeSet::new();
         if !self.call.active {
@@ -918,12 +918,12 @@ impl crate::app::ChatApp {
     }
 
     /// Who is in each voice channel, joined or not: the rosters the service
-    /// last heard from the room, by person (this person among them once the
-    /// room counts them in).
+    /// last heard from the workspace, by person (this person among them once the
+    /// workspace counts them in).
     pub(crate) fn refresh_native_streams(&mut self) {
         self.voice_members.clear();
         let snapshot = &self.native_voice.snapshot;
-        // This person's own mute is known here first; the room's word on it
+        // This person's own mute is known here first; the workspace's word on it
         // follows a moment later.
         let own = self.call.active.then_some((
             self.call.channel.as_str(),
@@ -934,7 +934,7 @@ impl crate::app::ChatApp {
             .chain(self.former_ids.iter().map(String::as_str))
             .collect();
         for roster in &snapshot.rosters {
-            // What the room says each person shows and whether they are
+            // What the workspace says each person shows and whether they are
             // muted: their tile reserves a picture from that moment, before
             // the first one arrives.
             let hearing = |user: &str| match own {
@@ -1020,7 +1020,7 @@ impl crate::app::ChatApp {
     }
 
     /// Who `id` is in a call: the name their face shows, and the service a
-    /// bridge reaches them through. A guest linked to a room member is
+    /// bridge reaches them through. A guest linked to a workspace member is
     /// that member; otherwise they are who the bridge says.
     fn call_person(&self, id: &str) -> (String, Option<String>) {
         match self.call_guest(id) {
@@ -1082,7 +1082,7 @@ impl crate::app::ChatApp {
     }
 
     /// The picture a guest's bridge shows for them, requested from the
-    /// room's content store until it is there.
+    /// workspace's content store until it is there.
     pub(crate) fn call_picture(&self, id: &str) -> Option<vello::peniko::ImageData> {
         let avatar = self.call_guest(id)?.avatar.as_deref()?;
         self.images.get(&crate::images::blob_key(avatar))
@@ -1643,7 +1643,7 @@ mod tests {
         assert_eq!(output["reported"]["capture_active"], false);
     }
 
-    /// A join the room refuses, or a grant that never comes, leaves the
+    /// A join the workspace refuses, or a grant that never comes, leaves the
     /// voice card up saying why, never a card stuck joining or one that
     /// vanishes; leaving closes it.
     #[test]
@@ -1678,7 +1678,7 @@ mod tests {
         let refused = join(&mut app, now);
         assert!(
             app.native_voice
-                .complete(refused, &Err("the room said no".into()))
+                .complete(refused, &Err("the workspace said no".into()))
         );
         app.project_native_voice();
         assert!(app.call.active, "the card stays");
@@ -2086,7 +2086,7 @@ mod tests {
     }
 
     /// The Standup's call with Ana in it and Dana and Ben, two people on
-    /// Discord a bridge carries in, Ben linked to Ana's room member.
+    /// Discord a bridge carries in, Ben linked to Ana's workspace member.
     fn bridged_standup() -> crate::app::ChatApp {
         use ui::native_media::{Guest, Roster};
         let mut doc = automerge::AutoCommit::new();

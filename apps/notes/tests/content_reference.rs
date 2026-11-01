@@ -1,7 +1,7 @@
 //! A picture reaches the notebook by reference: an agent puts its bytes into
-//! the room's content store first and names them `tilo.content:<hash>`, so
+//! the workspace's content store first and names them `tilo.content:<hash>`, so
 //! a picture far larger than an action's inline arguments still goes in.
-//! A reference to content the room does not hold is refused, and nothing is
+//! A reference to content the workspace does not hold is refused, and nothing is
 //! kept.
 
 use notes::NotesShell;
@@ -65,14 +65,14 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
 fn a_reference_to_content_the_room_does_not_hold_is_refused() {
     let mut app = app();
     let picture = png(240, 180);
-    // Put somewhere this room's store does not reach.
+    // Put somewhere this workspace's store does not reach.
     let elsewhere = tilo_content::ContentStore::memory();
     let digest = elsewhere.put(&picture).unwrap();
     let reference = format!("tilo.content:{digest}");
 
     let refused = app
         .call("keep-image", json!({ "bytes": reference }))
-        .expect_err("a reference the room cannot read is refused");
+        .expect_err("a reference the workspace cannot read is refused");
     let said = format!("{refused:?}");
     assert!(
         said.contains("is not readable in this room"),

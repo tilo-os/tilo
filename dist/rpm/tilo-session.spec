@@ -199,6 +199,7 @@ makes before it execs anything.
 # Deliberately empty — see the header. The payload arrives prebuilt.
 
 %install
+install -Dpm 0755 bin/tilo-session           %{buildroot}%{_bindir}/tilo-session
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
 install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
@@ -222,6 +223,8 @@ install -Dpm 0755 libexec/tilo-session-report %{buildroot}%{_libexecdir}/tilo-se
 install -Dpm 0644 pam/tilo-unlock            %{buildroot}%{_sysconfdir}/pam.d/tilo-unlock
 install -Dpm 0644 wayland-sessions/tilo.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
+install -Dpm 0644 wayland-sessions/tilo-shell.desktop \
+                  %{buildroot}%{_datadir}/wayland-sessions/tilo-shell.desktop
 
 # Portal backend. The desktop-specific preference file makes
 # xdg-desktop-portal route requests here only inside a Tilo session; the
@@ -305,13 +308,18 @@ for entry in %{buildroot}%{_datadir}/wayland-sessions/*.desktop; do
 done
 # The compositor looks for the unlock helper at exactly one compiled-in path.
 test -x %{buildroot}%{_libexecdir}/tilo-unlock-helper
-# And the production session wrapper must not be redirectable.
+# And the production session wrapper must not be redirectable: both paths it
+# can start are package-owned, and the flag only picks which of them.
+grep -q '^TILO_SESSION=/usr/bin/tilo-session$' %{buildroot}%{_libexecdir}/tilo-session
 grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' %{buildroot}%{_libexecdir}/tilo-session
 grep -q '^SESSION_RUNNER=/usr/libexec/tilo-session-runner$' %{buildroot}%{_libexecdir}/tilo-session
-# A host has no unit that runs the one-time setup, so the shared lifecycle has
-# to supply both declarations regardless of which entry wrapper selected it.
-grep -q -- '--firstboot' %{buildroot}%{_libexecdir}/tilo-session-runner
-grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session-runner
+# A host has no unit that runs the one-time setup, so the wrapper supplies both
+# declarations regardless of which entry selected it.
+grep -q -- '--firstboot' %{buildroot}%{_libexecdir}/tilo-session
+grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session
+grep -q -- '--host-desktop' %{buildroot}%{_libexecdir}/tilo-session
+# The entry a login picks by default starts the native session, not the shell.
+grep -q '^TryExec=/usr/bin/tilo-session$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
 # The portal backend is only reachable if something claims the session's name.
 grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.portal
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
@@ -353,6 +361,7 @@ done
 
 %files
 %dir %{_libexecdir}/tilo
+%{_bindir}/tilo-session
 %{_bindir}/tilo-shell
 %{_bindir}/tilo
 %{_bindir}/fs
@@ -372,6 +381,7 @@ done
 %{_libexecdir}/tilo-session-report
 %config(noreplace) %{_sysconfdir}/pam.d/tilo-unlock
 %{_datadir}/wayland-sessions/tilo.desktop
+%{_datadir}/wayland-sessions/tilo-shell.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal
 %{_datadir}/xdg-desktop-portal/tilo-portals.conf
 %{_datadir}/pipewire/tilo-echo-cancel.conf

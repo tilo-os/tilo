@@ -1,7 +1,7 @@
-//! How views show the people and agents of the room.
+//! How views show the people and agents of the workspace.
 //!
 //! The record holds ids, the same on every replica; the window knows the names. A view that
-//! shows `author.name()` shows what the room's roster calls that participant, the name this
+//! shows `author.name()` shows what the workspace's roster calls that participant, the name this
 //! device knows its person by for the participant at this window, and for software the label
 //! of its kind, so an agent never reads as a person.
 
@@ -18,7 +18,7 @@ struct Roster {
     names: HashMap<String, String>,
 }
 
-/// The names of the room, shared between the window and the runtime that asks for them.
+/// The names of the workspace, shared between the window and the runtime that asks for them.
 #[derive(Clone)]
 pub struct Names {
     me: Rc<str>,
@@ -69,7 +69,7 @@ fn own_name() -> String {
         .unwrap_or_else(|| "You".to_owned())
 }
 
-/// The room's other participants as presence names them, by id.
+/// The workspace's other participants as presence names them, by id.
 fn others(presence: &PresenceCtx) -> Vec<(String, String)> {
     let mut others: Vec<(String, String)> = presence
         .names

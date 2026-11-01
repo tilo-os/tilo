@@ -72,6 +72,7 @@ rustPlatform.buildRustPackage rec {
     "-p" "tilo-unlock-helper"
     "-p" "tilo-session-record"
     "-p" "shell"
+    "-p" "tilo-session"
     "-p" "imager"
     "-p" "tilo-cli"
     "--bin" "tilo"
@@ -80,6 +81,7 @@ rustPlatform.buildRustPackage rec {
     "--bin" "tilo-flight-recorder"
     "--bin" "tilo-session-report"
     "--bin" "shell"
+    "--bin" "tilo-session"
     "--bin" "imager"
     "--no-default-features"
   ];
@@ -118,6 +120,7 @@ rustPlatform.buildRustPackage rec {
     test -n "$shell_bin"
     bash "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
     p="$TMPDIR/tilo-payload"
+    install -Dm755 "$p/bin/tilo-session" "$out/bin/tilo-session"
     install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
     install -Dm755 "$p/bin/tilo" "$out/bin/tilo"
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
@@ -128,6 +131,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm755 "$p/libexec/tilo-session-report" "$out/libexec/tilo-session-report"
     install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
+    install -Dm644 "$p/wayland-sessions/tilo-shell.desktop" "$out/share/wayland-sessions/tilo-shell.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
     install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
@@ -139,6 +143,7 @@ rustPlatform.buildRustPackage rec {
 
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/tilo-session" \
+      --replace-fail 'TILO_SESSION=/usr/bin/tilo-session' "TILO_SESSION=$out/bin/tilo-session" \
       --replace-fail 'TILO_SHELL=/usr/bin/tilo-shell' "TILO_SHELL=$out/bin/tilo-shell" \
       --replace-fail 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "SESSION_RUNNER=$out/libexec/tilo-session-runner"
     substituteInPlace "$out/libexec/tilo-session-runner" \
@@ -147,6 +152,9 @@ rustPlatform.buildRustPackage rec {
       --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment" \
       --replace-fail 'FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder' "FLIGHT_RECORDER=$out/libexec/tilo-flight-recorder"
     substituteInPlace "$out/share/wayland-sessions/tilo.desktop" \
+      --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
+      --replace-fail 'TryExec=/usr/bin/tilo-session' "TryExec=$out/bin/tilo-session"
+    substituteInPlace "$out/share/wayland-sessions/tilo-shell.desktop" \
       --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
       --replace-fail 'TryExec=/usr/bin/tilo-shell' "TryExec=$out/bin/tilo-shell"
     grep -a -F "$out/libexec/tilo-unlock-helper" "$out/bin/tilo-shell"
@@ -178,6 +186,6 @@ rustPlatform.buildRustPackage rec {
     homepage = "https://code.tilo.so/tilo/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
-    mainProgram = "tilo-shell";
+    mainProgram = "tilo-session";
   };
 }

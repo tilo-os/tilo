@@ -8,8 +8,8 @@
 //!
 //! - keeps a record of the room under `<state_root>/hosted/<room>.json`, its
 //!   own, never the room's files;
-//! - federates the room's workspace with the governor's host, and only that
-//!   workspace ([`crate::federation`]): subscribing replays what the
+//! - attaches to the governor's host for the room's workspace, and only
+//!   that workspace ([`crate::attach`]): subscribing replays what the
 //!   governor retains, and live fan-out carries the rest both ways;
 //! - follows the room's governance with a replica that governs nothing: each
 //!   governance change the governor publishes is verified against the
@@ -41,7 +41,7 @@ use tilo_user_identity::DeviceCert;
 use tokio::task::JoinHandle;
 use web_time::SystemTime;
 
-use crate::federation::{PeerRelayDialer, Upstream};
+use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::rooms::RoomServices;
 
@@ -117,7 +117,7 @@ pub(crate) struct Hosting {
     dir: PathBuf,
     services: RoomServices,
     /// Each served room's follower, by room. Dropping one stops the room's
-    /// federation and its following.
+    /// attach session and its following.
     served: std::sync::Mutex<HashMap<String, AbortOnDrop>>,
 }
 
@@ -189,9 +189,9 @@ impl Hosting {
         Ok(hint)
     }
 
-    /// Stop serving `room`, `caller`'s request: its federation and following
-    /// end, nobody is admitted to it here any more, and this host's record
-    /// of it goes. The room's files stay.
+    /// Stop serving `room`, `caller`'s request: its attach session and
+    /// following end, nobody is admitted to it here any more, and this
+    /// host's record of it goes. The room's files stay.
     ///
     /// # Errors
     ///
@@ -234,9 +234,8 @@ impl Hosting {
     }
 
     /// Check `request`, admit what its governance admits, and start
-    /// following the room and federating it with its governor. `resumed`
-    /// takes in what this host retained of the room since it was handed
-    /// over.
+    /// following the room and attaching it to its governor. `resumed` takes
+    /// in what this host retained of the room since it was handed over.
     async fn serve(
         &self,
         request: &HostRoomRequest,
@@ -249,15 +248,13 @@ impl Hosting {
         governor
             .validate_bootstrap(&request.bootstrap)
             .map_err(|error| error.to_string())?;
-        let authority = governor.governing_authority.clone();
+        // The owner device serving the room, whose own address the hint is.
+        let authority = governor.host_device_certificate.clone();
         if governor.room != request.room
             || governor.workspace_id != request.workspace_id
             || authority.user_public_key != own.user_public_key
         {
-            return Err("the room is not governed by a device of this host's person".into());
-        }
-        if request.governor_hint.host.device_public_key != authority.device_public_key {
-            return Err("the governor's address is not the governor's own".into());
+            return Err("the room is not served by a device of this host's person".into());
         }
         let now = SystemTime::now();
         let mut peer = replica(&request.bootstrap, now)?;
@@ -283,6 +280,7 @@ impl Hosting {
         let (tap, notices) = tokio::sync::mpsc::channel(NOTICES);
         let replica = Arc::new(HostedReplica {
             peer: std::sync::Mutex::new(peer.clone()),
+            room_host: request.bootstrap.host.clone(),
             generation: request.bootstrap.generation,
         });
         {
@@ -292,11 +290,11 @@ impl Hosting {
             }
             runtime.governor_tap = Some(tap);
             runtime.hosted_replica = Some(Arc::clone(&replica));
-            // The governor is a host this workspace federates with from the
+            // The governor is a host this workspace is attached to from the
             // start: the session it answers this host's with keeps all of
             // the room, on-demand records included, whichever of the two
             // sessions comes up first.
-            runtime.record_peer_relay(authority.device_public_key);
+            runtime.note_attached_host(authority.device_public_key);
         }
         drop(workspace);
         let identity = LiveIdentity {
@@ -305,7 +303,7 @@ impl Hosting {
             signing_key: services.key.clone(),
             revocations: services.revocations.clone(),
         };
-        let dialer = PeerRelayDialer {
+        let dialer = HostDialer {
             endpoint: services.endpoint.clone(),
             identity,
             workspaces: services.workspaces.clone(),
@@ -352,7 +350,6 @@ fn own_hint(
         mode: WorkspaceHostMode::CertifiedHost,
         room: governor.room.clone(),
         workspace_id: governor.workspace_id,
-        governing_authority: governor.governing_authority.clone(),
         endpoint_addr,
         host_user_public_key: services.cert.user_public_key,
         host_device_certificate: services.cert.clone(),
@@ -368,7 +365,7 @@ fn own_hint(
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
     let mut peer = StatePeer::from_join(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         &bootstrap.revocations,
         now,
@@ -376,7 +373,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the room writes under.
     peer.write_as_room_host();
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
+    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
@@ -454,6 +451,8 @@ async fn stop_following(services: &RoomServices, workspace_id: u64) {
 /// current with each governance change the room's governor published.
 pub(crate) struct HostedReplica {
     peer: std::sync::Mutex<StatePeer>,
+    /// The device that answered the room's join for its owner.
+    room_host: DeviceCert,
     generation: u64,
 }
 
@@ -462,7 +461,13 @@ impl HostedReplica {
     /// ([`crate::rooms::member_bootstrap`]).
     pub(crate) fn bootstrap(&self, workspace_id: u64, device: &DeviceCert) -> Option<Vec<u8>> {
         let peer = self.peer.lock_recover();
-        crate::rooms::member_bootstrap(&peer, workspace_id, self.generation, device)
+        crate::rooms::member_bootstrap(
+            &peer,
+            &self.room_host,
+            workspace_id,
+            self.generation,
+            device,
+        )
     }
 }
 
@@ -501,7 +506,7 @@ struct Follower {
 
 impl Follower {
     /// Take in each change the room's workspace hands over, for as long as
-    /// the room is served. `dialer` federates the room and ends with it.
+    /// the room is served. `dialer` attaches the room and ends with it.
     async fn run(
         mut self,
         mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>,

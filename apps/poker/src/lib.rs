@@ -1,11 +1,11 @@
-//! Poker: Texas hold'em for everyone in the room.
+//! Poker: Texas hold'em for everyone in the workspace.
 //!
-//! The table is the room's default record, the one every device of the room
+//! The table is the workspace's default record, the one every device of the workspace
 //! opens when nothing names another, so everyone who joins the session is at
 //! the same table. Opening it seats nobody: whoever opens the table watches
 //! until they take a seat, with the "Take a seat" button or a seat's own
 //! "Sit here", the table's `sit` action. Only the table's creator writes what
-//! it starts with, so someone who joins never writes into a copy the room's
+//! it starts with, so someone who joins never writes into a copy the workspace's
 //! table is about to replace, and the buttons wait until the table has
 //! arrived. Each move is an action on the table ([`game`]), and each
 //! participant's window draws the same table with only their own cards face
@@ -63,7 +63,7 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Table>) -> Element {
-        // Names arrive from the room after the table: the view follows both.
+        // Names arrive from the workspace after the table: the view follows both.
         let names = cx.people().revision();
         cx.switch(&names, |cx, _| {
             let table = cx.value(Table::clone);

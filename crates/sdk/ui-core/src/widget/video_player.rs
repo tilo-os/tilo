@@ -257,7 +257,8 @@ pub struct VideoPlayer {
     /// [`FullscreenProvider::fullscreen_intent`].
     fullscreen: bool,
     fullscreen_touched: bool,
-    /// Push-mode consumers that own their own clock.
+    /// Push-mode consumers that own their own clock: told the position each seek reached, so
+    /// a host playing on its own reports where the person took the playhead.
     on_seek: Option<Box<dyn FnMut(Duration)>>,
     /// Bounds + hit regions, recomputed each draw.
     rect: Rect,
@@ -770,12 +771,6 @@ impl VideoPlayer {
         self
     }
 
-    #[must_use]
-    pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
-        self.on_seek = Some(Box::new(f));
-        self
-    }
-
     /// Push one H.264 access unit (Annex-B). Returns `true` when a frame was
     /// decoded and `latest_frame` updated.
     pub fn feed_frame(&mut self, nalus: &[u8]) -> bool {
@@ -881,6 +876,14 @@ impl VideoPlayer {
         self.duration_ms
     }
 
+    /// Tell `f` the position each seek reaches: a host playing on its own reports where the
+    /// person took the playhead, as a described component's event does.
+    #[must_use]
+    pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
+        self.on_seek = Some(Box::new(f));
+        self
+    }
+
     /// `ms` is clamped to the duration.
     pub fn seek_to_ms(&mut self, ms: u64) {
         if !self.transport_enabled {
@@ -891,8 +894,8 @@ impl VideoPlayer {
         if let Some(e) = &mut self.engine {
             e.seek_ms(target);
         }
-        if let Some(cb) = self.on_seek.as_mut() {
-            cb(Duration::from_millis(target));
+        if let Some(report) = self.on_seek.as_mut() {
+            report(Duration::from_millis(target));
         }
         self.dirty = true;
         if self.mpris.is_active() {

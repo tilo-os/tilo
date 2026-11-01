@@ -28,7 +28,7 @@ pub const ENV_GUILD_ID: &str = "DISCORD_GUILD_ID";
 /// itself (layout, roles, permissions, members) are refused, and no slash
 /// command is registered.
 pub const ENV_CHANNEL_ID: &str = "DISCORD_CHANNEL_ID";
-/// `DISCORD_LINK_URL`: the room's web entry, which `/link`'s button opens
+/// `DISCORD_LINK_URL`: the workspace's web entry, which `/link`'s button opens
 /// with a one-time token. Without it `/link` says linking is not set up.
 pub const ENV_LINK_URL: &str = "DISCORD_LINK_URL";
 

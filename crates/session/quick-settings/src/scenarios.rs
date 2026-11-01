@@ -17,6 +17,7 @@ pub const NAMES: &[&str] = &[
     "controls",
     "wifi",
     "wifi-password",
+    "wifi-hidden",
     "bluetooth",
     "vpn",
     "battery",
@@ -37,7 +38,7 @@ pub const NAMES: &[&str] = &[
 pub fn actions(name: Option<&str>) -> Vec<Invoke<QuickSettings>> {
     let open = |section| vec![QuickSettings::OPEN_SECTION.with(section)];
     match name {
-        Some("wifi" | "wifi-password") => open(QsSection::Wifi),
+        Some("wifi" | "wifi-password" | "wifi-hidden") => open(QsSection::Wifi),
         Some("bluetooth") => open(QsSection::Bluetooth),
         Some("vpn") => open(QsSection::Vpn),
         Some("battery") => open(QsSection::Battery),
@@ -105,6 +106,18 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             secure: false,
             security: os_actions::WifiSecurity::Open,
             ..network("Library", 1, false, false)
+        },
+    ];
+    state.saved_networks = vec![
+        crate::SavedNetwork {
+            name: "Home".into(),
+            profile: "home".into(),
+            autoconnect: true,
+        },
+        crate::SavedNetwork {
+            name: "Grandma's".into(),
+            profile: "grandma".into(),
+            autoconnect: false,
         },
     ];
     state.vpns = vec![os_actions::VpnConnectionInfo {
@@ -265,6 +278,11 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
                 error: Some("That password didn't work".into()),
                 ..WifiPasswordPrompt::new("Cafe guest")
             });
+        }
+        Some("wifi-hidden") => {
+            // The form under the networks: a short list keeps it in view.
+            state.wifi_networks.truncate(2);
+            state.wifi_hidden = Some(crate::HiddenNetworkPrompt::new());
         }
         Some("notifications") => {
             state.do_not_disturb = true;

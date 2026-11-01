@@ -291,7 +291,7 @@ fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
     fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
         let fired = Arc::new(AtomicUsize::new(0));
         let clicks = Arc::clone(&fired);
-        let button = Button::new("back", "Back to apps").on_click(move || {
+        let button = Button::new("back", "Back to apps").on_effect(move || {
             clicks.fetch_add(1, Ordering::SeqCst);
         });
         let mut harness = crate::headless::FrameHarness::new_with_theme(
@@ -767,19 +767,9 @@ fn action_mode_and_availability_gate_mutation_and_callbacks() {
         );
     }
 
-    fn legacy_button_paths_are_explicit_in_inventory() {
-        let button = Button::new("legacy", "Legacy").on_click(|| {});
-        let bindings = crate::widget::controls::control_action_bindings(&button);
-        assert!(bindings.iter().any(|entry| matches!(
-            entry.kind,
-            crate::widget::ControlBindingKind::LegacyCallback
-        )));
-    }
-
     button_test_id_is_stable_constructor_id();
     action_mode_suppresses_raw_mutation_and_callback();
     action_availability_revokes_and_restores_without_overriding_authored_state();
-    legacy_button_paths_are_explicit_in_inventory();
 }
 
 /// A theme switched under a live tree repaints a plain button's face
@@ -1117,7 +1107,7 @@ fn disabled_faces_are_neutral_and_reject_input() {
         let mut b = {
             let fired = fired.clone();
             Button::new("id", "Go")
-                .on_click(move || fired.set(fired.get() + 1))
+                .on_effect(move || fired.set(fired.get() + 1))
                 .with_enabled(false)
         };
 
@@ -1161,7 +1151,10 @@ fn disabled_faces_are_neutral_and_reject_input() {
             focus = sent.focus_target.or(focus);
         }
 
-        assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
+        // Presses are published, so an enabled button would fire here
+        // when the press is answered; a disabled one queues nothing.
+        assert_eq!(crate::testing::answer_controls(&mut b), 0);
+        assert_eq!(fired.get(), 0, "disabled button must not fire its press");
         assert!(focus.is_none(), "disabled button must not request focus");
         assert!(!handled, "disabled button must not swallow input");
     }
@@ -1475,7 +1468,7 @@ fn pointer_click_fires_the_callback() {
         let fired = Rc::new(Cell::new(0u32));
         let mut b = {
             let fired = fired.clone();
-            Button::new("id", "Go").on_click(move || fired.set(fired.get() + 1))
+            Button::new("id", "Go").on_effect(move || fired.set(fired.get() + 1))
         };
 
         let mut tree = TaffyTree::<()>::new();
@@ -1522,7 +1515,13 @@ fn pointer_click_fires_the_callback() {
                 button: MouseButton::Left,
             },
         );
-        assert_eq!(fired.get(), 1, "fired once on release over the button");
+        assert_eq!(fired.get(), 0, "the press waits to be answered");
+        assert_eq!(
+            crate::testing::answer_controls(&mut b),
+            1,
+            "fired once, when the release's press is answered"
+        );
+        assert_eq!(fired.get(), 1);
     }
 
     cursor_shape_is_pointer_over_button();

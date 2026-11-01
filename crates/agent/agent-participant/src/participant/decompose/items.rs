@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tilo_actions::ActionOutput;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::super::running::{Running, step_brief};
 use super::super::waits::{Arrival, holds_wanted, short_app, wait_words};

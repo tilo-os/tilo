@@ -71,14 +71,6 @@ fn start(name: &str, fd: RawFd) -> Result<Hub, NotAvailable> {
     // app starts later must not hold the service connection.
     fcntl_setfd(inherited, FdFlags::CLOEXEC).map_err(io::Error::from)?;
     let upstream = StdUnixStream::from(inherited.try_clone_to_owned()?);
-    #[cfg(target_os = "linux")]
-    let upstream = {
-        let mut socket = upstream;
-        if name == "collab" && std::env::var(crate::process_binding::ENV).as_deref() == Ok("1") {
-            crate::process_binding::complete(&mut socket)?;
-        }
-        socket
-    };
     upstream.set_nonblocking(true)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()

@@ -732,11 +732,16 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         let captured = std::rc::Rc::clone(&changes);
         let mut ti = TextInput::local()
             .with_initial_value("a")
-            .on_change(move |value| captured.borrow_mut().push(value.to_string()));
+            .on_change_view(move |value| captured.borrow_mut().push(value.to_string()));
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
         assert!(drive(&mut ti, &mut doc, &char_key("b"), mods(false, false),));
+        assert_eq!(
+            crate::testing::answer_controls(&mut ti),
+            1,
+            "the edit reaches its handler when it is answered"
+        );
         assert_eq!(&*changes.borrow(), &["ab"]);
 
         // A non-edit event must not repeat the prior notification even though
@@ -766,6 +771,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
             &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
             mods(false, false),
         ));
+        assert_eq!(crate::testing::answer_controls(&mut ti), 1);
         assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
 
         ti.set_text("programmatic");
@@ -820,7 +826,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::from_state(&state)
-            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+            .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()));
         let mut document = AutoCommit::new();
 
         assert!(Widget::perform_action(
@@ -831,6 +837,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "after");
+        assert_eq!(crate::testing::answer_controls(&mut input), 1);
         assert_eq!(&*changes.borrow(), &["after"]);
     }
 

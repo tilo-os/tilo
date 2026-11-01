@@ -37,6 +37,209 @@ pub enum HostedActions {
     },
 }
 
+/// One of the person's devices, as the device fabric reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "what the fabric says of this device now: independent facts"
+)]
+pub struct PersonalDevice {
+    /// The fabric id, which names the device in the panel's effects.
+    pub id: String,
+    pub label: String,
+    /// It has a live session with this device now.
+    pub online: bool,
+    /// This machine.
+    pub local: bool,
+    /// It shows, so where its display stands beside this one's is arranged in
+    /// its settings pane.
+    pub display: bool,
+    /// One of its interfaces wakes on a magic packet, so a device on its
+    /// network can wake it while it sleeps.
+    pub wakeable: bool,
+    /// It plays the sound this device sends it.
+    pub audio_output: bool,
+}
+
+impl PersonalDevice {
+    /// The Settings page where this device is managed: where its display is
+    /// placed beside this one's when it shows, else the person's devices and
+    /// what they keep in step.
+    #[must_use]
+    pub fn settings_link(&self) -> &'static str {
+        if self.display {
+            "settings://displays"
+        } else {
+            "settings://devices_sync"
+        }
+    }
+}
+
+/// The Devices section's rows: one per device other than this one, in
+/// `devices`' order. `playing` titled what plays here when another device
+/// can take it, and `sending` says a sound of this device's is chosen for
+/// one of them: each row that can take it says so, and every other row says
+/// only where its device is, since pressing it opens that device's settings.
+#[must_use]
+pub fn device_rows(
+    devices: &[PersonalDevice],
+    playing: Option<&str>,
+    sending: bool,
+) -> Vec<HostedRow> {
+    devices
+        .iter()
+        .filter(|device| !device.local)
+        .map(|device| {
+            let takes_sound = sending && device.online && device.audio_output;
+            HostedRow {
+                key: device.id.clone(),
+                title: device.label.clone(),
+                detail: crate::i18n::t(if takes_sound {
+                    "qs-devices-send-here"
+                } else if device.online {
+                    "qs-devices-online"
+                } else {
+                    "qs-devices-offline"
+                }),
+                icon: Icon::Monitor,
+                selected: false,
+                enabled: true,
+                actions: if takes_sound {
+                    HostedActions::Select(crate::i18n::t("qs-devices-action-send"))
+                } else {
+                    match playing {
+                        Some(title) if device.online => HostedActions::Select(crate::i18n::t_args(
+                            "qs-devices-play-here",
+                            &[("media", title.into())],
+                        )),
+                        _ if !device.online && device.wakeable => {
+                            HostedActions::Select(crate::i18n::t("qs-devices-wake"))
+                        }
+                        _ => HostedActions::None,
+                    }
+                },
+            }
+        })
+        .collect()
+}
+
+/// The row key prefix of one of this device's sounds.
+pub const SOUND_KEY: &str = "audio:sound:";
+/// The row key prefix of one route of a sound.
+pub const ROUTE_KEY: &str = "audio:route:";
+/// The row key prefix of one device asking for this device's sound.
+pub const ASK_KEY: &str = "audio:ask:";
+
+/// One sound of this device's that can be sent to another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendableSound {
+    /// Names the sound in the panel's effects, and follows it while the
+    /// person can still pick it.
+    pub token: u64,
+    pub label: String,
+    /// One application's sound, or everything this device plays.
+    pub application: bool,
+}
+
+/// One route of a sound, on its way or playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundRoute {
+    /// Names the route in the panel's effects.
+    pub id: String,
+    /// The sound that travels, as the route names it.
+    pub label: String,
+    /// What the route is doing now, in words that name the other device.
+    pub detail: String,
+    /// The route stopped and is only shown until it is dismissed.
+    pub stopped: bool,
+}
+
+/// Another of the person's devices asking to play a sound of this one's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundAsk {
+    /// Names the ask in the panel's effects.
+    pub id: String,
+    /// The sound it would play here.
+    pub media: String,
+    /// The device asking, as the person knows it.
+    pub source: String,
+}
+
+/// The sounds this device can send, the routes of the sounds it sends or
+/// receives, and the devices asking for its sound, as the remote audio
+/// service reads them: the rows the Devices section lists above the
+/// person's devices.
+#[must_use]
+pub fn remote_audio_rows(
+    sounds: &[SendableSound],
+    routes: &[SoundRoute],
+    asks: &[SoundAsk],
+    chosen: Option<u64>,
+) -> Vec<HostedRow> {
+    let sounds = sounds.iter().map(|sound| HostedRow {
+        key: format!("{SOUND_KEY}{}", sound.token),
+        title: sound.label.clone(),
+        detail: crate::i18n::t(if sound.application {
+            "qs-devices-audio-app"
+        } else {
+            "qs-devices-audio-choose"
+        }),
+        icon: Icon::Volume2,
+        selected: chosen == Some(sound.token),
+        enabled: true,
+        actions: HostedActions::None,
+    });
+    let asks = asks.iter().map(|ask| HostedRow {
+        key: format!("{ASK_KEY}{}", ask.id),
+        title: crate::i18n::t_args(
+            "qs-devices-play-here",
+            &[("media", ask.media.as_str().into())],
+        ),
+        detail: crate::i18n::t_args(
+            "qs-devices-requested-allow-once",
+            &[("source", ask.source.as_str().into())],
+        ),
+        icon: Icon::Volume2,
+        selected: false,
+        enabled: true,
+        actions: HostedActions::Pair {
+            first: (Icon::Check, crate::i18n::t("qs-devices-allow-audio")),
+            second: (Icon::X, crate::i18n::t("qs-devices-decline-audio")),
+        },
+    });
+    let routes = routes.iter().map(|route| HostedRow {
+        key: format!("{ROUTE_KEY}{}", route.id),
+        title: route.label.clone(),
+        detail: route.detail.clone(),
+        icon: Icon::Volume2,
+        selected: false,
+        enabled: true,
+        actions: HostedActions::Select(crate::i18n::t(if route.stopped {
+            "qs-devices-action-dismiss"
+        } else {
+            "qs-devices-action-stop"
+        })),
+    });
+    // What waits for an answer comes first, then what travels, then what can
+    // travel: the person answers a device before choosing one.
+    asks.chain(routes).chain(sounds).collect()
+}
+
+/// The same devices as an accessory's page lists where it can move to, this
+/// device included and marked local.
+#[must_use]
+pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<crate::HandoffTarget> {
+    devices
+        .iter()
+        .map(|device| crate::HandoffTarget {
+            id: device.id.clone(),
+            label: device.label.clone(),
+            online: device.online,
+            local: device.local,
+        })
+        .collect()
+}
+
 /// One row's face.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedRow {

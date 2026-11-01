@@ -1,5 +1,5 @@
 //! Opt-in Chat navigation through the SDK's existing viewport presence.
-//! The shell owns who follows whom; no pixels, capture lease or room grant
+//! The shell owns who follows whom; no pixels, capture lease or workspace grant
 //! are created here. Only bounded navigation ids and scroll leave the app.
 use serde::{Deserialize, Serialize};
 use ui::view::{ViewContribution, capability::ViewState};
@@ -68,7 +68,7 @@ impl ViewState for crate::ChatApp {
             return;
         };
         // Presence never resolves an arbitrary address or grants access. The
-        // target must already be in this permissioned room's loaded resource.
+        // target must already be in this permissioned workspace's loaded resource.
         let Some(channel) = self.channel(&context.channel) else {
             return;
         };
@@ -101,10 +101,10 @@ mod tests {
     use super::*;
     use ui::widget::Collaborative;
 
-    fn room() -> (crate::testing::Room, crate::ChatApp) {
+    fn workspace() -> (crate::testing::Workspace, crate::ChatApp) {
         let doc = crate::testing::demo_doc();
         let mut app = crate::app::ChatApp::new_ephemeral();
-        app.attach_room(&doc);
+        app.attach_workspace(&doc);
         app.reload(&doc);
         app.active_channel = "c_crit".into();
         (doc, app)
@@ -114,14 +114,14 @@ mod tests {
     fn shared_space_context_follows_through_sdk_presence_and_releases_on_shell_stop() {
         use ui::collaboration::{CollabEvent, PresencePayload};
         use ui::view::FreezeThaw;
-        let (doc, mut presenter) = room();
+        let (doc, mut presenter) = workspace();
         presenter
             .answer_effect(crate::effects::ChatEffect::ShareLiveContext)
             .unwrap();
         presenter.scroll = 180.0;
         let contribution = presenter.view_state().unwrap();
         let mut follower = crate::app::ChatApp::new_ephemeral();
-        follower.attach_room(&doc);
+        follower.attach_workspace(&doc);
         follower.reload(&doc);
         follower.active_channel = "c_general".into();
         // Publishing our own view lets the real SDK capture observe the
@@ -168,9 +168,9 @@ mod tests {
 
     #[test]
     fn shared_space_context_requires_local_consent_and_stop_withdraws_navigation() {
-        let (mut doc, mut presenter) = room();
+        let (mut doc, mut presenter) = workspace();
         let before = doc.save();
-        let (_, mut follower) = room();
+        let (_, mut follower) = workspace();
         assert!(ui::view::capability::view_state(&presenter).is_none());
         presenter
             .answer_effect(crate::effects::ChatEffect::ShareLiveContext)
@@ -204,8 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn shared_space_context_cannot_navigate_to_unknown_rooms_or_import_capture_state() {
-        let (_, mut app) = room();
+    fn shared_space_context_cannot_navigate_to_unknown_workspaces_or_import_capture_state() {
+        let (_, mut app) = workspace();
         let initial = app.active_channel.clone();
         app.handle_collab_event(&ui::collaboration::CollabEvent::FollowChanged {
             peer_id: Some("presenter".into()),

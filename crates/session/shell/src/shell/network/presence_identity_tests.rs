@@ -80,10 +80,10 @@ fn a_member_who_claims_anothers_identity_is_still_only_themselves() {
     let alice_device = iroh::SecretKey::from_bytes(&[0xA2; 32]);
     let mallory_root = SigningKey::from_bytes(&[0x3A; 32]);
     let mallory_device = iroh::SecretKey::from_bytes(&[0x3B; 32]);
-    let alice = crate::shell::collab_broker_capnp::principal_id_for_root(
+    let alice = crate::shell::collab_app_broker::principal_id_for_root(
         alice_root.verifying_key().to_bytes(),
     );
-    let mallory = crate::shell::collab_broker_capnp::principal_id_for_root(
+    let mallory = crate::shell::collab_app_broker::principal_id_for_root(
         mallory_root.verifying_key().to_bytes(),
     );
 

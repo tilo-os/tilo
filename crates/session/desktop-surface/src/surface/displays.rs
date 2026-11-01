@@ -265,6 +265,14 @@ impl DesktopHandle {
         })
     }
 
+    /// The primary display: the one the person chose in Settings while it
+    /// is connected, else the first. `None` while the desk carries no
+    /// partition, as one display needs no telling apart.
+    #[must_use]
+    pub fn primary_display(&self) -> Option<u32> {
+        self.read(|tree| tree.outputs.primary())
+    }
+
     /// The display window `group` shows on, while there are several.
     #[must_use]
     pub fn display_of(&self, group: GroupId) -> Option<u32> {
@@ -461,6 +469,7 @@ mod tests {
             y: 0.0,
             width: 800.0,
             height: 600.0,
+            primary: false,
         }
     }
 

@@ -1,5 +1,5 @@
 //! Discord to Tilo (discord-bridge.md §3, §5, §7): what a connector event
-//! becomes in the room's Chat. Echo suppression lives here: an event from
+//! becomes in the workspace's Chat. Echo suppression lives here: an event from
 //! one of the bridge's webhooks or from the bot user is the bridge's own
 //! output and plans nothing, and so does anything by a blocked persona.
 
@@ -338,7 +338,7 @@ fn place(
     }
 }
 
-/// `message-created`, in the room whose Chat record reads as `chat`.
+/// `message-created`, in the workspace whose Chat record reads as `chat`.
 #[must_use]
 pub fn plan_created(
     guild: &Guild,
@@ -550,7 +550,11 @@ pub fn plan_reaction(
 /// `member-changed`: a ban blocks the persona and removes what was mirrored
 /// of them; a linked member's roles changed by hand are set back.
 #[must_use]
-pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Value) -> InboundPlan {
+pub fn plan_member(
+    guild: &Guild,
+    event: &MemberChanged,
+    workspace: &serde_json::Value,
+) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if event.banned {
         // The bridge's own `block-persona` fires nothing, so the ban
@@ -565,7 +569,7 @@ pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Valu
         return plan;
     }
     if let Some(link) = guild.links.iter().find(|l| l.discord_user == event.user_id) {
-        let role = tilo::room_role(room, &link.person);
+        let role = tilo::workspace_role(workspace, &link.person);
         plan.member_roles.extend(roles::plan_member(
             guild,
             &event.user_id,
@@ -662,7 +666,7 @@ pub fn plan_command(guild: &Guild, chat: &serde_json::Value, event: &Command) ->
     plan
 }
 
-/// `authorized`: someone signed in with Discord on the room's host; the
+/// `authorized`: someone signed in with Discord on the workspace's host; the
 /// account is offered to the person who started it, and to them alone.
 #[must_use]
 pub fn plan_authorized(event: &Authorized) -> InboundPlan {

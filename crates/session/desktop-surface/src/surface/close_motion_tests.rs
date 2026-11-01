@@ -4,6 +4,7 @@
 //! Five windows of the default width on a 1280 px desktop.
 
 use super::*;
+use ui::widget::TileContent;
 
 struct Notices;
 

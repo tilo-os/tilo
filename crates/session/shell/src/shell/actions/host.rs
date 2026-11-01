@@ -62,9 +62,7 @@ impl<'a> Live<'a> {
             state,
             shortcuts: settings_store::hardware::ShortcutConfig::load(),
             display_waiting: super::display_change_waiting(),
-            invite_offered: state.peer_sync_enabled
-                && crate::shell::invite_policy::active_invite_route(state)
-                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
+            invite_offered: state.may_invite_here(),
         }
     }
 

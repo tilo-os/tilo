@@ -97,7 +97,9 @@ tilo_stage_script "$repo_root/dist/session/tilo-session-runner" "$work/tilo-sess
     FLIGHT_RECORDER="$work/tilo-flight-recorder"
 
 # The shared runner is an internal package component, but it still fails
-# closed when a broken wrapper omits or supplies an unsafe compositor path.
+# closed when a broken wrapper omits or supplies an unsafe compositor path. It
+# starts exactly the command line its wrapper names, so every login below hands
+# it a shell build's, as the production wrapper does when it is asked for one.
 set +e
 "$work/tilo-session" >"$work/no-arg.out" 2>&1
 no_arg_status=$?
@@ -126,6 +128,7 @@ grep -Fqx "tilo-session: $work/tilo-flight-recorder is missing or not executable
 # consulted. Source-level assertions are appropriate because their absolute
 # paths are replaced by each package format after staging.
 production=$repo_root/dist/session/tilo-session
+grep -Fqx 'TILO_SESSION=/usr/bin/tilo-session' "$production"
 grep -Fqx 'TILO_SHELL=/usr/bin/tilo-shell' "$production"
 grep -Fqx 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "$production"
 ! grep -Fq 'TILO_SESSION_SHELL' "$production"
@@ -145,7 +148,7 @@ chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
     TILO_SESSION_TEST_SECRET='must-not-be-logged' TILO_SESSION_TEST_LOCK_SEEN=$work/lock-seen \
-    "$work/tilo-session" "$work/shell"
+    "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm
 status=$?
 set -e
 [[ $status == 7 ]]
@@ -202,14 +205,14 @@ printf 'locked\n' >"$XDG_RUNTIME_DIR/tilo-session/lock-state"
 : >"$log"
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_LOCK_SEEN=$work/lock-seen \
-    TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session" "$work/shell"
+    TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm
 set -e
 test "$(cat "$work/lock-seen")" = unlocked
 test ! -e "$XDG_RUNTIME_DIR/tilo-session/lock-state"
 
 : >"$log"
 set +e
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_PREDECESSOR=1 "$work/tilo-session" "$work/shell"
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_PREDECESSOR=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm
 status=$?
 set -e
 [[ $status == 1 ]]
@@ -234,7 +237,7 @@ sort "$log" >"$work/log.sorted"
 cmp "$work/expected-predecessor.sorted" "$work/log.sorted"
 
 : >"$log"
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" "$work/shell" &
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm &
 wrapper_pid=$!
 # Wait for the wrapper to have started the shell, or to have exited without it. The bound only
 # guards a hang: two seconds were not enough for the wrapper's chain of process starts on a node
@@ -260,7 +263,7 @@ grep -Fqx 'shell-term' "$log"
 # being killed alongside `loginctl terminate-session self`.
 : >"$log"
 XDG_SESSION_ID=fixture-42 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 \
-    "$work/tilo-session" "$work/shell"
+    "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm
 ! grep -Fq 'compositor exited without a logout request' "$log"
 grep -Fqx 'systemctl --user stop tilo-graphical-session.target' "$log"
 grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
@@ -274,7 +277,7 @@ fi
 
 : >"$log"
 set +e
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_START=1 "$work/tilo-session" "$work/shell"
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_START=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm
 status=$?
 set -e
 [[ $status == 1 ]]
@@ -288,8 +291,8 @@ for failure in dbus import; do
     : >"$log"
     set +e
     case "$failure" in
-        dbus) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_DBUS=1 "$work/tilo-session" "$work/shell" ;;
-        import) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_IMPORT=1 "$work/tilo-session" "$work/shell" ;;
+        dbus) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_DBUS=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm ;;
+        import) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_IMPORT=1 "$work/tilo-session" "$work/shell" --host-desktop-session --firstboot --backend drm ;;
     esac
     status=$?
     set -e

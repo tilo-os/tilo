@@ -202,7 +202,9 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
-those of them the workspace's grants let read `r`. A principal says what it is: `p.name()`,
+those of them the workspace's grants let read `r`. `workspace.me` is the person the view is
+shown to, the runtime's viewer read where the view runs (an action acts for the `invoker`
+instead). A principal says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
@@ -491,8 +493,8 @@ cargo run -p tilolang-cli -- run apps/tl/counter --peers 2
 ```
 
 `run` builds the package into `.tapp`s for a locally built nested Tilo session
-(`dist/dev/nested-session.sh`, or `dist/dev/nested-pair.sh --peers N` for N people in one
-community workspace), installs them there and opens the app through the session's own action,
+(`dist/dev/nested-session.sh`), installs them there and opens the app through the session's own
+action,
 so the launcher starts it as on a real system. The session bakes the tilolang runtime bundle from
 the build. Then:
 

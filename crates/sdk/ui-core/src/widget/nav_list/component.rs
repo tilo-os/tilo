@@ -1,6 +1,6 @@
 //! [`NavList`] and its items as described components.
 
-use crate::component::{Component, Described, Event, ResourceId, Value};
+use crate::component::{Component, Described, Event, Person, ResourceId, Value};
 use crate::icons::Icon;
 
 use super::{NavItem, NavList, NavSection};
@@ -82,6 +82,10 @@ pub struct NavItemProps {
     /// The resource the place stands for, when it is one (a channel): the host says how much
     /// of it the person has not seen, in `live`, and lifts the label while anything is.
     pub item: Option<ResourceId>,
+    /// The person the place stands for, when it is one (a direct conversation): their avatar
+    /// in the icon's place, ringed in their presence colour, and their presence badge. The
+    /// icon and the avatar never both show: the person takes the icon's place.
+    pub person: Option<Person>,
     /// The place was chosen: what choosing it does, beside the list's own `select`.
     #[component(event)]
     pub select: Event,
@@ -92,6 +96,12 @@ impl From<NavItemProps> for NavItem {
         let mut item = Self::new(props.key, props.label);
         if let Some(icon) = props.icon {
             item = item.icon(icon);
+        }
+        // A person takes the icon's place: their face says who the place is, ringed in the
+        // presence colour their identity carries.
+        if let Some(person) = props.person {
+            item = item.person(&person.identity, None, false);
+            item = item.person_face(person.name, None);
         }
         // What names the person is what the badge counts: a mention count is more specific
         // than the place's unread count, and the label lifts either way.

@@ -67,6 +67,18 @@ pub struct Question {
 }
 
 impl Question {
+    /// The question as the shell asks it: what made the change, how long it
+    /// has left, and whether an answer is being recorded. The displays are
+    /// where the shell stands the sheet ([`ConfirmSeat::covers`]).
+    pub fn asking(tool: Option<String>, status: String, answering: bool) -> Self {
+        Self {
+            tool,
+            status,
+            answering,
+            displays: Vec::new(),
+        }
+    }
+
     fn title(&self) -> String {
         self.tool.as_ref().map_or_else(
             || t("display-confirm-tool-unknown-title"),
@@ -78,6 +90,25 @@ impl Question {
             },
         )
     }
+}
+
+/// The status line under the title: the countdown while the change waits
+/// for the person, that its answer is being recorded, or that nothing is
+/// counting down yet.
+pub fn status(seconds_left: Option<u64>, answering: bool) -> String {
+    if answering {
+        return t("display-confirm-answer-pending");
+    }
+    seconds_left.map_or_else(
+        || t("display-confirm-applying"),
+        |seconds| {
+            let seconds = f64::from(u32::try_from(seconds).unwrap_or(u32::MAX));
+            crate::t_args(
+                "display-confirm-countdown",
+                &[("seconds", ui::i18n::ArgValue::Number(seconds))],
+            )
+        },
+    )
 }
 
 /// What the cards show: the question.
@@ -92,6 +123,8 @@ struct Shown {
 pub struct ConfirmSeat {
     presentation: Presentation,
     question: Rc<RefCell<Question>>,
+    /// The displays the shell spans the sheet over, in its own coordinates.
+    displays: Rc<RefCell<Vec<Rect>>>,
     shown: Rc<RefCell<Option<LocalState<Shown>>>>,
     asked: Rc<RefCell<Vec<ConfirmEffect>>>,
 }
@@ -109,6 +142,10 @@ impl crate::Seat for ConfirmSeat {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
+
+    fn covers(&self, displays: Vec<Rect>) {
+        self.spans(displays);
+    }
 }
 
 impl ConfirmSeat {
@@ -121,6 +158,27 @@ impl ConfirmSeat {
             shown.update(|shown| shown.question = question.clone());
         }
         *self.question.borrow_mut() = question;
+    }
+
+    /// Ask about a change with its cards on every display the sheet covers.
+    pub fn asking(&self, tool: Option<String>, status: String, answering: bool) {
+        self.ask(Question {
+            displays: self.displays.borrow().clone(),
+            ..Question::asking(tool, status, answering)
+        });
+    }
+
+    /// Where the displays are the sheet covers, in its own coordinates: the
+    /// cards of a question standing now move with them.
+    fn spans(&self, displays: Vec<Rect>) {
+        if *self.displays.borrow() == displays {
+            return;
+        }
+        *self.displays.borrow_mut() = displays;
+        let question = self.question.borrow().clone();
+        if question != Question::default() {
+            self.asking(question.tool, question.status, question.answering);
+        }
     }
 
     /// What the question asks now.

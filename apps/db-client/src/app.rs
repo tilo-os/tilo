@@ -193,7 +193,7 @@ impl DbClientApp {
             .with_id("db-client")
             .with_window_toolbar()
             .sidebar(Box::new(Navigator::new(&link, actions)))
-            .content(Box::new(Workspace::new(&link)));
+            .content(Box::new(Workspace::new(&link, actions)));
         let mut store = Store {
             link,
             session,
@@ -466,11 +466,6 @@ impl Store {
             Intent::CloseDialog => {
                 self.dialog = None;
                 self.pending_query_confirmation = None;
-            }
-            Intent::LoadSnippet(index) => {
-                if let Some((_, sql)) = crate::sample::starter_queries().get(index) {
-                    self.replace_editor_sql(sql);
-                }
             }
             Intent::DismissStatus => self.session.status = RunStatus::Idle,
             Intent::Cancel => {

@@ -53,12 +53,9 @@ pub fn report(player: &Player, playhead_us: i64, apps: &[MediaApp]) -> Option<Pl
         return None;
     }
     let content_id = format!("blake3:{}", blake3::hash(locator.as_bytes()).to_hex());
-    let session_suffix = blake3::hash(format!("{}\0{locator}", player.bus_name).as_bytes());
-    let session_suffix = session_suffix.to_hex();
-    let session_suffix = session_suffix.as_str().get(..16)?;
     let report = PlaybackReport {
         session: PlaybackSession {
-            id: format!("{package_id}:mpris:{session_suffix}"),
+            id: session_id(&package_id, player, locator),
             app_id: package_id.clone(),
             title,
             content_id,
@@ -73,6 +70,16 @@ pub fn report(player: &Player, playhead_us: i64, apps: &[MediaApp]) -> Option<Pl
         accepted_handoff_request: None,
     };
     report.validate_route(&package_id, "").then_some(report)
+}
+
+/// The id a hand-over names `player`'s `locator` by: the app that plays it,
+/// and a digest of the player and its source, so the session another device
+/// continues is named the same one it was here.
+#[must_use]
+pub fn session_id(app_id: &str, player: &Player, locator: &str) -> String {
+    let digest = blake3::hash(format!("{}\0{locator}", player.bus_name).as_bytes()).to_hex();
+    let suffix = digest.as_str().get(..16).unwrap_or(digest.as_str());
+    format!("{app_id}:mpris:{suffix}")
 }
 
 fn resolve_package(

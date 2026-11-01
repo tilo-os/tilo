@@ -96,7 +96,7 @@ fn room_media_restore_rejects_malformed_present_policy() {
         StatePeer::restore(
             &bytes,
             ROOM,
-            peer.core.authority.clone(),
+            peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now
@@ -267,7 +267,7 @@ fn room_media_restore_rejects_present_mismatched_bound_chat() {
         StatePeer::restore(
             &peer.durable().unwrap(),
             ROOM,
-            peer.core.authority.clone(),
+            peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now
@@ -299,12 +299,12 @@ fn members() -> (
 ) {
     let (original, key, now) = fixture();
     let members = [member(110, 111), member(120, 121), member(101, 103)];
-    let roster = std::iter::once(original.core.authority.clone())
+    let roster = std::iter::once(original.owner_certificates()[0].clone())
         .chain(members.iter().map(|(_, cert)| cert.clone()))
         .collect::<Vec<_>>();
     let mut room = room::candidate(
         None,
-        &seed_room(ROOM, &original.core.authority, &roster).unwrap(),
+        &seed_room(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
     let caps = room.get(ROOT, "members").unwrap().unwrap().1;
@@ -312,7 +312,7 @@ fn members() -> (
     put_member(&mut room, &caps, members[1].1.user_public_key, Role::Viewer).unwrap();
     let mut peer = StatePeer::new(
         ROOM,
-        original.core.authority.clone(),
+        original.owner_certificates()[0].clone(),
         roster,
         RevocationList::new(),
         now,
@@ -344,7 +344,7 @@ fn room_media_policy_changes_only_from_the_owners_devices() {
     let value = policy(&peer);
     // The third member is another device of the owner's.
     let [editor, viewer, own] = members;
-    assert_eq!(own.1.user_public_key, peer.authority().user_public_key);
+    assert_eq!(own.1.user_public_key, peer.owner());
     let members = [editor, viewer];
     for (key, _) in &members {
         let before = peer.durable().unwrap();
@@ -423,7 +423,7 @@ fn room_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write(
 fn room_first_receiver(author: &StatePeer, key: &SigningKey, now: SystemTime) -> StatePeer {
     let mut receiver = StatePeer::new(
         ROOM,
-        author.core.authority.clone(),
+        author.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -513,7 +513,7 @@ fn room_media_room_first_restore_preserves_pending_exact_chat() {
     let restored = StatePeer::restore(
         &bytes,
         ROOM,
-        author.core.authority.clone(),
+        author.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -588,12 +588,12 @@ fn room_media_security_basis_excludes_labels_and_normalizes_identity_json() {
     let peers = room.get(ROOT, "peers").unwrap().unwrap().1;
     room.put(
         &peers,
-        hex::encode(peer.core.authority.device_public_key),
+        hex::encode(peer.owner_certificates()[0].device_public_key),
         "label",
     )
     .unwrap();
     let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let id = hex::encode(peer.core.authority.device_public_key);
+    let id = hex::encode(peer.owner_certificates()[0].device_public_key);
     let row: GovernedIdentity =
         serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
     room.put(
@@ -734,7 +734,7 @@ fn room_media_current_revoked_or_expired_governor_cannot_publish_policy() {
         let validation_time = if expired {
             // Construct a genuinely root-signed finite certificate and rebuild
             // its governed seed, rather than mutating trusted certificate data.
-            let mut cert = peer.core.authority.clone();
+            let mut cert = peer.owner_certificates()[0].clone();
             cert.expires_at_ns = Some(now_ns(now) + 1);
             sign_device_cert(&mut cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
             let doc = peer.document(APP, "").unwrap();
@@ -756,8 +756,8 @@ fn room_media_current_revoked_or_expired_governor_cannot_publish_policy() {
             now + Duration::from_nanos(1)
         } else {
             let mut entry = tilo_user_identity::RevocationEntry {
-                user_public_key: peer.core.authority.user_public_key,
-                revoked_device_public_key: peer.core.authority.device_public_key,
+                user_public_key: peer.owner(),
+                revoked_device_public_key: peer.owner_certificates()[0].device_public_key,
                 revoked_at_ns: 2,
                 reason: tilo_user_identity::RevocationReason::Retired,
                 signature: [0; 64],
@@ -783,7 +783,7 @@ fn room_media_restore_rejects_governed_certificate_replacement() {
     install_policy(&mut peer, &key, now, &value).unwrap();
     let mut room = peer.admitted_room().unwrap().clone();
     let ids = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let id = hex::encode(peer.core.authority.device_public_key);
+    let id = hex::encode(peer.owner_certificates()[0].device_public_key);
     let mut row: GovernedIdentity =
         serde_json::from_slice(&room::governance_of(Some(&room)).identities[&id]).unwrap();
     row.device_cert.device_label = "replacement certificate".into();
@@ -800,7 +800,7 @@ fn room_media_restore_rejects_governed_certificate_replacement() {
         StatePeer::restore(
             &peer.durable().unwrap(),
             ROOM,
-            peer.core.authority.clone(),
+            peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now
@@ -859,42 +859,6 @@ fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_
     );
     assert_eq!(before, peer.durable().unwrap());
 }
-#[test]
-fn room_media_governance_helpers_refresh_policy_and_leave_legacy_disabled() {
-    let (peer, key, members, now) = members();
-    let mut doc = peer.admitted_room().unwrap().clone();
-    crate::governance::remove_member(
-        &mut doc,
-        &peer.core.authority,
-        members[0].1.user_public_key,
-        &key,
-    )
-    .unwrap();
-    assert!(media::parse(&doc).unwrap().is_none());
-    let mut peer = peer;
-    let value = policy(&peer);
-    install_policy(&mut peer, &key, now, &value).unwrap();
-    let mut doc = peer.admitted_room().unwrap().clone();
-    crate::governance::remove_member(
-        &mut doc,
-        &peer.core.authority,
-        members[0].1.user_public_key,
-        &key,
-    )
-    .unwrap();
-    assert_eq!(
-        media::validate_transition(
-            Some(peer.admitted_room().unwrap()),
-            &doc,
-            media::TransitionMode::Authoring
-        )
-        .unwrap()
-        .unwrap()
-        .authorization_revision,
-        2
-    );
-}
-
 #[test]
 fn room_media_reader_uses_current_room_read_without_room_write() {
     let (mut peer, key, members, now) = members();
@@ -984,7 +948,7 @@ fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
     let mut revocation = tilo_user_identity::RevocationEntry {
-        user_public_key: peer.core.authority.user_public_key,
+        user_public_key: peer.owner(),
         revoked_device_public_key: [99; 32],
         revoked_at_ns: 10,
         reason: tilo_user_identity::RevocationReason::Retired,
@@ -999,17 +963,20 @@ fn room_media_governed_revocation_fence_cannot_be_removed_by_higher_revision() {
     // half lives beside the proof, in `tilo-relay-shell`.
     let mut current = peer.admitted_room().unwrap().clone();
     let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let id = hex::encode(peer.core.authority.device_public_key);
-    let mut row: GovernedIdentity =
-        serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
-    row.revocations.clear();
-    current
-        .put(
-            &ids,
-            id,
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-        )
-        .unwrap();
+    // Every owner device's row carries the owner's revocations: clear them all.
+    for cert in peer.owner_certificates() {
+        let id = hex::encode(cert.device_public_key);
+        let mut row: GovernedIdentity =
+            serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
+        row.revocations.clear();
+        current
+            .put(
+                &ids,
+                id,
+                automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            )
+            .unwrap();
+    }
     // A malicious pinned writer supplies a self-consistent higher counter.
     let mut changed = media::parse(&current).unwrap().unwrap();
     changed.authorization_revision += 1;

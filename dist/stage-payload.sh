@@ -18,20 +18,23 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-bins=(shell tilo tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
+bins=(shell tilo-session tilo tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
 (( ! primary_files )) || bins+=(fs tilo-relay-admin tilo-enroll)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
 done
 
 marker=tilo-app-session-build-marker-v1
-if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/shell"; then
-    echo "refusing to package a shell carrying the developer-session marker" >&2
-    exit 1
-fi
+for compositor in shell tilo-session; do
+    if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/$compositor"; then
+        echo "refusing to package a $compositor carrying the developer-session marker" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/tilo-shell"
+install -pm 0755 "$bin_dir/tilo-session"      "$stage/bin/tilo-session"
 # `tilo`: the desktop's apps and actions from any terminal (`tilo actions`,
 # `tilo do`, `tilo open`). Every host package ships it, as the OS image does.
 install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
@@ -49,6 +52,7 @@ install -pm 0755 "$repo_root/dist/session/tilo-session-runner" "$stage/libexec/t
 install -pm 0755 "$bin_dir/tilo-flight-recorder" "$stage/libexec/tilo-flight-recorder"
 install -pm 0755 "$bin_dir/tilo-session-report" "$stage/libexec/tilo-session-report"
 install -pm 0644 "$repo_root/dist/session/tilo.desktop"     "$stage/wayland-sessions/tilo.desktop"
+install -pm 0644 "$repo_root/dist/session/tilo-shell.desktop" "$stage/wayland-sessions/tilo-shell.desktop"
 install -pm 0644 "$repo_root/dist/session/tilo-app.desktop" "$stage/wayland-sessions/tilo-app.desktop"
 install -pm 0644 "$repo_root/dist/session/tilo-unlock.pam"   "$stage/pam/tilo-unlock"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \

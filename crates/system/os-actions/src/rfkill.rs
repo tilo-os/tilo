@@ -33,6 +33,17 @@ impl RfkillState {
     pub fn allows(self) -> bool {
         !self.soft_blocked && !self.hard_blocked
     }
+
+    /// Fold another switch of the same kind in: any one of them blocking keeps
+    /// the radio off, whichever order they are read in.
+    #[must_use]
+    pub fn fold(self, other: Self) -> Self {
+        Self {
+            present: self.present || other.present,
+            soft_blocked: self.soft_blocked || other.soft_blocked,
+            hard_blocked: self.hard_blocked || other.hard_blocked,
+        }
+    }
 }
 
 /// The kinds of radio the kernel names in `/sys/class/rfkill/*/type`.
@@ -71,26 +82,47 @@ pub fn state(kind: RadioKind) -> RfkillState {
 }
 
 fn state_in(class: &Path, kind: RadioKind) -> RfkillState {
-    let mut state = RfkillState::default();
+    switches(class)
+        .into_iter()
+        .filter(|(name, _)| name == kind.sysfs_name())
+        .map(|(_, state)| state)
+        .fold(RfkillState::default(), RfkillState::fold)
+}
+
+/// Every switch the kernel lists in `class`, by the `type` name it publishes
+/// and that switch's own reading.
+///
+/// The names are the kernel's (`wlan`, `bluetooth`, `wwan`, …), and some
+/// platforms also expose physical camera and microphone shutters through
+/// `rfkill` even though those names are not mandated by Linux.
+#[must_use]
+pub fn switches(class: &Path) -> Vec<(String, RfkillState)> {
     let Ok(entries) = std::fs::read_dir(class) else {
-        return state;
+        return Vec::new();
     };
-    for entry in entries.flatten() {
-        let root = entry.path();
-        if read(&root.join("type")).as_deref() != Some(kind.sysfs_name()) {
-            continue;
-        }
-        state.present = true;
-        state.hard_blocked |= read(&root.join("hard")).as_deref() == Some("1");
-        // Older kernels only publish `state`: 0 soft-blocked, 1 unblocked,
-        // 2 hard-blocked.
-        let soft = read(&root.join("soft"));
-        state.soft_blocked |= match soft.as_deref() {
-            Some(value) => value == "1",
-            None => read(&root.join("state")).as_deref() == Some("0"),
-        };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let root = entry.path();
+            let kind = read(&root.join("type"))?;
+            Some((kind, state_of(&root)))
+        })
+        .collect()
+}
+
+/// One switch's own reading: `present`, and whether it is blocked.
+fn state_of(root: &Path) -> RfkillState {
+    // Older kernels only publish `state`: 0 soft-blocked, 1 unblocked,
+    // 2 hard-blocked.
+    let soft_blocked = match read(&root.join("soft")).as_deref() {
+        Some(value) => value == "1",
+        None => read(&root.join("state")).as_deref() == Some("0"),
+    };
+    RfkillState {
+        present: true,
+        soft_blocked,
+        hard_blocked: read(&root.join("hard")).as_deref() == Some("1"),
     }
-    state
 }
 
 /// Lift every soft block on `kind`, as `rfkill unblock` does. A hard block

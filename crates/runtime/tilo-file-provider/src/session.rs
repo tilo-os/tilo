@@ -94,10 +94,7 @@ impl Item {
 }
 
 fn disconnected(error: &NotAvailable) -> bool {
-    match error {
-        NotAvailable::Capnp(error) => error.kind == capnp::ErrorKind::Disconnected,
-        _ => false,
-    }
+    matches!(error, NotAvailable::ConnectionFailed(error) if error.kind() == std::io::ErrorKind::ConnectionAborted)
 }
 
 /// Answers `request`, connecting first when there is no connection, and

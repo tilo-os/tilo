@@ -32,10 +32,14 @@ pub(crate) fn handle(effect: TasksEffect, cx: &mut EffectCx<Tracker>) -> EffectA
         TasksEffect::WriteNote { issue } => write_note(cx, issue),
         // The window answers these itself as they arrive (see `lib::router`):
         // the form a project is made in, the page an issue is shown on, and
-        // the window an issue's chat is.
-        TasksEffect::NewProject | TasksEffect::OpenIssue { .. } | TasksEffect::OpenChat { .. } => {
-            Ok(Effected::done())
-        }
+        // the place showing, and the window an issue's chat is.
+        TasksEffect::NewProject
+        | TasksEffect::OpenIssue { .. }
+        | TasksEffect::OpenChat { .. }
+        | TasksEffect::ShowList
+        | TasksEffect::ShowBoard
+        | TasksEffect::ShowTasks
+        | TasksEffect::ShowThread => Ok(Effected::done()),
     }
 }
 

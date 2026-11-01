@@ -304,7 +304,6 @@ mod cursor;
 pub mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use self::app::{HeadlessApp, MOUNT_VIEWPORT, fixture_runner_inputs};
-mod tooltip_layer;
 mod window_bar;
 pub use sidebar_button::SidebarShown;
 pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
@@ -478,7 +477,7 @@ pub struct FrameHarness {
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
     /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
-    tooltips: tooltip_layer::TooltipLayer,
+    tooltips: crate::host_core::TooltipLayer,
     /// The last frame drew a motion (the tooltip's arrival, a popover's)
     /// before its end. A motion asks for frames only until it ends, and a
     /// host whose frames come slower than the motion lasts (a busy or
@@ -1584,7 +1583,7 @@ impl FrameHarness {
             presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
             placed_pointers: Vec::new(),
-            tooltips: tooltip_layer::TooltipLayer::default(),
+            tooltips: crate::host_core::TooltipLayer::default(),
             settle_frame_owed: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
@@ -1792,6 +1791,14 @@ impl FrameHarness {
         &self.theme
     }
 
+    /// The backdrops the last frame's floating surfaces were drawn over, in
+    /// the frame's own pixels: what a host blurs outside the renderer and
+    /// hands back with [`crate::backdrop::provide_backdrops`].
+    #[must_use]
+    pub fn backdrops(&self) -> &crate::backdrop::BackdropFrame {
+        &self.backdrop
+    }
+
     /// Resize in logical pixels and settle geometry-dependent composition
     /// before exposing targets, accessibility, or a drawable frame. Uses the
     /// same bounded prepaint lifecycle as the live App host. Equal sizes are a
@@ -1865,37 +1872,14 @@ impl FrameHarness {
         binding: &crate::bound_dispatch::CallbackBinding,
         request: crate::undo::UndoRequest,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let action = match request {
-            crate::undo::UndoRequest::Undo => "undo",
-            crate::undo::UndoRequest::Redo => "redo",
-        };
         let snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
             None,
         )
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
-        let mut candidates = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| snapshot.resources().iter())
-            .filter(|resource| {
-                resource.actions.iter().any(|spec| {
-                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
-                })
-            });
-        let resource = candidates
-            .next()
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "history_action_unavailable".into(),
-                reason: "the current document does not publish its history action".into(),
-            })?;
-        if candidates.next().is_some() {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "history_action_ambiguous".into(),
-                reason: "the current document publishes more than one history target".into(),
-            });
-        }
+        let (resource, action) =
+            crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
         self.invoke_address(&address, &serde_json::Map::new(), false)
     }
@@ -2971,7 +2955,9 @@ impl FrameHarness {
         self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
             return true;
         }
         match self.records.as_mut() {
@@ -3055,7 +3041,9 @@ impl FrameHarness {
         let before = crate::doc::settle_mark(&self.state.doc);
         self.idle_control_tick();
         if let Some(wake) = &self.component_wake {
-            wake.binding.records.tick();
+            if let Err(error) = wake.binding.records.tick() {
+                tracing::error!(%error, "headless record persistence failed");
+            }
         } else if let Some(set) = self.records.as_mut() {
             set.tick(&mut self.state.doc);
         }
@@ -5108,25 +5096,63 @@ impl FrameHarness {
         out
     }
 
-    /// Every widget the driver can address, by `test_id` or path, with the
-    /// rect it currently occupies.
-    fn presentation_roots(&self) -> Vec<&dyn Widget> {
-        let mut roots = Vec::new();
-        if let Some(history) = &self.history {
-            roots.push(history.as_ref() as &dyn Widget);
-        }
-        if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
-            roots.push(palette as &dyn Widget);
-            return roots;
-        }
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-        {
-            roots.push(self.root.as_ref());
-        }
-        roots
+    /// Feed one host event to the tooltip layer, before it is dispatched:
+    /// the pointer settles over what the last frame showed, and acting hides
+    /// the tooltip as the live window does.
+    fn track_tooltip(&mut self, event: &WindowEvent) {
+        let target = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self.input_scale;
+                let point = Point::new(position.x / scale, position.y / scale);
+                self.tooltip_target_at(point)
+                    .map(|(rect, tip, _)| (rect, tip))
+            }
+            _ => None,
+        };
+        self.tooltips.track(event, target);
+    }
+
+    /// Paint the shown tooltip into the frame's scene.
+    fn draw_tooltip(&mut self, transform: Affine) {
+        self.tooltips.tick();
+        let current = self
+            .tooltips
+            .visible()
+            .and_then(|(_, anchor)| self.tooltip_target_at(anchor.center()));
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        );
+        let (scene, text, theme) = (&mut self.scene, &mut self.text, &self.theme);
+        self.tooltips
+            .paint(current, text, theme, scene, transform, viewport);
+    }
+
+    /// The painted tooltip as the accessibility tree reads it: a tooltip
+    /// naming what the control under the pointer does, where it shows.
+    fn tooltip_inspection(&self) -> Option<InspectionNode> {
+        let (text, chip) = self.tooltips.drawn()?;
+        Some(InspectionNode {
+            path: "tooltip".into(),
+            widget: "Tooltip".into(),
+            test_id: None,
+            focusable: false,
+            rect: [chip.x0, chip.y0, chip.width(), chip.height()],
+            child_clip: None,
+            layout: None,
+            semantics: Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),
+            ),
+            children: Vec::new(),
+        })
+    }
+
+    /// The text and chip (logical) of the tooltip the last frame painted.
+    #[must_use]
+    pub fn drawn_tooltip(&self) -> Option<(&str, Rect)> {
+        self.tooltips.drawn()
     }
 
     pub fn targets(&self) -> HashMap<String, Rect> {
@@ -5254,12 +5280,12 @@ impl FrameHarness {
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
         if self.tree().history_owns(node) {
-            let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
-            if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
-                self.set_focused(Some(node));
-            }
-            let handled = self
-                .dispatch_node(node, |widget, doc, root| {
+            let handled = {
+                let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
+                if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
+                    self.set_focused(Some(node));
+                }
+                self.dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
                         let mut edits = crate::widget::Edits::lend(doc);
                         crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
@@ -5273,11 +5299,15 @@ impl FrameHarness {
                         )
                     }
                 })
-                .map_err(|error| format!("History input refused: {error:?}"))?;
+                .map_err(|error| format!("History input refused: {error:?}"))?
+            };
             if !handled && !matches!(action, SemanticAction::Focus) {
                 return Err("History control does not support this action".into());
             }
             self.poll_control_invocations();
+            // History hosts the chrome it presents: answer the press it just
+            // queued before presenting what that press asked for.
+            self.service_pending_history_commands();
             self.relayout();
             return Ok(());
         }
@@ -5758,11 +5788,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-callback".into(),
-                    message: "imperative callback bypasses the resource/action door".into(),
-                }),
             })
             .collect::<Vec<_>>();
         if !has_semantics && inventoried_controls.is_empty() {
@@ -8544,6 +8569,31 @@ impl crate::host_core::HostCore for FrameHarness {
         }
     }
 
+    /// The app while it is live (an open History that replaces it is not),
+    /// or what stands over everything: the palette, once it is presented.
+    fn presentation_roots(&self) -> Vec<&dyn Widget> {
+        let mut roots = Vec::new();
+        if let Some(history) = &self.history {
+            roots.push(history.as_ref() as &dyn Widget);
+        }
+        if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
+            roots.push(palette as &dyn Widget);
+            return roots;
+        }
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+        {
+            roots.push(self.root.as_ref());
+        }
+        roots
+    }
+
+    fn pointer_hovers(&self) -> bool {
+        self.interaction.supports_hover()
+    }
+
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
         &mut self.layout_maps
     }
@@ -8610,6 +8660,14 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
+    }
+
+    fn service_history_own_controls(&mut self) -> bool {
+        let Some(history) = self.history.as_mut() else {
+            return false;
+        };
+        let path = &self.state.root;
+        history.answer_own_controls(&mut crate::widget::Edits::lend(&mut self.state.doc), path) > 0
     }
 
     fn acting_for_mut(
@@ -10058,7 +10116,7 @@ mod tests {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = std::rc::Rc::clone(&activations);
-            let button = Button::new("save", "Save").on_click(move || {
+            let button = Button::new("save", "Save").on_effect(move || {
                 observed.set(observed.get().saturating_add(1));
             });
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
@@ -10861,15 +10919,6 @@ mod tests {
                 .expect("bound control dispatches through the headless host");
             assert_eq!(calls.get(), 1);
 
-            let legacy = FrameHarness::new(
-                State::new(),
-                Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
-                (320, 160),
-            );
-            let audit = legacy.native_app_audit();
-            assert!(!audit.is_certified());
-            assert_eq!(audit.issues[0].code, "legacy-callback");
-
             let omitted = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("omitted", "Omitted")),
@@ -11140,7 +11189,7 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save")
-                .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
+                .on_effect(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
 
             let pointer_rect = driver.targets()["save"];
@@ -11370,7 +11419,7 @@ mod tests {
 
             let fired = Rc::new(Cell::new(0));
             let observed = Rc::clone(&fired);
-            let button = Button::new("save", "Save").on_click(move || {
+            let button = Button::new("save", "Save").on_effect(move || {
                 observed.set(observed.get() + 1);
             });
             let mut driver = FrameHarness::new_with_controlled_inputs(

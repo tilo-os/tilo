@@ -35,13 +35,13 @@ fn planned(guild: &Guild, event: &Value) -> BridgePlan {
     planned_in(guild, &Value::Null, event)
 }
 
-fn planned_in(guild: &Guild, room: &Value, event: &Value) -> BridgePlan {
+fn planned_in(guild: &Guild, workspace: &Value, event: &Value) -> BridgePlan {
     plan(
         Reading {
             guild,
             chat: &chat(),
             context: &Context::default(),
-            room,
+            workspace,
             emoji: None,
         },
         event,
@@ -218,17 +218,40 @@ fn a_tilo_role_change_reaches_the_linked_discord_account() {
         person: "u_ada".into(),
         ..Link::default()
     });
-    // Given a new role, or added back to the room with one.
+    // Given a new role, or added back to the workspace with one.
     for verb in ["set-role", "add-member"] {
         let event = json!({
-            "kind": ROOM_KIND,
-            "did": {"did": "verb", "action": {"app": "tilo", "kind": ROOM_KIND, "action": verb}},
+            "kind": WORKSPACE_KIND,
+            "did": {"did": "verb", "action": {"app": "tilo", "kind": WORKSPACE_KIND, "action": verb}},
             "arguments": {"person": "u_ada", "role": "moderator"},
         });
         let plan = planned(&g, &event);
         assert_eq!(plan.member_roles[0]["user"], "42", "{verb}");
         assert_eq!(plan.member_roles[0]["add"], json!(["r_mod"]), "{verb}");
     }
+}
+
+#[test]
+fn a_workspace_published_under_its_old_kind_is_still_followed() {
+    let mut g = guild();
+    g.links.push(Link {
+        discord_user: "42".into(),
+        person: "u_ada".into(),
+        ..Link::default()
+    });
+    // A host that still publishes the workspace's own record under the
+    // kind it had before the rename plans the same as one that does not.
+    let event = |kind: &str| {
+        json!({
+            "kind": kind,
+            "did": {"did": "verb", "action": {"app": "tilo", "kind": kind, "action": "ban"}},
+            "arguments": {"person": "u_ada", "reason": "spam"},
+        })
+    };
+    let named = planned(&g, &event(WORKSPACE_KIND));
+    let old = planned(&g, &event(LEGACY_WORKSPACE_KIND));
+    assert_eq!(named.bans, vec![json!({"user": "42", "reason": "spam"})]);
+    assert_eq!(old.bans, named.bans);
 }
 
 #[test]
@@ -239,20 +262,25 @@ fn removing_banning_and_unbanning_a_linked_person_reaches_discord() {
         person: "u_ada".into(),
         ..Link::default()
     });
-    let room = |verb: &str, person: &str| {
+    let workspace = |verb: &str, person: &str| {
         json!({
-            "kind": ROOM_KIND,
-            "did": {"did": "verb", "action": {"app": "tilo", "kind": ROOM_KIND, "action": verb}},
+            "kind": WORKSPACE_KIND,
+            "did": {"did": "verb", "action": {"app": "tilo", "kind": WORKSPACE_KIND, "action": verb}},
             "arguments": {"person": person, "reason": "spam"},
         })
     };
-    let banned = planned(&g, &room("ban", "u_ada"));
+    let banned = planned(&g, &workspace("ban", "u_ada"));
     assert_eq!(banned.bans, vec![json!({"user": "42", "reason": "spam"})]);
     assert!(banned.member_roles.is_empty());
-    assert_eq!(planned(&g, &room("remove-member", "u_ada")).kicks.len(), 1);
-    assert_eq!(planned(&g, &room("unban", "u_ada")).unbans.len(), 1);
+    assert_eq!(
+        planned(&g, &workspace("remove-member", "u_ada"))
+            .kicks
+            .len(),
+        1
+    );
+    assert_eq!(planned(&g, &workspace("unban", "u_ada")).unbans.len(), 1);
     // A guest with no linked account has nothing to act on in Discord.
-    assert!(planned(&g, &room("ban", "u_bo")).bans.is_empty());
+    assert!(planned(&g, &workspace("ban", "u_bo")).bans.is_empty());
 }
 
 /// A Chat change's history entry for a reaction: the framework's field
@@ -276,7 +304,7 @@ fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
                 guild: &g,
                 chat,
                 context: &Context::default(),
-                room: &Value::Null,
+                workspace: &Value::Null,
                 emoji: None,
             },
             event,
@@ -326,7 +354,7 @@ fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
     assert_eq!(planned_in(&g, &Value::Null, &echo), BridgePlan::default());
 }
 
-/// The chat as `read-room` answers it with a filed report's message: its
+/// The chat as `read-workspace` answers it with a filed report's message: its
 /// text read out of the report, its picture as an image, a reaction on it.
 fn with_report() -> Value {
     json!({
@@ -346,7 +374,7 @@ fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {
             guild,
             chat: &with_report(),
             context: &Context::default(),
-            room: &Value::Null,
+            workspace: &Value::Null,
             emoji: None,
         },
         event,
@@ -460,7 +488,7 @@ fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
     g.observe("9".into(), layout.channels, Vec::new());
 }
 
-/// The room's chat with "talk" listing `channels` in this order.
+/// The workspace's chat with "talk" listing `channels` in this order.
 fn talk(channels: &[&str]) -> Value {
     json!({
         "categories": [{"id": "k_talk", "value": {"name": "talk"}}],
@@ -476,7 +504,7 @@ fn planned_on(guild: &Guild, chat: &Value, event: &Value) -> BridgePlan {
             guild,
             chat,
             context: &Context::default(),
-            room: &Value::Null,
+            workspace: &Value::Null,
             emoji: None,
         },
         event,

@@ -4,15 +4,130 @@
 //! apps; the compositor holds none of their code. A [`SurfaceHost`] is how one
 //! of them reaches the screen: it hands the compositor buffers to show above
 //! the windows and receives the input that lands on them. The in-process host
-//! drives an ordinary toolkit app and rasterizes its frames into those
-//! buffers; nothing here knows how the pixels were made.
+//! drives an ordinary toolkit app and draws its frames into those buffers;
+//! nothing here knows how the pixels were made.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::utils::{Buffer, Rectangle};
 
 pub use smithay::input::pointer::CursorIcon;
 
 use crate::input::HostKey;
 use crate::keys::KeyClaim;
+
+/// A whole-pixel rectangle of a surface: what one draw changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    /// Its left edge, in pixels.
+    pub x: u32,
+    /// Its top edge, in pixels.
+    pub y: u32,
+    /// How wide it is, in pixels.
+    pub width: u32,
+    /// How tall it is, in pixels.
+    pub height: u32,
+}
+
+impl Region {
+    /// The rectangle at `(x, y)` of `width` by `height` pixels.
+    #[must_use]
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+/// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer
+/// the compositor draws, so a host only hands over what changed.
+#[derive(Clone, Debug)]
+pub struct HostFrame {
+    buffer: MemoryRenderBuffer,
+    size: (u32, u32),
+}
+
+impl HostFrame {
+    /// An empty frame of `size` physical pixels.
+    #[must_use]
+    pub fn new(size: (u32, u32)) -> Self {
+        Self {
+            buffer: MemoryRenderBuffer::new(
+                smithay::backend::allocator::Fourcc::Abgr8888,
+                (
+                    i32::try_from(size.0).unwrap_or(i32::MAX),
+                    i32::try_from(size.1).unwrap_or(i32::MAX),
+                ),
+                1,
+                smithay::utils::Transform::Normal,
+                None,
+            ),
+            size,
+        }
+    }
+
+    /// The frame as the compositor draws it.
+    #[must_use]
+    pub const fn buffer(&self) -> &MemoryRenderBuffer {
+        &self.buffer
+    }
+
+    /// A frame showing `buffer`, a surface of `size` physical pixels: for a
+    /// host that made its own.
+    #[must_use]
+    pub const fn from_buffer(buffer: MemoryRenderBuffer, size: (u32, u32)) -> Self {
+        Self { buffer, size }
+    }
+
+    /// The size of the surface in physical pixels.
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes
+    /// a row of this frame's surface) into the frame, telling it what
+    /// changed.
+    pub fn set_pixels(&mut self, pixels: &[u8], regions: &[Region]) {
+        let width = self.size.0 as usize;
+        let drawn = self.buffer.render().draw(|memory: &mut [u8]| {
+            for region in regions {
+                for row in region.y..region.y.saturating_add(region.height) {
+                    let start = (row as usize)
+                        .saturating_mul(width)
+                        .saturating_add(region.x as usize)
+                        .saturating_mul(4);
+                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
+                    if let (Some(to), Some(from)) =
+                        (memory.get_mut(start..end), pixels.get(start..end))
+                    {
+                        to.copy_from_slice(from);
+                    }
+                }
+            }
+            Ok::<_, std::convert::Infallible>(
+                regions
+                    .iter()
+                    .filter_map(|region| {
+                        Some(Rectangle::<i32, Buffer>::new(
+                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
+                            (
+                                i32::try_from(region.width).ok()?,
+                                i32::try_from(region.height).ok()?,
+                            )
+                                .into(),
+                        ))
+                    })
+                    .collect(),
+            )
+        });
+        if let Err(never) = drawn {
+            match never {}
+        }
+    }
+}
 
 /// One buffer a hosted surface shows, at a position in the logical layout.
 #[derive(Debug, Clone)]
@@ -23,7 +138,7 @@ pub struct HostLayer {
     /// fit, so a host draws at the output's (possibly fractional) scale.
     pub size: (i32, i32),
     /// The pixels; the buffer's own render context records what changed.
-    pub buffer: MemoryRenderBuffer,
+    pub frame: HostFrame,
 }
 
 /// A drag a hosted app starts: bytes per format (files as
@@ -33,7 +148,7 @@ pub struct HostLayer {
 pub struct HostDrag {
     pub offer: Vec<(String, Vec<u8>)>,
     pub icon: Option<(
-        MemoryRenderBuffer,
+        HostFrame,
         smithay::utils::Point<i32, smithay::utils::Logical>,
     )>,
 }
@@ -56,6 +171,16 @@ pub trait SurfaceHost {
     /// locked only it (and a lock client's surfaces) is drawn and given
     /// the pointer and the keyboard; until then it is never drawn.
     fn lock_screen(&self) -> bool {
+        false
+    }
+
+    /// Whether a capture may not show what this surface draws now: it shows
+    /// a secret, such as what the person typed into a password field. Every
+    /// copy of the desktop's pixels — a screenshot, a recording, a share
+    /// stream, the portal's screenshot — draws its layers as the
+    /// placeholder instead, while the person's own display keeps showing
+    /// them (see [`crate::capture::protect`]).
+    fn withholds_captures(&self) -> bool {
         false
     }
 
@@ -93,14 +218,19 @@ pub trait SurfaceHost {
     /// topmost surface first: a desktop chord or a hardware key this
     /// surface answers wherever the keyboard is. `locked` while the session
     /// is locked, when only keys that reveal nothing (volume, brightness)
-    /// may be taken.
-    fn claim_key(&mut self, _key: &HostKey, _locked: bool) -> KeyClaim {
+    /// may be taken. `inhibited` while a focused client holds the desktop's
+    /// shortcuts, when only what must never be given up (hardware keys,
+    /// locking the session) may be taken.
+    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         KeyClaim::Pass
     }
 
     /// Other clients' windows this surface pictures (thumbnails, cards),
     /// bottom first: the compositor draws their live buffers there, in
-    /// front of this surface's layers.
+    /// front of this surface's layers. A window the session keeps private
+    /// ([`crate::capture::protect`]) is drawn as the placeholder a capture
+    /// of it shows instead, since the desk a picture stands on is what a
+    /// screenshot, a recording and a share show.
     fn window_pictures(&self) -> Vec<crate::WindowPicture> {
         Vec::new()
     }
@@ -116,8 +246,13 @@ pub trait SurfaceHost {
     /// last.
     fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
 
-    /// A frame is about to be drawn: bring the layers up to date.
-    fn prepare_frame(&mut self) {}
+    /// A frame is about to be drawn: bring the layers up to date, and say
+    /// whether this surface drew or changed what it shows. A host that did
+    /// not leaves the frame to whoever else has something new; a host that
+    /// never knows draws every frame (`true`).
+    fn prepare_frame(&mut self) -> bool {
+        true
+    }
 
     /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
     /// one is added, removed or moved: a surface covering the desktop

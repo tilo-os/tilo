@@ -101,7 +101,7 @@ fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
         StatePeer::restore(
             &bomb,
             peer.room(),
-            peer.authority().clone(),
+            peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now
@@ -132,7 +132,7 @@ fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
         StatePeer::restore(
             &bytes,
             peer.room(),
-            peer.authority().clone(),
+            peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now

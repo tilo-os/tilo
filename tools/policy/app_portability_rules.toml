@@ -1,25 +1,25 @@
 # App portability rules: apps contain no platform code.
 #
-# One table, two front ends:
-#   * tools/policy/check_app_portability.py (the CI gate, run by
-#     tools/policy/run.sh) counts findings per app and rule against the
-#     shrink-only baseline tools/policy/app_portability_baseline.toml;
+# One engine, two scopes:
 #   * `tilo-app check --lint` (crates/dev/tilo-app-cli/src/portability.rs,
-#     which embeds this file) reports each site to the app developer.
+#     which embeds this file) reports each site to the app developer;
+#   * `tilo-app check --lint --all` (the repository gate, run by lint.yml)
+#     counts findings per package and rule against the shrink-only baseline
+#     tools/policy/app_portability_baseline.toml.
 #
-# Both read only production code: tests/, benches/, examples/, build.rs,
+# It reads only production code: tests/, benches/, examples/, build.rs,
 # `#[test]` and `#[cfg(test)]` items are exempt.
 #
-# Pattern vocabulary shared by both engines:
+# Pattern vocabulary:
 #   paths        "a::b" matches the identifiers `a`, `::`, `b` anywhere in a
 #                path (so `thread::spawn` also matches `std::thread::spawn`).
 #   std-modules  `std::<name>`, or `<name>` at the top level of a
 #                `std::{...}` group.
 #   applies      "always"; "not-tilo-os" skips apps whose platforms include
 #                tilo-os; "web" applies only when web is in the platforms.
-#   severity     how `tilo-app check --lint` treats a finding in an app that
-#                runs on every default platform: "error" fails the lint,
-#                "warn" is reported only. The CI gate counts both.
+#   severity     how the lint treats a finding in an app that runs on every
+#                default platform: "error" fails it, "warn" is reported only.
+#                The gate counts both.
 
 schema = 1
 

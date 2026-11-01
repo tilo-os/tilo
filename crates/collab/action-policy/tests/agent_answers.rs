@@ -256,3 +256,17 @@ fn scopes_read_back_from_their_nodes() {
     }
     assert_eq!(AnswerScope::of_node(&TreePath::room(ROOM)), None);
 }
+
+#[test]
+fn scopes_read_back_from_their_keys() {
+    for scope in [
+        AnswerScope::app("so.tilo.notes"),
+        AnswerScope::kind("so.tilo.notes", "note"),
+        AnswerScope::action("so.tilo.notes", "note", "send"),
+    ] {
+        assert_eq!(AnswerScope::parse(&scope.key()), Some(scope));
+    }
+    for wrong in ["", "app:", "app", "note:so.tilo.notes", "kind:a", "app:a:b"] {
+        assert_eq!(AnswerScope::parse(wrong), None, "{wrong}");
+    }
+}

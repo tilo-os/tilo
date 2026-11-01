@@ -1460,7 +1460,7 @@ fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
         "rows",
         vec![
             NavItem::new("talk", "talk").unread(true),
-            NavItem::new("dana", "Dana").person("u_dana", colour, true),
+            NavItem::new("dana", "Dana").person("u_dana", Some(colour), true),
         ],
     )]);
     let h = harness(list, Theme::dark());
@@ -1485,7 +1485,7 @@ fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
         dana.person
             .as_ref()
             .map(|person| (person.colour, person.speaking)),
-        Some((colour, true))
+        Some((Some(colour), true))
     );
 }
 
@@ -1498,7 +1498,7 @@ fn a_persons_row_takes_their_face_from_their_name() {
         "rows",
         vec![
             NavItem::new("dana", "Dana Reyes (via Discord)")
-                .person("discord:7", colour, false)
+                .person("discord:7", Some(colour), false)
                 .person_face("Dana Reyes", None),
         ],
     )]);

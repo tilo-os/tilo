@@ -23,9 +23,13 @@ struct Inner {
     bluetooth: bool,
     power: Option<os_actions::PowerProfile>,
     radios: os_actions::RadioState,
+    wired: Option<os_actions::WiredInfo>,
     vpns: Vec<os_actions::VpnConnectionInfo>,
     networks: Vec<os_actions::WifiNetworkInfo>,
-    accessories: Vec<os_actions::bluez::DeviceInfo>,
+    saved: Vec<os_actions::SavedNetworkProfile>,
+    accessories: Vec<os_actions::BtDeviceInfo>,
+    nearby: Vec<os_actions::NearbyBtDevice>,
+    scanning: bool,
     battery: u8,
     /// Changes made, in order.
     calls: Vec<String>,
@@ -66,14 +70,57 @@ impl Machine {
                 connected: true,
                 known: true,
             }];
-            inner.accessories = vec![os_actions::bluez::DeviceInfo {
+            inner.saved = vec![
+                os_actions::SavedNetworkProfile {
+                    name: "Home".into(),
+                    uuid: "home-profile".into(),
+                    kind: "802-11-wireless".into(),
+                    autoconnect: true,
+                    last_used: Some(1_700_000_000),
+                },
+                os_actions::SavedNetworkProfile {
+                    name: "Grandma's".into(),
+                    uuid: "grandma-profile".into(),
+                    kind: "802-11-wireless".into(),
+                    autoconnect: true,
+                    last_used: Some(1_600_000_000),
+                },
+            ];
+            inner.accessories = vec![os_actions::BtDeviceInfo {
                 name: "Headphones".into(),
-                address: "00:1B:66:A1:B2:C3".into(),
-                battery: Some(80),
+                mac: "00:1B:66:A1:B2:C3".into(),
+                battery: 80,
                 connected: true,
-                ..os_actions::bluez::DeviceInfo::default()
+            }];
+            inner.nearby = vec![os_actions::NearbyBtDevice {
+                name: "Speaker".into(),
+                address: "AA:CC:DD:EE:FF:00".into(),
+                rssi: Some(-52),
+                paired: false,
             }];
             inner.battery = 64;
+        }
+        machine
+    }
+
+    /// A desktop on a cable, with no Wi-Fi radio.
+    #[must_use]
+    pub fn desk() -> Self {
+        let machine = Self::laptop();
+        {
+            let mut inner = machine.0.lock().unwrap();
+            inner.radios.wifi_available = false;
+            inner.radios.wifi_enabled = false;
+            inner.wired = Some(os_actions::WiredInfo {
+                connected: true,
+                device: Some("eth0".into()),
+                speed: Some("1000 Mb/s".into()),
+                ipv4: Some("10.0.0.5".into()),
+            });
+            inner.networks.clear();
+            inner.saved.clear();
+            inner.accessories.clear();
+            inner.nearby.clear();
         }
         machine
     }
@@ -107,12 +154,6 @@ impl DeviceReads for Machine {
     fn displays(&self) -> Vec<DisplayBrightness> {
         Vec::new()
     }
-    fn output_device(&self) -> bool {
-        true
-    }
-    fn volume(&self) -> Option<VolumeState> {
-        self.0.lock().unwrap().volume
-    }
     fn bluetooth(&self) -> Option<bool> {
         Some(self.0.lock().unwrap().bluetooth)
     }
@@ -127,7 +168,7 @@ impl DeviceReads for Machine {
         ])
     }
     fn wired(&self) -> Option<os_actions::WiredInfo> {
-        None
+        self.0.lock().unwrap().wired.clone()
     }
     fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
         tilo_power_mgmt::BatterySnapshot {
@@ -161,8 +202,17 @@ impl DeviceReads for Machine {
     fn scan_wifi(&self) -> Result<(), String> {
         Ok(())
     }
-    fn bt_devices(&self) -> Option<Vec<os_actions::bluez::DeviceInfo>> {
+    fn saved_networks(&self) -> Vec<os_actions::SavedNetworkProfile> {
+        self.0.lock().unwrap().saved.clone()
+    }
+    fn bt_devices(&self) -> Option<Vec<os_actions::BtDeviceInfo>> {
         Some(self.0.lock().unwrap().accessories.clone())
+    }
+    fn nearby_bluetooth(&self) -> Vec<os_actions::NearbyBtDevice> {
+        self.0.lock().unwrap().nearby.clone()
+    }
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        Some(self.0.lock().unwrap().scanning)
     }
     fn firmware_updates(&self) -> Option<usize> {
         Some(2)
@@ -211,8 +261,53 @@ impl os_actions::Dispatcher for Machine {
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         self.change(format!("disconnect:{address}"), "disconnect")?;
         for accessory in &mut self.0.lock().unwrap().accessories {
-            if accessory.address == address {
+            if accessory.mac == address {
                 accessory.connected = false;
+            }
+        }
+        Ok(())
+    }
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        self.change(format!("scan:{on}"), "scan")?;
+        self.0.lock().unwrap().scanning = on;
+        Ok(())
+    }
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.change(format!("pair:{address}"), "pair")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            let at = inner
+                .nearby
+                .iter()
+                .position(|device| device.address == address);
+            if let Some(found) = at.map(|at| inner.nearby.remove(at)) {
+                inner.accessories.push(os_actions::BtDeviceInfo {
+                    name: found.name,
+                    mac: found.address,
+                    battery: 0,
+                    connected: true,
+                });
+            }
+        }
+        Ok(())
+    }
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.change(format!("forget:{address}"), "forget")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            inner
+                .accessories
+                .retain(|accessory| accessory.mac != address);
+            inner.nearby.retain(|device| device.address != address);
+        }
+        Ok(())
+    }
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        self.change(format!("wired:{enabled}"), "wired")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            if let Some(wired) = inner.wired.as_mut() {
+                wired.connected = enabled;
             }
         }
         Ok(())
@@ -226,9 +321,33 @@ impl os_actions::Dispatcher for Machine {
             "connect_wifi",
         )
     }
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        self.change(
+            format!("join-hidden:{ssid}:{}", password.unwrap_or("")),
+            "connect_hidden_wifi",
+        )
+    }
     fn set_power_profile(&self, profile: os_actions::PowerProfile) -> Result<(), String> {
         self.change(format!("power:{profile:?}"), "power")?;
         self.0.lock().unwrap().power = Some(profile);
+        Ok(())
+    }
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        self.change(format!("forget-network:{profile}"), "forget_network")?;
+        self.0
+            .lock()
+            .unwrap()
+            .saved
+            .retain(|saved| saved.uuid != profile);
+        Ok(())
+    }
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        self.change(format!("autoconnect:{profile}:{on}"), "autoconnect")?;
+        for saved in &mut self.0.lock().unwrap().saved {
+            if saved.uuid == profile {
+                saved.autoconnect = on;
+            }
+        }
         Ok(())
     }
 }

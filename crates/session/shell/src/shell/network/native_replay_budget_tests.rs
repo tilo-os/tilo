@@ -1,16 +1,16 @@
 use super::*;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
-use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
 use tilo_network_actor::{HostIdentity, native_ingress};
+use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture};
 
 #[test]
 fn native_replay_yields_between_signed_admissions_without_reordering_control() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = tilo_joined_room::open_file(&directory.path().join("owner.json")).unwrap();
+    let owner = tilo_peer_state::owner::open_file(&directory.path().join("owner.json")).unwrap();
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     let certificate = owner
@@ -122,7 +122,7 @@ fn take_native_publications(commands: &mut mpsc::Receiver<NetCmd>) -> usize {
 }
 
 fn signed_input(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     room: RoomId,
     governor: [u8; 32],
     message: &NeighbourMsg,

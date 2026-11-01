@@ -14,7 +14,7 @@
 //! 3. Peer1 publishes a delta — peer2 receives it via relay1.
 //! 4. Peer2 fails over: reconnects to relay2 instead. Peer1
 //!    publishes another delta. Peer2 does NOT receive it via
-//!    relay2 (no inter-relay CRDT federation yet) — but the
+//!    relay2 (relays do not sync rooms with each other) — but the
 //!    delta is queued on relay1 for peer2, so if peer2 comes
 //!    back to relay1 it drains.
 //!
@@ -233,7 +233,7 @@ async fn peers_use_several_relays_and_fail_over() {
         }
 
         // p1 publishes another delta via relay1. Since p2 is on
-        // relay2 (no inter-relay CRDT federation), relay1 will
+        // relay2 (relays do not sync rooms with each other), relay1 will
         // enqueue for p2 on ITS disk; relay2 sees nothing.
         let d2 = Envelope::Delta {
             workspace_id: 3,

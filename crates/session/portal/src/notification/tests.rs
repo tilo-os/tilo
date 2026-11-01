@@ -308,8 +308,12 @@ async fn bed() -> Bed {
         backend.clone(),
         Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
     );
-    let portal = Portal::new(questions.clone(), authenticator)
-        .with_consents(crate::consent::Consents::new(questions, None));
+    let portal = Portal::new(
+        questions.clone(),
+        authenticator,
+        tilo_documents::Documents::new(),
+    )
+    .with_consents(crate::consent::Consents::new(questions, None));
     let notifications = Notifications::new();
     serve_on(&portal, &backend, notifications.clone())
         .await

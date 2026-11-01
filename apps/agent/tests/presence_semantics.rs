@@ -43,7 +43,7 @@ fn send_until_presence(
 #[test]
 fn keyed_pointer_and_typing_survive_the_native_broker() {
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("collab.capnp");
+    let socket = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&socket, &[]);
 
     let mut alice = TypedPeer::connect(&socket);
@@ -63,7 +63,7 @@ fn keyed_pointer_and_typing_survive_the_native_broker() {
     assert_eq!(
         send_until_presence(&mut alice, &mut bob, &pointer, &expected_pointer),
         expected_pointer,
-        "the keyed pointer must not be decoded as the keyless cursor variant"
+        "the keyed pointer arrives as a pointer under its key"
     );
 
     let typing_key = PresenceKey::Tab {

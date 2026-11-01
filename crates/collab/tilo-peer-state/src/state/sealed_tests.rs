@@ -11,7 +11,7 @@ fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -69,7 +69,7 @@ fn restore_bytes(peer: &StatePeer, bytes: &[u8], now: SystemTime) -> Result<Stat
     StatePeer::restore(
         bytes,
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -202,7 +202,7 @@ fn a_revoked_author_cannot_add_sealed_history() {
         TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
         NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(host.authority().clone()),
+            cert: Box::new(host.owner_certificates()[0].clone()),
             revocations: vec![revocation],
         },
         now,
@@ -441,7 +441,7 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
             TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(revoked.authority().clone()),
+                cert: Box::new(revoked.owner_certificates()[0].clone()),
                 revocations: vec![revocation],
             },
             now,

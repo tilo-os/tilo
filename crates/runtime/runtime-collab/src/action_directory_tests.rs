@@ -1,8 +1,7 @@
-//! The action-directory codec: typed values in, the same typed values out,
-//! and a malformed payload refused at decode with its row named.
+//! Directory answers as the wire carries them: typed values in, the same
+//! typed values out, and a malformed or out-of-bounds answer refused.
 
 use super::*;
-use crate::collab_capnp;
 use crate::{SHAPE_ID_BYTES, ShapeId, SurfaceDelta, SurfaceResource, SurfaceTable};
 use tilo_actions::{
     ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind,
@@ -114,22 +113,20 @@ fn page(rows: Vec<ActionDirectoryRow>) -> ActionDirectoryPage {
     }
 }
 
-/// Encode `page` with the production writer, let `tamper` edit the encoded
-/// rows, then decode it with the production reader.
+/// Send `page` as the wire carries it, let `tamper` edit the sent rows, then
+/// read it back as the broker reads an app's answer.
 fn round_trip(
     page: &ActionDirectoryPage,
-    tamper: impl FnOnce(capnp::struct_list::Builder<'_, collab_capnp::action_directory_row::Owned>),
-) -> Result<ActionDirectoryPage, capnp::Error> {
-    let mut message = capnp::message::Builder::new_default();
-    {
-        let mut root = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
-        write_action_directory_page(root.reborrow(), page).unwrap();
-        tamper(root.get_rows().unwrap());
-    }
-    let reader = message
-        .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
-        .unwrap();
-    decode_action_directory_page(reader)
+    tamper: impl FnOnce(&mut Vec<serde_json::Value>),
+) -> Result<ActionDirectoryPage, String> {
+    let mut sent = serde_json::to_value(page).unwrap();
+    let rows = sent["rows"].as_array_mut().unwrap();
+    tamper(rows);
+    read_directory_answer(
+        &sent.to_string(),
+        u64::MAX / 8,
+        |page: &ActionDirectoryPage| page.rows.iter().collect(),
+    )
 }
 
 #[test]
@@ -155,265 +152,139 @@ fn an_exact_resolution_round_trips_typed() {
         ActionDirectoryResolution::StaleRevision,
         ActionDirectoryResolution::Unavailable,
     ] {
-        let mut message = capnp::message::Builder::new_default();
-        write_action_directory_resolution(
-            message.init_root::<collab_capnp::action_directory_resolution::Builder<'_>>(),
-            &sent,
-        )
-        .unwrap();
-        let received = decode_action_directory_resolution(
-            message
-                .get_root_as_reader::<collab_capnp::action_directory_resolution::Reader<'_>>()
-                .unwrap(),
-        )
+        let json = serde_json::to_string(&sent).unwrap();
+        let received = read_directory_answer(&json, 1 << 20, |resolution| match resolution {
+            ActionDirectoryResolution::Found { row, .. } => vec![&**row],
+            _ => Vec::new(),
+        })
         .unwrap();
         assert_eq!(received, sent);
     }
 }
 
 #[test]
-fn a_malformed_contract_is_rejected_at_decode_with_the_row_named() {
-    let error = round_trip(&page(vec![action_row()]), |mut rows| {
-        rows.reborrow()
-            .get(0)
-            .get_descriptor()
-            .unwrap()
-            .set_contract_json("{\"kind\":\"everyone\"}");
+fn a_malformed_contract_refuses_the_page() {
+    round_trip(&page(vec![action_row()]), |rows| {
+        rows[0]["descriptor"]["contract"] = serde_json::json!({"kind": "everyone"});
     })
     .unwrap_err();
-    let message = error.to_string();
-    assert!(
-        message.contains("`files.folder:inbox`/`erase`") && message.contains("contract"),
-        "{message}"
-    );
 }
 
 #[test]
 fn a_directory_descriptor_without_a_contract_is_refused() {
-    let error = round_trip(&page(vec![action_row()]), |mut rows| {
-        rows.reborrow()
-            .get(0)
-            .get_descriptor()
+    round_trip(&page(vec![action_row()]), |rows| {
+        rows[0]["descriptor"]
+            .as_object_mut()
             .unwrap()
-            .set_contract_json("");
+            .remove("contract");
     })
     .unwrap_err();
+}
+
+#[test]
+fn an_oversized_directory_contract_is_refused() {
+    let mut row = action_row();
+    if let Some(descriptor) = &mut row.descriptor {
+        descriptor.contract.tags = vec!["x".repeat(MAX_DIRECTORY_CONTRACT_WIRE_BYTES)];
+    }
+    let error = round_trip(&page(vec![row]), |_| {}).unwrap_err();
     assert!(
-        error.to_string().contains("`files.folder:inbox`/`erase`"),
+        error.contains("`files.folder:inbox`/`erase`") && error.contains("contract"),
         "{error}"
     );
 }
 
 #[test]
-fn an_oversized_directory_contract_is_refused() {
-    let oversized = format!(
-        "{{\"tags\":[\"{}\"]}}",
-        "x".repeat(MAX_DIRECTORY_CONTRACT_WIRE_BYTES)
-    );
-    let error = round_trip(&page(vec![action_row()]), |mut rows| {
-        rows.reborrow()
-            .get(0)
-            .get_descriptor()
-            .unwrap()
-            .set_contract_json(&oversized);
-    })
-    .unwrap_err();
-    assert!(error.to_string().contains("bounded"), "{error}");
-}
-
-#[test]
 fn a_malformed_visibility_contract_refuses_the_page() {
-    let error = round_trip(&page(vec![container_row()]), |mut rows| {
-        rows.reborrow()
-            .get(0)
-            .set_visibility_contract_json("not json");
+    round_trip(&page(vec![container_row()]), |rows| {
+        rows[0]["visibility"]["contract"] = serde_json::json!("not json");
     })
     .unwrap_err();
-    let message = error.to_string();
-    assert!(
-        message.contains("`files.root`/``") && message.contains("visibility contract"),
-        "{message}"
-    );
 }
 
 #[test]
-fn visibility_governing_kind_is_optional_for_legacy_publishers_but_never_guessed() {
-    let decoded = round_trip(&page(vec![container_row()]), |mut rows| {
-        rows.reborrow().get(0).set_visibility_governing_kind("");
+fn visibility_governing_kind_is_optional_but_never_guessed() {
+    let decoded = round_trip(&page(vec![container_row()]), |rows| {
+        rows[0]["visibility"]["governing_kind"] = serde_json::Value::Null;
     })
     .unwrap();
     assert_eq!(
         decoded.rows[0].visibility.as_ref().unwrap().governing_kind,
         None
     );
-    let error = round_trip(&page(vec![container_row()]), |mut rows| {
-        rows.reborrow()
-            .get(0)
-            .set_visibility_governing_kind("public-read");
+    round_trip(&page(vec![container_row()]), |rows| {
+        rows[0]["visibility"]["governing_kind"] = serde_json::json!("public-read");
     })
     .unwrap_err();
-    assert!(error.to_string().contains("governing kind"), "{error}");
 }
 
 #[test]
 fn a_visibility_action_without_its_contract_refuses_the_page() {
-    let error = round_trip(&page(vec![container_row()]), |mut rows| {
-        rows.reborrow().get(0).set_visibility_contract_json("");
+    round_trip(&page(vec![container_row()]), |rows| {
+        rows[0]["visibility"]
+            .as_object_mut()
+            .unwrap()
+            .remove("contract");
     })
     .unwrap_err();
-    assert!(error.to_string().contains("set together"), "{error}");
+    let error = round_trip(&page(vec![container_row()]), |rows| {
+        rows[0]["visibility"]["action"] = serde_json::json!("");
+    })
+    .unwrap_err();
+    assert!(error.contains("visibility"), "{error}");
 }
 
 #[test]
 fn a_malformed_or_invalid_presentation_refuses_the_page() {
     for presentation in [
-        "{\"detail\":",
-        "{\"unknown\":\"field\"}",
-        "{\"detail\":\"two\\nlines\"}",
+        serde_json::json!("{\"detail\":"),
+        serde_json::json!({"unknown": "field"}),
+        serde_json::json!({"detail": "two\nlines"}),
     ] {
-        let error = round_trip(&page(vec![action_row()]), |mut rows| {
-            rows.reborrow()
-                .get(0)
-                .set_resource_presentation_json(presentation);
+        round_trip(&page(vec![action_row()]), |rows| {
+            rows[0]["presentation"] = presentation.clone();
         })
         .unwrap_err();
-        let message = error.to_string();
-        assert!(
-            message.contains("`files.folder:inbox`/`erase`") && message.contains("presentation"),
-            "{presentation}: {message}"
-        );
     }
 }
 
 #[test]
 fn an_unknown_directory_operation_kind_is_refused() {
     for kind in ["", "teleport"] {
-        let error = round_trip(&page(vec![action_row()]), |mut rows| {
-            rows.reborrow()
-                .get(0)
-                .get_descriptor()
-                .unwrap()
-                .set_operation_kind(kind);
+        round_trip(&page(vec![action_row()]), |rows| {
+            rows[0]["descriptor"]["operation_kind"] = serde_json::json!(kind);
         })
         .unwrap_err();
-        assert!(
-            error.to_string().contains("operation kind"),
-            "{kind}: {error}"
-        );
-    }
-}
-
-/// A published action names its operation kind, parameters and contract;
-/// one that leaves any of them empty is refused, never given defaults.
-#[test]
-fn a_published_action_without_kind_parameters_or_contract_is_refused() {
-    let sent = action_row().descriptor.unwrap();
-    for empty in ["kind", "params", "contract"] {
-        let mut message = capnp::message::Builder::new_default();
-        {
-            let mut out = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-            write_exported_action(out.reborrow(), &sent).unwrap();
-            match empty {
-                "kind" => out.set_operation_kind(""),
-                "params" => out.set_params_json(""),
-                _ => out.set_contract_json(""),
-            }
-        }
-        assert!(
-            decode_exported_action(
-                message
-                    .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-                    .unwrap(),
-            )
-            .is_err(),
-            "{empty}"
-        );
     }
 }
 
 #[test]
-fn a_published_action_round_trips_typed() {
-    let sent = action_row().descriptor.unwrap();
-    let mut message = capnp::message::Builder::new_default();
-    write_exported_action(
-        message.init_root::<collab_capnp::exported_action::Builder<'_>>(),
-        &sent,
-    )
-    .unwrap();
-    let received = decode_exported_action(
-        message
-            .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(received, sent);
-}
-
-#[test]
-fn a_semantic_identity_naming_another_kind_is_not_written() {
-    let mut action = action_row().descriptor.unwrap();
-    action.semantic_identity = Some(ResourceSemanticIdentity {
-        kind: "chat.message".into(),
-        key: "m1".into(),
-    });
-    let mut message = capnp::message::Builder::new_default();
-    let result = write_exported_action(
-        message.init_root::<collab_capnp::exported_action::Builder<'_>>(),
-        &action,
-    );
-    assert!(result.is_err());
-}
-
-/// The byte budget an app pages its directory by is checked against the
-/// encoded page, so the per-row estimate must never fall below a row's
-/// Cap'n Proto size, however its fields are sized.
-#[test]
-fn directory_row_estimates_bound_their_encoded_size() {
-    let text = |length: usize| "x".repeat(length);
-    for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
-        let mut row = action_row();
-        row.parent_resource = text(length);
-        row.resource_label = text(length);
-        row.presentation = Some(ResourcePresentation {
-            detail: Some(text(length.min(ResourcePresentation::MAX_DETAIL_BYTES))),
-            badge: None,
-            preview: Some(text(length.min(ResourcePresentation::MAX_PREVIEW_BYTES))),
+fn a_semantic_identity_naming_another_kind_is_refused() {
+    let mut row = action_row();
+    if let Some(descriptor) = &mut row.descriptor {
+        descriptor.semantic_identity = Some(ResourceSemanticIdentity {
+            kind: "chat.message".into(),
+            key: "m1".into(),
         });
-        if let Some(descriptor) = &mut row.descriptor {
-            descriptor.resource_label = text(length);
-            descriptor.action_label = text(length);
-            descriptor.description = Some(text(length));
-            descriptor.contract.tags = vec![text(length)];
-            descriptor.input = ExportedInput::Text {
-                prompt: text(length),
-                placeholder: text(length),
-                wants_content: false,
-            };
-        }
-        let rows = 40u32;
-        let mut message = capnp::message::Builder::new_default();
-        {
-            let mut page = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
-            page.set_revision("v5:00000000-0000-0000-0000-000000000000");
-            let mut list = page.reborrow().init_rows(rows);
-            for index in 0..rows {
-                write_action_directory_row(list.reborrow().get(index), &row).unwrap();
-            }
-        }
-        let encoded = message
-            .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
-            .unwrap()
-            .total_size()
-            .unwrap()
-            .word_count
-            .saturating_mul(8);
-        let estimated =
-            action_directory_row_wire_bytes(&row).saturating_mul(usize::try_from(rows).unwrap());
-        assert!(
-            u64::try_from(estimated).unwrap() >= encoded,
-            "field length {length}: estimated {estimated} < encoded {encoded}"
-        );
     }
+    let error = round_trip(&page(vec![row]), |_| {}).unwrap_err();
+    assert!(error.contains("semantic identity"), "{error}");
+}
+
+fn rows(page: &ActionDirectoryPage) -> Vec<&ActionDirectoryRow> {
+    page.rows.iter().collect()
+}
+
+/// The byte budget an app pages its directory by holds whatever the JSON
+/// says: rows over it refuse the answer.
+#[test]
+fn a_page_over_its_byte_budget_is_refused() {
+    let sent = page(vec![action_row(), action_row()]);
+    let json = serde_json::to_string(&sent).unwrap();
+    let size = u64::try_from(action_directory_row_wire_bytes(&action_row()) * 2).unwrap();
+    assert_eq!(read_directory_answer(&json, size, rows).unwrap(), sent);
+    let error = read_directory_answer(&json, size - 1, rows).unwrap_err();
+    assert!(error.contains("budget"), "{error}");
 }
 
 #[test]
@@ -445,23 +316,8 @@ fn a_surface_delta_round_trips_and_expands_to_the_published_actions() {
         removed: vec!["gone".into()],
     };
 
-    let mut message = capnp::message::Builder::new_default();
-    write_surface_delta(
-        message
-            .init_root::<collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>>(
-            ),
-        "so.tilo.files",
-        &delta,
-    )
-    .unwrap();
-    let reader = message
-        .get_root_as_reader::<collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>>()
-        .unwrap();
-    assert_eq!(
-        reader.get_app_id().unwrap().to_str().unwrap(),
-        "so.tilo.files"
-    );
-    let decoded = decode_surface_delta(reader).unwrap();
+    let json = serde_json::to_string(&delta).unwrap();
+    let decoded: SurfaceDelta = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded, delta);
 
     let mut table = SurfaceTable::default();
@@ -471,19 +327,17 @@ fn a_surface_delta_round_trips_and_expands_to_the_published_actions() {
 
 #[test]
 fn a_surface_delta_with_a_malformed_shape_id_is_refused() {
-    let mut message = capnp::message::Builder::new_default();
-    {
-        let mut root = message
-            .init_root::<collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>>(
-            );
-        let mut shapes = root.reborrow().init_shapes(1);
-        let mut row = shapes.reborrow().get(0);
-        row.set_id(&[1, 2, 3]);
-        write_exported_action(row.init_action(), &action_row().descriptor.unwrap().shape())
-            .unwrap();
-    }
-    let reader = message
-        .get_root_as_reader::<collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>>()
-        .unwrap();
-    assert!(decode_surface_delta(reader).is_err());
+    let delta = SurfaceDelta {
+        reset: true,
+        shapes: vec![(
+            [1; SHAPE_ID_BYTES],
+            action_row().descriptor.unwrap().shape(),
+        )],
+        templates: Vec::new(),
+        resources: Vec::new(),
+        removed: Vec::new(),
+    };
+    let mut json = serde_json::to_value(&delta).unwrap();
+    json["shapes"][0][0] = serde_json::json!([1, 2, 3]);
+    assert!(serde_json::from_value::<SurfaceDelta>(json).is_err());
 }

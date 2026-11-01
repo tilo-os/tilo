@@ -32,6 +32,27 @@ pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || Non
 /// system locale.
 pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
 
+/// The interface face the person chose, by any family name a theme's type
+/// role may name (`Default`, `Hyperlegible`, `Noto Sans`). Unset follows the
+/// theme's own face.
+pub const UI_FACE: Key<Option<String>> = Key::new(SECTION, "ui_face", || None);
+
+/// The accent the person chose, by any name the presence palette gives a hue
+/// (`violet`, `teal`). Unset follows the theme's own accent. A high-contrast
+/// theme keeps its colourless accent whatever this says.
+pub const ACCENT: Key<Option<String>> = Key::new(SECTION, "accent", || None);
+
+/// How much of the theme's translucency the person keeps: `1` as the theme
+/// sets it, `0` floating chrome opaque. Unset follows the theme. The
+/// accessibility switch that makes every panel opaque (`reduce_transparency`)
+/// still wins over this.
+pub const TRANSLUCENCY: Key<Option<f32>> = Key::new(SECTION, "translucency", || None);
+
+/// The band a stored translucency is clamped to.
+pub const TRANSLUCENCY_MIN: f32 = 0.0;
+/// See [`TRANSLUCENCY_MIN`].
+pub const TRANSLUCENCY_MAX: f32 = 1.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,7 +68,15 @@ mod tests {
     #[test]
     fn appearance_keys_read_the_leaves_the_theme_reads() {
         let document = object(json!({
-            "appearance": {"mode": "dark", "high_contrast": true, "language": "de-DE", "wallpaper": "custom"},
+            "appearance": {
+                "mode": "dark",
+                "high_contrast": true,
+                "language": "de-DE",
+                "wallpaper": "custom",
+                "ui_face": "Hyperlegible",
+                "accent": "violet",
+                "translucency": 0.4,
+            },
         }));
         assert_eq!(MODE.from_document(&document).as_deref(), Some("dark"));
         assert!(HIGH_CONTRAST.from_document(&document));
@@ -56,9 +85,18 @@ mod tests {
             WALLPAPER.from_document(&document).as_deref(),
             Some("custom")
         );
+        assert_eq!(
+            UI_FACE.from_document(&document).as_deref(),
+            Some("Hyperlegible")
+        );
+        assert_eq!(ACCENT.from_document(&document).as_deref(), Some("violet"));
+        assert_eq!(TRANSLUCENCY.from_document(&document), Some(0.4));
         let empty = Map::new();
         assert_eq!(MODE.from_document(&empty), None);
         assert!(!HIGH_CONTRAST.from_document(&empty));
         assert_eq!(WALLPAPER.from_document(&empty), None);
+        assert_eq!(UI_FACE.from_document(&empty), None);
+        assert_eq!(ACCENT.from_document(&empty), None);
+        assert_eq!(TRANSLUCENCY.from_document(&empty), None);
     }
 }

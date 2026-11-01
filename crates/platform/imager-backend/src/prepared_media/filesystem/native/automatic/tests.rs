@@ -33,7 +33,7 @@ impl Backend for Fixture {
         Ok(())
     }
     fn grant(&self, target: &TargetDrive, root: &Path) -> io::Result<MediaFilesystemGrant> {
-        let pin = PinnedRoot::open_absolute(root)?;
+        let pin = PinnedDirectory::open_absolute(root)?;
         let partition = select_partition(&self.inventory()?, target, root, pin.identity.dev())?;
         Ok(MediaFilesystemGrant {
             target: target.clone(),

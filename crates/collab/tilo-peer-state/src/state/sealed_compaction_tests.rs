@@ -686,6 +686,136 @@ fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns()
     );
 }
 
+/// The record's own writers fold its sealed history, not only the room's
+/// governor: a device the record admits as a writer of it holds the channel
+/// keys, so compacting is part of writing it. A replica without the keys
+/// takes the checkpoint in, and the writes after it.
+#[test]
+fn a_records_writer_compacts_the_history_it_holds() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    for value in ["1", "2"] {
+        let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
+        admit(&mut f.host, &f.other, write, now);
+    }
+    let mut replica = f.host.clone();
+    // The room's editor is one of the record's writers.
+    let editor = f.editor.clone();
+    let compaction = mint(&mut f.host, &keys, &editor, now).unwrap();
+    assert_eq!(
+        held(&f.host),
+        vec![envelope_of(&compaction)],
+        "the writer folded the history it holds"
+    );
+    admit(&mut replica, &editor, compaction, now);
+    assert_eq!(
+        held(&replica),
+        held(&f.host),
+        "a replica without the keys takes the checkpoint in"
+    );
+
+    // The record goes on: the writer's next write builds on the checkpoint,
+    // and the replica follows it.
+    let later = write(&f.host, &f.other, &keys, &author.edit("value", "3"), now);
+    admit(&mut f.host, &f.other, later.clone(), now);
+    admit(&mut replica, &f.other, later, now);
+    assert_eq!(held(&replica), held(&f.host), "the write after it joins");
+    assert_eq!(
+        held(&replica).len(),
+        2,
+        "the checkpoint and the write after it"
+    );
+
+    // A key holder reads the record whole from what the replica kept.
+    let restored = f.restore(&replica.durable().unwrap()).unwrap();
+    let mut read_write = |op: &SignedOp| open(&keys, op);
+    let opened = restored
+        .publication()
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .unwrap();
+    let read = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(
+        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("3")
+    );
+}
+
+/// A record fills its sealed bound and the device writing it folds the
+/// history itself: the write past the bound is refused first, then the
+/// device publishes its own checkpoint and the record goes on. Nothing else
+/// takes part.
+#[test]
+fn a_member_writes_past_its_bound_without_a_room_host() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let editor = f.editor.clone();
+    let mut author = Author::new(&f.host);
+    let mut written = 0;
+    while held(&f.host).len() < MAX_SEALED_OPS {
+        let value = written.to_string();
+        let sealed = write(&f.host, &editor, &keys, &author.edit("value", &value), now);
+        match f.host.receive_from_report(origin(&editor), sealed, now) {
+            Ok(report) => {
+                assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
+                written += 1;
+            }
+            Err(error) => {
+                assert!(
+                    error.to_string().contains("sealed record history is full"),
+                    "{error}"
+                );
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        written, MAX_SEALED_OPS,
+        "the bound refuses the write past it"
+    );
+    assert!(
+        !f.host.publication().sealed_records_to_compact().is_empty(),
+        "a full record is due for its writer's checkpoint"
+    );
+
+    let checkpoint = mint(&mut f.host, &keys, &editor, now).unwrap();
+    assert_eq!(held(&f.host), vec![envelope_of(&checkpoint)]);
+
+    // The record goes on past the bound it refused at.
+    for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
+        let sealed = write(
+            &f.host,
+            &editor,
+            &keys,
+            &author.edit("value", &value.to_string()),
+            now,
+        );
+        admit(&mut f.host, &editor, sealed, now);
+    }
+    assert_eq!(
+        held(&f.host).len(),
+        9,
+        "the checkpoint and the writes after it"
+    );
+    assert!(f.host.publication().sealed_records_to_compact().is_empty());
+    let mut read_write = |op: &SignedOp| open(&keys, op);
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .unwrap();
+    let read = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(
+        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("4103"),
+        "every write before the checkpoint is still in the record"
+    );
+}
+
 #[test]
 fn forged_compactions_are_refused() {
     let mut f = fixture();
@@ -708,10 +838,6 @@ fn forged_compactions_are_refused() {
     impostor.author = Ed25519PublicKey::from_bytes(f.owner.verifying_key().to_bytes());
     impostor.seq = next_seq(&f.host, &f.owner);
     refused(&mut f.host, &f.owner, message(impostor), now);
-
-    let editor = f.editor.clone();
-    let forgery = forged(&f.host, &editor, &valid, now);
-    refused_with(&mut f.host, &editor, forgery, now, "forbidden");
 
     let mut other_record = envelope_of(&forged(&f.host, &f.owner, &valid, now));
     other_record.artifact = collab_types::document_artifact_id(APP, ROOM, "tab:2");
@@ -763,6 +889,36 @@ fn a_compaction_under_a_stale_epoch_is_refused() {
     let owner = f.owner.clone();
     let forgery = forged(&f.host, &owner, &compaction, now);
     refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
+}
+
+#[test]
+fn a_compaction_founds_a_route_a_replica_holds_none_of() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let message = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+    admit(&mut f.host, &f.other, message, now);
+    let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+
+    let mut fresh = StatePeer::new(
+        ROOM,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.room_message(), now)
+        .unwrap();
+    assert!(
+        fresh.document(APP, RECORD).is_none(),
+        "the replica holds no history of the record"
+    );
+    admit(&mut fresh, &f.owner, compaction.clone(), now);
+    assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
 }
 
 #[test]

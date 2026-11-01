@@ -180,6 +180,7 @@ imports! {
     Lenses = "lenses" ([H] -> [H]);
     Delivery = "delivery" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);
+    Viewer = "viewer" ([] -> [H]);
     Members = "members" ([H] -> [H]);
     Speakers = "speakers" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);

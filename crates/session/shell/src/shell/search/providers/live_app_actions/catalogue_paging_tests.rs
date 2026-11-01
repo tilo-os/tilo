@@ -15,7 +15,7 @@ use tilo_actions::remote::{
 
 use super::{DirectoryCacheKey, LiveAppActionsProvider, PendingDirectoryPage};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchResourceScope, SearchScope};
-use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+use crate::shell::collab_app_broker::ActionDirectoryRoot;
 use crate::shell::search::{
     QueryArgs, ResourceKind, SearchBudget, SearchContext, SearchProvider as _, SearchRegistry,
 };

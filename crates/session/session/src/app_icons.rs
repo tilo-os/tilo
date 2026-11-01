@@ -1,4 +1,5 @@
-//! Artwork for the applications notifications come from.
+//! Artwork for the applications notifications come from, and for the icons
+//! their tray items name.
 //!
 //! A notification names its app three ways — the id the session attributed
 //! it to, the desktop entry its sender hinted, and an icon name the sender
@@ -9,17 +10,21 @@
 //! An icon is looked up in the person's themes and rasterised at the size
 //! the banner paints it, which reads the disk. That happens on a worker,
 //! and the loop is woken with the answer, so a banner paints its app's
-//! letter for the frame before its artwork is there.
+//! letter for the frame before its artwork is there. The icon an installed
+//! package signed is resolved by the app lists' own worker
+//! ([`crate::lists::AppLists::icons`]), for the same reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use desktop_entry::icon_theme::{self, IconFormat};
+use desktop_entry::icon_theme::{self, IconFormat, IconLookup, IconSearchPath};
 use tilo_lock::MutexRecover as _;
 use ui::icons::{AppImage, AppImageSource};
+
+use crate::lists::Lists;
 
 /// The most bytes of an icon file the worker reads: an icon is kilobytes,
 /// and a hostile or broken theme must not make it parse megabytes.
@@ -33,8 +38,9 @@ const CACHE_LIMIT: usize = 512;
 enum Layer {
     /// An icon name in the person's themes, or an absolute icon path.
     Named(String),
-    /// Pixels the sender handed over, already decoded and bounded.
-    Pixels(ui::peniko::ImageData),
+    /// Pixels the sender handed over, already decoded and bounded, one per
+    /// size it offered; the one that fills the paint size is picked.
+    Pixels(Vec<ui::peniko::ImageData>),
 }
 
 /// The artwork of one notification: the first of its layers that has
@@ -55,7 +61,7 @@ impl AppImageSource for Artwork {
         let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
         for layer in &self.layers {
             match layer {
-                Layer::Pixels(image) => return Some(image.clone()),
+                Layer::Pixels(images) => return pick(images, device_px),
                 Layer::Named(name) => match registry().answer(name, device_px) {
                     Some(Some(image)) => return Some(image),
                     // This theme has no such icon: the next layer shows.
@@ -69,6 +75,47 @@ impl AppImageSource for Artwork {
         }
         None
     }
+}
+
+/// The artwork a window brought of its own: the icon the program set for
+/// that window, whether it handed over pixels or named a theme icon. Keyed by
+/// the window and the icon's serial, so a program that sets another icon is
+/// new artwork and the same one is not painted again.
+pub(crate) fn window(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
+    let layers = match icon.artwork() {
+        tilo_compositor::IconArtwork::Named(name) => vec![Layer::Named(name.clone())],
+        tilo_compositor::IconArtwork::Pixels(images) => {
+            let images = images
+                .iter()
+                .map(|image| {
+                    // `wl_shm` pixels, and an X11 window's, are premultiplied.
+                    let pixels: Arc<Vec<u8>> = Arc::clone(&image.pixels);
+                    let pixels: Arc<dyn AsRef<[u8]> + Send + Sync> = pixels;
+                    ui::raster::rgba8_premultiplied(
+                        ui::peniko::Blob::new(pixels),
+                        image.width,
+                        image.height,
+                    )
+                })
+                .collect();
+            vec![Layer::Pixels(images)]
+        }
+    };
+    AppImage::new(Artwork {
+        key: format!("window:{window}:{}", icon.serial()),
+        layers,
+    })
+}
+
+/// The pixels that fill `device_px`: the smallest offer at least that big, so
+/// artwork is never stretched, else the largest there is.
+fn pick(images: &[ui::peniko::ImageData], device_px: u32) -> Option<ui::peniko::ImageData> {
+    images
+        .iter()
+        .filter(|image| image.width >= device_px)
+        .min_by_key(|image| image.width)
+        .or_else(|| images.iter().max_by_key(|image| image.width))
+        .cloned()
 }
 
 /// The artwork for a notification from `app_id`, hinting `desktop_entry`
@@ -98,7 +145,7 @@ pub(crate) fn notification(
     {
         layers.push(Layer::Named(name));
     }
-    layers.extend(pixels.map(Layer::Pixels));
+    layers.extend(pixels.map(|image| Layer::Pixels(vec![image])));
     if let Some(name) = app_icon.map(str::trim).filter(|name| !name.is_empty()) {
         layers.push(Layer::Named(name.to_owned()));
     }
@@ -115,13 +162,34 @@ fn entry_icon(desktop_id: &str) -> Option<String> {
         .and_then(|entry| entry.icon.clone())
 }
 
-/// The absolute path of the icon the installed package `app_id` signed.
+/// The absolute path of the icon the installed package `app_id` signed, as
+/// the app lists' worker last resolved it. Never touches the disk: a package
+/// installed since is artwork of its own only once the lists were read
+/// again, and until then the theme icon named like the id shows.
 fn installed_icon(app_id: &str) -> Option<String> {
-    tilo_installed_apps::read_one_from_env(app_id)
-        .ok()
-        .flatten()
-        .and_then(|app| app.icon_path())
+    let lists = LISTS.lock_recover().as_ref()?.latest();
+    let icons = &lists.icons;
+    let app = if icons.contains_key(app_id) {
+        app_id.to_owned()
+    } else {
+        // A notification can name an app by an id it no longer installs
+        // under: the package that took its place signed the artwork.
+        tilo_action_policy::earlier::held_current(app_id)
+    };
+    icons
+        .get(&app)
         .and_then(|path| path.to_str().map(str::to_owned))
+}
+
+/// The app lists search reads of this device, where a notification's app
+/// icon is found: set once at startup, kept current by their own worker.
+static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
+
+/// Answer an app's artwork from `lists`. Before this — and in a session given
+/// lists fixed up front, which are all the artwork there is — only the icons
+/// those lists carry are named.
+pub(crate) fn set_lists(lists: Lists) {
+    *LISTS.lock_recover() = Some(lists);
 }
 
 /// Wake the loop once artwork is ready, so the banner repaints with it.
@@ -208,6 +276,36 @@ impl Registry {
         *jobs = Some(send.clone());
         send
     }
+}
+
+/// The pixels of an icon an application names for its tray item, looked up
+/// in the person's themes — under the item's own `theme_path` first, so an
+/// application that ships its theme is drawn from it — and rasterised
+/// `device_px` square: `(width, height, straight-alpha RGBA)`, or `None`
+/// when no theme has it or it cannot be decoded.
+///
+/// This reads the disk, so the tray host calls it while reading an item on
+/// its own runtime, never from the session's loop.
+pub(crate) fn tray_raster(
+    name: &str,
+    theme_path: Option<&str>,
+    device_px: u32,
+) -> Option<(u32, u32, Arc<Vec<u8>>)> {
+    let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    let file = match theme_path.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => IconLookup::new(
+            IconSearchPath::system().with_first_base(PathBuf::from(path)),
+            icon_theme::DEFAULT_THEME,
+        )
+        .find(name, device_px, 1)?,
+        None => icon_theme::lookup(name, device_px, 1)?,
+    };
+    let bytes = read_bounded(&file.path)?;
+    let pixels = match file.format {
+        IconFormat::Png => rasterize_png(&bytes, device_px)?,
+        IconFormat::Svg => rasterize_svg(&bytes, device_px)?,
+    };
+    Some((pixels.width, pixels.height, Arc::new(pixels.rgba)))
 }
 
 /// The pixels of icon `name` at `px` square, or `None` when no theme has
@@ -376,8 +474,48 @@ mod tests {
         assert_eq!((pixels.width, pixels.height), (2, 1));
     }
 
+    /// The pixels a window hands over come in several sizes: the one that
+    /// fills the slot is shown, so the artwork is never stretched.
+    #[test]
+    fn a_windows_icon_is_shown_at_the_size_that_fills_its_slot() {
+        let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
+            .into_iter()
+            .map(|edge| {
+                let bytes = usize::try_from(edge * edge * 4).unwrap_or_default();
+                ui::raster::rgba8_premultiplied(vec![0; bytes], edge, edge)
+            })
+            .collect();
+        let width = |device_px| pick(&images, device_px).map(|image| image.width);
+        assert_eq!(width(20), Some(32));
+        assert_eq!(width(16), Some(16));
+        assert_eq!(width(64), Some(48), "the largest there is, never stretched");
+        assert_eq!(pick(&[], 16).map(|image| image.width), None);
+    }
+
     #[test]
     fn nothing_that_names_artwork_is_no_artwork() {
         assert!(notification("notification:2:0".to_owned(), None, None, None, None).is_none());
+    }
+
+    /// An icon an application names for its tray item is read the way a
+    /// notification's is: straight-alpha RGBA at the size asked for, and
+    /// nothing at all for one that cannot be decoded.
+    #[test]
+    fn a_named_tray_icon_comes_back_as_rgba_pixels() {
+        let dir = tempfile::tempdir().expect("a theme");
+        let icon = dir.path().join("tray-icon.png");
+        std::fs::write(&icon, png()).expect("the icon");
+        let name = icon.to_str().expect("a path");
+        let (width, height, rgba) = tray_raster(name, None, 16).expect("the icon's pixels");
+        assert_eq!((width, height), (2, 1));
+        assert_eq!(rgba.get(..4), Some([255, 0, 0, 255].as_slice()));
+
+        let broken = dir.path().join("broken.png");
+        std::fs::write(&broken, b"not a png").expect("the file");
+        assert_eq!(
+            tray_raster(broken.to_str().expect("a path"), None, 16),
+            None
+        );
+        assert_eq!(tray_raster("no-such-icon-anywhere", None, 16), None);
     }
 }

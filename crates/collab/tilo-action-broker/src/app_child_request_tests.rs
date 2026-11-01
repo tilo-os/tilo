@@ -198,7 +198,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xc4a1);
-            invoke(&agent.handle, &rig.binding, asked).await.unwrap();
+            invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
 
@@ -254,7 +254,7 @@ async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
             let own = id(0xc4a3);
-            invoke(&app, &rig.binding, own).await.unwrap();
+            invoke(&app, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
             // The person may make notes, but the app holds no grant to
@@ -264,29 +264,6 @@ async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
             let unnamed = app_asks(&app, new_note(None)).await;
             assert!(refused(&unnamed), "{unnamed:?}");
             assert!(notes.try_recv().is_err(), "nothing reached Notes");
-            rig.stop().await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let env = Environment::new();
-            let rig = Rig::new(&env).await;
-            let mut notes = publish_notes(&rig, &env);
-            let app = rig.worker.handle.clone();
-            let person = rig.caller(&env, 906, None).await;
-            let asked = id(0xc4a4);
-            invoke(&person.handle, &rig.binding, asked).await.unwrap();
-            let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-
-            let made = app_asks(&app, new_note(Some(asked))).await;
-            assert!(admitted(&made), "{made:?}");
-            let note = notes.try_recv().expect("Notes runs the call");
-            assert_eq!(note.actor, delivered.actor, "the person who asked");
-            drop(person);
             rig.stop().await;
         })
         .await;
@@ -312,7 +289,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xc4b1);
-            invoke(&agent.handle, &rig.binding, asked).await.unwrap();
+            invoke(&agent.handle, asked).await.unwrap();
             rig.stream.as_ref().unwrap().read().await.unwrap();
             let notes = &mut notes;
 
@@ -389,18 +366,36 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = native_person_rig(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let asked = id(0xc4a4);
+            let delivered = person_asks(&rig, &env, asked).await;
+
+            let made = app_asks(&app, new_note(Some(asked))).await;
+            assert!(admitted(&made), "{made:?}");
+            let note = notes.try_recv().expect("Notes runs the call");
+            assert_eq!(note.actor, delivered.actor, "the person who asked");
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_persons_read_does_not_make_their_edit_unasked() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
-            let rig = Rig::new(&env).await;
+            let rig = native_person_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
             let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
-            let person = rig.caller(&env, 906, None).await;
             let asked = id(0xc4b2);
-            invoke(&person.handle, &rig.binding, asked).await.unwrap();
-            rig.stream.as_ref().unwrap().read().await.unwrap();
+            person_asks(&rig, &env, asked).await;
             let read = notebook("read-page", asked);
             assert!(admitted(&app_asks(&app, read.clone()).await));
             notes.try_recv().expect("Notes reads");
@@ -414,8 +409,48 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
                 assert!(!admitted(&edit), "{edit:?}");
             }
             assert!(notes.try_recv().is_err(), "no edit reached Notes");
-            drop((person, notes_app));
+            drop(notes_app);
             rig.stop().await;
         })
         .await;
+}
+
+/// The rig with the host's native seat, the door the person's own palette
+/// and sheets invoke through.
+async fn native_person_rig(env: &Environment) -> Rig {
+    Rig::with_services(
+        env,
+        HostServices {
+            local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                env.authority.clone(),
+            ))),
+            ..env.membership.services()
+        },
+    )
+    .await
+}
+
+/// The person asks the rig's application for its action as `asked`; the
+/// invocation it is handed.
+async fn person_asks(
+    rig: &Rig,
+    env: &Environment,
+    asked: tilo_actions::InvocationId,
+) -> runtime_collab::Invocation {
+    let mut request = local_host_request(true);
+    request.invocation = asked;
+    let receipt = local_host_answer(rig.state.action_invoke_local_person(
+        &super::signed_worker::native_person(&env.route, &env.cert),
+        &request,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Accepted
+        ),
+        "{receipt:?}"
+    );
+    rig.stream.as_ref().unwrap().read().await.unwrap()
 }

@@ -109,9 +109,10 @@ pub struct CalculatorApp {
     rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
     select: Option<(GraphKind, Id)>,
-    /// The window bar's angle-unit entries, each carrying whether it
-    /// chooses degrees.
-    angle_units: ui::framework::BarCommands<bool>,
+    /// The window's bar as it was declared last: the press heard now names
+    /// one of its slots, then the window declares the bar for what it shows.
+    /// `None` for a bare widget in a layout test, which no desktop hosts.
+    bar: Option<ui::framework::WindowBar<Calculator>>,
 }
 
 /// What the view asks of the window: taken on its next sync and settle,
@@ -151,6 +152,7 @@ impl Asks {
 pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
     let mut window = CalculatorApp::new();
     window.dispatch = Some(cx.dispatcher());
+    window.bar = window.window_bar();
     window.document = Some(cx.live().clone());
     window.follow_document();
     {
@@ -226,7 +228,7 @@ impl CalculatorApp {
             entries: Rc::default(),
             rows: Rc::default(),
             select: None,
-            angle_units: ui::framework::BarCommands::new(),
+            bar: None,
         }
     }
 
@@ -1257,6 +1259,22 @@ impl CalculatorApp {
             actions::CalculatorEffect::ShowCalculator => Mode::Calc,
             actions::CalculatorEffect::ShowGraph2d => Mode::Graph2d,
             actions::CalculatorEffect::ShowGraph3d => Mode::Graph3d,
+            actions::CalculatorEffect::ShowConvert => Mode::Convert,
+            actions::CalculatorEffect::UseDegrees => {
+                self.set_degrees(true);
+                return;
+            }
+            actions::CalculatorEffect::UseRadians => {
+                self.set_degrees(false);
+                return;
+            }
+            actions::CalculatorEffect::TogglePanel => {
+                if let Some(kind) = self.model.mode.graph() {
+                    self.panel_mut(kind).side_mut().toggle();
+                    self.dirty = true;
+                }
+                return;
+            }
         };
         // Showing a mode is presentation, except that a first graph visit
         // adds its starter row through the resource's action.
@@ -1365,13 +1383,18 @@ impl Widget for CalculatorApp {
         asked
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
         let effect = self.asks.borrow_mut().effect.take();
         if let Some(effect) = effect {
             self.perform_effect(effect, edits);
         }
-        self.apply_window_toolbar(edits, path);
-        self.declare_window_toolbar();
+        if let Some(bar) = &self.bar {
+            bar.take_events();
+        }
+        self.bar = self.window_bar();
+        if let Some(bar) = &self.bar {
+            bar.declare();
+        }
     }
 
     fn build_layout(

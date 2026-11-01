@@ -25,6 +25,8 @@ pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
 pub mod sound;
+#[cfg(feature = "service")]
+pub mod sounds;
 
 use serde::{Deserialize, Serialize};
 

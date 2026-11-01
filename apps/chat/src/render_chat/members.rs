@@ -1,4 +1,4 @@
-//! The people drawer: the room's people and agents with their presence and
+//! The people drawer: the workspace's people and agents with their presence and
 //! the voice channel each is in, and the pinned messages beside them.
 
 use vello::Scene;
@@ -72,7 +72,7 @@ impl ChatApp {
                 if y > panel.y1 {
                     break;
                 }
-                // Named as the room names them, numbered when shared: the
+                // Named as the workspace names them, numbered when shared: the
                 // same label as their lines in the timeline.
                 let display = if person.is_agent && !self.is_me(&person.id) {
                     format!("{} (agent)", person.name)

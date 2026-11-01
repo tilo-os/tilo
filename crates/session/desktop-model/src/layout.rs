@@ -6,9 +6,10 @@ use crate::app::AppKind;
 use crate::ids::{GroupId, StripId, TabId};
 use crate::width::WindowWidth;
 
-/// What a tile holds. Persistence only carries `Stub` and a symbolic
-/// `AppPlaceholder` for native apps, whose concrete widgets are
-/// constructed at shell boot.
+/// What a tile holds. What is stored is the form that opens again: an app
+/// ([`TileContent::LocalApp`]), a placeholder, a stub, or a window hosted on
+/// another device — never a live foreign surface, whose id names a buffer
+/// only the compositor that mapped it owns.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(from = "TileRecord", into = "TileRecord")]
 pub enum TileContent {
@@ -284,6 +285,31 @@ impl Tab {
     #[must_use]
     pub fn is_named(&self) -> bool {
         self.app_title.is_some()
+    }
+
+    /// The tab as it opens again after this process ended. A running window's
+    /// surface belongs to the compositor that mapped it, and the same number
+    /// after a restart is another window or none, so only the app that opens
+    /// it again is kept ([`TileContent::LocalApp`]); its title stands in as
+    /// the label until the app reports one. Content that already opens again
+    /// — a local app, a placeholder, a stub, a window hosted on another
+    /// device — is kept as it is.
+    #[must_use]
+    pub fn relaunchable(&self) -> Self {
+        let tile = match &self.tile {
+            TileContent::Foreign { app_id, .. } => TileContent::LocalApp {
+                app_id: app_id.clone(),
+                label: self.title.clone(),
+                note: String::new(),
+            },
+            other => other.clone(),
+        };
+        Self {
+            id: self.id,
+            title: self.title.clone(),
+            tile,
+            app_title: self.app_title.clone(),
+        }
     }
 }
 

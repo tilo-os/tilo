@@ -1,3 +1,18 @@
+/// What the app reports, as its SDK sends it on its channel.
+async fn admit(
+    channel: &runtime_collab::ChannelHandle,
+    request: &crate::local_document_action::Request,
+) -> Result<runtime_collab::PublishedInvocationObservation, runtime_collab::LocalDocumentActionError>
+{
+    let report: runtime_collab::LocalDocumentActionReport =
+        serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
+    channel.admit_local_document_action(&report).await
+}
+
+fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
+    matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_))
+}
+
 struct LocalReportGrants(WorkspaceTreeHandle);
 impl crate::services::AppActionGrants for LocalReportGrants {
     fn may_grant(&self, _room: &str, _person: &str) -> bool {
@@ -28,34 +43,33 @@ struct LocalDocumentDirectory {
     pin_dropped: Rc<std::cell::Cell<bool>>,
     resolutions: Rc<std::cell::Cell<usize>>,
 }
-impl action_directory::Server for LocalDocumentDirectory {
-    fn resolve(
-        self: Rc<Self>,
-        params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        // The mutation has already advanced the live directory. Ordinary
-        // invocation must not gain access to the retained pre-event revision.
-        let _ = params;
-        results.get().init_resolution().set_stale_revision(());
-        Promise::ok(())
+impl wire::DirectorySource for LocalDocumentDirectory {
+    fn query(
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        Box::pin(std::future::ready(Err("not listed here".into())))
     }
 
-    fn resolve_local_document_action(
-        self: Rc<Self>,
-        params: action_directory::ResolveLocalDocumentActionParams,
-        mut results: action_directory::ResolveLocalDocumentActionResults,
-    ) -> Promise<(), capnp::Error> {
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
+    fn resolve(
+        &self,
+        (revision, _, _): (&str, &str, &str),
+        local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+        // The mutation has already advanced the live directory. Ordinary
+        // invocation must not gain access to the retained pre-event revision.
+        if !local_document {
+            return Box::pin(std::future::ready(Ok(
+                runtime_collab::ActionDirectoryResolution::StaleRevision,
+            )));
+        }
         self.resolutions.set(self.resolutions.get() + 1);
-        if self.pin_dropped.get()
-            || request.get_revision().unwrap().to_str().unwrap() != "original-r1"
-        {
-            results.get().init_resolution().set_stale_revision(());
-            return Promise::ok(());
+        if self.pin_dropped.get() || revision != "original-r1" {
+            return Box::pin(std::future::ready(Ok(
+                runtime_collab::ActionDirectoryResolution::StaleRevision,
+            )));
         }
         let mut row = directory_state("original-r1").borrow().row();
         let descriptor = row.descriptor.as_mut().unwrap();
@@ -68,10 +82,12 @@ impl action_directory::Server for LocalDocumentDirectory {
         let visibility = row.visibility.as_mut().unwrap();
         visibility.governing_kind = Some(self.kind);
         visibility.contract = descriptor.contract.clone();
-        let mut resolution = results.get().init_resolution();
-        resolution.set_resolved_revision("original-r1");
-        runtime_collab::write_action_directory_row(resolution.init_found(), &row).unwrap();
-        Promise::ok(())
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryResolution::Found {
+                row: Box::new(row),
+                revision: Some("original-r1".into()),
+            },
+        )))
     }
 }
 
@@ -94,15 +110,12 @@ async fn local_report_admission(
             let resolutions = Rc::new(std::cell::Cell::new(0));
             rig.worker
                 .handle
-                .publish_action_directory(
-                    &env.route.app_id,
-                    capnp_rpc::new_client(LocalDocumentDirectory {
-                        kind,
-                        read,
-                        pin_dropped: pin_dropped.clone(),
-                        resolutions: resolutions.clone(),
-                    }),
-                )
+                .publish_action_directory(wire_answerer(Rc::new(LocalDocumentDirectory {
+                    kind,
+                    read,
+                    pin_dropped: pin_dropped.clone(),
+                    resolutions: resolutions.clone(),
+                })))
                 .await
                 .unwrap();
             let identity = rig
@@ -113,7 +126,7 @@ async fn local_report_admission(
                 .only(903)
                 .unwrap()
                 .clone();
-            let raw: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+            let raw = wire_channel(JoinedChannel {
                 as_app: None,
                 person_chat_views: std::cell::RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -129,29 +142,7 @@ async fn local_report_admission(
                 _hold: None,
             });
             let before_stale = receipt_barriers(&rig);
-            assert!(matches!(
-                rig.worker
-                    .handle
-                    .resolve_published_action(903, "original-r1", "workspace:atlas", "open",)
-                    .await
-                    .unwrap(),
-                runtime_collab::ActionDirectoryResolution::StaleRevision
-            ));
-            let mut ordinary = raw.invoke_resolved_published_action_request();
-            {
-                let mut wire = ordinary.get();
-                wire.set_peer_id(903);
-                wire.set_revision("original-r1");
-                wire.set_resource("workspace:atlas");
-                wire.set_action("open");
-                wire.set_confirmation_json("{}");
-            }
-            assert!(
-                ordinary.send().promise.await.is_err(),
-                "a retained pre-event revision must never authorize ordinary invocation"
-            );
-            assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             let mut request = crate::local_document_action::Request {
                 custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
                     root: env.cert.user_public_key,
@@ -213,80 +204,53 @@ async fn local_report_admission(
                 }
                 wrong.invocation = wrong.bound_invocation().unwrap();
                 assert_ne!(wrong.invocation, invocation, "{field}");
-                let mut call = raw.admit_local_document_action_request();
-                call.get().set_request(&serde_json::to_vec(&wrong).unwrap());
-                let error = call
-                    .send()
-                    .promise
+                let error = admit(&raw, &wrong)
                     .await
-                    .err()
-                    .expect("custody must be refused");
-                assert!(
-                    error
-                        .to_string()
-                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
-                    "{field}: {error}"
-                );
+                    .expect_err("custody must be refused");
+                assert!(rejected(&error), "{field}: {error}");
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-                no_delivery(&rig);
+                no_delivery(&rig).await;
             }
             // A connection no launcher vouched for is no worker. Nothing
             // reported on it can be admitted, so the broker refuses
             // definitively: the app stops holding the report (and the
             // surface it was made under) instead of waiting forever.
-            let app_connection: channel_handle::Client =
-                capnp_rpc::new_client(CapnpChannelHandle {
-                    as_app: None,
-                    person_chat_views: std::cell::RefCell::default(),
-                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
-                    state: rig.state.clone(),
-                    directories: rig.directories.clone(),
-                    channel_id: env.route.channel_key(),
-                    peer_id: 904,
-                    connection_id: 904,
-                    verified_identity: identity.clone(),
-                    record_kind: None,
-                    route_access: RouteAccess::Own,
-                    lease: None,
-                    _hold: None,
-                });
-            let mut call = app_connection.admit_local_document_action_request();
-            call.get()
-                .set_request(&serde_json::to_vec(&request).unwrap());
-            let error = call
-                .send()
-                .promise
+            let app_connection = wire_channel(JoinedChannel {
+                as_app: None,
+                person_chat_views: std::cell::RefCell::default(),
+                committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                state: rig.state.clone(),
+                directories: rig.directories.clone(),
+                channel_id: env.route.channel_key(),
+                peer_id: 904,
+                connection_id: 904,
+                verified_identity: identity.clone(),
+                record_kind: None,
+                route_access: RouteAccess::Own,
+                lease: None,
+                _hold: None,
+            });
+            let error = admit(&app_connection, &request)
                 .await
-                .err()
-                .expect("a connection that is no host worker admits no report");
+                .expect_err("a connection that is no host worker admits no report");
             assert!(
-                error.to_string().contains(&format!(
-                    "{}{}",
-                    runtime_collab::LOCAL_DOCUMENT_REJECTED,
-                    runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
-                )),
+                rejected(&error)
+                    && error
+                        .to_string()
+                        .contains(runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING),
                 "{error}"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             drop(app_connection);
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
             wrong_revision.invocation = wrong_revision.bound_invocation().unwrap();
-            let mut stale = raw.admit_local_document_action_request();
-            stale
-                .get()
-                .set_request(&serde_json::to_vec(&wrong_revision).unwrap());
-            let error = stale
-                .send()
-                .promise
+            let error = admit(&raw, &wrong_revision)
                 .await
-                .err()
-                .expect("local admission also requires the exact retained revision");
+                .expect_err("local admission also requires the exact retained revision");
             assert!(
-                !error
-                    .to_string()
-                    .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                !rejected(&error),
                 "unknown requests must retain reconciliation custody: {error}"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
@@ -308,45 +272,34 @@ async fn local_report_admission(
             };
             let first_grant = once_grant("first-report");
             let first_grant = env.membership.write().workspaces[0].grant(first_grant);
-            let bytes = serde_json::to_vec(&request).unwrap();
             let before = receipt_barriers(&rig);
-            let mut rpc = raw.admit_local_document_action_request();
-            rpc.get().set_request(&bytes);
-            let reply = rpc.send().promise.await;
+            let reply = admit(&raw, &request).await;
             if (kind == tilo_actions::OperationKind::Effect && !read)
                 || ((kind == tilo_actions::OperationKind::View || read)
                     && !request.mutation_hashes.is_empty())
             {
-                let error = reply
-                    .err()
-                    .expect("malformed non-document report must fail");
+                let error = reply.expect_err("malformed non-document report must fail");
                 assert!(
-                    error
-                        .to_string()
-                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                    rejected(&error),
                     "definitive structural refusal must release SDK custody: {error}"
                 );
                 assert_eq!(receipt_barriers(&rig).writes, before.writes);
                 assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
-                no_delivery(&rig);
+                no_delivery(&rig).await;
                 drop(raw);
                 rig.stop().await;
                 return;
             }
-            let reply = reply.unwrap();
-            let observation = reply.get().unwrap().get_observation().unwrap();
-            assert!(observation.get_found());
+            let observation = reply.unwrap().result.expect("the report was found");
             assert!(
                 observation
-                    .get_terminal_json()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
+                    .terminal_json
+                    .as_deref()
+                    .unwrap_or_default()
                     .is_empty()
             );
             let evidence: crate::action_evidence::AdmissionEvidence =
-                serde_json::from_str(observation.get_admission_json().unwrap().to_str().unwrap())
-                    .unwrap();
+                serde_json::from_str(observation.admission_json.as_deref().unwrap()).unwrap();
             let facts = &evidence.public_receipt().facts;
             assert_eq!(facts.invocation.0, invocation);
             assert_eq!(facts.app_id, env.route.app_id);
@@ -438,7 +391,7 @@ async fn local_report_admission(
             }
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             assert!(
                 !env.membership.write().workspaces[0].revoke_grant(&first_grant),
                 "first admission spends its one-use grant"
@@ -449,44 +402,22 @@ async fn local_report_admission(
             // Transport retries must observe the cache before consulting it.
             pin_dropped.set(true);
             let resolved_before_retry = resolutions.get();
-            let mut retry = raw.admit_local_document_action_request();
-            retry.get().set_request(&bytes);
-            let replay = retry.send().promise.await.unwrap();
+            let replay = admit(&raw, &request).await.unwrap().result.unwrap();
             assert_eq!(resolutions.get(), resolved_before_retry);
             assert!(
                 env.membership.write().workspaces[0].revoke_grant(&next_grant),
                 "exact retry must not spend another one-use grant"
             );
-            assert_eq!(
-                replay.get().unwrap().get_observation().unwrap().get_id(),
-                observation.get_id()
-            );
-            assert_eq!(
-                replay
-                    .get()
-                    .unwrap()
-                    .get_observation()
-                    .unwrap()
-                    .get_admission_json()
-                    .unwrap(),
-                observation.get_admission_json().unwrap()
-            );
-            no_delivery(&rig);
+            assert_eq!(replay.id, observation.id);
+            assert_eq!(replay.admission_json, observation.admission_json);
+            no_delivery(&rig).await;
             let mut substituted = request.clone();
             substituted.encoded.payload = b"null".to_vec();
-            let mut retry = raw.admit_local_document_action_request();
-            retry
-                .get()
-                .set_request(&serde_json::to_vec(&substituted).unwrap());
-            assert!(retry.send().promise.await.is_err());
+            assert!(admit(&raw, &substituted).await.is_err());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
             // New content-bound captures still need a retained directory pin.
             substituted.invocation = substituted.bound_invocation().unwrap();
-            let mut unpinned = raw.admit_local_document_action_request();
-            unpinned
-                .get()
-                .set_request(&serde_json::to_vec(&substituted).unwrap());
-            assert!(unpinned.send().promise.await.is_err());
+            assert!(admit(&raw, &substituted).await.is_err());
             substituted.invocation = request.invocation;
             pin_dropped.set(false);
             if kind == tilo_actions::OperationKind::Document && !request.mutation_hashes.is_empty()
@@ -498,19 +429,7 @@ async fn local_report_admission(
                     let mut next = request.clone();
                     next.capture_id = uuid::Uuid::new_v4();
                     next.invocation = next.bound_invocation().unwrap();
-                    let mut rpc = raw.admit_local_document_action_request();
-                    rpc.get().set_request(&serde_json::to_vec(&next).unwrap());
-                    assert!(
-                        rpc.send()
-                            .promise
-                            .await
-                            .unwrap()
-                            .get()
-                            .unwrap()
-                            .get_observation()
-                            .unwrap()
-                            .get_found()
-                    );
+                    assert!(admit(&raw, &next).await.unwrap().result.is_some());
                 }
                 {
                     let receipts = rig.state.local_report_receipts.lock().unwrap();
@@ -521,67 +440,40 @@ async fn local_report_admission(
                 // A failed fresh lookup cannot prove that this evicted
                 // report was never admitted; SDK custody must remain pending.
                 pin_dropped.set(true);
-                let mut unresolved = raw.admit_local_document_action_request();
-                unresolved.get().set_request(&bytes);
-                let error = unresolved.send().promise.await.err().unwrap();
+                let error = admit(&raw, &request).await.err().unwrap();
                 assert!(
-                    !error
-                        .to_string()
-                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                    !rejected(&error),
                     "replay lookup failure must not release an admitted capture"
                 );
                 pin_dropped.set(false);
                 // An evicted exact retry reconstructs the same content-bound
                 // evidence; it still cannot redeliver or produce a terminal.
-                let mut retry = raw.admit_local_document_action_request();
-                retry.get().set_request(&bytes);
-                let replay = retry.send().promise.await.unwrap();
-                assert_eq!(
-                    replay
-                        .get()
-                        .unwrap()
-                        .get_observation()
-                        .unwrap()
-                        .get_admission_json()
-                        .unwrap(),
-                    observation.get_admission_json().unwrap()
-                );
-                let mut retry = raw.admit_local_document_action_request();
-                retry
-                    .get()
-                    .set_request(&serde_json::to_vec(&substituted).unwrap());
+                let replay = admit(&raw, &request).await.unwrap().result.unwrap();
+                assert_eq!(replay.admission_json, observation.admission_json);
                 assert!(
-                    retry.send().promise.await.is_err(),
+                    admit(&raw, &substituted).await.is_err(),
                     "eviction cannot permit content substitution"
                 );
                 assert_eq!(receipt_barriers(&rig), before_burst);
-                no_delivery(&rig);
+                no_delivery(&rig).await;
             }
             // Cached observations still consult current host custody, even if
             // the original connection and receipt are both retained.
             let original_host = env.authority.certificate.lock().unwrap().take();
-            let mut revoked_retry = raw.admit_local_document_action_request();
-            revoked_retry.get().set_request(&bytes);
-            assert!(revoked_retry.send().promise.await.is_err());
+            assert!(admit(&raw, &request).await.is_err());
             *env.authority.certificate.lock().unwrap() = original_host;
             // An old endpoint must not silently inherit a missing/replaced host.
             rig.state.host_workers.lock().unwrap().remove(903);
             pin_dropped.set(true);
-            let mut stale_retry = raw.admit_local_document_action_request();
-            stale_retry.get().set_request(&bytes);
             assert!(
-                stale_retry.send().promise.await.is_err(),
+                admit(&raw, &request).await.is_err(),
                 "cached receipt requires live host custody"
             );
             substituted.capture_id = uuid::Uuid::new_v4();
             substituted.invocation = substituted.bound_invocation().unwrap();
-            let mut stale = raw.admit_local_document_action_request();
-            stale
-                .get()
-                .set_request(&serde_json::to_vec(&substituted).unwrap());
-            assert!(stale.send().promise.await.is_err());
+            assert!(admit(&raw, &substituted).await.is_err());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             drop(raw);
             rig.stop().await;
         })

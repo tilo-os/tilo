@@ -1084,7 +1084,7 @@ mod tests {
         let mut tile = StatTile::new("CPU", "42")
             .unit("%")
             .change("3% in the last minute", Trend::Down)
-            .on_activate("cpu", move || counter.set(counter.get() + 1));
+            .on_view("cpu", move || counter.set(counter.get() + 1));
         let node = Widget::accessibility(&tile).unwrap();
         assert_eq!(node.name.as_deref(), Some("CPU"));
         assert_eq!(
@@ -1099,6 +1099,8 @@ mod tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
+        assert_eq!(hits.get(), 0, "the press waits to be answered");
+        assert_eq!(crate::testing::answer_controls(&mut tile), 1);
         assert_eq!(hits.get(), 1);
     }
 

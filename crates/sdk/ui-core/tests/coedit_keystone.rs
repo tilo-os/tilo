@@ -4,7 +4,7 @@
 //! each sees the other's caret/presence.
 //!
 //! Runs against the production typed protocol: two real
-//! `CollaborationManager`s over Cap'n Proto Unix sockets, real `automerge` documents, and the real
+//! `CollaborationManager`s over collaboration-wire Unix sockets, real `automerge` documents, and the real
 //! `tilo_ui::widget::TextInput` render pass — no mocks of the thing under test.
 //!
 //! Three proofs: converged co-edit renders identically on both peers

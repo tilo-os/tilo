@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::ActionAddress;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use crate::control::AgentControl;
 use crate::planner::{

@@ -27,6 +27,7 @@ use tilo_actions::{
 use tilo_desktop_model::own_arrangement::{self, Place, SHELL, Strips};
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth};
 use tilo_desktop_surface::DesktopHandle;
+use tilo_surface_host::Published;
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::state::UndoLog;
 
@@ -889,7 +890,7 @@ impl ArrangementDoor {
     }
 }
 
-impl crate::Published for ArrangementDoor {
+impl Published for ArrangementDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         resources()
     }

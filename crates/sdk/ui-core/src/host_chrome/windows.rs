@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 
 use tilo_actions::ControlInvocation;
+use tilo_lock::MutexRecover as _;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, PROPERTYKEY, RPC_E_CHANGED_MODE, WPARAM};
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
@@ -49,13 +50,11 @@ static STARTUP_COMMAND: Mutex<Option<ControlInvocation>> = Mutex::new(None);
 
 /// The invocation this process was launched with, from a Jump List task.
 pub(crate) fn request_startup_command(invocation: ControlInvocation) {
-    if let Ok(mut pending) = STARTUP_COMMAND.lock() {
-        *pending = Some(invocation);
-    }
+    *STARTUP_COMMAND.lock_recover() = Some(invocation);
 }
 
 pub(crate) fn take_startup_command() -> Option<ControlInvocation> {
-    STARTUP_COMMAND.lock().ok()?.take()
+    STARTUP_COMMAND.lock_recover().take()
 }
 
 struct State {

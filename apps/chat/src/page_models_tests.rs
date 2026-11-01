@@ -114,7 +114,7 @@ fn chat_asks_the_provider_set_up_in_the_page_through_its_lent_service() {
     });
 
     let identity = LocalIdentity::demo();
-    let mut doc = crate::testing::Room::default();
+    let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     crate::testing::say(&mut doc, &identity.id, "c_chat", "What is on today?");
     let mut app = ChatApp::new(
@@ -127,7 +127,7 @@ fn chat_asks_the_provider_set_up_in_the_page_through_its_lent_service() {
         "so.tilo.chat",
         &identity.id,
     ));
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     app.ensure_selection();
     app.reload(&doc);

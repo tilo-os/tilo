@@ -12,9 +12,7 @@
 )]
 
 use code_editor::{CodeEditorShell, benchmark_buffer_text, settings::CodeSettings};
-use iai_callgrind::{
-    Callgrind, EntryPoint, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main,
-};
+use iai_callgrind::{library_benchmark, library_benchmark_group};
 use std::fmt::Write as _;
 use ui::framework::testing::TestApp;
 
@@ -225,19 +223,44 @@ fn single_key_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixture> {
 }
 
 library_benchmark_group!(name = typing; benchmarks = single_character_to_scene, single_key_to_scene);
-main!(
-    config = LibraryBenchmarkConfig::default()
-        .pass_through_envs(["VALGRIND_LIB", "TMPDIR", "HOME", "XDG_RUNTIME_DIR"])
-        .tool(Callgrind::with_args([
-            "cache-sim=yes",
-            "I1=32768,8,64",
-            "D1=32768,8,64",
-            "LL=8388608,16,64",
-        ])
-        // The default trailing wildcard also matches non-inlined closures:
-        // entering one would toggle collection OFF around the actual edit.
-        .entry_point(EntryPoint::Custom(
-            "*::__iai_callgrind_wrapper_mod::*_to_scene".into(),
-        )));
-    library_benchmark_groups = typing
-);
+
+/// The entry point iai-callgrind expects: it either runs the benchmarks
+/// through its runner, or is re-entered by that runner to measure one of them.
+mod entry {
+    use iai_callgrind::{Callgrind, EntryPoint, LibraryBenchmarkConfig, main};
+
+    use super::typing;
+
+    main!(
+        config = LibraryBenchmarkConfig::default()
+            .pass_through_envs(["VALGRIND_LIB", "TMPDIR", "HOME", "XDG_RUNTIME_DIR"])
+            .tool(Callgrind::with_args([
+                "cache-sim=yes",
+                "I1=32768,8,64",
+                "D1=32768,8,64",
+                "LL=8388608,16,64",
+            ])
+            // The default trailing wildcard also matches non-inlined closures:
+            // entering one would toggle collection OFF around the actual edit.
+            .entry_point(EntryPoint::Custom(
+                "*::__iai_callgrind_wrapper_mod::*_to_scene".into(),
+            )));
+        library_benchmark_groups = typing
+    );
+
+    pub(super) fn run() {
+        main();
+    }
+}
+
+fn main() {
+    // A test runner lists and runs every target by executing it. Only a
+    // benchmark run, or the callgrind runner re-entering this binary, measures.
+    if !std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--bench" || arg == "--iai-run")
+    {
+        return;
+    }
+    entry::run();
+}

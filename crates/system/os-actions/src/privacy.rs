@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::rfkill::{self, RfkillState};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaKind {
     Microphone,
@@ -29,6 +31,20 @@ pub enum KillState {
     Allowed,
     SoftwareBlocked,
     HardwareBlocked,
+}
+
+impl From<RfkillState> for KillState {
+    fn from(state: RfkillState) -> Self {
+        if !state.present {
+            Self::Unavailable
+        } else if state.hard_blocked {
+            Self::HardwareBlocked
+        } else if state.soft_blocked {
+            Self::SoftwareBlocked
+        } else {
+            Self::Allowed
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +80,7 @@ pub fn get_privacy_status() -> PrivacyStatus {
     status
 }
 
-fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
+fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
     let mut status = PrivacyStatus {
         microphone_muted: media::audio::default_node::volume_state(
             media::audio::default_node::DefaultNode::Source,
@@ -78,23 +94,21 @@ fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
         }),
         ..PrivacyStatus::default()
     };
-    if let Ok(entries) = std::fs::read_dir(rfkill) {
-        for entry in entries.flatten() {
-            let root = entry.path();
-            let ty = read(&root.join("type")).unwrap_or_default();
-            let state = kill_state(&root);
-            match ty.as_str() {
-                "wlan" => status.wifi_kill = state,
-                "bluetooth" => status.bluetooth_kill = state,
-                "wwan" => status.mobile_kill = state,
-                // Some platforms expose physical camera/mic shutters through
-                // rfkill even though these names are not mandated by Linux.
-                "camera" => status.camera_kill = state,
-                "microphone" => status.microphone_kill = state,
-                _ => {}
-            }
-        }
+    // Every switch of a kind is folded in, so a machine with more than one
+    // (the card's own and the platform's) reports blocked when any of them is.
+    let mut radios: HashMap<String, RfkillState> = HashMap::new();
+    for (kind, switch) in rfkill::switches(class) {
+        let folded = radios.entry(kind).or_default();
+        *folded = folded.fold(switch);
     }
+    let kill = |kind: &str| KillState::from(radios.get(kind).copied().unwrap_or_default());
+    status.wifi_kill = kill("wlan");
+    status.bluetooth_kill = kill("bluetooth");
+    status.mobile_kill = kill("wwan");
+    // Some platforms expose physical camera/mic shutters through rfkill even
+    // though these names are not mandated by Linux.
+    status.camera_kill = kill("camera");
+    status.microphone_kill = kill("microphone");
     status
 }
 
@@ -317,18 +331,6 @@ fn humanize_binary(binary: &str) -> String {
         .join(" ")
 }
 
-fn kill_state(root: &Path) -> KillState {
-    if read(root.join("hard").as_path()).as_deref() == Some("1") {
-        KillState::HardwareBlocked
-    } else if read(root.join("soft").as_path()).as_deref() == Some("1")
-        || read(root.join("state").as_path()).as_deref() == Some("0")
-    {
-        KillState::SoftwareBlocked
-    } else {
-        KillState::Allowed
-    }
-}
-
 fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
@@ -338,6 +340,27 @@ fn read(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_blocked_switch_of_a_kind_blocks_it_whichever_order_it_reads_in() {
+        for blocked_first in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let dev = tempfile::tempdir().unwrap();
+            for (name, blocked) in [("rfkill0", blocked_first), ("rfkill1", !blocked_first)] {
+                let switch = root.path().join(name);
+                std::fs::create_dir(&switch).unwrap();
+                std::fs::write(switch.join("type"), "wlan\n").unwrap();
+                std::fs::write(switch.join("soft"), u8::from(blocked).to_string()).unwrap();
+                std::fs::write(switch.join("hard"), "0\n").unwrap();
+            }
+            let status = get_privacy_status_from(root.path(), dev.path());
+            assert_eq!(
+                status.wifi_kill,
+                KillState::SoftwareBlocked,
+                "one blocked switch keeps the radio off (blocked first: {blocked_first})"
+            );
+        }
+    }
 
     #[test]
     fn device_use_is_attributed_only_from_server_side_security_evidence() {

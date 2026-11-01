@@ -32,12 +32,100 @@ use crate::providers::ProviderSelection;
 use crate::surface::Catalogue;
 use crate::tools::{self, Revealed};
 
+pub use agent_provider_config::protocol::ToolCall;
+
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
+enum ActionTurn {
+    Tools {
+        /// The assistant turn to replay, in the provider's own dialect.
+        assistant: Value,
+        calls: Vec<ToolCall>,
+    },
+    Plan {
+        /// The assistant turn and the call's id, to answer a refused plan.
+        assistant: Value,
+        id: String,
+        input: Value,
+    },
+}
+
+/// The two wire dialects of the action-discovery tool loop. Both run the
+/// same conversation with the same bounds: read-only discovery tools, then
+/// exactly one `plan` call, alone in its turn, as the final answer.
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialect {
+    /// Anthropic Messages: `system` key, `input_schema` tools, `tool_use`
+    /// blocks, `tool_result` blocks in one user turn.
+    Anthropic,
+    /// `OpenAI` Chat Completions: a system message, `function` tools,
+    /// `message.tool_calls` with JSON-string arguments, `role: "tool"` replies.
+    OpenAi,
+}
+
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
+impl Dialect {
+    fn of(protocol: agent_provider_config::ProviderProtocol) -> Self {
+        match protocol {
+            agent_provider_config::ProviderProtocol::Anthropic => Self::Anthropic,
+            agent_provider_config::ProviderProtocol::OpenAiCompatible => Self::OpenAi,
+        }
+    }
+
+    fn first_messages(self, first: &FirstTurn) -> Vec<Value> {
+        match self {
+            Self::Anthropic => vec![first.message(self)],
+            Self::OpenAi => vec![
+                serde_json::json!({ "role": "system", "content": ACTION_SYSTEM }),
+                first.message(self),
+            ],
+        }
+    }
+
+    fn body(self, selection: &ProviderSelection, messages: &[Value], most_steps: usize) -> Value {
+        match self {
+            Self::Anthropic => action_request_body_for(selection, messages, most_steps),
+            Self::OpenAi => openai_action_request_body(selection, messages, most_steps),
+        }
+    }
+
+    fn parse(self, body: &str) -> Result<ActionTurn, String> {
+        match self {
+            Self::Anthropic => parse_action_turn(body),
+            Self::OpenAi => parse_openai_action_turn(body),
+        }
+    }
+
+    fn tool_result(self, id: &str, answer: &str) -> Value {
+        match self {
+            Self::Anthropic => {
+                serde_json::json!({ "type": "tool_result", "tool_use_id": id, "content": answer })
+            }
+            Self::OpenAi => {
+                serde_json::json!({ "role": "tool", "tool_call_id": id, "content": answer })
+            }
+        }
+    }
+}
+
 /// Model turns one action decision may take (discovery calls plus `plan`).
 const MAX_ACTION_TURNS: usize = 12;
 /// The most one model turn may take out of the decision's total budget, so
 /// one stalled call still leaves room for another turn.
 const MAX_TURN_TIME: Duration = Duration::from_secs(20);
-/// The system prompt of the action-discovery conversation, in both dialects.
+/// The system prompt of the action-discovery conversation.
 /// Constant, like the tools, so the provider's prompt cache keeps it.
 const ACTION_SYSTEM: &str = "Drive Tilo exclusively through the resource/action tools. The request lists the operations published right now with their parameters: when one of them does what is asked, call `plan` with it straight away. Use the listing tools only for what that list leaves out, and `describe_operation` only when an operation's arguments are unclear from its signature. Preserve every argument's declared JSON type. Never invent an operation id or parameter.";
 
@@ -63,6 +151,9 @@ pub enum Fallback {
 pub struct Chooser {
     /// A Settings-selected provider. Its credential remains in the gateway.
     provider: Option<ProviderConnection>,
+    /// Whether its loop speaks the gateway's provider-neutral protocol.
+    /// Production transports always do; only a unit-test legacy fixture
+    /// keeps provider envelopes.
     neutral: bool,
     timeout: Duration,
     enabled: bool,
@@ -167,7 +258,7 @@ impl Chooser {
     }
 
     /// A chooser whose loop turns are answered by `turns` instead of the
-    /// gateway, speaking `protocol` (tests and offline proofs).
+    /// gateway (tests and offline proofs), selecting `protocol`'s provider.
     pub fn scripted(
         timeout: Duration,
         protocol: agent_provider_config::ProviderProtocol,
@@ -179,7 +270,7 @@ impl Chooser {
         let selection = ProviderSelection::from_profile(&profile, model);
         Self {
             provider: Some(ProviderConnection { selection }),
-            neutral: !cfg!(test),
+            neutral: true,
             timeout,
             enabled: true,
             trace: AtomicU64::new(0),
@@ -205,6 +296,20 @@ impl Chooser {
         chooser.provider = Some(ProviderConnection {
             selection: ProviderSelection::from_profile(&profile, model),
         });
+        chooser
+    }
+
+    /// A scripted chooser speaking the provider's own dialect `protocol`
+    /// names, for a fixture that scripts that dialect's bodies: the legacy
+    /// codec a test can still ask for.
+    #[cfg(test)]
+    pub(crate) fn scripted_dialect(
+        timeout: Duration,
+        protocol: agent_provider_config::ProviderProtocol,
+        turns: Arc<dyn TurnTransport>,
+    ) -> Self {
+        let mut chooser = Self::scripted(timeout, protocol, turns);
+        chooser.neutral = false;
         chooser
     }
 
@@ -308,9 +413,8 @@ impl Chooser {
     }
 
     /// [`Self::choose_actions`], reporting what the model produces while it
-    /// streams to `live` (display only; the decision is unchanged). Both
-    /// dialects report argument text as it arrives and each tool call as it
-    /// completes.
+    /// streams to `live` (display only; the decision is unchanged). Argument
+    /// text arrives as it is written and each tool call once it completes.
     ///
     /// # Errors
     ///
@@ -490,190 +594,15 @@ impl Chooser {
     }
 }
 
-/// Sends one turn's request body and answers the provider's response body:
-/// the gateway in production, a script in tests.
-#[cfg(test)]
-type PostTurn<'a> = dyn FnMut(
-        Value,
-        tilo_model_client::PlanTrace,
-        &mut dyn FnMut(StreamSignal<'_>),
-    ) -> Result<String, AskError>
-    + 'a;
-
-/// One action decision's conversation, whatever carries its turns.
-#[cfg(test)]
-struct ActionDecision<'a> {
-    selection: &'a ProviderSelection,
-    rest: &'a str,
-    catalogue: &'a Catalogue,
-    most_steps: usize,
-}
-
-#[cfg(test)]
-impl ActionDecision<'_> {
-    /// Run the conversation to a plan. The first turn already shows the
-    /// published operations (and reveals them), and the system prompt and
-    /// tools are the same bytes on every turn, so the provider's prompt cache
-    /// keeps everything up to the newest messages — and, through the
-    /// [`FirstTurn`]'s breakpoint, the operations across decisions too.
-    fn run(
-        &self,
-        trace_id: u64,
-        post: &mut PostTurn<'_>,
-        live: &mut dyn FnMut(StreamSignal<'_>),
-    ) -> Result<tools::Answer, AskError> {
-        let dialect = Dialect::of(self.selection.protocol);
-        let began = ui::time::now();
-        let mut revealed = Revealed::new();
-        let first = action_user_turn(self.rest, self.catalogue, &mut revealed);
-        let mut messages = dialect.first_messages(&first);
-        let mut refused = None;
-        for turn in 0..MAX_ACTION_TURNS {
-            let body = dialect.body(self.selection, &messages, self.most_steps);
-            let turn_began = ui::time::now();
-            let trace = tilo_model_client::PlanTrace {
-                id: trace_id,
-                turn: u32::try_from(turn).unwrap_or(u32::MAX),
-            };
-            live(StreamSignal::Turn(turn));
-            let raw = post(body, trace, live);
-            tracing::info!(
-                trace = format!("{trace_id:016x}"),
-                turn,
-                protocol = ?self.selection.protocol,
-                turn_ms = turn_began.elapsed().as_millis() as u64,
-                total_ms = began.elapsed().as_millis() as u64,
-                ok = raw.is_ok(),
-                "model turn"
-            );
-            match dialect.parse(&raw?).map_err(AskError::Failed)? {
-                ActionTurn::Plan {
-                    assistant,
-                    id,
-                    input,
-                } => match tools::read_plan(&input, &revealed, self.most_steps) {
-                    Ok(answer) => return Ok(answer),
-                    // Refused before anything ran. The model is told why —
-                    // with the shown ids it may have meant — and may plan
-                    // again, as a refused `invoke` is answered in the loop.
-                    Err(error) => {
-                        messages.push(assistant);
-                        messages.push(dialect.tool_result(&id, &tools::plan_refused(&error)));
-                        if dialect == Dialect::Anthropic {
-                            fold_anthropic_results(&mut messages);
-                        }
-                        refused = Some(error);
-                    }
-                },
-                ActionTurn::Tools { assistant, calls } => {
-                    // The stream reported each call as it completed.
-                    messages.push(assistant);
-                    for call in calls {
-                        let answer =
-                            tools::answer(&call.name, &call.input, self.catalogue, &mut revealed);
-                        messages.push(dialect.tool_result(&call.id, &answer));
-                    }
-                    if dialect == Dialect::Anthropic {
-                        fold_anthropic_results(&mut messages);
-                    }
-                }
-            }
-        }
-        Err(AskError::Failed(refused.map_or_else(
-            || "the model exhausted the action-discovery turn limit".into(),
-            |error| format!("the model exhausted the action-discovery turn limit: {error}"),
-        )))
-    }
-}
-
-pub use agent_provider_config::protocol::ToolCall;
-
-#[cfg(test)]
-enum ActionTurn {
-    Tools {
-        /// The assistant turn to replay, in the provider's own dialect.
-        assistant: Value,
-        calls: Vec<ToolCall>,
-    },
-    Plan {
-        /// The assistant turn and the call's id, to answer a refused plan.
-        assistant: Value,
-        id: String,
-        input: Value,
-    },
-}
-
-/// The two wire dialects of the action-discovery tool loop. Both run the
-/// same conversation with the same bounds: read-only discovery tools, then
-/// exactly one `plan` call, alone in its turn, as the final answer.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Dialect {
-    /// Anthropic Messages: `system` key, `input_schema` tools, `tool_use`
-    /// blocks, `tool_result` blocks in one user turn.
-    Anthropic,
-    /// `OpenAI` Chat Completions: a system message, `function` tools,
-    /// `message.tool_calls` with JSON-string arguments, `role: "tool"` replies.
-    OpenAi,
-}
-
-#[cfg(test)]
-impl Dialect {
-    fn of(protocol: agent_provider_config::ProviderProtocol) -> Self {
-        match protocol {
-            agent_provider_config::ProviderProtocol::Anthropic => Self::Anthropic,
-            agent_provider_config::ProviderProtocol::OpenAiCompatible => Self::OpenAi,
-        }
-    }
-
-    fn first_messages(self, first: &FirstTurn) -> Vec<Value> {
-        match self {
-            Self::Anthropic => vec![first.message(self)],
-            Self::OpenAi => vec![
-                serde_json::json!({ "role": "system", "content": ACTION_SYSTEM }),
-                first.message(self),
-            ],
-        }
-    }
-
-    fn body(self, selection: &ProviderSelection, messages: &[Value], most_steps: usize) -> Value {
-        match self {
-            Self::Anthropic => action_request_body_for(selection, messages, most_steps),
-            Self::OpenAi => openai_action_request_body(selection, messages, most_steps),
-        }
-    }
-
-    fn parse(self, body: &str) -> Result<ActionTurn, String> {
-        match self {
-            Self::Anthropic => parse_action_turn(body),
-            Self::OpenAi => parse_openai_action_turn(body),
-        }
-    }
-
-    fn tool_result(self, id: &str, answer: &str) -> Value {
-        match self {
-            Self::Anthropic => {
-                serde_json::json!({ "type": "tool_result", "tool_use_id": id, "content": answer })
-            }
-            Self::OpenAi => {
-                serde_json::json!({ "role": "tool", "tool_call_id": id, "content": answer })
-            }
-        }
-    }
-}
-
 /// A conversation's first user turn, in two parts: the published operations,
 /// the same bytes for the same catalogue whatever the task, then everything
 /// that varies per task (the earlier conversation, the document, the
 /// request).
 ///
-/// Anthropic caches only up to an explicit breakpoint, so its dialect sends
-/// the parts as two text blocks with a breakpoint closing the operations:
-/// the next task over the same catalogue reads tools, system prompt and
-/// operations back from the cache instead of prefilling them again (the
-/// gateway's own breakpoints still mark the conversation tail). An
-/// `OpenAI`-compatible provider caches a repeated prefix by itself, and some
-/// reject fields they do not know, so it gets the one joined string.
+/// The parts stay separate content blocks: a provider's prompt cache can
+/// then read the operations back for the next task over the same catalogue
+/// instead of prefilling them again, and caching of that boundary belongs
+/// to the gateway.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FirstTurn {
     /// The published operations: stable across tasks.
@@ -687,9 +616,6 @@ impl FirstTurn {
         format!("{}{}", self.operations, self.task)
     }
 
-    /// The first user message in `dialect`. A blank part gets no block (an
-    /// empty text block is refused), and with no operations there is
-    /// nothing worth a breakpoint of its own.
     /// Keep the stable catalogue and volatile task in separate content blocks;
     /// provider-specific caching of that boundary belongs to the gateway.
     fn apply_to(&self, request: &mut agent_provider_config::protocol::ModelRequest) {
@@ -733,19 +659,11 @@ impl FirstTurn {
     }
 }
 
-/// A first turn with no published operations ahead of `task`.
-impl From<&str> for FirstTurn {
-    fn from(task: &str) -> Self {
-        Self {
-            operations: String::new(),
-            task: task.to_owned(),
-        }
-    }
-}
-
-/// Anthropic carries every `tool_result` of a turn in one user message:
-/// gather the trailing result blocks pushed after the assistant turn.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn fold_anthropic_results(messages: &mut Vec<Value>) {
     let start = messages
         .iter()
@@ -756,6 +674,10 @@ fn fold_anthropic_results(messages: &mut Vec<Value>) {
 }
 
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn action_request_body_for(
     selection: &ProviderSelection,
     messages: &[Value],
@@ -776,6 +698,10 @@ fn action_request_body_for(
 /// (an answer that neither discovers nor plans is an error in both dialects).
 /// No `reasoning_effort` is chosen here: the gateway applies the profile's.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn openai_action_request_body(
     selection: &ProviderSelection,
     messages: &[Value],
@@ -793,6 +719,10 @@ fn openai_action_request_body(
 /// `{name, description, input_schema}` → `{type: "function", function:
 /// {name, description, parameters}}`.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn openai_tools(definitions: &Value) -> Value {
     definitions
         .as_array()
@@ -815,6 +745,10 @@ fn openai_tools(definitions: &Value) -> Value {
 }
 
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
     let (assistant, calls) = anthropic_calls(body)?;
     settle_turn(assistant, calls)
@@ -822,6 +756,10 @@ fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
 
 /// The assistant turn (to replay) and its tool calls, in call order.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
@@ -867,6 +805,10 @@ fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
 }
 
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn parse_openai_action_turn(body: &str) -> Result<ActionTurn, String> {
     let (assistant, calls) = openai_calls(body)?;
     settle_turn(assistant, calls)
@@ -874,6 +816,10 @@ fn parse_openai_action_turn(body: &str) -> Result<ActionTurn, String> {
 
 /// The assistant turn (to replay) and its tool calls, in call order.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
@@ -953,6 +899,10 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
 /// The rule shared by both dialects: `plan` is the final answer and must be
 /// the only call of its turn; otherwise the turn must call discovery tools.
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, String> {
     tools::validate_plan_calls(&calls)?;
     if calls.iter().any(|call| call.name == tools::PLAN) {
@@ -1148,7 +1098,7 @@ impl MarkGate {
     }
 }
 
-/// Turns over the launcher-issued model gateway. Both dialects stream.
+/// Turns over the launcher-issued model gateway.
 struct GatewayTurns {
     profile_id: String,
     model_id: String,
@@ -1246,6 +1196,8 @@ pub struct Conversation {
 
 impl Conversation {
     /// Compatibility constructor; provider selection belongs to the gateway.
+    /// A legacy test fixture keeps the provider's own dialect it is scripted
+    /// for; production always speaks the neutral protocol.
     pub fn new(
         protocol: agent_provider_config::ProviderProtocol,
         model: &str,
@@ -1463,11 +1415,6 @@ impl Conversation {
     pub fn push_pictures(&mut self, note: &str, pictures: Vec<(String, Vec<u8>)>) {
         use agent_provider_config::protocol::{Content, Message, Role};
         use base64::Engine as _;
-        #[cfg(test)]
-        if let Some(legacy) = &mut self.legacy {
-            legacy.push_user(note);
-            return;
-        }
         let mut content = vec![Content::Text { text: note.into() }];
         content.extend(
             pictures
@@ -1487,10 +1434,6 @@ impl Conversation {
     }
 
     pub fn len(&self) -> usize {
-        #[cfg(test)]
-        if let Some(legacy) = &self.legacy {
-            return legacy.messages.len();
-        }
         self.history.messages().len()
     }
     pub fn is_empty(&self) -> bool {
@@ -1510,6 +1453,10 @@ struct LegacyConversation {
 }
 
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "the legacy provider-dialect codec a scripted test fixture carries"
+)]
 impl LegacyConversation {
     pub fn new(
         protocol: agent_provider_config::ProviderProtocol,
@@ -1909,26 +1856,27 @@ mod tests {
         assert!(encoded.contains(tools::LIST_OPERATIONS));
         assert!(!encoded.contains("turn the bullets into a table"));
 
+        let mut conversation = Conversation::neutral("system", "sample twelve values");
         let discovery = serde_json::json!({
-            "stop_reason": "tool_use",
-            "content": [{
-                "type": "tool_use",
+            "message": {"role": "assistant", "content": [{
+                "type": "tool_call",
                 "id": "tool-1",
                 "name": tools::LIST_OPERATIONS,
                 "input": {"application": "calculator"}
-            }]
+            }]},
+            "stop_reason": "tool_calls"
         })
         .to_string();
-        let ActionTurn::Tools { calls, .. } = parse_action_turn(&discovery).unwrap() else {
-            panic!("the first turn must be discovery");
-        };
+        let (assistant, calls) = conversation.calls(&discovery).unwrap();
         let listed = tools::answer(&calls[0].name, &calls[0].input, &catalogue, &mut revealed);
         assert!(listed.contains("calculator.range:main#sample"));
+        conversation
+            .push(assistant, vec![("tool-1".into(), listed)])
+            .unwrap();
 
         let final_turn = serde_json::json!({
-            "stop_reason": "tool_use",
-            "content": [{
-                "type": "tool_use",
+            "message": {"role": "assistant", "content": [{
+                "type": "tool_call",
                 "id": "tool-2",
                 "name": tools::PLAN,
                 "input": {
@@ -1939,13 +1887,12 @@ mod tests {
                     "why": "the calculator publishes the requested sampler",
                     "then": null
                 }
-            }]
+            }]},
+            "stop_reason": "tool_calls"
         })
         .to_string();
-        let ActionTurn::Plan { input, .. } = parse_action_turn(&final_turn).unwrap() else {
-            panic!("the second turn must be the final plan");
-        };
-        let answer = tools::read_plan(&input, &revealed, 4).unwrap();
+        let (_, calls) = conversation.calls(&final_turn).unwrap();
+        let answer = tools::read_plan(&calls[0].input, &revealed, 4).unwrap();
         let instruction = Instruction::from_answer(
             &answer.actions[0],
             "sample twelve values",
@@ -1964,222 +1911,6 @@ mod tests {
                 confirmation: crate::plan::ConfirmationEvidence::None,
             }
         );
-    }
-
-    #[test]
-    fn reasoning_history_stays_in_the_original_coding_conversation() {
-        let protocol = agent_provider_config::ProviderProtocol::OpenAiCompatible;
-        let mut conversation =
-            Conversation::new(protocol, "pinned-qwen", "system", &FirstTurn::from("task"));
-        let body = serde_json::json!({"choices":[{"message":{
-            "content":null,"reasoning_content":"provider-authored thought",
-            "tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_operations","arguments":"{}"}}]
-        }}]}).to_string();
-        let (assistant, calls) = conversation.calls(&body).unwrap();
-        assert_eq!(calls.len(), 1);
-        conversation
-            .push(assistant, vec![("call_1".into(), "observed result".into())])
-            .unwrap();
-        let next = conversation.body(&[]);
-        assert_eq!(
-            next["messages"][2]["reasoning_content"],
-            "provider-authored thought"
-        );
-        assert_eq!(next["messages"][2]["content"], Value::Null);
-        assert_eq!(next["messages"][3]["tool_call_id"], "call_1");
-        let fresh = Conversation::new(
-            protocol,
-            "different-model",
-            "system",
-            &FirstTurn::from("new task"),
-        );
-        assert!(
-            !fresh
-                .body(&[])
-                .to_string()
-                .contains("provider-authored thought")
-        );
-        let other_dialect = Conversation::new(
-            agent_provider_config::ProviderProtocol::Anthropic,
-            "other-provider",
-            "system",
-            &FirstTurn::from("new task"),
-        );
-        assert!(
-            !other_dialect
-                .body(&[])
-                .to_string()
-                .contains("reasoning_content")
-        );
-        let mut malformed: Value = serde_json::from_str(&body).unwrap();
-        malformed["choices"][0]["message"]["reasoning_content"] =
-            serde_json::json!({"wrong":"type"});
-        assert!(conversation.calls(&malformed.to_string()).is_err());
-    }
-
-    #[test]
-    fn openai_dialect_runs_the_same_tool_loop_with_function_tools() {
-        let mut profile = agent_provider_config::ProviderProfile::hosted(
-            agent_provider_config::ProviderProtocol::OpenAiCompatible,
-        );
-        profile
-            .models
-            .push(agent_provider_config::ModelDescriptor::new("gpt-5.4-nano"));
-        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
-        let dialect = Dialect::of(selection.protocol);
-        assert_eq!(dialect, Dialect::OpenAi);
-        let mut messages =
-            dialect.first_messages(&FirstTurn::from("turn the bullets into a table"));
-        let body = dialect.body(&selection, &messages, 4);
-
-        // The request is Chat Completions shaped: no Anthropic keys at all.
-        assert_eq!(body["model"], "gpt-5.4-nano");
-        assert_eq!(body["max_completion_tokens"], 4096);
-        assert!(body.get("max_tokens").is_none());
-        assert!(body.get("system").is_none());
-        assert_eq!(body["tool_choice"], "required");
-        assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][0]["content"], ACTION_SYSTEM);
-        assert_eq!(body["messages"][1]["role"], "user");
-        let tools = body["tools"].as_array().unwrap();
-        let definitions = tools::definitions(4);
-        assert_eq!(tools.len(), definitions.as_array().unwrap().len());
-        for (tool, definition) in tools.iter().zip(definitions.as_array().unwrap()) {
-            assert_eq!(tool["type"], "function");
-            assert_eq!(tool["function"]["name"], definition["name"]);
-            assert_eq!(tool["function"]["description"], definition["description"]);
-            assert_eq!(tool["function"]["parameters"], definition["input_schema"]);
-            assert!(tool.get("input_schema").is_none());
-        }
-
-        // A discovery turn: JSON-string arguments, replayed with role:"tool".
-        let discovery = serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "call_1", "type": "function", "function": {"name": tools::LIST_OPERATIONS, "arguments": "{\"application\":\"calculator\"}"}},
-                        {"id": "call_2", "type": "function", "function": {"name": tools::LIST_APPLICATIONS, "arguments": ""}}
-                    ]
-                }
-            }]
-        })
-        .to_string();
-        let ActionTurn::Tools { assistant, calls } = dialect.parse(&discovery).unwrap() else {
-            panic!("a discovery turn");
-        };
-        assert_eq!(calls.len(), 2);
-        assert_eq!(
-            calls[0].input,
-            serde_json::json!({"application": "calculator"})
-        );
-        assert_eq!(calls[1].input, serde_json::json!({}));
-        assert_eq!(assistant["tool_calls"][1]["id"], "call_2");
-        messages.push(assistant);
-        for call in &calls {
-            messages.push(dialect.tool_result(&call.id, "listed"));
-        }
-        assert_eq!(messages[3]["role"], "tool");
-        assert_eq!(messages[3]["tool_call_id"], "call_1");
-        assert_eq!(messages[4]["tool_call_id"], "call_2");
-        assert_eq!(messages[4]["content"], "listed");
-
-        let plan_turn = serde_json::json!({
-            "choices": [{"message": {"tool_calls": [
-                {"id": "call_3", "type": "function", "function": {"name": tools::PLAN, "arguments": "{\"steps\":[],\"why\":\"x\",\"then\":null}"}}
-            ]}}]
-        })
-        .to_string();
-        let ActionTurn::Plan { input, .. } = dialect.parse(&plan_turn).unwrap() else {
-            panic!("the final plan");
-        };
-        assert_eq!(input["why"], "x");
-    }
-
-    /// With `TILO_AGENT_DUMP_OPENAI_BODY=<path>`, write the first `OpenAI`
-    /// discovery request (real tool schemas) for a live provider check.
-    #[test]
-    fn openai_first_turn_body_can_be_dumped_for_a_live_check() {
-        let Some(path) = std::env::var_os("TILO_AGENT_DUMP_OPENAI_BODY") else {
-            return;
-        };
-        let mut profile = agent_provider_config::ProviderProfile::hosted(
-            agent_provider_config::ProviderProtocol::OpenAiCompatible,
-        );
-        profile
-            .models
-            .push(agent_provider_config::ModelDescriptor::new("gpt-5.4-nano"));
-        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
-        let messages = Dialect::OpenAi.first_messages(&action_user_turn(
-            "make the second paragraph bold",
-            &Catalogue::default(),
-            &mut Revealed::new(),
-        ));
-        let body = Dialect::OpenAi.body(&selection, &messages, 8);
-        std::fs::write(path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
-    }
-
-    #[test]
-    fn openai_dialect_refuses_malformed_and_mixed_turns() {
-        let turn = |calls: Value| {
-            serde_json::json!({"choices": [{"message": {"tool_calls": calls}}]}).to_string()
-        };
-        let call = |id: &str, name: &str, arguments: &str| serde_json::json!({"id": id, "type": "function", "function": {"name": name, "arguments": arguments}});
-        let mixed = turn(serde_json::json!([
-            call("a", tools::LIST_OPERATIONS, "{}"),
-            call("b", tools::PLAN, "{}")
-        ]));
-        assert!(parse_openai_action_turn(&mixed).is_err());
-        let two_plans = turn(serde_json::json!([
-            call("a", tools::PLAN, "{}"),
-            call("b", tools::PLAN, "{}")
-        ]));
-        assert!(parse_openai_action_turn(&two_plans).is_err());
-        let bad_json = turn(serde_json::json!([call(
-            "a",
-            tools::LIST_OPERATIONS,
-            "{not json"
-        )]));
-        assert!(parse_openai_action_turn(&bad_json).is_err());
-        let no_id = turn(serde_json::json!([call("", tools::LIST_OPERATIONS, "{}")]));
-        assert!(parse_openai_action_turn(&no_id).is_err());
-        let text_only =
-            serde_json::json!({"choices": [{"message": {"content": "hello"}}]}).to_string();
-        assert!(parse_openai_action_turn(&text_only).is_err());
-        let refusal = serde_json::json!({"choices": [{"message": {"refusal": "no"}}]}).to_string();
-        assert!(parse_openai_action_turn(&refusal).is_err());
-        let filtered =
-            serde_json::json!({"choices": [{"finish_reason": "content_filter", "message": {}}]})
-                .to_string();
-        assert!(parse_openai_action_turn(&filtered).is_err());
-        assert!(parse_openai_action_turn("{}").is_err());
-    }
-
-    #[test]
-    fn anthropic_dialect_keeps_its_wire_shape() {
-        let profile = agent_provider_config::ProviderProfile::hosted(
-            agent_provider_config::ProviderProtocol::Anthropic,
-        );
-        let selection = ProviderSelection::from_profile(
-            &profile,
-            agent_provider_config::ModelDescriptor::new("claude-x"),
-        );
-        let dialect = Dialect::of(selection.protocol);
-        let mut messages = dialect.first_messages(&FirstTurn::from("do it"));
-        let body = dialect.body(&selection, &messages, 4);
-        assert_eq!(body["system"], ACTION_SYSTEM);
-        assert_eq!(body["max_tokens"], 4096);
-        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
-        assert!(body["tools"][0].get("input_schema").is_some());
-        messages.push(serde_json::json!({"role": "assistant", "content": []}));
-        messages.push(dialect.tool_result("t1", "a"));
-        messages.push(dialect.tool_result("t2", "b"));
-        fold_anthropic_results(&mut messages);
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[2]["role"], "user");
-        assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
     }
 
     /// `Finished` goes out before the marks a turn held. The next turn may
@@ -2299,357 +2030,6 @@ mod tests {
             "the stop names the turn's operation"
         );
         drop(env);
-    }
-
-    const PROTOCOLS: [agent_provider_config::ProviderProtocol; 2] = [
-        agent_provider_config::ProviderProtocol::Anthropic,
-        agent_provider_config::ProviderProtocol::OpenAiCompatible,
-    ];
-    const SAMPLE: &str = "calculator.range:main#sample";
-
-    /// A room whose calculator publishes one typed operation.
-    fn calculator() -> Catalogue {
-        Catalogue {
-            offers: vec![Offer {
-                app: "calculator".to_string(),
-                broker_peer_id: None,
-                broker_provider: None,
-                descriptor: ActionDescriptor {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    address: ActionAddress::new("calculator.range:main", "sample"),
-                    resource_kind: "calculator.range".into(),
-                    resource_label: "Main range".into(),
-                    action_label: "Sample values".into(),
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: Some("Generate a bounded sample".into()),
-                    locus: ExecutionLocus::ClientLocal,
-                    kind: OperationKind::Document,
-                    contract: ActionContract::default(),
-                    input: InputSpec::None,
-                    params: vec![
-                        ActionParam::required("count", ParamType::Integer, "Number of values"),
-                        ActionParam::required("normalise", ParamType::Boolean, "Normalise output"),
-                    ],
-                    view: None,
-                },
-            }],
-            facts: Vec::new(),
-            held: vec!["calculator"],
-        }
-    }
-
-    /// One provider response calling `name` with `input`, in `protocol`'s
-    /// dialect.
-    fn call(
-        protocol: agent_provider_config::ProviderProtocol,
-        id: &str,
-        name: &str,
-        input: &Value,
-    ) -> String {
-        match Dialect::of(protocol) {
-            Dialect::Anthropic => serde_json::json!({
-                "stop_reason": "tool_use",
-                "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]
-            }),
-            Dialect::OpenAi => serde_json::json!({
-                "choices": [{
-                    "finish_reason": "tool_calls",
-                    "message": {"role": "assistant", "content": null, "tool_calls": [
-                        {"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}}
-                    ]}
-                }]
-            }),
-        }
-        .to_string()
-    }
-
-    fn plan_of(operation: &str) -> Value {
-        serde_json::json!({
-            "steps": [{"operation": operation, "arguments": {"count": 12, "normalise": true}}],
-            "why": "the calculator publishes the sampler",
-            "then": null
-        })
-    }
-
-    /// Run one action decision over the production conversation, the
-    /// provider answering `answers` in order. The decision and every request
-    /// body sent.
-    fn decide(
-        protocol: agent_provider_config::ProviderProtocol,
-        answers: Vec<String>,
-    ) -> (Result<tools::Answer, String>, Vec<Value>) {
-        decide_on(protocol, "sample twelve values, normalised", answers)
-    }
-
-    /// [`decide`] for the instruction `rest`, over the same catalogue.
-    fn decide_on(
-        protocol: agent_provider_config::ProviderProtocol,
-        rest: &str,
-        answers: Vec<String>,
-    ) -> (Result<tools::Answer, String>, Vec<Value>) {
-        let mut profile = agent_provider_config::ProviderProfile::hosted(protocol);
-        profile
-            .models
-            .push(agent_provider_config::ModelDescriptor::new("scripted"));
-        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
-        let catalogue = calculator();
-        let decision = ActionDecision {
-            selection: &selection,
-            rest,
-            catalogue: &catalogue,
-            most_steps: 4,
-        };
-        let mut answers = answers.into_iter();
-        let mut sent = Vec::new();
-        let decided = decision.run(
-            7,
-            &mut |body, _, _| {
-                sent.push(body);
-                answers
-                    .next()
-                    .ok_or_else(|| AskError::Failed("the script ran out of turns".into()))
-            },
-            &mut |_| {},
-        );
-        (decided.map_err(|AskError::Failed(error)| error), sent)
-    }
-
-    /// The text of the first user turn of a request: one string, or
-    /// Anthropic's text blocks in order.
-    fn first_user_turn(body: &Value) -> String {
-        let user = body["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|message| message["role"] == "user")
-            .unwrap();
-        match &user["content"] {
-            Value::String(text) => text.clone(),
-            Value::Array(blocks) => blocks
-                .iter()
-                .map(|block| {
-                    assert_eq!(block["type"], "text", "{block}");
-                    block["text"].as_str().unwrap()
-                })
-                .collect(),
-            other => panic!("a first user turn is text: {other}"),
-        }
-    }
-
-    /// Two decisions over the same catalogue open with byte-identical
-    /// operations. Anthropic's first turn closes them with a cache
-    /// breakpoint of their own, so the next decision reads tools, system
-    /// prompt and operations back from the cache; the document and the
-    /// instruction follow in a block of their own. `OpenAI`-compatible
-    /// bodies carry no `cache_control` at all and keep the one string.
-    #[test]
-    fn the_operations_are_cached_across_decisions() {
-        let first_bodies = |protocol: agent_provider_config::ProviderProtocol| {
-            ["sample twelve values, normalised", "sample three values"].map(|rest| {
-                let answer = call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE));
-                let (decided, sent) = decide_on(protocol, rest, vec![answer]);
-                assert_eq!(decided.unwrap().actions, [SAMPLE]);
-                sent.into_iter().next().unwrap()
-            })
-        };
-        let anthropic = first_bodies(agent_provider_config::ProviderProtocol::Anthropic);
-        // What Anthropic caches at the breakpoint, in its render order:
-        // tools, system, then the first user message through the operations.
-        let prefix = |body: &Value| {
-            let content = body["messages"][0]["content"].as_array().unwrap();
-            assert_eq!(content.len(), 2, "{body}");
-            serde_json::to_string(&(&body["tools"], &body["system"], &content[0])).unwrap()
-        };
-        assert_eq!(prefix(&anthropic[0]), prefix(&anthropic[1]));
-        let operations = &anthropic[0]["messages"][0]["content"][0];
-        assert_eq!(operations["type"], "text");
-        assert_eq!(
-            operations["cache_control"],
-            serde_json::json!({"type": "ephemeral"})
-        );
-        let operations = operations["text"].as_str().unwrap();
-        assert!(
-            operations.starts_with("Operations published right now:")
-                && operations.contains(SAMPLE),
-            "{operations}"
-        );
-        assert!(
-            !operations.contains("The instruction asks for"),
-            "{operations}"
-        );
-        let task = |body: &Value| body["messages"][0]["content"][1].clone();
-        assert_ne!(task(&anthropic[0]), task(&anthropic[1]));
-        assert!(task(&anthropic[0]).get("cache_control").is_none());
-        assert!(
-            task(&anthropic[1])["text"]
-                .as_str()
-                .unwrap()
-                .ends_with("The instruction asks for:\n\nsample three values\n")
-        );
-        for body in &anthropic {
-            // The one breakpoint the agent places; the gateway adds the rest.
-            assert_eq!(body.to_string().matches("cache_control").count(), 1);
-        }
-
-        let openai = first_bodies(agent_provider_config::ProviderProtocol::OpenAiCompatible);
-        for (body, same) in openai.iter().zip(&anthropic) {
-            assert!(!body.to_string().contains("cache_control"), "{body}");
-            assert!(body["messages"][1]["content"].is_string(), "{body}");
-            assert_eq!(first_user_turn(body), first_user_turn(same));
-            assert!(first_user_turn(body).starts_with(operations));
-        }
-    }
-
-    /// The first turn already shows the published operations with their
-    /// parameters (and reveals them), so a request the summary answers is
-    /// planned in ONE provider call — no `list_*`/`describe_operation`
-    /// round trips.
-    #[test]
-    fn a_request_the_summary_answers_is_planned_in_one_model_turn() {
-        for protocol in PROTOCOLS {
-            let (decided, sent) = decide(
-                protocol,
-                vec![call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE))],
-            );
-            let answer = decided.unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
-            assert_eq!(sent.len(), 1, "{protocol:?}: one provider call");
-            assert_eq!(answer.actions, [SAMPLE]);
-            assert_eq!(answer.arguments[0]["count"], 12);
-            assert_eq!(answer.arguments[0]["normalise"], true);
-            let user = first_user_turn(&sent[0]);
-            assert!(
-                user.contains(&format!(
-                    "{SAMPLE} — Sample values {{count: integer, normalise: boolean}}"
-                )),
-                "{protocol:?}: {user}"
-            );
-            // Stable first, volatile last: the operations, then the
-            // instruction.
-            let operations = user.find(SAMPLE).unwrap();
-            let instruction = user.find("The instruction asks for").unwrap();
-            assert!(operations < instruction, "{user}");
-        }
-    }
-
-    /// With no enum to enforce it, the check behind `plan` is `read_plan`:
-    /// an id nothing showed is refused back to the model with the ids it may
-    /// have meant, the model may plan again, and a model that never names a
-    /// shown id still ends within the turn limit with the reason.
-    #[test]
-    fn a_plan_naming_an_unshown_operation_is_refused_back_to_the_model() {
-        for protocol in PROTOCOLS {
-            let invented = "calculator.range:other#sample";
-            let (decided, sent) = decide(
-                protocol,
-                vec![
-                    call(protocol, "p1", tools::PLAN, &plan_of(invented)),
-                    call(protocol, "p2", tools::PLAN, &plan_of(SAMPLE)),
-                ],
-            );
-            let answer = decided.unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
-            assert_eq!(answer.actions, [SAMPLE]);
-            assert_eq!(sent.len(), 2);
-            let messages = sent[1]["messages"].as_array().unwrap();
-            let refusal = messages.last().unwrap();
-            let (call_id, text) = match Dialect::of(protocol) {
-                Dialect::Anthropic => {
-                    assert_eq!(refusal["role"], "user");
-                    (
-                        refusal["content"][0]["tool_use_id"].as_str(),
-                        refusal["content"][0]["content"].as_str().unwrap(),
-                    )
-                }
-                Dialect::OpenAi => {
-                    assert_eq!(refusal["role"], "tool");
-                    (
-                        refusal["tool_call_id"].as_str(),
-                        refusal["content"].as_str().unwrap(),
-                    )
-                }
-            };
-            assert_eq!(
-                call_id,
-                Some("p1"),
-                "{protocol:?}: answers the refused call"
-            );
-            assert!(text.contains("nothing was performed"), "{text}");
-            assert!(text.contains(invented), "{text}");
-            assert!(
-                text.contains(&format!("Listed ids for that action: {SAMPLE}")),
-                "{protocol:?}: suggests the shown id: {text}"
-            );
-            assert!(text.contains(tools::LIST_OPERATIONS), "{text}");
-
-            let stubborn =
-                vec![call(protocol, "p", tools::PLAN, &plan_of(invented)); MAX_ACTION_TURNS];
-            let (decided, sent) = decide(protocol, stubborn);
-            let error = decided.expect_err("never shown, never planned");
-            assert_eq!(sent.len(), MAX_ACTION_TURNS);
-            assert!(
-                error.contains("no listing in this conversation returned"),
-                "{protocol:?}: {error}"
-            );
-        }
-    }
-
-    /// Everything before the newest messages is the same bytes on every turn
-    /// of one decision — system prompt, tools, and each earlier message — so
-    /// the provider's prompt cache (`OpenAI`'s automatic one too) hits the
-    /// whole prefix. Revealing operations no longer rewrites `plan`.
-    #[test]
-    fn the_system_prompt_and_tools_are_the_same_bytes_on_every_turn() {
-        for protocol in PROTOCOLS {
-            let (decided, sent) = decide(
-                protocol,
-                vec![
-                    call(
-                        protocol,
-                        "l1",
-                        tools::LIST_OPERATIONS,
-                        &serde_json::json!({"application": "calculator"}),
-                    ),
-                    call(
-                        protocol,
-                        "d1",
-                        tools::DESCRIBE_OPERATION,
-                        &serde_json::json!({"operation": SAMPLE}),
-                    ),
-                    call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE)),
-                ],
-            );
-            assert_eq!(decided.unwrap().actions, [SAMPLE]);
-            assert_eq!(sent.len(), 3);
-            let tool_bytes = |body: &Value| serde_json::to_string(&body["tools"]).unwrap();
-            let system = |body: &Value| match Dialect::of(protocol) {
-                Dialect::Anthropic => serde_json::to_string(&body["system"]).unwrap(),
-                Dialect::OpenAi => serde_json::to_string(&body["messages"][0]).unwrap(),
-            };
-            for later in &sent[1..] {
-                assert_eq!(
-                    tool_bytes(later),
-                    tool_bytes(&sent[0]),
-                    "{protocol:?}: tools"
-                );
-                assert_eq!(system(later), system(&sent[0]), "{protocol:?}: system");
-            }
-            assert!(
-                !tool_bytes(&sent[0]).contains("\"enum\""),
-                "{}",
-                tool_bytes(&sent[0])
-            );
-            for pair in sent.windows(2) {
-                let earlier = pair[0]["messages"].as_array().unwrap();
-                let later = pair[1]["messages"].as_array().unwrap();
-                assert!(later.len() > earlier.len());
-                assert_eq!(
-                    serde_json::to_string(&later[..earlier.len()]).unwrap(),
-                    serde_json::to_string(earlier).unwrap(),
-                    "{protocol:?}: earlier messages are replayed unchanged"
-                );
-            }
-        }
     }
 }
 

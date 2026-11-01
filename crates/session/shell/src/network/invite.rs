@@ -3,7 +3,7 @@
 //! host's own (`tilo-workspace-join`).
 
 pub(crate) mod enrollment_driver;
-pub(crate) use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+pub(crate) use tilo_peer_state::owner::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 use serde::{Deserialize, Serialize};
 

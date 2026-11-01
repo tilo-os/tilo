@@ -108,8 +108,6 @@ pub(super) struct AppAssemblyValues {
     pub actions: Option<Box<ActionRuntime>>,
     pub search_presented: Option<bool>,
     pub native_document_chrome: Option<bool>,
-    pub last_published_playback: Option<Option<Vec<media::handoff::PlaybackReport>>>,
-    pub last_playback_publish: Option<Option<Instant>>,
     pub continuation: Option<ContinuationRuntime>,
     pub profiler: Option<Option<crate::profiling::FrameProfiler>>,
     pub native_input_probe: Option<Option<Box<dyn Fn() -> serde_json::Value>>>,
@@ -222,8 +220,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     assembly.values.actions = Some(Box::new(ActionRuntime::new()));
     assembly.values.search_presented = Some(false);
     assembly.values.native_document_chrome = Some(true);
-    assembly.values.last_published_playback = Some(None);
-    assembly.values.last_playback_publish = Some(None);
     let Some(inputs) = assembly.inputs.as_ref() else {
         assembly.retire();
         unreachable!("App assembly owns its inputs");
@@ -284,8 +280,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         actions: Some(actions),
         search_presented: Some(search_presented),
         native_document_chrome: Some(native_document_chrome),
-        last_published_playback: Some(last_published_playback),
-        last_playback_publish: Some(last_playback_publish),
         continuation: Some(continuation),
         profiler: Some(profiler),
         native_input_probe: Some(native_input_probe),
@@ -357,8 +351,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         native_document_chrome,
         continuation,
         action_publication_failure,
-        last_published_playback,
-        last_playback_publish,
         profiler,
         native_input_probe,
         floating,
@@ -396,6 +388,5 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     // launched app visible to continuity capture even if it receives no
     // input events before the next peer asks for a checkpoint.
     app.publish_continuation_metadata();
-    app.publish_playback_handoff();
     app
 }

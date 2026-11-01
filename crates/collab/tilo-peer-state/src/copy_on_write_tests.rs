@@ -104,7 +104,7 @@ fn admitting_one_document_copies_and_saves_only_that_document() {
     let restored = StatePeer::restore(
         &durable,
         candidate.room(),
-        candidate.authority().clone(),
+        candidate.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,

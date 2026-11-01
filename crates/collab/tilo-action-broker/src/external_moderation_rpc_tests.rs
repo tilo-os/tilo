@@ -32,7 +32,7 @@ mod external_moderation_rpc_tests {
     struct Room {
         original: signed_worker::OriginalRoom,
         route: CrdtRoute,
-        state: Arc<CapnpBrokerState>,
+        state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
     }
@@ -86,7 +86,7 @@ mod external_moderation_rpc_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-            let (state, bridge) = CapnpBrokerState::new_configured(
+            let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,
@@ -342,159 +342,6 @@ mod external_moderation_rpc_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn external_moderation_rpc_binds_exact_operation_and_live_target_custody() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(971).await;
-                    let other = room.worker(972).await;
-                    let descriptor = descriptor(action);
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
-                        .await
-                        .unwrap();
-                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let operation = operation(action == "appeal");
-                    let wire =
-                        room.invoke(971, &descriptor.resource, action, &argument(&operation));
-                    let delivered = stream.read().await.unwrap();
-                    assert_eq!(delivered.id, wire);
-                    let id = delivered.invocation_uuid;
-                    let request = Request {
-                        protocol: PROTOCOL.into(),
-                        invocation: uuid::Uuid::from_bytes(id).to_string(),
-                        operation,
-                    };
-                    request.validate().unwrap();
-                    // This proves admission reached the production host worker,
-                    // not just a custody helper that always refuses requests.
-                    refused(&target.handle, &request, id, "HTTPS").await;
-                    for field in ["destination", "owner", "mutation"] {
-                        let mut changed = request.clone();
-                        match field {
-                            "destination" => changed.operation.destination.base_url.push('/'),
-                            "owner" => {
-                                changed.operation.destination.owner_pubkey_hex = "ef".repeat(32);
-                            }
-                            "mutation" => match &mut changed.operation.mutation {
-                                ModerationMutation::FileReport { summary, .. } => summary.push('!'),
-                                ModerationMutation::PublisherAppeal { reason, .. } => {
-                                    reason.push('!');
-                                }
-                                _ => unreachable!(),
-                            },
-                            _ => unreachable!(),
-                        }
-                        refused(&target.handle, &changed, id, "differs").await;
-                    }
-                    let mut wrong_mutation = request.clone();
-                    wrong_mutation.operation.mutation = operation_for_other_action(action);
-                    refused(&target.handle, &wrong_mutation, id, "differs").await;
-                    let unknown = uuid::Uuid::new_v4().into_bytes();
-                    refused(&target.handle, &request, unknown, "invocation").await;
-                    let unknown_request = Request {
-                        invocation: uuid::Uuid::from_bytes(unknown).to_string(),
-                        ..request.clone()
-                    };
-                    refused(
-                        &target.handle,
-                        &unknown_request,
-                        unknown,
-                        "no retained target invocation",
-                    )
-                    .await;
-                    refused(&other.handle, &request, id, "no retained target invocation").await;
-
-                    let mut changed = descriptor.clone();
-                    changed.contract.kind = tilo_actions::ActionKind::Read;
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[changed])
-                        .await
-                        .unwrap();
-                    refused(&target.handle, &request, id, "mismatch").await;
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
-                        .await
-                        .unwrap();
-                    refused(&target.handle, &request, id, "HTTPS").await;
-                    assert!(
-                        target
-                            .handle
-                            .cancel_published_invocation(wire)
-                            .await
-                            .is_err(),
-                        "certificate-owned jobs reject legacy actor-only cancellation"
-                    );
-                    let host = room
-                        .state
-                        .journal
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .host();
-                    let cancelled = target
-                        .handle
-                        .cancel_durable_published_invocation(host.as_bytes(), &id)
-                        .await
-                        .unwrap();
-                    assert!(cancelled.result.unwrap().cancellation_requested);
-                    refused(&target.handle, &request, id, "retired or cancelled").await;
-                    room.state.remove_connection(971);
-                    assert!(
-                        target
-                            .handle
-                            .external_moderation(&request, id)
-                            .await
-                            .is_err()
-                    );
-                }
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn external_moderation_rpc_outside_grant_does_not_replace_exact_confirmation() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(979).await;
-                    let mut descriptor = descriptor(action);
-                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[descriptor])
-                        .await
-                        .unwrap();
-                    let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let operation = operation(action == "appeal");
-                    // Even with a broad Outside grant, the unconfirmed call must
-                    // now fail at admission, before it can reach the host worker.
-                    let error = target
-                        .handle
-                        .invoke_published_action(
-                            979,
-                            "workspace:atlas",
-                            action,
-                            Some(&argument(&operation)),
-                            "{}",
-                        )
-                        .await
-                        .expect_err("a broad grant cannot replace the trusted host answer");
-                    assert!(error.to_string().contains("confirmation"), "{error}");
-                }
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn external_moderation_rpc_confirmation_token_binds_payload_and_destination() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -502,11 +349,7 @@ mod external_moderation_rpc_tests {
                     let room = Room::new(false);
                     let target = room.worker(980).await;
                     let descriptor = descriptor(action);
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[descriptor])
-                        .await
-                        .unwrap();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
                     let (actor, origin) = room.caller();
@@ -619,11 +462,7 @@ mod external_moderation_rpc_tests {
                     let target = room.worker(980).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[descriptor])
-                        .await
-                        .unwrap();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
                     let (actor, _) = room.caller();
@@ -751,11 +590,7 @@ mod external_moderation_rpc_tests {
                     let room = Room::with_document(false, Some(committed_report(note, None)));
                     let target = room.worker(977).await;
                     let descriptor = descriptor("submit-report");
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[descriptor])
-                        .await
-                        .unwrap();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let mut operation = operation(false);
                     operation.destination.base_url = "https://custom.example".into();
@@ -836,11 +671,7 @@ mod external_moderation_rpc_tests {
                         Room::with_document(false, Some(committed_report(note, Some("case-one"))));
                     let target = room.worker(978).await;
                     let descriptor = descriptor("appeal");
-                    target
-                        .handle
-                        .publish_actions(&room.route.app_id, &[descriptor])
-                        .await
-                        .unwrap();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let mut operation = operation(true);
                     operation.destination.base_url = "https://custom.example".into();
@@ -902,7 +733,7 @@ mod external_moderation_rpc_tests {
                     let room = Room::new(false);
                     let target = room.worker(976).await;
                     let descriptor = descriptor("submit-report");
-                    target.handle.publish_actions(&room.route.app_id, &[descriptor]).await.unwrap();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let mut operation = operation(false);
                     operation.destination.base_url = "https://custom.example".into();
@@ -927,11 +758,7 @@ mod external_moderation_rpc_tests {
                 let room = Room::new(false);
                 let target = room.worker(975).await;
                 let descriptor = descriptor("submit-report");
-                target
-                    .handle
-                    .publish_actions(&room.route.app_id, &[descriptor])
-                    .await
-                    .unwrap();
+                target.handle.publish_actions(&[descriptor]).await.unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let mut operation = operation(false);
                 operation.issued_at_unix = 1;
@@ -954,10 +781,6 @@ mod external_moderation_rpc_tests {
             .await;
     }
 
-    fn operation_for_other_action(action: &str) -> ModerationMutation {
-        operation(action == "submit-report").mutation
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn external_moderation_rpc_native_target_requires_original_channel_and_publication() {
         tokio::task::LocalSet::new()
@@ -967,7 +790,7 @@ mod external_moderation_rpc_tests {
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
-                    .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
+                    .publish_actions(std::slice::from_ref(&descriptor))
                     .await
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -997,80 +820,9 @@ mod external_moderation_rpc_tests {
                 refused(&foreign, &request, id, "no retained target invocation").await;
                 let mut replacement = descriptor;
                 replacement.resource = "replacement-store-resource".into();
-                target
-                    .handle
-                    .publish_actions(&room.route.app_id, &[replacement])
-                    .await
-                    .unwrap();
+                target.handle.publish_actions(&[replacement]).await.unwrap();
                 refused(&target.handle, &request, id, "publication retired").await;
                 room.state.remove_connection(973);
-                assert!(
-                    target
-                        .handle
-                        .external_moderation(&request, id)
-                        .await
-                        .is_err()
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn external_moderation_rpc_holds_a_launched_app_to_the_same_execution_frontier() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let room = Room::new(true);
-                let (_rpc, _presentation, target) = room.launched(974).await;
-                assert!(
-                    room.state
-                        .host_workers
-                        .lock()
-                        .unwrap()
-                        .get(974, &room.route)
-                        .is_some_and(|admitted| admitted.worker_registration.is_some()),
-                    "the launched Store is the registered worker of its own route"
-                );
-                let descriptor = descriptor("submit-report");
-                target
-                    .handle
-                    .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
-                    .await
-                    .unwrap();
-                let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                let operation = operation(false);
-                let wire = room.invoke(
-                    974,
-                    &descriptor.resource,
-                    "submit-report",
-                    &argument(&operation),
-                );
-                let delivered = stream.read().await.unwrap();
-                assert_eq!(delivered.id, wire);
-                let id = delivered.invocation_uuid;
-                let request = Request {
-                    protocol: PROTOCOL.into(),
-                    invocation: uuid::Uuid::from_bytes(id).to_string(),
-                    operation,
-                };
-                refused(&target.handle, &request, id, "HTTPS").await;
-                let host = room
-                    .state
-                    .journal
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .host();
-                let cancelled = target
-                    .handle
-                    .cancel_durable_published_invocation(host.as_bytes(), &id)
-                    .await
-                    .unwrap();
-                assert!(cancelled.result.unwrap().cancellation_requested);
-                refused(&target.handle, &request, id, "retired or cancelled").await;
-                room.state.remove_connection(974);
                 assert!(
                     target
                         .handle
@@ -1091,7 +843,7 @@ mod external_moderation_rpc_tests {
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
-                    .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
+                    .publish_actions(std::slice::from_ref(&descriptor))
                     .await
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -1128,6 +880,222 @@ mod external_moderation_rpc_tests {
                     error.contains("certified collaboration session is no longer admitted")
                         && error.contains("not a workspace member"),
                     "expected original authority expiry refusal: {error}"
+                );
+            })
+            .await;
+    }
+
+    fn operation_for_other_action(action: &str) -> ModerationMutation {
+        operation(action == "submit-report").mutation
+    }
+
+    /// The original caller cancels the invocation `wire` they made.
+    fn cancel_as_original(room: &Room, wire: u64) {
+        let (_, InvocationCaller::Local { admitted, .. }) = room.caller() else {
+            unreachable!("the room's original caller is local")
+        };
+        let owner = InvocationOwner::AuthenticatedLocal {
+            root: room.original.cert.user_public_key,
+            device: room.original.cert.device_public_key,
+            agent: admitted.agent_id.clone(),
+        };
+        assert!(room.state.can_cancel_for_owner(wire, &owner));
+        let _ = room
+            .state
+            .request_cancellation_for_owner(wire, &owner)
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_binds_exact_operation_and_live_target_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for action in ["submit-report", "appeal"] {
+                    let room = Room::new(false);
+                    let target = room.worker(971).await;
+                    let other = room.worker(972).await;
+                    let descriptor = descriptor(action);
+                    target
+                        .handle
+                        .publish_actions(std::slice::from_ref(&descriptor))
+                        .await
+                        .unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let operation = operation(action == "appeal");
+                    let wire =
+                        room.invoke(971, &descriptor.resource, action, &argument(&operation));
+                    let delivered = stream.read().await.unwrap();
+                    assert_eq!(delivered.id, wire);
+                    let id = delivered.invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    request.validate().unwrap();
+                    // Admission reached the host worker's real effect, not a
+                    // custody check that refuses every request.
+                    refused(&target.handle, &request, id, "HTTPS").await;
+                    for field in ["destination", "owner", "mutation"] {
+                        let mut changed = request.clone();
+                        match field {
+                            "destination" => changed.operation.destination.base_url.push('/'),
+                            "owner" => {
+                                changed.operation.destination.owner_pubkey_hex = "ef".repeat(32);
+                            }
+                            "mutation" => match &mut changed.operation.mutation {
+                                ModerationMutation::FileReport { summary, .. } => summary.push('!'),
+                                ModerationMutation::PublisherAppeal { reason, .. } => {
+                                    reason.push('!');
+                                }
+                                _ => unreachable!(),
+                            },
+                            _ => unreachable!(),
+                        }
+                        refused(&target.handle, &changed, id, "differs").await;
+                    }
+                    let mut wrong_mutation = request.clone();
+                    wrong_mutation.operation.mutation = operation_for_other_action(action);
+                    refused(&target.handle, &wrong_mutation, id, "differs").await;
+                    let unknown = uuid::Uuid::new_v4().into_bytes();
+                    refused(&target.handle, &request, unknown, "invocation").await;
+                    let unknown_request = Request {
+                        invocation: uuid::Uuid::from_bytes(unknown).to_string(),
+                        ..request.clone()
+                    };
+                    refused(
+                        &target.handle,
+                        &unknown_request,
+                        unknown,
+                        "no retained target invocation",
+                    )
+                    .await;
+                    refused(&other.handle, &request, id, "no retained target invocation").await;
+
+                    let mut changed = descriptor.clone();
+                    changed.contract.kind = tilo_actions::ActionKind::Read;
+                    target.handle.publish_actions(&[changed]).await.unwrap();
+                    refused(&target.handle, &request, id, "mismatch").await;
+                    target
+                        .handle
+                        .publish_actions(std::slice::from_ref(&descriptor))
+                        .await
+                        .unwrap();
+                    refused(&target.handle, &request, id, "HTTPS").await;
+                    cancel_as_original(&room, wire);
+                    refused(&target.handle, &request, id, "retired or cancelled").await;
+                    room.state.remove_connection(971);
+                    assert!(
+                        target
+                            .handle
+                            .external_moderation(&request, id)
+                            .await
+                            .is_err()
+                    );
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_outside_grant_does_not_replace_exact_confirmation() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for action in ["submit-report", "appeal"] {
+                    let room = Room::new(false);
+                    let target = room.worker(979).await;
+                    let mut descriptor = descriptor(action);
+                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+                    let resource = descriptor.resource.clone();
+                    target.handle.publish_actions(&[descriptor]).await.unwrap();
+                    let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let operation = operation(action == "appeal");
+                    let serde_json::Value::Object(argument) =
+                        serde_json::from_str(&argument(&operation)).unwrap()
+                    else {
+                        unreachable!("the argument is an object")
+                    };
+                    // Even with a broad Outside grant, the unconfirmed call
+                    // fails at admission, before it can reach the host worker.
+                    let handle = target.handle.clone();
+                    let request = signed_worker::invoke_request(
+                        "979",
+                        &resource,
+                        action,
+                        Some(serde_json::Value::Object(argument)),
+                    );
+                    let mut asked = tokio::task::spawn_local(async move {
+                        signed_worker::ask(
+                            &handle,
+                            tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                        )
+                        .await
+                    });
+                    // The app's own directory answers on the broker's turn.
+                    let answer = loop {
+                        room.state.drain_action_directory_bridge(&room.directories);
+                        if asked.is_finished() {
+                            break (&mut asked).await.unwrap().unwrap();
+                        }
+                        tokio::task::yield_now().await;
+                    };
+                    let receipt = signed_worker::receipt(answer);
+                    assert!(
+                        format!("{:?}", receipt.status).contains("Confirmation"),
+                        "a broad grant cannot replace the trusted host answer: {receipt:?}"
+                    );
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_holds_a_launched_app_to_the_same_execution_frontier() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let room = Room::new(true);
+                let (_rpc, _presentation, target) = room.launched(974).await;
+                assert!(
+                    room.state
+                        .host_workers
+                        .lock()
+                        .unwrap()
+                        .get(974, &room.route)
+                        .is_some_and(|admitted| admitted.worker_registration.is_some()),
+                    "the launched Store is the registered worker of its own route"
+                );
+                let descriptor = descriptor("submit-report");
+                target
+                    .handle
+                    .publish_actions(std::slice::from_ref(&descriptor))
+                    .await
+                    .unwrap();
+                let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                let operation = operation(false);
+                let wire = room.invoke(
+                    974,
+                    &descriptor.resource,
+                    "submit-report",
+                    &argument(&operation),
+                );
+                let delivered = stream.read().await.unwrap();
+                assert_eq!(delivered.id, wire);
+                let id = delivered.invocation_uuid;
+                let request = Request {
+                    protocol: PROTOCOL.into(),
+                    invocation: uuid::Uuid::from_bytes(id).to_string(),
+                    operation,
+                };
+                refused(&target.handle, &request, id, "HTTPS").await;
+                cancel_as_original(&room, wire);
+                refused(&target.handle, &request, id, "retired or cancelled").await;
+                room.state.remove_connection(974);
+                assert!(
+                    target
+                        .handle
+                        .external_moderation(&request, id)
+                        .await
+                        .is_err()
                 );
             })
             .await;

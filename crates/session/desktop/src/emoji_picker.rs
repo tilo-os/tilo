@@ -28,6 +28,9 @@
 use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use ui::time::{Duration, Instant};
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use emoji::{Catalogue, Recents, SkinTone};
 use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 use ui::paint::PaintCtx;
@@ -67,6 +70,91 @@ pub trait RecentsStore {
 
     /// Replace what is stored.
     fn save(&self, recents: &Recents) -> Result<(), String>;
+}
+
+/// Where the picker opens: the caret of the field the person types into and
+/// the display it stands on, in the chrome's own coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EmojiPlace {
+    /// The display the caret stands on: what a card without a caret is
+    /// centred on, and what every card stays within.
+    pub viewport: Option<Rect>,
+    /// The field's caret; `None` for a field that reported none.
+    pub caret: Option<Rect>,
+}
+
+/// The picker's link with its host: where the next opening goes, the emoji
+/// the person picked until the host has written them into a field, what
+/// reached a field, and where the recents are kept. The host says the first
+/// and the third, the picker the second, and both share the fourth.
+#[derive(Clone, Default)]
+pub struct EmojiLink {
+    place: Rc<Cell<Option<EmojiPlace>>>,
+    picks: Rc<RefCell<Vec<String>>>,
+    delivered: Rc<RefCell<Vec<(String, bool)>>>,
+    store: Rc<RefCell<Option<Box<dyn RecentsStore>>>>,
+}
+
+impl EmojiLink {
+    /// A link whose recents are kept in `store`.
+    #[must_use]
+    pub fn new(store: Box<dyn RecentsStore>) -> Self {
+        let link = Self::default();
+        link.attach_store(store);
+        link
+    }
+
+    /// Where the next opening goes: the caret of the field the person types
+    /// into, in the chrome's coordinates.
+    pub fn place_at(&self, place: EmojiPlace) {
+        self.place.set(Some(place));
+    }
+
+    /// Where the picker opens now, as the host last said; `None` centres it
+    /// over the chrome.
+    #[must_use]
+    pub fn place(&self) -> Option<EmojiPlace> {
+        self.place.get()
+    }
+
+    /// The person picked `text`: it waits for the host to write it into the
+    /// field they were typing into.
+    pub fn note_picked(&self, text: String) {
+        self.picks.borrow_mut().push(text);
+    }
+
+    /// The emoji picked since the last call, oldest first.
+    pub fn take_picks(&self) -> Vec<String> {
+        std::mem::take(&mut *self.picks.borrow_mut())
+    }
+
+    /// `text` reached a field; `sensitive` when that field keeps its content
+    /// secret, whose emoji is never remembered.
+    pub fn note_delivered(&self, text: String, sensitive: bool) {
+        self.delivered.borrow_mut().push((text, sensitive));
+    }
+
+    /// What reached a field since the last call, oldest first.
+    pub fn take_delivered(&self) -> Vec<(String, bool)> {
+        std::mem::take(&mut *self.delivered.borrow_mut())
+    }
+
+    /// Whether a pick reached a field and waits to be taken: what wakes the
+    /// chrome's frame to remember it.
+    #[must_use]
+    pub fn has_delivered(&self) -> bool {
+        !self.delivered.borrow().is_empty()
+    }
+
+    /// Keep the recents in `store` from now on.
+    pub fn attach_store(&self, store: Box<dyn RecentsStore>) {
+        *self.store.borrow_mut() = Some(store);
+    }
+
+    /// The store to keep the recents in, once.
+    pub fn take_store(&self) -> Option<Box<dyn RecentsStore>> {
+        self.store.borrow_mut().take()
+    }
 }
 
 /// What a point on the card is.
@@ -156,6 +244,9 @@ pub struct EmojiPicker {
     hover: Option<Hit>,
     commits: Vec<String>,
     viewport: Rect,
+    /// What changed since the card last painted: an opening or closing, a
+    /// key, a pick, a scroll glide.
+    dirty: Cell<bool>,
     /// The focused field's caret in desktop coordinates, when it reported
     /// one; the card is placed against it.
     anchor: Option<Rect>,
@@ -198,6 +289,7 @@ impl EmojiPicker {
             hover: None,
             commits: Vec::new(),
             viewport: Rect::ZERO,
+            dirty: Cell::new(false),
             anchor: None,
             geometry: Geometry::default(),
             spacing: ui::tokens::Spacing::BASE,
@@ -220,6 +312,18 @@ impl EmojiPicker {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether the card changed since it last painted, closed into or out of
+    /// it: what asks its host for a frame.
+    #[must_use]
+    pub fn needs_redraw(&self) -> bool {
+        self.dirty.get()
+    }
+
+    /// The card as last painted.
+    pub fn mark_drawn(&mut self) {
+        self.dirty.set(false);
     }
 
     /// Open centred over `viewport` in the desktop's language, search
@@ -252,6 +356,7 @@ impl EmojiPicker {
         self.tones = None;
         self.press = None;
         self.hover = None;
+        self.dirty.set(true);
         self.rebuild();
     }
 
@@ -264,6 +369,7 @@ impl EmojiPicker {
         self.press = None;
         self.hover = None;
         self.search.set_focused(false);
+        self.dirty.set(true);
     }
 
     /// The visible picker scroll surface through the system's existing scroll door.
@@ -309,6 +415,7 @@ impl EmojiPicker {
         if matches!(result, PrimaryScrollResult::Changed(_)) {
             self.press = None;
             self.hover = None;
+            self.dirty.set(true);
         }
         result
     }
@@ -328,6 +435,7 @@ impl EmojiPicker {
         if moved {
             self.press = None;
             self.hover = None;
+            self.dirty.set(true);
         }
         moved
     }
@@ -371,6 +479,7 @@ impl EmojiPicker {
             tracing::warn!(%error, "emoji recents could not be saved");
         }
         if self.open {
+            self.dirty.set(true);
             self.rebuild();
         }
     }
@@ -916,6 +1025,7 @@ impl EmojiPicker {
         if !self.open {
             return;
         }
+        self.dirty.set(true);
         let mut handled = false;
         let region = if self.tones.is_some() {
             &mut self.tone_scroll

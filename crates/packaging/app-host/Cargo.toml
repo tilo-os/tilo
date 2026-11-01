@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app host — the privileged door to the device package store over a Cap'n Proto control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
+description = "Tilo app host — the privileged door to the device package store over a control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
 
 [[bin]]
 name = "tilo-app-host"
@@ -21,7 +21,7 @@ path = "src/lib.rs"
 # The daemon: the package store with its content store, installs, remote
 # fetch and the control socket. The Store app depends on this crate with
 # `default-features = false` and gets only the client side (the typed client,
-# the wire schema and local-archive review), so an app never compiles the
+# the wire and local-archive review), so an app never compiles the
 # privileged door it talks to, and the shared app runtime never carries it.
 default = ["service"]
 service = [
@@ -30,7 +30,6 @@ service = [
     "dep:app-cli",
     "dep:install",
     "dep:runtime-bundle",
-    "dep:wire-frame",
     "dep:clap",
     "dep:anyhow",
     "dep:tracing",
@@ -60,15 +59,11 @@ app-cli = { path = "../app-cli", optional = true }
 # own installs and removals too.
 install = { path = "../install", optional = true }
 runtime-bundle = { path = "../runtime-bundle", optional = true }
-runtime-portal = { path = "../../runtime/runtime-portal" }
-
-# Cap'n Proto RPC for the control socket.
-capnp.workspace = true
-capnp-rpc.workspace = true
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 
 # Daemon plumbing.
 clap = { workspace = true, optional = true }

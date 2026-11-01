@@ -46,7 +46,7 @@ impl ShellOverlayHost {
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
-        modifier: Option<ui::widget::command_palette::ActivationModifier>,
+        modifier: Option<ui::search::ActivationModifier>,
     ) {
         let Some(id) = self
             .search
@@ -89,7 +89,7 @@ impl ShellOverlayHost {
             let _ = self.choose_app_row(&result);
             return;
         }
-        if modifier == Some(ui::widget::command_palette::ActivationModifier::Shift)
+        if modifier == Some(ui::search::ActivationModifier::Shift)
             && let Some(app) = self.new_window_of(&result)
         {
             let target = self

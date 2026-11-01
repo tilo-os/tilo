@@ -132,7 +132,7 @@ files = [
 
 # The native session, which replaces the shell: offered by the greeter beside
 # it (os/usr/share/wayland-sessions/tilo-session.desktop) and started by the
-# shell's session wrapper with `--native`.
+# image's session wrapper for a login that names no session flag.
 [[component]]
 name = "tilo-session"
 kind = "userspace"

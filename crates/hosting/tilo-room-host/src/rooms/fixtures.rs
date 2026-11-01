@@ -140,6 +140,7 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .expect("the host opens");

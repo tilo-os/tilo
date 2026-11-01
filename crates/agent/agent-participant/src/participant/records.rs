@@ -4,7 +4,7 @@
 //! document another agent is writing ([`super::authors`]).
 
 use automerge::ReadDoc as _;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 use super::running::imports;

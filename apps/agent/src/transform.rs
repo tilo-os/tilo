@@ -44,8 +44,8 @@ use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, Invocatio
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
 use tilo_actions::{ActionContext, ExecutionLocus, OperationKind};
 use tilo_automation::{
-    AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_RESPOND_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
+    AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION, AGENT_RESPOND_ACTION,
+    AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
 };
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 
@@ -422,7 +422,6 @@ fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
 #[must_use]
 pub fn publication() -> CollabRequest {
     CollabRequest::PublishActions {
-        app_id: AGENT_APP_ID.to_string(),
         actions: descriptors().iter().map(exported).collect(),
     }
 }
@@ -1416,10 +1415,9 @@ mod tests {
                 assert_ne!(param.ty, ParamType::Secret);
             }
         }
-        let CollabRequest::PublishActions { app_id, actions } = publication() else {
+        let CollabRequest::PublishActions { actions } = publication() else {
             panic!("the publication publishes actions");
         };
-        assert_eq!(app_id, AGENT_APP_ID);
         assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
         // The audience crosses the publication boundary too, so the session
         // that serves these into search leaves them out of people's listings.

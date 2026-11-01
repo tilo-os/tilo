@@ -80,7 +80,7 @@ from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
 `libtilo_browser_import_engine.so` for Browser, with the
 website-session codec check; the app host's client, with
-its Cap'n Proto RPC, and the catalogue Store browses:
+its control wire, and the catalogue Store browses:
 `libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:

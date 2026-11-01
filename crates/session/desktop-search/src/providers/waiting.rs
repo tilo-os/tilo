@@ -68,6 +68,10 @@ impl Source for Waiting {
         "waiting-on-you"
     }
 
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-waiting")
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         let browsing = needle.trim().is_empty();
         self.notifications
@@ -92,6 +96,8 @@ impl Source for Waiting {
                 };
                 let target = self.answer(notification)?;
                 Some(Hit {
+                    faces: Vec::new(),
+                    outcome: None,
                     kind: waiting_kind(),
                     provider: self.id().into(),
                     id: notification.id.as_str().to_owned(),

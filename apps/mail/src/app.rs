@@ -329,9 +329,8 @@ pub struct MailApp {
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
-    /// Boxed: the window is a sixth of the app's size and moves with it, so a
-    /// test that builds one per case would spend its thread's stack moving
-    /// copies of it. The heap keeps the app small wherever it is passed.
+    /// Boxed: the composer's inputs and editor are most of this window's size,
+    /// and the window is built and moved as a value.
     compose: Box<ComposeWindow>,
     /// A modal, read-only key map. It is local presentation state; every
     /// shortcut it documents still routes to the normal visible/canonical path.
@@ -954,7 +953,7 @@ impl MailApp {
             }
             "offline" => {
                 self.shared.borrow_mut().status =
-                    Some("You’re offline, showing downloaded mail".into());
+                    Some("You’re offline. Showing downloaded mail.".into());
             }
             _ => {}
         }
@@ -1271,12 +1270,16 @@ impl MailApp {
 
     /// The window shell: the sidebar of accounts and folders, the message
     /// list and the open message. Its toolbar is the window bar's slots
-    /// ([`crate::window_bar`]).
+    /// ([`crate::window_bar`]). The section headers' settings button is the
+    /// mailbox's published action.
     fn build_shell(shared: &Shared) -> NavShell {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("mail-shell")
-            .sidebar(Box::new(sidebar::sidebar(shared)))
+            .sidebar(Box::new(sidebar::sidebar(
+                shared,
+                crate::bindings::account_settings(),
+            )))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
             .with_window_toolbar()
@@ -3510,52 +3513,6 @@ impl MailApp {
     }
 }
 
-impl Mailroom {
-    /// Materialise one message resource row on demand. The public resource
-    /// tree deliberately carries only a bounded current-folder prefix, but a
-    /// stable message id must still resolve for agents and search activation.
-    pub(crate) fn resource_message_row(&self, id: &str) -> Option<crate::actions::MessageRow> {
-        self.shared
-            .borrow()
-            .mailbox
-            .messages
-            .values()
-            .find(|message| message.id.to_string() == id)
-            .map(crate::actions::message_row)
-    }
-
-    /// Lazily materialise a bounded thread resource by its stable key. This
-    /// keeps every loaded thread addressable even when the open-resource tree
-    /// only carries the first `OPEN_MESSAGE_LIMIT` messages.
-    pub(crate) fn resource_thread_rows(
-        &self,
-        stable: &str,
-    ) -> Option<(String, Vec<crate::actions::MessageRow>)> {
-        let (folder_raw, anchor_raw) = stable.split_once(':')?;
-        let folder = Folder::from_key(folder_raw)?;
-        if anchor_raw.is_empty() {
-            return None;
-        }
-        let state = self.shared.borrow();
-        let thread = state
-            .mailbox
-            .threads_in(folder)
-            .into_iter()
-            .find(|thread| thread.id == anchor_raw)?;
-        let subject = thread.subject;
-        Some((
-            subject,
-            thread
-                .message_ids
-                .into_iter()
-                .filter_map(|id| state.mailbox.get(id))
-                .take(crate::resource::OPEN_MESSAGE_LIMIT)
-                .map(crate::actions::message_row)
-                .collect(),
-        ))
-    }
-}
-
 impl MailApp {
     /// The column in front of a narrow window (for tests / probes).
     pub fn nav_pane(&self) -> NavPane {
@@ -4825,6 +4782,10 @@ impl Mailroom {
     /// # Errors
     /// Why the effect does not apply to what this window has loaded now: a
     /// message, folder or account that is gone, no connected account.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered match over every effect a mail window publishes, kept together so a new effect cannot be left unhandled"
+    )]
     pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4839,6 +4800,12 @@ impl Mailroom {
             }
             MailEffect::Compose => {
                 self.shared.borrow_mut().push_intent(Intent::Compose);
+                Ok(done)
+            }
+            MailEffect::AccountSettings => {
+                self.shared
+                    .borrow_mut()
+                    .push_command(Command::AccountSettings);
                 Ok(done)
             }
             MailEffect::PrepareContactDraft {
@@ -4986,7 +4953,8 @@ impl Mailroom {
         payload: &[u8],
     ) -> Result<ui::framework::Effected, String> {
         let effect =
-            <crate::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+            <crate::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(payload)
+                .map_err(|error| error.to_string())?;
         self.begin_effect(invocation, effect)
     }
 
@@ -5982,6 +5950,9 @@ impl MailApp {
 #[path = "server_deltas.rs"]
 mod server_deltas;
 use server_deltas::{first_fetch, pass_over_draft_copies, server_changes, take_found};
+
+#[path = "mailroom_rows.rs"]
+mod mailroom_rows;
 
 #[cfg(test)]
 mod tests;

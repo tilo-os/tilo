@@ -10,8 +10,11 @@
 //! prompt**: there is deliberately no separate "may this app read your
 //! files?" question in front of it, since choosing a file is the act of
 //! authorising exactly that file, nothing wider and nothing the app
-//! chose. The frontend exports what was chosen through the document
-//! portal, so nothing is recorded in any workspace.
+//! chose. What each answer names comes from [`crate::doc_store`]: a
+//! sandboxed app is given its own path in the session's documents store,
+//! which its launcher bound into it, and a host app the path itself, so
+//! nothing is exported by the frontend and nothing is recorded in any
+//! workspace.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,6 +24,7 @@ use tilo_service::Question;
 use zbus::interface;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
+use crate::doc_store::{self, Export};
 use crate::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use crate::{Portal, PortalCaller, lockdown, option, question_handle};
 
@@ -189,7 +193,18 @@ pub async fn pick(
     question: FileChooserQuestion,
 ) -> Outcome {
     let writable_directory = question.directory && question.writable_directory;
-    let writable = question.save || writable_directory;
+    // What the choice gives the app, and how the frontend words the answer:
+    // one source, so an answer can never widen what the store was told.
+    let kind = if question.save {
+        tilo_documents::Kind::Save
+    } else if question.directory {
+        tilo_documents::Kind::Folder {
+            write: writable_directory,
+        }
+    } else {
+        tilo_documents::Kind::Read
+    };
+    let writable = kind.writes();
     let asked = portal.questions.ask(Question {
         handle: question_handle(path),
         kind: FILE_CHOOSER_QUESTION.into(),
@@ -210,7 +225,8 @@ pub async fn pick(
     if writable_directory && (paths.len() != 1 || !paths.iter().all(|path| path.is_dir())) {
         return Err(Ended::Failed);
     }
-    let mut results = paths_to_open_response(Some(paths), writable)?;
+    let exports = doc_store::exports(portal.documents(), caller, &paths, kind);
+    let mut results = paths_to_open_response(Some(exports), writable)?;
     if writable_directory {
         let choices = vec![(
             tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE.to_owned(),
@@ -394,20 +410,24 @@ fn decode_open_options(
     }
 }
 
-/// Translate a chosen path list into the results the `FileChooser`
+/// Translate what the person chose into the results the `FileChooser`
 /// frontend expects. No selection (`None`, or nothing chosen) is a cancel.
+///
+/// Each answer names what the app opens ([`Export::app_path`]): the store
+/// path of a sandboxed app, or the host path itself. `writable` is what the
+/// choice gives the app.
 ///
 /// # Errors
 /// [`Ended::Cancelled`] for no selection, [`Ended::Failed`] for a path no
 /// URI can name.
-pub fn paths_to_open_response(paths: Option<Vec<PathBuf>>, writable: bool) -> Outcome {
+pub fn paths_to_open_response(exports: Option<Vec<Export>>, writable: bool) -> Outcome {
     let mut results = Results::new();
-    let paths = paths
-        .filter(|paths| !paths.is_empty())
+    let exports = exports
+        .filter(|exports| !exports.is_empty())
         .ok_or(Ended::Cancelled)?;
-    let uris = paths
+    let uris = exports
         .iter()
-        .map(|path| file_uri(path))
+        .map(|export| file_uri(&export.app_path))
         .collect::<Option<Vec<_>>>()
         .or_fail()?;
     if let Ok(owned) = OwnedValue::try_from(Value::new(uris)) {
@@ -415,7 +435,7 @@ pub fn paths_to_open_response(paths: Option<Vec<PathBuf>>, writable: bool) -> Ou
     }
     // The frontend defaults a missing `writable` to true. Always state the
     // access explicitly so a read-only Open cannot acquire write permission
-    // when xdg-desktop-portal exports it through the document portal.
+    // on what the app was handed.
     results.insert("writable".to_string(), OwnedValue::from(writable));
     Ok(results)
 }

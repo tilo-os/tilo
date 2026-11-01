@@ -177,6 +177,15 @@ pub enum PdfEffect {
         #[param("The last page to read, 1-based; 50 pages on when omitted")]
         to_page: Option<usize>,
     },
+    /// Read form fields
+    ///
+    /// Answers with the fields of the PDF's form: each one's name, its
+    /// kind (text, checkbox, radio or choice), its value now in the shape
+    /// a field edit sets, the path that edit takes (`form_values/<name>`),
+    /// its choices or the value a checkbox exports, the page it is on, and
+    /// whether it is read-only or required. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadFormFields,
     /// Look at a page
     ///
     /// Answers with a picture of one page as the PDF draws it, kept as
@@ -230,6 +239,23 @@ pub enum PdfEffect {
     OpenPdf {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,
+    },
+    /// Insert pages from a file
+    ///
+    /// Puts pages of the PDF or picture at `path` into this document, as
+    /// the page rail's Add does: all of its pages, or those `pages` names
+    /// in that order, the first of them at position `at`. Answers with the
+    /// ids of the new pages and the document's page count.
+    #[effect(job, returns)]
+    InsertPages {
+        #[param("Absolute path of the PDF or picture")]
+        path: tilo_resource::AbsolutePath,
+        #[param(
+            "The position the first new page takes, 1-based; 1 puts them first; after the last page when omitted"
+        )]
+        at: Option<usize>,
+        #[param("Its pages to insert, 1-based, in this order; every page when omitted")]
+        pages: Option<Vec<usize>>,
     },
     /// Save annotated PDF
     #[effect(job, cancellable, destructive)]
@@ -522,6 +548,23 @@ pub fn duplicate_page_plan_action(entry: &PagePlanEntry) -> Invoke<PdfMarkup> {
 
 pub fn import_pages_action(after_id: Option<&str>, pages: Vec<PagePlanEntry>) -> Invoke<PdfMarkup> {
     PdfMarkup::IMPORT_PAGES.with((after_id.map(str::to_owned), pages))
+}
+
+/// Imported `pages` after page occurrence `after`, or first when none, as
+/// one change: an import without a page to follow appends, so each new page
+/// then moves after the one before it, the first to the start.
+pub fn insert_pages_action(after: Option<&str>, pages: Vec<PagePlanEntry>) -> Invoke<PdfMarkup> {
+    if after.is_some() {
+        return import_pages_action(after, pages);
+    }
+    let ids: Vec<String> = pages.iter().map(|page| page.id.clone()).collect();
+    let mut steps = vec![import_pages_action(None, pages)];
+    let mut previous: Option<&str> = None;
+    for id in &ids {
+        steps.push(move_page_plan_action(id, previous));
+        previous = Some(id);
+    }
+    Invoke::group(steps)
 }
 
 pub fn delete_page_plan_action(id: &str) -> Invoke<PdfMarkup> {

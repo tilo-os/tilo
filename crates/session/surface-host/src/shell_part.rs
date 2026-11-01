@@ -45,6 +45,10 @@ pub const DESK_RESOURCE: &str = "session:desk";
 pub const SWITCH_WORKSPACE: &str = "switch-workspace";
 /// The argument of [`SWITCH_WORKSPACE`] naming the workspace.
 pub const WORKSPACE_ARG: &str = "workspace";
+/// The desk's action that opens or closes a running application's tray item, by its key.
+pub const OPEN_TRAY_ITEM: &str = "open-tray-item";
+/// The argument of [`OPEN_TRAY_ITEM`] naming the tray item.
+pub const TRAY_KEY_ARG: &str = "key";
 /// The resource the notification centre's actions are published on.
 pub const NOTIFICATIONS_RESOURCE: &str = "quick-settings.panel";
 
@@ -96,10 +100,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
-    (
-        "desk.tl",
-        include_str!("../../../../apps/tl/shell/desk.tl"),
-    ),
+    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
@@ -244,6 +245,16 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
     out.push(shell);
     Ok(out)
 }
+/// The capability that opens a running application's tray item, by its key: the desk's own
+/// `open_tray_item` action answers it.
+const CAP_TRAY: &str = "session.tray";
+
+/// The bar's own `session.act` ids that are the desk's resource's, not the chrome's: the
+/// question on the person's avatar is answered and put off where the desk reads it.
+const DESK_ACTIONS: &[(&str, &str)] = &[
+    ("answer_ask", DESK_RESOURCE),
+    ("put_off_ask", DESK_RESOURCE),
+];
 
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
@@ -335,6 +346,22 @@ pub struct NoticeActionReading {
     pub label: String,
 }
 
+/// A timer or stopwatch running in Clocks, as the bar's clock reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerReading {
+    /// The activity's id, which a press on the clock's controls names.
+    #[serde(default)]
+    pub activity_id: Option<String>,
+    /// Its label, such as `Tea`.
+    pub label: String,
+    /// What the timer has left, or the stopwatch has run, in seconds.
+    pub remaining_secs: u64,
+    #[serde(default)]
+    pub stopwatch: bool,
+    #[serde(default)]
+    pub paused: bool,
+}
+
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
 #[allow(
@@ -345,6 +372,14 @@ pub struct NoticeActionReading {
 pub struct DeskReading {
     pub person: String,
     pub clock: String,
+    /// The timer or stopwatch Clocks shows, when one runs: what the bar's clock reads beside
+    /// the time, and the controls pressed on it name.
+    #[serde(default)]
+    pub timer: Option<TimerReading>,
+    /// The question the session puts to the person about themselves, waiting on their own
+    /// avatar until they answer it or put it off.
+    #[serde(default)]
+    pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
     pub unread: u32,
@@ -404,6 +439,9 @@ pub struct DeskReading {
     /// Whether a window stands where a dock rides.
     #[serde(default)]
     pub dock_covered: bool,
+    /// The running applications' tray items, in the order they registered.
+    #[serde(default)]
+    pub tray: Vec<TrayReading>,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -461,6 +499,58 @@ pub struct ArrangementReading {
     pub rows: Vec<ArrangementRowReading>,
     pub strips: Vec<ArrangementStripReading>,
     pub places: Vec<ArrangementPlaceReading>,
+}
+
+/// A running application's tray item, as the bar shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayReading {
+    /// The item's key, which a press on it names.
+    pub key: String,
+    /// The app's own words for it.
+    pub title: String,
+    /// Whether choosing it opens its menu rather than its window.
+    #[serde(default)]
+    pub menu: bool,
+}
+
+/// A question the session puts to the person about themselves, waiting on their own avatar.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskReading {
+    /// The question ("Keep your name and work?").
+    pub question: String,
+    /// What answering brings.
+    pub detail: String,
+    /// The answer's label ("Keep with passkey").
+    pub answer: String,
+    /// Shown as the popover; `false` while it waits as the avatar's dot.
+    pub open: bool,
+}
+
+impl DeskReading {
+    /// The timer Clocks runs, by its name: its label (`Tea`), or what it is when the app
+    /// named none (`Timer`, `Stopwatch`). Empty when no timer floats.
+    #[must_use]
+    pub fn timer_name(&self) -> String {
+        let Some(timer) = &self.timer else {
+            return String::new();
+        };
+        if !timer.label.is_empty() {
+            return timer.label.clone();
+        }
+        if timer.stopwatch {
+            "Stopwatch".to_owned()
+        } else {
+            "Timer".to_owned()
+        }
+    }
+
+    /// What the timer reads: what it has left, or what the stopwatch has run.
+    #[must_use]
+    pub fn timer_left(&self) -> String {
+        self.timer.as_ref().map_or_else(String::new, |timer| {
+            ui::format::timecode(timer.remaining_secs)
+        })
+    }
 }
 
 /// What a shell asked of the session: an invocation on the door.
@@ -705,11 +795,24 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             action: SWITCH_WORKSPACE.to_owned(),
             arguments: BTreeMap::from([(WORKSPACE_ARG.to_owned(), word.clone())]),
         }),
-        CAP_ACT => Ok(Ask {
-            resource: CHROME_RESOURCE.to_owned(),
-            action: word.clone(),
-            arguments: BTreeMap::new(),
+        CAP_TRAY => Ok(Ask {
+            resource: DESK_RESOURCE.to_owned(),
+            action: OPEN_TRAY_ITEM.to_owned(),
+            arguments: BTreeMap::from([(TRAY_KEY_ARG.to_owned(), word.clone())]),
         }),
+        CAP_ACT => {
+            // The desktop's own argument-less actions are the chrome's; the desk's few (the
+            // question on the person's avatar) are the resource the bar reads it from.
+            let resource = DESK_ACTIONS
+                .iter()
+                .find(|(id, _)| id == word)
+                .map_or(CHROME_RESOURCE, |(_, resource)| resource);
+            Ok(Ask {
+                resource: (*resource).to_owned(),
+                action: word.clone(),
+                arguments: BTreeMap::new(),
+            })
+        }
         CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
         CAP_ARRANGE => {
             // `<action id> {json arguments}`, or just the id for an action that takes none.
@@ -801,6 +904,7 @@ pub struct SessionOrigin {
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
+    tray: BTreeMap<String, Kept<TrayReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -823,6 +927,7 @@ impl SessionOrigin {
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
+            tray: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -928,12 +1033,60 @@ impl SessionOrigin {
             text(&reading.banner),
             reading.banner != was.banner,
         );
+        // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
+        // the clock shows the time alone; paused and stopwatch say how to read it.
+        let timer = reading.timer.clone().unwrap_or_default();
+        set(
+            "timer",
+            text(&reading.timer_name()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_left",
+            text(&reading.timer_left()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_paused",
+            Value::Bool(timer.paused),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_stopwatch",
+            Value::Bool(timer.stopwatch),
+            reading.timer != was.timer,
+        );
+        // The ask on the person's avatar: its words, and whether it stands open.
+        let ask = reading.ask.clone().unwrap_or_default();
+        set("ask", text(&ask.question), reading.ask != was.ask);
+        set("ask_detail", text(&ask.detail), reading.ask != was.ask);
+        set("ask_answer", text(&ask.answer), reading.ask != was.ask);
+        set("ask_open", Value::Bool(ask.open), reading.ask != was.ask);
         let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
                 target: root.clone(),
                 fields,
             });
+        }
+        // The running applications' tray items: each's key and the app's own words for it.
+        let tray = reading.tray.clone();
+        if let (Ok(ty), Some(collection)) = (kind("tray_item"), field(desk, "tray")) {
+            writes.extend(sync_items(
+                &mut self.tray,
+                &tray,
+                root,
+                &collection,
+                ty,
+                |item| item.key.clone(),
+                |item| {
+                    vec![
+                        ("key", text(&item.key)),
+                        ("title", text(&item.title)),
+                        ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
         }
         if let (Ok(ty), Some(collection)) = (kind("workspace"), field(desk, "workspaces")) {
             writes.extend(sync_items(
@@ -1579,7 +1732,6 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
-
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1852,7 +2004,6 @@ impl ShellPart {
         // The seed moved the record: the part's next turn settles what it started (a view
         // that read a bound field runs again), as any change of the record does.
         self.instance.moved();
-
     }
 
     /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
@@ -2174,7 +2325,7 @@ impl SurfaceHost for ShellPart {
         self.widgets.layers()
     }
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {
         // A shell's overlays answer the keyboard: Alt+Tab walks the switcher, Enter goes there,
         // and Esc closes whatever surface is up. A locked session is not the shell's to answer.
         if locked || self.surface_key(key).is_none() {
@@ -2265,7 +2416,7 @@ impl SurfaceHost for ShellPart {
         self.widgets.cursor()
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
         // standing over them is what lets a press outside it close it.
@@ -2273,16 +2424,21 @@ impl SurfaceHost for ShellPart {
         if input || self.due() {
             self.turn();
         }
-        self.draw();
+        let mut drew = self.draw();
         // The toolkit takes input in at its frame: what the person pressed reports there, and
         // the instance hears of it now rather than at the next input.
         if input {
             if self.turn() {
-                self.draw();
+                drew |= self.draw();
             }
+            // The toolkit took the input in: a menu the part opened, or a surface of the
+            // desk's, may have opened or closed with it.
             self.follow_cover();
-            self.draw();
+            if self.draw() {
+                drew = true;
+            }
         }
+        drew
     }
 }
 
@@ -2301,16 +2457,19 @@ impl ShellPart {
         });
     }
 
-    /// Draw a frame of the part's widget tree when it owes one.
+    /// Draw a frame of the part's widget tree when it owes one, and say
+    /// whether it drew or changed what it shows.
     #[allow(dead_code, reason = "a test draws a frame between presses")]
-    fn draw(&mut self) {
+    fn draw(&mut self) -> bool {
         let before = crate::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
-        self.widgets.prepare_frame();
-        if crate::Published::revision(&self.widgets) != before {
+        let drew = self.widgets.prepare_frame();
+        let changed = crate::Published::revision(&self.widgets) != before;
+        if changed {
             self.work.drawn = self.work.drawn.wrapping_add(1);
             self.work.drawing = self.work.drawing.saturating_add(started.elapsed());
         }
+        drew || changed
     }
 }
 
@@ -2602,13 +2761,6 @@ mod tests {
         );
     }
 
-
-
-
-
-
-
-
     #[test]
     fn the_part_stands_in_the_band_the_shell_records_dock_names() {
         let (mut part, _link) = part();
@@ -2642,7 +2794,10 @@ mod surface_keys {
     #[test]
     fn alt_tab_asks_for_the_switcher_from_rest() {
         let (mut part, link) = part_with(reading_with_windows());
-        assert_ne!(part.claim_key(&tab(true, true), false), KeyClaim::Pass);
+        assert_ne!(
+            part.claim_key(&tab(true, true), false, false),
+            KeyClaim::Pass
+        );
         part.key(&tab(true, true));
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
@@ -2671,7 +2826,7 @@ mod surface_keys {
         reading.here = "switcher".to_owned();
         let (mut part, link) = part_with(reading);
         link.asked.borrow_mut().clear();
-        assert_ne!(part.claim_key(&alt(false), false), KeyClaim::Pass);
+        assert_ne!(part.claim_key(&alt(false), false, false), KeyClaim::Pass);
         part.key(&alt(false));
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
@@ -2685,7 +2840,7 @@ mod surface_keys {
         let mut reading = super::tests_support::reading_with_windows();
         reading.here = "overview".to_owned();
         let (mut part, link) = part_with(reading);
-        assert_ne!(part.claim_key(&escape(), false), KeyClaim::Pass);
+        assert_ne!(part.claim_key(&escape(), false, false), KeyClaim::Pass);
         part.key(&escape());
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),

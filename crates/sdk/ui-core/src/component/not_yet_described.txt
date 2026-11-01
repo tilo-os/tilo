@@ -5,20 +5,7 @@
 # described by the toolkit or being here).
 #
 # A line is `Name — why it is not bound yet`.
-CandlestickChart — open/high/low/close candles: its candles and style are Rust data the language has no value for yet
 CartesianPlot — numeric axes and mixed series: its axes, series and marks are Rust data the language has no value for yet
-CategoryChart — categories side-by-side, stacked or cumulative: its series are Rust data the language has no value for yet
 Chart — a titled trend chart with its axis labels: its series are Rust data the language has no value for yet
-ChordChart — weighted relationships between nodes: its nodes, links and style are Rust data the language has no value for yet
-DistributionChart — box and violin plots of observations: its series are Rust data the language has no value for yet
-FunnelChart — sequential conversion through stages: its stages are Rust data the language has no value for yet
 GraphCanvas — a node-and-connection drawing: its nodes and connections are Rust data the language has no value for yet
-Heatmap — a matrix of intensities: its cells and style are Rust data the language has no value for yet
-PieChart — part-to-whole slices: its slices and style are Rust data the language has no value for yet
-PolarAreaChart — a rose of angular categories: its items and style are Rust data the language has no value for yet
-RadarChart — several metrics on axes of their own: its axes and series are Rust data the language has no value for yet
-RangeChart — timelines and intervals with progress: its bars and style are Rust data the language has no value for yet
-SankeyChart — movement between stages: its nodes, links and style are Rust data the language has no value for yet
 Sparkline — a tiny inline trend line: its samples are a list of floats it could take; not described yet
-SunburstChart — hierarchical part-to-whole rings: its node tree and style are Rust data the language has no value for yet
-Treemap — hierarchical part-to-whole tiles: its items and style are Rust data the language has no value for yet

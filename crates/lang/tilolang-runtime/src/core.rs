@@ -113,8 +113,9 @@ pub struct Core {
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
     /// Whether the invocation being made is a `try`'s, whose failure the program handles.
     pub trying: std::cell::Cell<bool>,
-    /// The resources of apps this runtime does not hold that programs read, as they print.
-    pub foreign: RefCell<crate::reads::Foreign>,
+    /// The resources of apps this runtime does not run: how they print, and their readings, as
+    /// the host gives them.
+    pub foreign: RefCell<crate::foreign::Foreign>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
@@ -222,7 +223,7 @@ impl Core {
             invoker: RefCell::new(None),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
-            foreign: RefCell::new(crate::reads::Foreign::default()),
+            foreign: RefCell::new(crate::foreign::Foreign::default()),
             seen_writes: RefCell::new(Vec::new()),
         });
         // The types the host provides to every module, such as `Invocation`.
@@ -312,7 +313,7 @@ impl Core {
             StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke, TupleGetF,
             TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor,
             UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Withdraw,
+            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, Withdraw,
             WorkspaceMembers,
         };
         match imp {
@@ -363,7 +364,7 @@ impl Core {
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
             | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
-            | Dated => self.platform_import(imp, a),
+            | Dated | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

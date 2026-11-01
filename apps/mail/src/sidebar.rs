@@ -5,6 +5,7 @@
 //! selection in step with [`MailState`] and turns a chosen row into a
 //! [`Command`] the app applies with the document in hand.
 
+use tilo_actions::ActionBinding;
 use ui::icons::Icon;
 use ui::num::u32_of_usize;
 use ui::widget::{NavAction, NavItem, NavList, NavSection};
@@ -28,10 +29,6 @@ pub(crate) fn parse_folder_row(id: &str) -> Option<(usize, Folder)> {
 
 fn section_id(account: usize) -> String {
     format!("account-{account}")
-}
-
-fn parse_section(id: &str) -> Option<usize> {
-    id.strip_prefix("account-")?.parse().ok()
 }
 
 /// The row id of every account's inbox together.
@@ -158,11 +155,15 @@ pub(crate) fn selected_row(state: &MailState) -> Option<String> {
 
 /// The accounts-and-folders sidebar: the toolkit list, following the
 /// accounts and the open folder and reporting choices into `shared`.
-pub fn sidebar(shared: &Shared) -> NavList {
+///
+/// A section header's button opens Settings' External Accounts page: it runs
+/// the published [`MailEffect::AccountSettings`](crate::actions::MailEffect)
+/// when `settings` binds it, so the header, the window bar's own entry and
+/// an agent all reach the same action.
+pub fn sidebar(shared: &Shared, settings: Option<ActionBinding<String>>) -> NavList {
     let on_select = shared.clone();
-    let on_section = shared.clone();
     let follow = shared.clone();
-    NavList::new(Vec::new())
+    let mut list = NavList::new(Vec::new())
         .with_accessible_name("Mailboxes")
         .on_view("mail-mailboxes", move |id| {
             if id == ALL_INBOXES {
@@ -176,18 +177,14 @@ pub fn sidebar(shared: &Shared) -> NavList {
                     .borrow_mut()
                     .push_command(Command::OpenFolder(account, folder));
             }
-        })
-        .on_section_action(move |section, action| {
-            if action == ACCOUNT_SETTINGS && parse_section(section).is_some() {
-                on_section
-                    .borrow_mut()
-                    .push_command(Command::AccountSettings);
-            }
-        })
-        .follow(move || {
-            let state = follow.try_borrow().ok()?;
-            Some((sections(&state), selected_row(&state)))
-        })
+        });
+    if let Some(settings) = settings {
+        list = list.section_action(ACCOUNT_SETTINGS, settings);
+    }
+    list.follow(move || {
+        let state = follow.try_borrow().ok()?;
+        Some((sections(&state), selected_row(&state)))
+    })
 }
 
 #[cfg(test)]
@@ -207,7 +204,6 @@ mod tests {
             );
         }
         assert_eq!(parse_folder_row("3/unknown"), None);
-        assert_eq!(parse_section(&section_id(2)), Some(2));
 
         let state = state();
         let sections = sections(&state);

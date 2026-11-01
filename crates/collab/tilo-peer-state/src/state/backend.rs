@@ -225,7 +225,13 @@ impl Clone for PeerDocument {
 
 pub(super) struct PeerCore {
     pub(super) room: String,
-    pub(super) authority: DeviceCert,
+    /// The room owner's user root: every device it certifies may write as the owner.
+    pub(super) owner: [u8; 32],
+    /// The device this replica was made on or joined through. A device on
+    /// an operating system Tilo does not control is held to the foreign
+    /// bound in the room, except this one: a room made on such a device is
+    /// governed from it.
+    pub(super) origin: [u8; 32],
     pub(super) certificates: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
     pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
@@ -243,7 +249,8 @@ impl Clone for PeerCore {
     fn clone(&self) -> Self {
         Self {
             room: self.room.clone(),
-            authority: self.authority.clone(),
+            owner: self.owner,
+            origin: self.origin,
             certificates: self.certificates.clone(),
             revocations: self.revocations.clone(),
             receipts: self.receipts.clone(),
@@ -317,10 +324,10 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32]))
             .unwrap();
         peer.receive_from(
-            TransportOrigin::RelayDelta(peer.authority().device_public_key),
+            TransportOrigin::RelayDelta(peer.owner_certificates()[0].device_public_key),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(peer.authority().clone()),
+                cert: Box::new(peer.owner_certificates()[0].clone()),
                 revocations: vec![entry],
             },
             now,

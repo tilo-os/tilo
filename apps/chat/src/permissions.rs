@@ -13,7 +13,7 @@
 //!   blob **and** before the renderer paints it, so an ungranted embed shows a
 //!   locked card and never asks a collaborator for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
-//!   call in the current workspace? (`Write` on the room.)
+//!   call in the current workspace? (`Write` on the workspace.)
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
@@ -60,7 +60,7 @@ impl ChatPermissions {
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
     /// A valid content-hash/demo identity plus workspace Read. Attachments belong to
     /// the conversation, not a peer-local filesystem path, so a viewer who
-    /// can read the room can hydrate the room's verified shared bytes.
+    /// can read the workspace can hydrate the workspace's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
         let valid_hash = tilo_content::valid_hash(blob);
         let valid_demo = matches!(
@@ -76,10 +76,10 @@ impl ChatPermissions {
                 .check(&PermissionScope::workspace(ActionKind::Read))
     }
 
-    /// May this peer post / react / join a call here? `Write` on the room (a
+    /// May this peer post / react / join a call here? `Write` on the workspace (a
     /// Viewer can read the channels but not write into them).
     ///
-    /// "Here" is the OS's active room, not one of chat's own workspace rows.
+    /// "Here" is the OS's active workspace, not one of chat's own workspace rows.
     /// This took a `workspace: &str` and discarded it, which read as a
     /// per-workspace check and was not one — callers threaded an id out of
     /// chat's document all the way down to a parameter named with an
@@ -90,13 +90,13 @@ impl ChatPermissions {
             .check(&PermissionScope::workspace(ActionKind::Undoable))
     }
 
-    /// The room this peer is in, as its host names it.
-    pub fn room(&self) -> &str {
+    /// The workspace this peer is in, as its host names it.
+    pub fn workspace(&self) -> &str {
         self.ctx.standing().room()
     }
 
     /// May this peer remove other people's messages? Moderation in chat is
-    /// its `moderation` node, which the room's Moderators and owner hold.
+    /// its `moderation` node, which the workspace's Moderators and owner hold.
     pub fn can_moderate(&self) -> bool {
         self.ctx.check(&PermissionScope::Action {
             node: ui::permissions::TreePath::root()
@@ -153,10 +153,10 @@ mod tests {
         assert!(!p.can_participate(), "restricted: participate");
         assert!(
             p.allows(CallAction::Join),
-            "restricted: room readers may listen"
+            "restricted: workspace readers may listen"
         );
         assert!(!p.allows(CallAction::Speak), "restricted: speak");
-        // …but a View-only member can still read the room, and leaving a call
+        // …but a View-only member can still read the workspace, and leaving a call
         // is never blocked.
         assert!(p.allows(CallAction::Leave), "restricted: leave");
 
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
         use ui::room_sync::{RoomSync, RoomSyncState};
-        // The launch opened Chat read-only: its room did not let Chat author.
+        // The launch opened Chat read-only: its workspace did not let Chat author.
         let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
             "3f2b1c00-0000-4000-8000-000000000001",
             "u_guest",
@@ -209,7 +209,7 @@ mod tests {
         }));
         assert!(
             chat().can_participate(),
-            "the room's grants made Chat an author: the composer shows"
+            "the workspace's grants made Chat an author: the composer shows"
         );
         ui::room_sync::set(None);
     }

@@ -264,29 +264,23 @@ impl Receipt {
 #[cfg(feature = "client")]
 impl crate::ChannelHandle {
     /// Execute one host-approved ID for this target's actual accepted action.
-    /// No fallback exists on brokers without this method.
     ///
     /// # Errors
     /// Refuses invalid requests, unavailable transport, stale custody or invalid replies.
     pub async fn approved_check(&self, request: &Request) -> Result<Receipt, crate::NotAvailable> {
-        let encoded = request
-            .encode()
-            .map_err(|error| crate::NotAvailable::Capnp(capnp::Error::failed(error)))?;
-        let mut call = self.inner.approved_check_request();
-        call.get().set_request(&encoded);
-        let response = call.send().promise.await?;
-        let receipt = Receipt::decode(response.get()?.get_receipt()?)
-            .map_err(|error| crate::NotAvailable::Capnp(capnp::Error::failed(error)))?;
+        let encoded = request.encode().map_err(crate::NotAvailable::Refused)?;
+        let reply = self.approved_check_command(encoded).await?;
+        let receipt = Receipt::decode(&reply).map_err(crate::NotAvailable::Refused)?;
         if receipt.invocation != request.invocation || receipt.check_id != request.check_id {
-            return Err(crate::NotAvailable::Capnp(capnp::Error::failed(
+            return Err(crate::NotAvailable::Refused(
                 "approved-check response correlation changed".into(),
-            )));
+            ));
         }
         Ok(receipt)
     }
 }
 
-/// One result of a pulled check-specific observation capability.
+/// One result of a check's reported progress.
 #[cfg(feature = "client")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReportedProgressUpdate {
@@ -294,10 +288,11 @@ pub enum ReportedProgressUpdate {
     Receipt(Box<Receipt>),
 }
 
-/// Pulled reports on the original capability; this does not own an execution job.
+/// A check's reported progress, then its receipt; this does not own an
+/// execution job.
 #[cfg(feature = "client")]
 pub struct ApprovedCheckReportedProgressStream {
-    inner: crate::collab_capnp::approved_check_reported_progress_stream::Client,
+    feed: Option<crate::client::Feed>,
     request: Request,
     sequence: u64,
     terminal: bool,
@@ -305,105 +300,91 @@ pub struct ApprovedCheckReportedProgressStream {
 }
 
 #[cfg(feature = "client")]
-fn report_transport_error(error: impl Into<String>) -> crate::NotAvailable {
-    crate::NotAvailable::Capnp(capnp::Error::failed(error.into()))
-}
-
-#[cfg(feature = "client")]
-impl crate::ChannelHandle {
-    /// Open the reported-observation lane for this exact accepted check.
-    ///
-    /// # Errors
-    /// Refuses invalid requests or unsupported brokers without falling back to @58.
-    pub async fn approved_check_reported_progress(
-        &self,
-        request: &Request,
-    ) -> Result<ApprovedCheckReportedProgressStream, crate::NotAvailable> {
-        let encoded = request.encode().map_err(report_transport_error)?;
-        let mut call = self.inner.approved_check_reported_progress_request();
-        call.get().set_request(&encoded);
-        let response = call.send().promise.await?;
-        Ok(ApprovedCheckReportedProgressStream {
-            inner: response.get()?.get_stream()?,
-            request: request.clone(),
-            sequence: 0,
-            terminal: false,
-            disabled: false,
-        })
-    }
+fn report_error(error: impl Into<String>) -> crate::NotAvailable {
+    crate::NotAvailable::Refused(error.into())
 }
 
 #[cfg(feature = "client")]
 impl ApprovedCheckReportedProgressStream {
+    pub(crate) const fn new(feed: crate::client::Feed, request: Request) -> Self {
+        Self {
+            feed: Some(feed),
+            request,
+            sequence: 0,
+            terminal: false,
+            disabled: false,
+        }
+    }
+
     /// Pull one bounded observation or the unchanged terminal receipt.
     ///
     /// # Errors
-    /// Refuses ambiguous fields, malformed or miscorrelated observations, nonmonotonic
-    /// sequences and reads after terminal completion. Any refusal freezes this client.
+    /// Refuses malformed or miscorrelated observations, nonmonotonic
+    /// sequences and reads after terminal completion. Any refusal freezes
+    /// this stream.
     pub async fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
         if self.terminal {
-            return Err(report_transport_error(
-                "approved-check report lane is terminal",
-            ));
+            return Err(report_error("approved-check report lane is terminal"));
         }
-        let result = self.read_next().await;
+        let progress = match &self.feed {
+            Some(feed) => match feed.event().await {
+                Ok(crate::wire::Event::ApprovedCheck(progress)) => Ok(progress),
+                Ok(other) => Err(report_error(format!(
+                    "the collaboration host delivered {other:?}"
+                ))),
+                Err(error) => Err(error),
+            },
+            None => Err(report_error("approved-check report lane is closed")),
+        };
+        self.accept(progress)
+    }
+
+    fn accept(
+        &mut self,
+        progress: Result<crate::wire::CheckProgress, crate::NotAvailable>,
+    ) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
+        let result = progress.and_then(|progress| self.check(progress));
         if !matches!(result, Ok(ReportedProgressUpdate::Report(_))) {
             self.terminal = true;
+            self.feed = None;
         }
         result
     }
 
-    async fn read_next(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
-        let response = self.inner.read_request().send().promise.await?;
-        let reply = response.get()?;
-        let report = reply.get_report()?;
-        let receipt = reply.get_receipt()?;
-        let error = reply.get_error()?;
-        if !matches!(
-            (report.is_empty(), receipt.is_empty(), error.is_empty()),
-            (false, true, true) | (true, false, true) | (true, true, false)
-        ) {
-            return Err(report_transport_error(
-                "ambiguous approved-check report reply",
-            ));
-        }
-        if !error.is_empty() {
-            if error.len() > MAX_REPORT_BYTES {
-                return Err(report_transport_error(
-                    "approved-check report refusal too large",
-                ));
+    fn check(
+        &mut self,
+        progress: crate::wire::CheckProgress,
+    ) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
+        use crate::wire::CheckProgress;
+        let report = match progress {
+            CheckProgress::Failed(error) => {
+                if error.len() > MAX_REPORT_BYTES {
+                    return Err(report_error("approved-check report refusal too large"));
+                }
+                return Err(report_error(error));
             }
-            return Err(report_transport_error(
-                error
-                    .to_str()
-                    .map_err(|error| report_transport_error(error.to_string()))?
-                    .to_owned(),
-            ));
-        }
-        if !receipt.is_empty() {
-            let receipt = Receipt::decode(receipt).map_err(report_transport_error)?;
-            if receipt.invocation != self.request.invocation
-                || receipt.check_id != self.request.check_id
-            {
-                return Err(report_transport_error(
-                    "approved-check response correlation changed",
-                ));
+            CheckProgress::Receipt(receipt) => {
+                let receipt = Receipt::decode(&receipt).map_err(report_error)?;
+                if receipt.invocation != self.request.invocation
+                    || receipt.check_id != self.request.check_id
+                {
+                    return Err(report_error("approved-check response correlation changed"));
+                }
+                return Ok(ReportedProgressUpdate::Receipt(Box::new(receipt)));
             }
-            return Ok(ReportedProgressUpdate::Receipt(Box::new(receipt)));
-        }
-        let report = Report::decode(report).map_err(report_transport_error)?;
+            CheckProgress::Report(report) => report,
+        };
+        let report = Report::decode(&report).map_err(report_error)?;
         if report.invocation != self.request.invocation
             || report.check_id != self.request.check_id
             || report.sequence <= self.sequence
         {
-            return Err(report_transport_error(
+            return Err(report_error(
                 "approved-check report correlation or sequence changed",
             ));
         }
         if self.disabled {
-            return Err(report_transport_error(
-                "approved-check reporting lane is disabled",
-            ));
+            return Err(report_error("approved-check reporting lane is disabled"));
         }
         self.disabled = matches!(report.observation, ReportObservation::Disabled { .. });
         self.sequence = report.sequence;
@@ -502,75 +483,74 @@ mod tests {
     }
 
     #[cfg(feature = "client")]
-    type ReportFrame = (Vec<u8>, Vec<u8>, String);
+    use crate::wire::CheckProgress;
+
+    /// A stream fed `frames` in order, then nothing.
+    #[cfg(feature = "client")]
+    struct Frames {
+        stream: ApprovedCheckReportedProgressStream,
+        frames: std::collections::VecDeque<CheckProgress>,
+    }
 
     #[cfg(feature = "client")]
-    struct WireReports(std::cell::RefCell<std::collections::VecDeque<ReportFrame>>);
-
-    #[cfg(feature = "client")]
-    impl crate::collab_capnp::approved_check_reported_progress_stream::Server for WireReports {
-        fn read(
-            self: capnp::capability::Rc<Self>,
-            _: crate::collab_capnp::approved_check_reported_progress_stream::ReadParams,
-            mut results: crate::collab_capnp::approved_check_reported_progress_stream::ReadResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let Some((report, receipt, error)) = self.0.borrow_mut().pop_front() else {
-                return std::future::ready(Err(capnp::Error::failed(
-                    "unexpected extra read".into(),
-                )));
-            };
-            let mut reply = results.get();
-            reply.set_report(&report);
-            reply.set_receipt(&receipt);
-            reply.set_error(error.as_str());
-            std::future::ready(Ok(()))
+    impl Frames {
+        fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
+            if self.stream.terminal {
+                return Err(report_error("approved-check report lane is terminal"));
+            }
+            let next = self
+                .frames
+                .pop_front()
+                .ok_or_else(|| report_error("unexpected extra read"));
+            self.stream.accept(next)
         }
     }
 
     #[cfg(feature = "client")]
-    fn wire_reports(
-        frames: Vec<(Vec<u8>, Vec<u8>, String)>,
-    ) -> ApprovedCheckReportedProgressStream {
-        ApprovedCheckReportedProgressStream {
-            inner: capnp_rpc::new_client(WireReports(std::cell::RefCell::new(frames.into()))),
-            request: Request {
-                version: 1,
-                invocation: ID.into(),
-                check_id: "regression".into(),
+    fn wire_reports(frames: Vec<CheckProgress>) -> Frames {
+        Frames {
+            stream: ApprovedCheckReportedProgressStream {
+                feed: None,
+                request: Request {
+                    version: 1,
+                    invocation: ID.into(),
+                    check_id: "regression".into(),
+                },
+                sequence: 0,
+                terminal: false,
+                disabled: false,
             },
-            sequence: 0,
-            terminal: false,
-            disabled: false,
+            frames: frames.into(),
         }
     }
 
     #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn approved_check_report_stream_keeps_terminal_receipt_separate_and_final() {
+    #[test]
+    fn approved_check_report_stream_keeps_terminal_receipt_separate_and_final() {
         let observed = report(1);
         let terminal = receipt();
         let mut stream = wire_reports(vec![
-            (observed.encode().unwrap(), Vec::new(), String::new()),
-            (Vec::new(), terminal.encode().unwrap(), String::new()),
-            (report(2).encode().unwrap(), Vec::new(), String::new()),
+            CheckProgress::Report(observed.encode().unwrap()),
+            CheckProgress::Receipt(terminal.encode().unwrap()),
+            CheckProgress::Report(report(2).encode().unwrap()),
         ]);
         assert_eq!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Report(observed)
         );
         assert_eq!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Receipt(Box::new(terminal))
         );
         assert!(
-            stream.read().await.is_err(),
+            stream.read().is_err(),
             "late observation cannot replace receipt"
         );
     }
 
     #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn approved_check_disabled_report_lane_accepts_only_terminal_receipt() {
+    #[test]
+    fn approved_check_disabled_report_lane_accepts_only_terminal_receipt() {
         let disabled = Report {
             observation: ReportObservation::Disabled {
                 reason: LaneRefusal::InvalidReport,
@@ -578,60 +558,56 @@ mod tests {
             ..report(1)
         };
         let mut stream = wire_reports(vec![
-            (disabled.encode().unwrap(), Vec::new(), String::new()),
-            (Vec::new(), receipt().encode().unwrap(), String::new()),
+            CheckProgress::Report(disabled.encode().unwrap()),
+            CheckProgress::Receipt(receipt().encode().unwrap()),
         ]);
         assert_eq!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Report(disabled.clone())
         );
         assert_eq!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Receipt(Box::new(receipt()))
         );
         let mut stream = wire_reports(vec![
-            (disabled.encode().unwrap(), Vec::new(), String::new()),
-            (report(2).encode().unwrap(), Vec::new(), String::new()),
+            CheckProgress::Report(disabled.encode().unwrap()),
+            CheckProgress::Report(report(2).encode().unwrap()),
         ]);
         assert!(matches!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Report(_)
         ));
         assert!(
-            stream.read().await.is_err(),
+            stream.read().is_err(),
             "disabled observation lane cannot restart"
         );
     }
 
     #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn approved_check_report_stream_refuses_ambiguous_foreign_stale_and_oversized() {
+    #[test]
+    fn approved_check_report_stream_refuses_empty_foreign_stale_and_oversized() {
         let mut foreign = report(1);
         foreign.invocation = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
         for frame in [
-            (Vec::new(), Vec::new(), String::new()),
-            (
-                report(1).encode().unwrap(),
-                receipt().encode().unwrap(),
-                String::new(),
-            ),
-            (foreign.encode().unwrap(), Vec::new(), String::new()),
-            (vec![b' '; MAX_REPORT_BYTES + 1], Vec::new(), String::new()),
-            (Vec::new(), Vec::new(), "x".repeat(MAX_REPORT_BYTES + 1)),
+            CheckProgress::Report(Vec::new()),
+            CheckProgress::Receipt(Vec::new()),
+            CheckProgress::Report(foreign.encode().unwrap()),
+            CheckProgress::Report(vec![b' '; MAX_REPORT_BYTES + 1]),
+            CheckProgress::Failed("x".repeat(MAX_REPORT_BYTES + 1)),
         ] {
             let mut stream = wire_reports(vec![frame]);
-            assert!(stream.read().await.is_err());
-            assert!(stream.read().await.is_err(), "refusal freezes lane");
+            assert!(stream.read().is_err());
+            assert!(stream.read().is_err(), "refusal freezes lane");
         }
         let mut stream = wire_reports(vec![
-            (report(3).encode().unwrap(), Vec::new(), String::new()),
-            (report(3).encode().unwrap(), Vec::new(), String::new()),
+            CheckProgress::Report(report(3).encode().unwrap()),
+            CheckProgress::Report(report(3).encode().unwrap()),
         ]);
         assert!(matches!(
-            stream.read().await.unwrap(),
+            stream.read().unwrap(),
             ReportedProgressUpdate::Report(_)
         ));
-        assert!(stream.read().await.is_err());
+        assert!(stream.read().is_err());
     }
 
     #[test]
@@ -756,137 +732,5 @@ mod tests {
             assert!(value.encode().is_err());
             assert!(Receipt::decode(&serde_json::to_vec(&value).unwrap()).is_err());
         }
-    }
-
-    #[cfg(feature = "client")]
-    struct WireAbi;
-
-    #[cfg(feature = "client")]
-    impl crate::collab_capnp::channel_handle::Server for WireAbi {
-        fn local_file_clipboard(
-            self: capnp::capability::Rc<Self>,
-            _: crate::collab_capnp::channel_handle::LocalFileClipboardParams,
-            mut results: crate::collab_capnp::channel_handle::LocalFileClipboardResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().set_reply_json(b"clipboard56");
-            std::future::ready(Ok(()))
-        }
-
-        fn audio_output_command(
-            self: capnp::capability::Rc<Self>,
-            _: crate::collab_capnp::channel_handle::AudioOutputCommandParams,
-            mut results: crate::collab_capnp::channel_handle::AudioOutputCommandResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().set_reply(b"audio57");
-            std::future::ready(Ok(()))
-        }
-
-        fn approved_check(
-            self: capnp::capability::Rc<Self>,
-            _: crate::collab_capnp::channel_handle::ApprovedCheckParams,
-            mut results: crate::collab_capnp::channel_handle::ApprovedCheckResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().set_receipt(b"approved58");
-            std::future::ready(Ok(()))
-        }
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn approved_check_reports_unsupported_broker_refuses_without_terminal_fallback() {
-        let channel = crate::ChannelHandle {
-            inner: std::rc::Rc::new(capnp_rpc::new_client(WireAbi)),
-            descriptors: None,
-        };
-        let request = Request {
-            version: 1,
-            invocation: ID.into(),
-            check_id: "regression".into(),
-        };
-        assert!(
-            channel
-                .approved_check_reported_progress(&request)
-                .await
-                .is_err()
-        );
-    }
-
-    /// Literal wire slots model an independently compiled existing caller,
-    /// rather than allowing client and server renumbering to cancel each other.
-    #[cfg(feature = "client")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn approved_check_append_preserves_clipboard_and_audio_wire_slots() {
-        use crate::collab_capnp::channel_handle;
-        use capnp::capability::Request as RpcRequest;
-        use capnp::traits::HasTypeId;
-
-        let client: channel_handle::Client = capnp_rpc::new_client(WireAbi);
-        let clipboard: RpcRequest<
-            channel_handle::local_file_clipboard_params::Owned,
-            channel_handle::local_file_clipboard_results::Owned,
-        > = client
-            .client
-            .new_call(channel_handle::Client::TYPE_ID, 56, None);
-        assert_eq!(
-            clipboard
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_reply_json()
-                .unwrap(),
-            b"clipboard56"
-        );
-        let audio: RpcRequest<
-            channel_handle::audio_output_command_params::Owned,
-            channel_handle::audio_output_command_results::Owned,
-        > = client
-            .client
-            .new_call(channel_handle::Client::TYPE_ID, 57, None);
-        assert_eq!(
-            audio
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_reply()
-                .unwrap(),
-            b"audio57"
-        );
-        let approved: RpcRequest<
-            channel_handle::approved_check_params::Owned,
-            channel_handle::approved_check_results::Owned,
-        > = client
-            .client
-            .new_call(channel_handle::Client::TYPE_ID, 58, None);
-        assert_eq!(
-            approved
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_receipt()
-                .unwrap(),
-            b"approved58"
-        );
-        assert_eq!(
-            client
-                .approved_check_request()
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_receipt()
-                .unwrap(),
-            b"approved58"
-        );
     }
 }

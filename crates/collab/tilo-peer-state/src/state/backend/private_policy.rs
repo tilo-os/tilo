@@ -23,7 +23,7 @@ impl StatePeer {
             .room_doc
             .as_deref()
             .ok_or("admitted room missing")?;
-        private_policy::legacy_owner(&LegacyRead(doc), &self.core.room, &self.core.authority)
+        private_policy::legacy_owner(&LegacyRead(doc), &self.core.room, &self.core.owner)
             .map_err(private_policy::Error::legacy)
     }
     pub(crate) fn legacy_governance_revision(&self) -> Result<String, String> {
@@ -45,7 +45,7 @@ impl StatePeer {
     > {
         crate::room::private_policy::Metadata {
             room: &self.core.room,
-            authority: &self.core.authority,
+            owner: &self.core.owner,
             certificates: self
                 .core
                 .certificates

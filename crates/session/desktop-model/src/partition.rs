@@ -47,6 +47,10 @@ pub struct Display {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// Whether the person made this display primary. Told again with every
+    /// reconciliation, so it is not part of what the partition remembers.
+    #[serde(skip)]
+    pub primary: bool,
 }
 
 impl Display {
@@ -76,9 +80,9 @@ pub struct OutputPartition {
     /// return when it comes back, unless they were moved since.
     #[serde(default, deserialize_with = "deserialize_id_btree_map")]
     pub origin: BTreeMap<GroupId, String>,
-    /// The displays last reconciled against, primary first. Remembered so a
-    /// monitor missing at the next start still has a position to find the
-    /// nearest remaining one from.
+    /// The displays last reconciled against. Remembered so a monitor
+    /// missing at the next start still has a position to find the nearest
+    /// remaining one from.
     #[serde(default)]
     pub displays: Vec<Display>,
     /// The monitor the person is working on. Follows the pointer and
@@ -102,9 +106,14 @@ impl OutputPartition {
         self.home.is_empty() && self.origin.is_empty() && self.displays.is_empty()
     }
 
-    /// The primary display: the first one reconciled.
+    /// The primary display: the one the person made primary in Settings
+    /// while it is connected, else the first one reconciled.
     pub fn primary(&self) -> Option<u32> {
-        self.displays.first().map(|d| d.id)
+        self.displays
+            .iter()
+            .find(|display| display.primary)
+            .or_else(|| self.displays.first())
+            .map(|display| display.id)
     }
 
     /// The monitor output `id` shows, while it is connected.
@@ -314,17 +323,24 @@ impl OutputPartition {
         self.rehome(strip.id, group, display)
     }
 
-    /// Bring the partition in line with the displays now connected,
-    /// primary first. Groups whose monitor went away move to the nearest
-    /// remaining one, remembering where they came from; groups whose
-    /// monitor came back return to it, whatever output it is connected as
-    /// now. Either way each keeps its place in the strip's order.
+    /// Bring the partition in line with the displays now connected. Groups
+    /// whose monitor went away move to the nearest remaining one, else to
+    /// the display that stands in for the primary, remembering where they
+    /// came from; groups whose monitor came back return to it, whatever
+    /// output it is connected as now. Either way each keeps its place in the
+    /// strip's order.
     pub fn reconcile(&mut self, workspaces: &[Workspace], now: &[Display]) {
         let previous = std::mem::replace(&mut self.displays, now.to_vec());
         let live: BTreeSet<&str> = now.iter().map(|d| d.monitor.as_str()).collect();
         if live.is_empty() {
             return;
         }
+        // The display the person chose, else the first one there is.
+        let primary = now
+            .iter()
+            .find(|d| d.primary)
+            .or_else(|| now.first())
+            .map(|d| d.id);
         // Back home: a monitor that returned reclaims what left it.
         let returning: Vec<(GroupId, String)> = self
             .origin
@@ -347,7 +363,6 @@ impl OutputPartition {
                 })
                 .map(|d| d.id)
         };
-        let primary = now.first().map(|d| d.id);
         for group in workspaces
             .iter()
             .flat_map(|w| &w.strips)
@@ -440,6 +455,7 @@ mod tests {
                 y: 0.0,
                 width: 1280.0,
                 height: 800.0,
+                primary: false,
             },
             Display {
                 id: 1,
@@ -448,6 +464,7 @@ mod tests {
                 y: 0.0,
                 width: 2560.0,
                 height: 1440.0,
+                primary: false,
             },
         ]
     }
@@ -457,6 +474,50 @@ mod tests {
             let monitor = p.monitor_of(d).expect("connected").to_owned();
             p.home.insert(g, monitor);
         }
+    }
+
+    /// `displays` with the monitor `primary` made the primary one.
+    fn with_primary(mut displays: Vec<Display>, primary: &str) -> Vec<Display> {
+        for display in &mut displays {
+            display.primary = display.monitor == primary;
+        }
+        displays
+    }
+
+    /// The display the person chose in Settings is the primary one while it
+    /// is connected, else the first one there is.
+    #[test]
+    fn the_chosen_display_is_primary_and_the_first_stands_in_without_one() {
+        let ws = workspace(&[1]);
+        let mut p = OutputPartition::default();
+        p.reconcile(&ws, &docked());
+        assert_eq!(p.primary(), Some(0), "no choice: the first one");
+
+        p.reconcile(&ws, &with_primary(docked(), MONITOR));
+        assert_eq!(p.primary(), Some(1), "the monitor the person chose");
+        assert_eq!(p.focused_display(), Some(1), "focus follows it");
+        assert_eq!(p.display_of(1), Some(1), "so does a window without one");
+
+        // The chosen monitor is unplugged: the one left stands in, and the
+        // choice returns with the monitor.
+        p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
+        assert_eq!(p.primary(), Some(0));
+        p.reconcile(&ws, &with_primary(docked(), MONITOR));
+        assert_eq!(p.primary(), Some(1));
+    }
+
+    /// A monitor that goes away and comes back takes the groups it stranded
+    /// to it, never to the display standing in for the primary.
+    #[test]
+    fn groups_a_gone_monitor_stranded_move_to_the_primary_that_is_there() {
+        let ws = workspace(&[1, 2]);
+        let mut p = OutputPartition::default();
+        p.reconcile(&ws, &with_primary(docked(), PANEL));
+        home(&mut p, &[(1, 0), (2, 1)]);
+        // The monitor holding one of them goes, leaving the panel as primary.
+        p.reconcile(&ws, &with_primary(docked()[..1].to_vec(), PANEL));
+        assert_eq!(p.display_of(2), Some(0));
+        assert_eq!(p.origin.get(&2).map(String::as_str), Some(MONITOR));
     }
 
     #[test]
@@ -596,5 +657,56 @@ mod tests {
         assert!(tree.show_strip_on(0, StripId(1)));
         assert_eq!(tree.strip_shown_on(0), Some(StripId(1)));
         assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+    }
+
+    /// A monitor is unplugged and plugged back in while the desk runs, as a
+    /// docked laptop's is: what it held moves to the display left and
+    /// returns with it, a group opened on it is homed to it, and the strip
+    /// it shows follows the displays it has.
+    #[test]
+    fn a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes()
+    {
+        let ws = workspace(&[1, 2]).remove(0);
+        let mut tree = crate::tree::DesktopTree {
+            active: ws.id,
+            workspaces: vec![ws],
+            ..Default::default()
+        };
+        tree.active_strip.insert(tree.active, StripId(1));
+        assert!(tree.reconcile_displays(&docked()));
+        home(&mut tree.outputs, &[(1, 0), (2, 1)]);
+
+        // The cable is pulled: its group moves to the panel, and the desk
+        // remembers it came from the monitor.
+        assert!(tree.reconcile_displays(&docked()[..1]));
+        assert!(!tree.is_partitioned(), "one display shows one strip");
+        assert_eq!(tree.outputs.display_of(2), Some(0));
+        assert_eq!(
+            tree.outputs.origin.get(&2).map(String::as_str),
+            Some(MONITOR)
+        );
+
+        // Plugged back in mid-run, the monitor is a display again and the
+        // group it held is back on it, on the strip the desk shows there.
+        assert!(tree.reconcile_displays(&docked()));
+        assert!(tree.is_partitioned());
+        assert_eq!(tree.strip_shown_on(1), tree.active_strip_id());
+        assert_eq!(
+            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 1),
+            vec![2]
+        );
+
+        // A group opened while the monitor has focus is homed to it.
+        tree.outputs.set_focused(1);
+        tree.workspaces[0].strips[0].window_groups.push(group(3));
+        assert!(tree.reconcile_displays(&docked()));
+        assert_eq!(tree.outputs.display_of(3), Some(1));
+
+        // And when it goes again everything it showed moves to the panel.
+        assert!(tree.reconcile_displays(&docked()[..1]));
+        assert_eq!(
+            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 0),
+            vec![1, 2, 3]
+        );
     }
 }

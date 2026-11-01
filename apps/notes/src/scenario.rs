@@ -689,7 +689,7 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
     Ok(())
 }
 
-/// The room around the note: two people and an agent the `@` list offers.
+/// The workspace around the note: two people and an agent the `@` list offers.
 fn show_room(driver: &mut FrameHarness) {
     use ui::permissions::UserId;
     use ui::presence::{ParticipantKind, PresenceCtx};

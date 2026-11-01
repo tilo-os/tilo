@@ -39,7 +39,8 @@ use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::content::ContentWants;
-use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
+use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordCheckout, RecordId, RecordStore};
@@ -812,7 +813,7 @@ impl Room {
     /// A late join or a reconnect delivers a route's retained checkpoint and
     /// its whole tail at once. Each merge into an open record copies the
     /// document, so the mutations of one route are coalesced first (see
-    /// [`tilo_browser_peer::coalesce`]) and merged once per run instead of once per change.
+    /// [`tilo_peer_state::document_frame::coalesce`]) and merged once per run instead of once per change.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per peer event: the receiver is a table, read top to bottom"
@@ -901,9 +902,11 @@ impl Room {
         // Records first: a desktop naming a new tab's record finds it.
         batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
         for (route, mutations) in batches {
-            if let Err(error) =
-                self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)
-            {
+            if let Err(error) = self.apply(
+                &route,
+                tilo_peer_state::document_frame::coalesce(mutations),
+                &mut woken,
+            ) {
                 self.unapplied.insert(route.clone());
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }

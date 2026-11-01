@@ -9,11 +9,12 @@
 //!
 //! Below the facts, the problems this computer recorded: the desktop
 //! stopping or stopping responding, a part of it restarting, the computer
-//! itself stopping, a fault the system's core went on from. The host keeps the records in the person's private crash
-//! directory and answers them through its `tilo.crash-records` actions, the
-//! door an agent or a script uses too; About lists what each says happened
-//! and reads one record's text only when its page opens. Nothing leaves the
-//! computer.
+//! itself stopping, a fault the system's core went on from. The session
+//! keeps the records in the person's private crash directory and publishes
+//! them as its `crash-records` resources, which About reads as an app
+//! reads any of the session's: the list without a stack, and one record's
+//! text only when its page opens. An agent reaches the same readings.
+//! Nothing leaves the computer.
 //!
 //! Who the person is lives in Users, which reads the identities from the
 //! one place that keeps them; About shows no second copy that could
@@ -57,7 +58,7 @@ pub enum AboutEffect {
     /// Open a problem's page: what happened, when, and the record's text.
     #[effect(view, label = "Problem details")]
     OpenProblem {
-        #[param("The record's id, as the host's crash-records list answers it")]
+        #[param("The record's id, as the crash records' list answers it")]
         record: String,
     },
 }
@@ -225,38 +226,53 @@ pub fn area(app: &SettingsApp) -> Option<&AboutArea> {
     app.areas().find()
 }
 
-/// A call to the host's records, answering on its state.
-type RecordsCall = ui::InvocationCall;
+/// A read of the problems, answering on its state once it has read them.
+type RecordsCall<T> = ui::Arriving<T, String>;
 
-/// What lists the problems this computer recorded and reads one. Each call
-/// answers on the state it returns; nothing here waits.
+/// What lists the problems this computer recorded and reads one. Each read
+/// runs off the UI thread and answers on the state it returns; nothing here
+/// waits.
 pub trait ProblemRecords {
-    fn list(&self) -> RecordsCall;
-    fn read(&self, id: &str) -> RecordsCall;
+    fn list(&self) -> RecordsCall<Vec<CrashRecord>>;
+    fn read(&self, id: &str) -> RecordsCall<CrashRecordText>;
 }
 
-/// The host's records, read through the action door as the person using
-/// Settings, as an agent reads them.
-struct RemoteRecords {
-    remote: ui::RemoteActions,
-}
+/// The records as the session publishes them, which Settings reads as an
+/// app: [`records::RESOURCE`] is every record without its text, and each
+/// record's own resource is its text.
+struct SessionRecords;
 
-impl ProblemRecords for RemoteRecords {
-    fn list(&self) -> RecordsCall {
-        use ui::tilo_actions::remote::InvokeArgument;
-        self.remote
-            .invoke(records::target(records::LIST), InvokeArgument::None, None)
+impl ProblemRecords for SessionRecords {
+    fn list(&self) -> RecordsCall<Vec<CrashRecord>> {
+        published(records::RESOURCE)
     }
 
-    fn read(&self, id: &str) -> RecordsCall {
-        use ui::tilo_actions::remote::InvokeArgument;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("id".into(), id.into());
-        self.remote.invoke(
-            records::target(records::READ),
-            InvokeArgument::Json(arguments),
-            None,
-        )
+    fn read(&self, id: &str) -> RecordsCall<CrashRecordText> {
+        published(&records::record(id))
+    }
+}
+
+/// What the session's resource `resource` reads as, read on the background
+/// worker.
+fn published<T: serde::de::DeserializeOwned + Send + Sync + 'static>(
+    resource: &str,
+) -> RecordsCall<T> {
+    let resource = resource.to_owned();
+    ui::Arriving::local("the crash records", move || {
+        let records = ui::collaboration::SessionResource::open(&resource)?;
+        let reading = records
+            .latest()
+            .ok_or_else(|| "The session published no reading.".to_string())??;
+        serde_json::from_str(&reading).map_err(|error| format!("a record does not read: {error}"))
+    })
+}
+
+/// What a read answered, once it has; `None` while it still runs.
+fn settled<T: Clone>(call: &RecordsCall<T>) -> Option<Result<T, String>> {
+    match call.get() {
+        ui::Arrival::Pending { .. } => None,
+        ui::Arrival::Ready(value) => Some(Ok(value)),
+        ui::Arrival::Failed(error) => Some(Err(error)),
     }
 }
 
@@ -267,20 +283,16 @@ pub struct AboutArea {
     devices: bool,
     /// The pages the panes drilled into: a problem's page among them.
     pages: crate::pages::PanePages,
-    /// The window's client for the action door, shared with the other
-    /// areas that act through the host.
-    remote: ui::RemoteActions,
     model: OnceCell<Rc<RefCell<AboutModel>>>,
     /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
 impl AboutArea {
-    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
             devices: cx.devices,
             pages: cx.pages.clone(),
-            remote,
             model: OnceCell::new(),
             shown: LocalState::new(0),
         }
@@ -289,7 +301,7 @@ impl AboutArea {
     /// The area over `model` in place of the one it would make: a test's.
     #[cfg(test)]
     fn over(cx: &AreaContext, model: AboutModel) -> Self {
-        let area = Self::new(cx, ui::RemoteActions::current());
+        let area = Self::new(cx);
         let _ = area.model.set(Rc::new(RefCell::new(model)));
         area
     }
@@ -298,11 +310,9 @@ impl AboutArea {
     /// the window reaches the device.
     pub fn model(&self) -> &Rc<RefCell<AboutModel>> {
         self.model.get_or_init(|| {
-            let source = self.devices.then(|| {
-                Rc::new(RemoteRecords {
-                    remote: self.remote.clone(),
-                }) as Rc<dyn ProblemRecords>
-            });
+            let source = self
+                .devices
+                .then(|| Rc::new(SessionRecords) as Rc<dyn ProblemRecords>);
             Rc::new(RefCell::new(AboutModel::new(
                 self.pages.clone(),
                 AboutInfo::from_system(),
@@ -350,7 +360,7 @@ enum Shown {
 /// The problem whose page is open.
 struct Opened {
     id: String,
-    call: Option<RecordsCall>,
+    call: Option<RecordsCall<CrashRecordText>>,
     shown: Shown,
 }
 
@@ -368,7 +378,7 @@ pub struct AboutModel {
     info: AboutInfo,
     source: Option<Rc<dyn ProblemRecords>>,
     problems: Problems,
-    listing: Option<RecordsCall>,
+    listing: Option<RecordsCall<Vec<CrashRecord>>>,
     opened: Option<Opened>,
     pages_seen: u64,
     changed: bool,
@@ -444,14 +454,11 @@ impl AboutModel {
         });
     }
 
-    /// Take in the host's answers and follow the page shown.
+    /// Take in what the records answered and follow the page shown.
     fn take_answers(&mut self) {
-        if let Some(answer) = self.listing.as_ref().and_then(crate::device_fleet::settled) {
+        if let Some(answer) = self.listing.as_ref().and_then(settled) {
             self.listing = None;
-            self.problems = answer
-                .ok()
-                .and_then(|output| serde_json::from_value(output.value?).ok())
-                .map_or(Problems::Unreadable, Problems::Read);
+            self.problems = answer.map_or(Problems::Unreadable, Problems::Read);
             self.changed = true;
         }
         let revision = self.pages.revision();
@@ -460,13 +467,10 @@ impl AboutModel {
             self.follow_page();
         }
         if let Some(opened) = self.opened.as_mut()
-            && let Some(answer) = opened.call.as_ref().and_then(crate::device_fleet::settled)
+            && let Some(answer) = opened.call.as_ref().and_then(settled)
         {
             opened.call = None;
-            opened.shown = answer
-                .ok()
-                .and_then(|output| serde_json::from_value(output.value?).ok())
-                .map_or(Shown::Unreadable, Shown::Read);
+            opened.shown = answer.map_or(Shown::Unreadable, Shown::Read);
             self.changed = true;
         }
     }
@@ -836,9 +840,8 @@ mod tests {
         }
     }
 
-    /// The host's records, as fixtures: a desktop that stopped responding
-    /// and the computer stopping, as the shell's `tilo.crash-records`
-    /// answers them.
+    /// The session's records, as fixtures: a desktop that stopped
+    /// responding and the computer stopping, as the session publishes them.
     struct FixtureRecords {
         reads: std::cell::RefCell<Vec<String>>,
     }
@@ -867,22 +870,12 @@ mod tests {
         ]
     }
 
-    fn answered(value: serde_json::Value) -> RecordsCall {
-        ui::Arriving::ready(ui::tilo_actions::InvocationUpdate::Succeeded {
-            invocation: ui::tilo_actions::InvocationId::new(),
-            output: ui::tilo_actions::ActionOutput {
-                value: Some(value),
-                resources: Vec::new(),
-            },
-        })
-    }
-
     impl ProblemRecords for FixtureRecords {
-        fn list(&self) -> RecordsCall {
-            answered(serde_json::to_value(fixture_records()).unwrap())
+        fn list(&self) -> RecordsCall<Vec<CrashRecord>> {
+            ui::Arriving::ready(fixture_records())
         }
 
-        fn read(&self, id: &str) -> RecordsCall {
+        fn read(&self, id: &str) -> RecordsCall<CrashRecordText> {
             self.reads.borrow_mut().push(id.to_owned());
             let record = fixture_records()
                 .into_iter()
@@ -893,14 +886,11 @@ mod tests {
             } else {
                 "tilo desktop freeze\n\nthread 412 (shell)\n   0: std::sys::sync::mutex::futex::Mutex::lock_contended\n"
             };
-            answered(
-                serde_json::to_value(CrashRecordText {
-                    record,
-                    text: text.into(),
-                    truncated: false,
-                })
-                .unwrap(),
-            )
+            ui::Arriving::ready(CrashRecordText {
+                record,
+                text: text.into(),
+                truncated: false,
+            })
         }
     }
 

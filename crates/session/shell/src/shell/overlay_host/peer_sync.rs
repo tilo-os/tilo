@@ -166,9 +166,9 @@ impl ShellOverlayHost {
     pub(super) fn realtime_continuity_call(
         &self,
         action: RealtimeContinuityUiAction,
-    ) -> Result<crate::shell::collab_broker_capnp::RealtimeContinuityUiView, String> {
+    ) -> Result<crate::shell::collab_app_broker::RealtimeContinuityUiView, String> {
         self.realtime_continuity_bridge.as_ref().map_or_else(
-            || Ok(crate::shell::collab_broker_capnp::RealtimeContinuityUiView::default()),
+            || Ok(crate::shell::collab_app_broker::RealtimeContinuityUiView::default()),
             |bridge| bridge(action),
         )
     }

@@ -3,7 +3,7 @@
 //!
 //! The bot's program only sequences steps, so everything it does comes from
 //! two effects. `plan-route` names the Chat message an event is about, for
-//! the program to read with Chat's `read-room`. `plan-event` answers a
+//! the program to read with Chat's `read-workspace`. `plan-event` answers a
 //! [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
 use crate::record::{Guild, MappedKind, Ownership};
-use crate::tilo::{self, RoomChat};
+use crate::tilo::{self, WorkspaceChat};
 use crate::{import, layout, order, roles};
 
 /// The Chat record kind the bridge mirrors.
@@ -30,8 +30,13 @@ pub const CHAT_KIND: &str = "chat.workspace";
 pub const MESSAGES_KIND: &str = "chat.messages";
 /// The workspace's own emoji, which the bridge uploads to the server.
 pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
-/// The room record kind whose role changes the bridge mirrors.
-pub const ROOM_KIND: &str = "tilo.room";
+/// The workspace's own governance record kind, whose role changes the
+/// bridge mirrors.
+pub const WORKSPACE_KIND: &str = "tilo.workspace";
+/// The kind that record was published under before the workspace was
+/// called by its name: a host that still publishes it is followed all the
+/// same, and so is a program installed against it.
+pub const LEGACY_WORKSPACE_KIND: &str = "tilo.room";
 /// Chat's verb filing a feedback report in a channel.
 pub const SUBMIT_FEEDBACK: &str = "submit-feedback";
 
@@ -85,9 +90,9 @@ pub struct BridgePlan {
     /// the server, or the one uploaded for it renamed.
     pub apply_emojis: Vec<Value>,
     pub member_roles: Vec<Value>,
-    /// `kick`: a linked person was removed from the room.
+    /// `kick`: a linked person was removed from the workspace.
     pub kicks: Vec<Value>,
-    /// `ban`: a linked person was banned from the room.
+    /// `ban`: a linked person was banned from the workspace.
     pub bans: Vec<Value>,
     pub unbans: Vec<Value>,
     /// `fetch-asset`, then `remember-avatar`.
@@ -127,7 +132,7 @@ pub struct BridgePlan {
     /// Chat `set-channel-category`: a joined channel moves to its Discord
     /// channel's category.
     pub file_channels: Vec<Value>,
-    /// Chat `delete-channel`: a channel of the room's the server had no
+    /// Chat `delete-channel`: a channel of the workspace's the server had no
     /// match for and nothing was written in.
     pub drop_channels: Vec<Value>,
     /// Chat `delete-category`: a category of Tilo's own the moves or dropped
@@ -166,7 +171,7 @@ enum Fired<'e> {
         item: Option<&'e str>,
         event: &'e Value,
     },
-    Room {
+    Workspace {
         verbs: Vec<String>,
         event: &'e Value,
     },
@@ -204,7 +209,7 @@ fn fired(event: &Value) -> Fired<'_> {
             item: event.pointer("/item/id").and_then(Value::as_str),
             event,
         },
-        Some(ROOM_KIND) => Fired::Room { verbs, event },
+        Some(WORKSPACE_KIND | LEGACY_WORKSPACE_KIND) => Fired::Workspace { verbs, event },
         Some(EMOJI_KIND) => Fired::Emoji,
         Some(crate::KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,
@@ -378,17 +383,17 @@ fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
         .collect()
 }
 
-/// What a plan reads: the guild, Chat's `read-room` answer for the room
+/// What a plan reads: the guild, Chat's `read-workspace` answer for the workspace
 /// and the routed message, and where links point.
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
     pub guild: &'a Guild,
     pub chat: &'a Value,
     pub context: &'a Context,
-    /// The room's members with their roles (`{"members": [{"person",
+    /// The workspace's members with their roles (`{"members": [{"person",
     /// "role"}]}`), for a Discord-side moderator's standing in Tilo; `null`
     /// when the host binds none, which treats nobody as a moderator.
-    pub room: &'a Value,
+    pub workspace: &'a Value,
     /// The workspace's emoji as the host hands them (`{"emoji": [{"name",
     /// "picture"}]}`), or `None` when it binds none, which leaves the
     /// server's emoji alone.
@@ -428,9 +433,9 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                 plan.unreacts.extend(values(unreacts));
             }
         }
-        Fired::Room { verbs, event } => {
+        Fired::Workspace { verbs, event } => {
             for verb in &verbs {
-                room_change(&mut plan, read.guild, verb, event);
+                workspace_change(&mut plan, read.guild, verb, event);
             }
         }
         Fired::Guild { verbs, event } => {
@@ -460,7 +465,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
     plan
 }
 
-/// The Chat verbs that rearrange the room's channels: after them the
+/// The Chat verbs that rearrange the workspace's channels: after them the
 /// bridge puts Discord in Chat's order.
 const ARRANGES: &[&str] = &[
     "create-channel",
@@ -511,7 +516,7 @@ fn post(plan: &mut BridgePlan, guild: &Guild, chat: &Value, message: &str, conte
 /// someone rearranged Chat, which Discord follows.
 fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     let guild = read.guild;
-    let tilo = RoomChat::from_chat(read.chat);
+    let tilo = WorkspaceChat::from_chat(read.chat);
     let import = import::plan(guild, &tilo);
     plan.import_categories
         .extend(import.categories.into_iter().map(|c| {
@@ -543,7 +548,7 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
             .into_iter()
             .map(|category| json!({ "category": category })),
     );
-    // Adopted, the room lists the server's channels as the server does.
+    // Adopted, the workspace lists the server's channels as the server does.
     if !import.finish.is_empty() {
         plan.chat_arrangements
             .extend(values(order::to_chat(guild, guild, &tilo)));
@@ -575,7 +580,7 @@ fn emoji(plan: &mut BridgePlan, read: Reading<'_>) {
     plan.apply_emojis.extend(values(emoji.applies));
 }
 
-fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) {
+fn workspace_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) {
     // A bridge confined to one channel leaves the server's members alone.
     if guild.only_channel.is_some() {
         return;
@@ -644,7 +649,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         source::REACTION_REMOVED => payload::<ReactionChanged>(body)
             .map(|e| inbound::plan_reaction(guild, &e, read.chat, false)),
         source::MEMBER_CHANGED => {
-            payload::<MemberChanged>(body).map(|e| inbound::plan_member(guild, &e, read.room))
+            payload::<MemberChanged>(body).map(|e| inbound::plan_member(guild, &e, read.workspace))
         }
         source::COMMAND => {
             payload::<Command>(body).map(|e| inbound::plan_command(guild, read.chat, &e))
@@ -681,16 +686,16 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     );
     observed.observe_emojis(layout.emojis.clone());
     let adopted = read.guild.ownership == Ownership::Adopted;
-    let room = RoomChat::from_chat(read.chat);
+    let workspace = WorkspaceChat::from_chat(read.chat);
     if observed == *read.guild {
         reconcile(plan, read, false);
         // Back after a while: what moved in Discord meanwhile shows in Chat.
         if adopted && layout.connected {
             plan.chat_arrangements
-                .extend(values(order::to_chat(read.guild, read.guild, &room)));
+                .extend(values(order::to_chat(read.guild, read.guild, &workspace)));
         }
         // On every start too: the workspace's emoji made while the bridge
-        // was away, or that the server had no room or permission for.
+        // was away, or that the server had no workspace or permission for.
         emoji(plan, read);
         // Linked avatars that changed while the bridge was away.
         plan.photos
@@ -704,9 +709,11 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         }));
         // Someone moved a channel or category in Discord: Chat follows. The
         // bridge's own arrangement on its way there is no such move.
-        if adopted && (layout.connected || order::moved_in_discord(read.guild, &observed, &room)) {
+        if adopted
+            && (layout.connected || order::moved_in_discord(read.guild, &observed, &workspace))
+        {
             plan.chat_arrangements
-                .extend(values(order::to_chat(&observed, read.guild, &room)));
+                .extend(values(order::to_chat(&observed, read.guild, &workspace)));
         }
     }
 }

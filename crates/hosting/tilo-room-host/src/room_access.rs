@@ -8,20 +8,19 @@
 //! 1. The certificate is current relay-wide ([`RelayTrust::cert`]): not
 //!    expired, not revoked, admitted by the live trust policy.
 //! 2. An agent device acts only inside its live delegation.
-//! 3. A host-capable certificate of another user never federates a room.
-//! 4. A same-user peer relay this room federates with is admitted on the
-//!    planes that carry federation (subscribe, state, replay).
-//! 5. A device the room's spectator root certified only watches: it is
+//! 3. A host this room is attached to is admitted on the planes that carry
+//!    its changes (subscribe, state, publish, replay), listed or not.
+//! 4. A device the room's spectator root certified only watches: it is
 //!    admitted on the read planes ([`RoomOperation::reads`]) and refused on
 //!    every other, even where the room lists it, and it subscribes only
 //!    while one of the room's spectator seats is free ([`Spectators`]). In
 //!    a public room, one it holds a seat in, it may also take the channels'
 //!    content keys ([`RoomOperation::ChannelReadKeys`]).
-//! 6. An exact member device — within any pending replacement's ceiling — or
+//! 5. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the room's signed authority admits is admitted.
-//! 7. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
+//! 6. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
-//! 8. Anything else is not a member.
+//! 7. Anything else is not a member.
 //!
 //! Spectators are the visitors of a public room who only watch it: a page
 //! embedding the room. They are not members one by one; they all act as one
@@ -71,7 +70,7 @@
 //! relay's own user whose delegation (step 2) is live and names this room. A
 //! device that is no agent, an agent of another user, and any room this
 //! relay does not govern are refused; nothing is admitted by membership,
-//! enrolment or federation. Being a governed member is what admits the agent
+//! enrolment or attachment. Being a governed member is what admits the agent
 //! to the room on the other planes and lets the room's participants admit it
 //! to the channels of its records.
 //!
@@ -82,7 +81,7 @@ use std::sync::RwLock;
 
 use tilo_user_identity::RevocationList;
 
-use crate::auth::{AuthenticatedPeer, PeerRole};
+use crate::auth::AuthenticatedPeer;
 use crate::peer::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
@@ -167,8 +166,8 @@ enum OwnerDevice {
 }
 
 impl RoomOperation {
-    /// Whether this plane carries federation between same-user relays.
-    const fn federates(self) -> bool {
+    /// Whether this plane carries a workspace's changes.
+    const fn carries_changes(self) -> bool {
         matches!(
             self,
             Self::Subscribe | Self::State | Self::Publish | Self::Replay
@@ -230,8 +229,6 @@ pub enum DenyReason {
     Revoked,
     /// The live trust policy no longer admits the certificate's user.
     NotTrusted,
-    /// A host-capable certificate of another user.
-    CrossUserFederation,
     /// The agent was withdrawn.
     AgentWithdrawn,
     /// The agent's delegation expired.
@@ -269,7 +266,6 @@ impl DenyReason {
             Self::CertExpired => "device certificate expired",
             Self::Revoked => "authenticated device was revoked",
             Self::NotTrusted => "collaborator was removed from signed workspace authority",
-            Self::CrossUserFederation => "cross-user certificates cannot federate relay rooms",
             Self::AgentWithdrawn => "the agent was withdrawn",
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
@@ -529,12 +525,7 @@ pub(crate) fn listed(room: Room<'_>, peer: &AuthenticatedPeer, op: RoomOperation
     if watches_only(room.runtime, peer) {
         return op.reads();
     }
-    (op.federates()
-        && peer.role == PeerRole::PeerRelay
-        && room
-            .runtime
-            .known_peer_relays
-            .contains(&peer.device_public_key))
+    (op.carries_changes() && room.runtime.attached(&peer.device_public_key))
         || room.lists(&peer.device_public_key)
 }
 
@@ -566,11 +557,8 @@ pub(crate) fn decide_in(
         return Decision::Deny(reason);
     }
     let own_user = &peer.user_public_key == trust.own_user;
-    if peer.role == PeerRole::PeerRelay && !own_user {
-        return Decision::Deny(DenyReason::CrossUserFederation);
-    }
     if op == RoomOperation::OwnChannelKeys {
-        // Never by membership, enrolment or federation: only the governor.
+        // Never by membership, enrolment or attachment: only the governor.
         return if room.governed_by(&peer.device_public_key) {
             Decision::Admit
         } else {
@@ -579,7 +567,7 @@ pub(crate) fn decide_in(
     }
     #[cfg(any(test, feature = "agents"))]
     if op == RoomOperation::DelegateMembership {
-        // Never by membership, enrolment or federation: only this relay's
+        // Never by membership, enrolment or attachment: only this relay's
         // user's own agent, inside its delegation, in a room governed here.
         let delegated = own_user
             && trust

@@ -166,6 +166,7 @@ imports! {
     (Lenses, "lenses", "i", "i"),
     (Delivery, "delivery", "i", "i"),
     (WorkspaceMembers, "workspace_members", "", "i"),
+    (Viewer, "viewer", "", "i"),
     (Members, "members", "i", "i"),
     (Speakers, "speakers", "i", "i"),
     (MetaOf, "meta_of", "i", "i"),

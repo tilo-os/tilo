@@ -426,6 +426,34 @@ impl SettingsRecords {
         )
     }
 
+    /// The settings sections `declares` declare, of the app `app_id` (titled
+    /// `app_title`), changed by `person`: each change is stored in the
+    /// session's settings document with what made it and who, and is a step
+    /// of its invoker's, undone and redone like any of theirs. The
+    /// sections' history is the settings document's, so the host holds no
+    /// person records beside them.
+    #[must_use]
+    pub fn of_person_named(
+        app_id: &'static str,
+        app_title: &'static str,
+        person: &str,
+        declares: &[super::Declare],
+    ) -> Self {
+        Self::declared(
+            super::record::Sections {
+                app_id,
+                document: SettingsDocument::Session,
+                person: Some(Rc::new(super::person::PersonState::without_records(
+                    person.to_owned(),
+                    app_id,
+                    app_title,
+                ))),
+                doors: Vec::new(),
+            },
+            declares,
+        )
+    }
+
     fn declared(sections: super::record::Sections, declares: &[super::Declare]) -> Self {
         let person = sections.person.clone();
         let mut records = super::Records::sections(sections);

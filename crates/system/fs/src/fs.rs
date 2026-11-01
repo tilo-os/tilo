@@ -717,7 +717,7 @@ pub struct QuickFS {
     enforcement: Option<(AclHandle, crate::acl::IdentityKey)>,
     /// Host-side thumbnail generation + cache. `Some` when the mount has a
     /// persistent cache directory (serves previews via `user.tilo.thumb` and
-    /// gossips the hash); `None` leaves the mount thumbnail-less.
+    /// publishes the hash); `None` leaves the mount thumbnail-less.
     thumbs: Option<crate::thumbs::ThumbProvider>,
     /// Durable local pin/replica/transfer registry. The FUSE path only reads
     /// its in-memory state; persistence happens at mutation points.
@@ -4424,10 +4424,10 @@ impl QuickFS {
 
     /// The thumbnail (PNG bytes) for a file, generated as metadata ahead
     /// of/independent of content, or `None` when unavailable. Resolution
-    /// order: (1) content-addressed cache hit, (2) a peer-gossiped
+    /// order: (1) content-addressed cache hit, (2) a peer-published
     /// thumbnail blob hash, hydrated (tiny, ahead of the file's content) and
     /// adopted, (3) host generation from fully-local content, cached and
-    /// ingested so the hash gossips to peers. Never hydrates the file's
+    /// ingested so the hash reaches peers. Never hydrates the file's
     /// *content* from the network to make a preview — only the host, which
     /// already has the bytes, generates.
     pub fn thumbnail_for(&self, ino: u64) -> Option<Vec<u8>> {
@@ -4453,8 +4453,8 @@ impl QuickFS {
             return Some(png);
         }
 
-        // A peer gossiped a thumbnail blob — hydrate the tiny blob (ahead of
-        // the content) and adopt it.
+        // A peer published a thumbnail blob — hydrate the tiny blob (ahead
+        // of the content) and adopt it.
         if let Some(tbh) = thumb_hash
             && let Some(png) = self.read_blob_blocking(tbh)
             && let Some(out) = provider.adopt(ch, png)

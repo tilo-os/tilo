@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use provider_settings_ui::bound::{Setting, SettingRows as _, record_item};
 use ui::framework::ViewCx;
-use ui::widget::{Element, Picture};
+use ui::widget::{Element, Picture, TextInput};
 
 use crate::accessibility_settings::{AccessibilityDevicePrefs, AccessibilitySettings};
 use crate::i18n::{t, t_args};
@@ -229,7 +229,8 @@ fn vision_card(cx: &ViewCx<AccessibilitySettings>, magnifying: bool) -> Settings
     section(&t("a11y-vision-title"), rows(content))
 }
 
-/// Pointer: mouse keys, a large cursor and, while it is on, its size.
+/// Pointer: mouse keys, a large cursor and, while it is on, its size; the
+/// pointer's theme; the guides and the caret.
 fn pointer_card(cx: &ViewCx<AccessibilitySettings>, large: bool) -> SettingsSection {
     let access = AccessibilitySettings::paths();
     let mut content = vec![mouse_keys(cx), large_cursor(cx)];
@@ -237,6 +238,7 @@ fn pointer_card(cx: &ViewCx<AccessibilitySettings>, large: bool) -> SettingsSect
         content.push(cursor_size(cx));
     }
     content.extend([
+        cursor_theme(cx),
         assist(cx, "a11y-pointer-crosshair", "a11y.cursor_crosshair")
             .toggle(access.cursor_crosshair),
         assist(cx, "a11y-thick-caret", "a11y.thick_text_caret").toggle(access.thick_text_caret),
@@ -506,6 +508,41 @@ pub(crate) fn cursor_size(cx: &ViewCx<AccessibilitySettings>) -> Item {
         )
 }
 
+/// The pointer's theme, by the name it is installed under. A control with
+/// no theme comes back as the one the desktop ships with, refused at the
+/// field exactly as a size out of range is.
+pub(crate) fn cursor_theme(cx: &ViewCx<AccessibilitySettings>) -> Item {
+    cx.setting(t("a11y-cursor-theme"))
+        .described(t("a11y-cursor-theme-desc"))
+        .id("a11y.cursor_theme")
+        .stacked()
+        .custom(
+            |access: &AccessibilitySettings| access.cursor_theme.to_string(),
+            |shown| {
+                let input = TextInput::from_state(shown).with_id("a11y.cursor_theme");
+                let binding = cx.actions().set_binding(
+                    AccessibilitySettings::paths().cursor_theme,
+                    |typed: String| {
+                        tilo_accessibility_settings::CursorTheme::new(&typed)
+                            .ok_or_else(|| format!("`{typed}` is not the name of a pointer theme"))
+                    },
+                );
+                Box::new(bound(input, binding))
+            },
+        )
+}
+
+/// `control` acting through `binding`, or shown unavailable without one.
+fn bound<I, C: ui::framework::ActionControl<I>>(
+    control: C,
+    binding: Option<ui::tilo_actions::ActionBinding<I>>,
+) -> C {
+    match binding {
+        Some(binding) => control.bind_action(binding),
+        None => control.unavailable(),
+    }
+}
+
 pub(crate) fn sticky_keys(cx: &ViewCx<AccessibilitySettings>) -> Item {
     assist(cx, "a11y-sticky-keys", "a11y.sticky_keys")
         .toggle(AccessibilitySettings::paths().sticky_keys)
@@ -613,6 +650,7 @@ mod tests {
 
         edit_field(&mut app, ACCESSIBILITY, "large_cursor", true).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "cursor_size", 64).unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "cursor_theme", "Bibata-Modern-Ice").unwrap();
         edit_field(&mut app, ACCESSIBILITY, "sticky_keys", true).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "bounce_keys", true).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "bounce_keys_delay_ms", 500).unwrap();
@@ -624,6 +662,7 @@ mod tests {
         let access = app.settings::<AccessibilitySettings>().get();
         assert!(access.large_cursor);
         assert_eq!(access.cursor_size, 64);
+        assert_eq!(access.cursor_theme.as_str(), "Bibata-Modern-Ice");
         assert!(access.sticky_keys);
         assert!(access.bounce_keys && access.bounce_keys_alert && access.mouse_keys);
         assert_eq!(access.bounce_keys_delay_ms, 500);
@@ -632,6 +671,10 @@ mod tests {
         assert_eq!(access.screen_reader_rate, 140);
 
         assert!(edit_field(&mut app, ACCESSIBILITY, "cursor_size", 9999).is_err());
+        // A theme is a name, not a path out of the theme directories.
+        for theme in ["", "/usr/share/icons/Adwaita", "  "] {
+            assert!(edit_field(&mut app, ACCESSIBILITY, "cursor_theme", theme).is_err());
+        }
         assert_eq!(app.settings::<AccessibilitySettings>().get(), access);
     }
 

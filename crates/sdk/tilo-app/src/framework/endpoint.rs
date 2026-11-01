@@ -107,7 +107,7 @@ impl<E: Effect> ResourceOperations for EffectEndpoint<E> {
             return Ok(None);
         }
         op.check()?;
-        let effect = E::from_payload(request.payload)?;
+        let effect = E::from_payload(request.payload).map_err(|error| error.to_string())?;
         let caller = EffectCaller {
             invocation: request.invocation,
             invoker: ui_core::invocation_scope::current_invoker(),

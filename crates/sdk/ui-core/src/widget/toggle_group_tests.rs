@@ -500,18 +500,23 @@ fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
             0,
             Rect::new(0.0, 0.0, 300.0, 36.0),
         )
-        .on_change(move |i| {
+        .on_view("choice", move |i| {
             *captured_clone.borrow_mut() = Some(i);
         });
 
         dispatch(&mut g, &cursor_moved(250.0, 18.0));
         dispatch(&mut g, &mouse_press());
 
+        assert_eq!(
+            crate::testing::answer_controls(&mut g),
+            1,
+            "the choice reaches the group when it is answered"
+        );
         assert_eq!(g.selected(), 2, "click in segment 2 must select index 2");
         assert_eq!(
             *captured.borrow(),
             Some(2),
-            "on_change must fire with the new index"
+            "the published choice must fire with the new index"
         );
     }
 
@@ -526,16 +531,20 @@ fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
             ],
             0,
         )
-        .on_change(move |index| captured.borrow_mut().push(index));
+        .on_view("choice", move |index| captured.borrow_mut().push(index));
         group.set_focus(true);
 
         assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
+        crate::testing::answer_controls(&mut group);
         assert_eq!(group.selected(), 1);
         assert!(dispatch(&mut group, &named_key(NamedKey::End)));
+        crate::testing::answer_controls(&mut group);
         assert_eq!(group.selected(), 2);
         assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
+        crate::testing::answer_controls(&mut group);
         assert_eq!(group.selected(), 0, "arrow navigation wraps");
         assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
+        crate::testing::answer_controls(&mut group);
         assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
         group.set_focus(false);
@@ -965,7 +974,7 @@ fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
             0,
             Rect::new(0.0, 0.0, 300.0, 36.0),
         )
-        .on_change(move |i| *captured.borrow_mut() = Some(i));
+        .on_view("choice", move |i| *captured.borrow_mut() = Some(i));
 
         assert_eq!(
             Widget::accessibility(&g).unwrap().value.as_deref(),
@@ -981,6 +990,7 @@ fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
         // Click into segment 2 → value follows the new selection.
         dispatch(&mut g, &cursor_moved(250.0, 18.0));
         dispatch(&mut g, &mouse_press());
+        assert_eq!(crate::testing::answer_controls(&mut g), 1);
         assert_eq!(g.selected(), 2);
         assert_eq!(
             Widget::accessibility(&g).unwrap().value.as_deref(),
@@ -992,15 +1002,16 @@ fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
         let changed = Rc::new(RefCell::new(Vec::new()));
         let captured = Rc::clone(&changed);
         let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
-            .on_change(move |index| captured.borrow_mut().push(index));
+            .on_view("choice", move |index| captured.borrow_mut().push(index));
 
         assert!(Widget::perform_semantic_action(
             &mut group,
-            "segment:1",
+            "choice:segment:1",
             &crate::a11y::Action::Activate,
             &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
+        assert_eq!(crate::testing::answer_controls(&mut group), 1);
         assert_eq!(group.selected(), 1);
         assert_eq!(&*changed.borrow(), &[1]);
     }

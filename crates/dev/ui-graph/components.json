@@ -5749,6 +5749,13 @@
           "type": {
             "option": "resource"
           }
+        },
+        {
+          "name": "person",
+          "doc": "The person the place stands for, when it is one (a direct conversation): their avatar in the icon's place, ringed in their presence colour, and their presence badge. The icon and the avatar never both show: the person takes the icon's place.",
+          "type": {
+            "option": "principal"
+          }
         }
       ],
       "events": [

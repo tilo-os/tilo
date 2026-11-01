@@ -641,16 +641,16 @@ fn track_control(
         .unwrap_or_else(|| panic!("track {id} shows its {name} control under the pointer"))
 }
 
-/// Press and release the left button on the row of track `id`.
+/// Press and release the left button on the row of track `id`, through the
+/// custody the live window gives the table: a row's press is the table's
+/// published view action.
 fn click_track(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
-    send(
+    hosted_click(
         app,
-        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
         doc,
+        Point::new(row.x0 + row.width() * 0.3, row.center().y),
     );
-    send(app, &press(MouseButton::Left), doc);
-    send(app, &released(MouseButton::Left), doc);
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
@@ -2822,18 +2822,13 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             Some(serde_json::json!({ "state": "resolved" })),
             "a no-audio build never labels URL resolution as actual playback"
         );
-        let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
-            id: "tk_g1".into(),
-            label: "Track one".into(),
-            album_id: String::new(),
-            artist_id: String::new(),
-            offline: false,
-            liked: false,
-        })
-        .actions
-        .into_iter()
-        .find(|action| action.id == "play")
-        .expect("play resource action");
+        let play = app
+            .publish_resource(&crate::actions::track_resource_id("tk_g1"))
+            .expect("the song's row")
+            .actions
+            .into_iter()
+            .find(|action| action.id == "play")
+            .expect("play resource action");
         assert_eq!(
             play.contract.execution,
             tilo_actions::ExecutionMode::Background { cancellable: false },

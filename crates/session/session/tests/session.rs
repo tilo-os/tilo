@@ -11,7 +11,8 @@
     clippy::indexing_slicing,
     clippy::struct_excessive_bools,
     clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed step is the assertion"
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
 use std::cell::RefCell;
@@ -20,8 +21,8 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures_util::FutureExt as _;
 use tilo_actions::ResourceSpec;
+use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
@@ -32,14 +33,16 @@ use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
-use tilo_service::{Answer, Asked};
+use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
+use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
-use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
+use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_surface_host::Published;
+use tilo_test_env::PrivateBus;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -198,6 +201,31 @@ fn pump(
     }
 }
 
+/// Step `session` with `client` until `asked` answers.
+#[track_caller]
+fn until<T>(
+    session: &mut Session,
+    client: &mut TestClient,
+    mut asked: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    let mut answer = None;
+    pump(session, &mut [client], |session, _| {
+        answer = asked(session);
+        answer.is_some()
+    });
+    answer
+}
+
+/// The control assistive technology names `name` under `node`, by target.
+fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
+    if node.name.as_deref() == Some(name)
+        && let Some(target) = &node.action_target
+    {
+        return Some(target.clone());
+    }
+    node.children.iter().find_map(|child| control(child, name))
+}
+
 fn session() -> Session {
     // Headless tests take no part in the collaboration plane: no endpoint, no
     // room.
@@ -205,6 +233,23 @@ fn session() -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
+/// A session whose app lists are `lists`: what the desk offers to open.
+fn session_with_lists(lists: tilo_session::AppLists) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            search: tilo_session::SearchOptions {
+                lists: tilo_session::Lists::fixed(lists),
+                ..tilo_session::SearchOptions::default()
+            },
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -377,6 +422,31 @@ fn centre(session: &mut Session, rect: (i32, i32, i32, i32)) -> [u8; 4] {
     shot.pixel(x, y).unwrap()
 }
 
+/// The colours across the bar's band on the display.
+fn band(session: &mut Session) -> std::collections::BTreeSet<[u8; 4]> {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    (0..frame.width)
+        .step_by(4)
+        .filter_map(|x| frame.pixel(x, 12))
+        .collect()
+}
+
+/// The colour the display shows most across the bar's band.
+fn band_colour(session: &mut Session) -> [u8; 4] {
+    let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for x in (0..frame.width).step_by(4) {
+        if let Some(pixel) = frame.pixel(x, 12) {
+            *counts.entry(pixel).or_insert(0_usize) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(colour, _)| colour)
+        .unwrap()
+}
+
 /// Step the session until `done` holds, for up to three seconds of its
 /// clock.
 #[track_caller]
@@ -394,6 +464,88 @@ fn within(
         }
     }
     panic!("condition not reached in time");
+}
+
+/// Wait for the size the desktop configures the window to, draw it at that
+/// size as its client does, and wait until the compositor shows it there.
+fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < until && client.seen.size != Some(size) {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+    }
+    assert_eq!(
+        client.seen.size,
+        Some(size),
+        "the desktop asks the window for its new size"
+    );
+    client.show(size.0, size.1, [200, 40, 40, 255]);
+    let app = app.to_owned();
+    within(session, client, move |session| {
+        window(session.compositor(), &app)
+            .is_some_and(|(_, rect)| (rect.2, rect.3) == (size.0, size.1))
+    });
+}
+
+/// A window taken across the display covers it, the bar's room included,
+/// and the bar draws again once the window gives the display back.
+#[test]
+fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
+    const APP: &str = "org.example.Cinema";
+    const RED: [u8; 4] = [200, 40, 40, 255];
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, APP);
+    let (id, rect) = window(session.compositor(), APP).unwrap();
+    assert!(
+        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
+        "the window stands under the bar: {rect:?}"
+    );
+    assert!(
+        band(&mut session).len() > 2,
+        "and the bar draws in its band"
+    );
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "the bar's band is not the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, true)),
+        "the desk holds the window"
+    );
+    take_size(&mut session, &mut client, APP, (WIDTH, HEIGHT));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, (0, 0, WIDTH, HEIGHT))),
+        "the display from its top edge to its bottom"
+    );
+    assert_eq!(
+        band_colour(&mut session),
+        RED,
+        "the bar stepped aside: its band is the window"
+    );
+
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.set_fullscreen(id, false))
+    );
+    take_size(&mut session, &mut client, APP, (rect.2, rect.3));
+    assert_eq!(
+        window(session.compositor(), APP),
+        Some((id, rect)),
+        "the window stands where it stood"
+    );
+    assert!(band(&mut session).len() > 2, "the bar is back in its band");
+    assert_ne!(
+        band_colour(&mut session),
+        RED,
+        "and the band is not the window again"
+    );
 }
 
 #[test]
@@ -430,9 +582,15 @@ fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
 mod keys {
     pub const TAB: u32 = 15;
     pub const A: u32 = 30;
+    pub const D: u32 = 32;
+    pub const LEFT_SHIFT: u32 = 42;
+    pub const ESCAPE: u32 = 1;
+    pub const ENTER: u32 = 28;
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
+    /// What the microphone's key sends.
+    pub const MICROPHONE_MUTE: u32 = 248;
     pub const BRIGHTNESS_DOWN: u32 = 224;
     pub const PLAY_PAUSE: u32 = 164;
     pub const WLAN: u32 = 238;
@@ -634,6 +792,117 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     assert_eq!(*asked.borrow(), ["play-pause"]);
 }
 
+/// The player, as a system service the session hosts: it publishes what
+/// plays and records what it was asked.
+struct PlayerService {
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl tilo_session::Service for PlayerService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let spec = |id: &'static str| {
+            tilo_actions::ActionSpec::typed_operation(
+                id,
+                id,
+                String::new(),
+                tilo_actions::OperationKind::Effect,
+                "test.player",
+                Vec::new(),
+                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
+            )
+        };
+        vec![
+            tilo_actions::ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
+                .with_action(spec("play-pause"))
+                .with_action(spec("next"))
+                .with_action(spec("previous")),
+        ]
+    }
+
+    fn read(&self, _resource: &str) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn invoke(
+        &mut self,
+        _resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        self.asked.borrow_mut().push(action.to_owned());
+        Ok(tilo_service::Started::Done(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+}
+
+#[test]
+fn the_lock_screens_transport_steers_whatever_plays() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Lent(
+                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
+            )),
+            services: vec![Box::new(PlayerService {
+                asked: Rc::clone(&asked),
+            })],
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    host.update(|state| {
+        state.now_playing = Some(tilo_quick_settings::NowPlaying::fixture());
+    });
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.compositor().locked());
+    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
+    let screen = publisher(&session, unlock).expect("the lock screen is up");
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Clair de lune"),
+        "the locked screen says what plays: {:?}",
+        session.accessible_labels()
+    );
+
+    session
+        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
+        .expect("play/pause");
+    session
+        .invoke(&screen, LockEffect::NEXT_TRACK.id, &serde_json::Map::new())
+        .expect("next");
+    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
+    assert_eq!(
+        *asked.borrow(),
+        ["play-pause", "next"],
+        "the locked screen's transport reaches the player, as the unlocked one does"
+    );
+
+    // With nothing playing there is no transport, and no player is steered.
+    host.update(|state| state.now_playing = None);
+    session.step(Duration::from_millis(1)).unwrap();
+    session
+        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
+        .expect("play/pause");
+    for _ in 0..20 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(
+        *asked.borrow(),
+        ["play-pause", "next"],
+        "nothing plays, so nothing is asked of a player"
+    );
+}
+
 #[test]
 fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
@@ -662,84 +931,6 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     );
 }
 
-#[test]
-fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unlocks() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let _client = mapped(&mut session, "org.example.Terminal");
-    let unlocked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    session.step(Duration::from_millis(1)).unwrap();
-    assert!(session.compositor().locked());
-    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
-    assert!(
-        publisher(&session, "toggle-overview").is_none(),
-        "the locked session withholds the desktop's actions"
-    );
-    let screen = publisher(&session, unlock).expect("the lock screen publishes unlocking");
-    let locked = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        locked.rgba, unlocked.rgba,
-        "the lock screen hides the desktop"
-    );
-    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
-    assert!(
-        colours.len() > 2,
-        "the lock screen draws its clock and prompt, not only the dim"
-    );
-
-    let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "wrong" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("did not unlock"))
-    });
-    assert!(
-        session.compositor().locked(),
-        "a wrong password keeps it locked"
-    );
-
-    session
-        .invoke(
-            &screen,
-            type_password,
-            &arguments(serde_json::json!({ "password": "sesame" })),
-        )
-        .expect("type");
-    session
-        .invoke(&screen, unlock, &serde_json::Map::new())
-        .expect("unlock");
-    pump(&mut session, &mut [], |session, _| {
-        !session.compositor().locked()
-    });
-    assert!(
-        publisher(&session, unlock).is_none(),
-        "the lock screen is gone"
-    );
-    assert!(publisher(&session, "toggle-overview").is_some());
-}
-
 /// Unlocks with "sesame" only.
 struct Sesame;
 
@@ -751,6 +942,185 @@ impl tilo_session::unlock::PasswordVerifier for Sesame {
             tilo_session::unlock::Verdict::Wrong
         }
     }
+}
+
+/// A session action runner that records what it was asked to do, so a test
+/// can say nothing reached the machine it runs on.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the shape every session action runner has"
+)]
+fn record_session_action(action: tilo_session::SessionAction) -> Result<(), String> {
+    ACTIONS.with_borrow_mut(|actions| actions.push(action));
+    Ok(())
+}
+
+thread_local! {
+    static ACTIONS: RefCell<Vec<tilo_session::SessionAction>> = const { RefCell::new(Vec::new()) };
+}
+
+fn taken_actions() -> Vec<tilo_session::SessionAction> {
+    ACTIONS.with_borrow_mut(std::mem::take)
+}
+
+/// A session in a window of another desktop runs no idle timers: that
+/// desktop owns idle, blanking, locking and suspend.
+#[test]
+fn a_session_in_a_window_runs_no_idle_timers() {
+    let _settled = ui::motion::testing::settled();
+    let mut hosted = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            hosted: true,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    assert_eq!(
+        hosted.compositor().idle_config(),
+        tilo_compositor::IdleConfig::never(),
+        "a session in a window starts with no idle timers"
+    );
+    // The settings the person's settings app applies reach every session;
+    // here they must not bring the timers back.
+    hosted
+        .compositor()
+        .set_idle_config(tilo_compositor::IdleConfig::default());
+    assert_eq!(
+        hosted.compositor().idle_config(),
+        tilo_compositor::IdleConfig::never(),
+        "the host desktop owns idle, whatever this session is told"
+    );
+
+    let mut own = session();
+    own.compositor()
+        .set_idle_config(tilo_compositor::IdleConfig::default());
+    assert_eq!(
+        own.compositor().idle_config(),
+        tilo_compositor::IdleConfig::default(),
+        "a session with displays of its own keeps its timers"
+    );
+}
+
+/// Every power choice a session in a window takes stays in that session:
+/// nothing reaches the machine the window runs on, and shutting down ends
+/// the session rather than the host.
+#[test]
+fn a_session_in_a_window_takes_no_power_on_its_host() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            hosted: true,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let locked = PowerEffect::LOCK.id;
+    let menu = publisher(&session, locked)
+        .into_iter()
+        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
+        .expect("the open menu publishes its choices");
+
+    // The machine's own power is not offered, and an action that asks for
+    // it anyway is refused here.
+    for action in [
+        PowerEffect::SWITCH_USER.id,
+        PowerEffect::SUSPEND.id,
+        PowerEffect::RESTART.id,
+    ] {
+        assert!(
+            session
+                .invoke(&menu, action, &serde_json::Map::new())
+                .is_err(),
+            "{action} is not offered here"
+        );
+    }
+    assert!(
+        taken_actions().is_empty(),
+        "no session action reached the host"
+    );
+    assert!(!session.ended(), "and the session runs on");
+
+    // Shutting down ends this session and nothing else: the person's own
+    // press on the row is their decision, and here it ends the session
+    // rather than the machine it runs on.
+    let row = session
+        .power_menu()
+        .expect("power menu")
+        .rows()
+        .into_iter()
+        .find(|(effect, _)| *effect == PowerEffect::ShutDown)
+        .map(|(_, row)| row)
+        .expect("the open menu has a shut down row");
+    let (x, y) = (f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
+    for event in [
+        InputEvent::PointerMotion { x, y },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: true,
+        },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: false,
+        },
+    ] {
+        session.compositor().input(event).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(session.ended(), "shutting down ends the session");
+    assert!(
+        taken_actions().is_empty(),
+        "and did not reach the host's machine"
+    );
+}
+
+/// A session that cannot check a password never locks: the lock screen
+/// could not be left again. Locking stays on offer where a password does
+/// unlock it.
+#[test]
+fn a_session_that_cannot_check_a_password_never_locks() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    // The session's own lock action, as the key or a client sends it.
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        !session.compositor().locked(),
+        "no password can be checked here, so the screen stays unlocked"
+    );
+    // Nor does the power menu offer it.
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let menu = publisher(&session, PowerEffect::LOCK.id)
+        .into_iter()
+        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
+        .expect("the open menu publishes its choices");
+    assert!(
+        session
+            .invoke(&menu, PowerEffect::LOCK.id, &serde_json::Map::new())
+            .is_err(),
+        "locking is not offered where nothing could unlock it"
+    );
 }
 
 #[test]
@@ -974,6 +1344,194 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
     }
 }
 
+/// The audio service as the session reaches it: it publishes the sound as
+/// the service does and records every change asked of it.
+struct Audio {
+    sound: RefCell<tilo_audio_service::sound::Sound>,
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl Audio {
+    /// Speakers playing quietly and muted, headphones to switch to, a
+    /// muted microphone.
+    fn speakers(asked: Rc<RefCell<Vec<String>>>) -> Self {
+        use tilo_audio_service::sound::Device;
+        let device = |node, label: &str, chosen| Device {
+            node,
+            name: format!("node-{node}"),
+            label: label.into(),
+            chosen,
+            ..Device::default()
+        };
+        Self {
+            sound: RefCell::new(tilo_audio_service::sound::Sound {
+                output: Some(40),
+                volume: Some(0.25),
+                muted: true,
+                input: Some(50),
+                input_muted: true,
+                outputs: vec![
+                    device(40, "Speakers", true),
+                    device(41, "Headphones", false),
+                ],
+                inputs: vec![device(50, "Microphone", true)],
+                ..tilo_audio_service::sound::Sound::default()
+            }),
+            asked,
+        }
+    }
+}
+
+impl tilo_session::Service for Audio {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![tilo_audio_service::sound::resource(&self.sound.borrow())]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_audio_service::sound::SOUND)
+            .then(|| serde_json::to_value(&*self.sound.borrow()).expect("the sound serialises"))
+    }
+
+    fn invoke(
+        &mut self,
+        _: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        let named = arguments
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.asked
+            .borrow_mut()
+            .push(format!("{action} {named}").trim_end().to_owned());
+        Ok(tilo_service::Started::Accepted)
+    }
+}
+
+#[test]
+fn a_session_without_an_audio_service_offers_no_sound_to_change() {
+    let _settled = ui::motion::testing::settled();
+    let reads = Machine::laptop();
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    for action in [QsEffect::SET_VOLUME.id, QsEffect::TOGGLE_MUTED.id] {
+        assert!(
+            offering(&session, action).is_none(),
+            "nothing reads the sound, so {action} is not on offer"
+        );
+    }
+}
+
+#[test]
+fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let reads = machine.clone();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The sound the service reads is the panel's from the moment it reads it,
+    // so its effects are on offer without anything opening the panel.
+    pump(&mut session, &mut [], |session, _| {
+        offering(session, QsEffect::SET_VOLUME.id).is_some()
+    });
+
+    // What the person does in the panel is the service's action to carry
+    // out, one per change, with the value they chose.
+    let panel = offering(&session, QsEffect::SET_VOLUME.id).unwrap();
+    session
+        .invoke(
+            &panel,
+            QsEffect::SET_VOLUME.id,
+            &arguments(serde_json::json!({ "level": 0.5 })),
+        )
+        .expect("set the volume");
+    session
+        .invoke(&panel, QsEffect::TOGGLE_MUTED.id, &serde_json::Map::new())
+        .expect("mute");
+    let quiet = QsEffect::VOLUME_DOWN.id;
+    session
+        .invoke(&panel, quiet, &serde_json::Map::new())
+        .expect("quieter");
+    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 3);
+    assert_eq!(
+        *asked.borrow(),
+        // Quieter is the panel working out where the step lands and the
+        // service taking that level.
+        [
+            "set-volume level=0.5",
+            "toggle-muted",
+            "set-volume level=0.2"
+        ],
+        "each change is the service's, in the order made"
+    );
+    assert!(
+        !machine
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("volume") || call.starts_with("mute")),
+        "the panel never writes the sound itself: {:?}",
+        machine.calls()
+    );
+
+    // The microphone's key is the service's too, and its answer on screen is
+    // the state the service reads rather than a guess.
+    tap(&mut session, keys::MICROPHONE_MUTE);
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .accessible_labels()
+            .contains(&"Microphone muted".to_owned())
+    });
+    assert!(
+        asked.borrow().contains(&"toggle-input-muted".to_owned()),
+        "the key reaches the service: {:?}",
+        asked.borrow()
+    );
+    assert_eq!(
+        session
+            .read(tilo_audio_service::sound::SOUND)
+            .and_then(|sound| sound.get("output").cloned()),
+        Some(serde_json::json!(40)),
+        "the session reads the service's own sound"
+    );
+}
+
 #[test]
 fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
     let _settled = ui::motion::testing::settled();
@@ -1116,7 +1674,16 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
 fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
     use tilo_sheets::Seat as _;
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
     session.step(Duration::from_millis(1)).unwrap();
     let lock = PowerEffect::LOCK.id;
     // The session's own screen resource locks too; the sheet's is another.
@@ -1251,15 +1818,22 @@ fn a_portal_question_is_answered_through_the_sheets_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "index": 1 })),
+            &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
         )
         .expect("select");
     session
-        .invoke(&sheet, PortalEffect::CONFIRM.id, &serde_json::Map::new())
+        .invoke(
+            &sheet,
+            PortalEffect::CONFIRM.id,
+            &arguments(serde_json::json!({ "handle": "request-1" })),
+        )
         .expect("confirm");
     let asked = seat.take_asked();
     assert!(
-        asked.contains(&PortalEffect::Select { index: 1 }),
+        asked.contains(&PortalEffect::Select {
+            handle: "request-1".to_owned(),
+            index: 1
+        }),
         "the service reads what was chosen: {asked:?}"
     );
 }
@@ -1298,7 +1872,10 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "path": beach.to_string_lossy() })),
+            &arguments(serde_json::json!({
+                "handle": "request-1",
+                "path": beach.to_string_lossy(),
+            })),
         )
         .expect("select");
     // Choosing takes the choice at once; confirming checks it off the loop.
@@ -1307,7 +1884,7 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             FilePickerEffect::CONFIRM.id,
-            &serde_json::Map::new(),
+            &arguments(serde_json::json!({ "handle": "request-1" })),
         )
         .expect("confirm");
     let mut answer = None;
@@ -1318,590 +1895,32 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
     assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
 }
 
-/// A session whose services ask their questions on its sheets.
-fn asking() -> (Session, tilo_service::Questions) {
-    let questions = tilo_service::Questions::new();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    (session, questions)
+/// A pixel of a picture, as R, G, B, A.
+fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
+    picture
+        .get_pixel(u32::try_from(x).unwrap(), u32::try_from(y).unwrap())
+        .0
 }
 
-/// Ask `kind` on its sheet, answered by the app it is asked for.
-fn ask(questions: &tilo_service::Questions, kind: &str, details: serde_json::Value) -> Asked {
-    questions.ask(tilo_service::Question {
-        handle: format!("portal:/request/{kind}"),
-        kind: kind.to_owned(),
-        app_id: Some("org.example.Recorder".to_owned()),
-        label: "org.example.Recorder".to_owned(),
-        details,
-    })
-}
+#[path = "session/bars.rs"]
+mod bars;
+#[path = "session/chrome.rs"]
+mod chrome;
+#[path = "session/lock.rs"]
+mod lock;
+#[path = "session/lock_recovery.rs"]
+mod lock_recovery;
+mod questions;
+#[path = "session/workspace_settings.rs"]
+mod workspace_settings;
 
-/// The answer to `asked`, once the sheets answered it.
-#[track_caller]
-fn answered(session: &mut Session, questions: &tilo_service::Questions, asked: Asked) -> Answer {
-    pump(session, &mut [], |_, _| questions.pending().is_empty());
-    asked
-        .now_or_never()
-        .expect("the question is answered")
-        .expect("answered, not declined")
-}
+#[path = "session/capture_studio.rs"]
+mod capture_studio;
+#[path = "session/portal_capture.rs"]
+mod portal_capture;
 
-/// Press `effect` on the sheet publishing it, as the person would.
-fn press(session: &mut Session, effect: &str, args: serde_json::Value) {
-    let sheet = publisher(session, effect).expect("the sheet publishes that");
-    session
-        .invoke(&sheet, effect, &arguments(args))
-        .expect("press");
-    session.step(Duration::from_millis(1)).expect("step");
-}
-
-#[test]
-fn the_access_question_is_answered_on_the_portal_sheet() {
-    use tilo_portal::consent::AccessQuestion;
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.access",
-        serde_json::to_value(AccessQuestion {
-            capability: "screencast".to_owned(),
-            reason: None,
-            may_remember: true,
-            text: None,
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session
-        .portal()
-        .expect("portal sheet")
-        .dialog()
-        .expect("the sheet asks");
-    assert_eq!(
-        dialog.title,
-        "org.example.Recorder wants to use your screen"
-    );
-    assert_eq!(
-        dialog.body,
-        Body::Choices(vec![
-            "Allow once".to_owned(),
-            "Allow for this session".to_owned(),
-            "Always allow".to_owned(),
-        ])
-    );
-    press(
-        &mut session,
-        PortalEffect::SELECT.id,
-        serde_json::json!({"index": 2}),
-    );
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.choice, Some(2), "allowed for good");
-    assert!(
-        session.portal().expect("portal sheet").dialog().is_none(),
-        "the sheet is done"
-    );
-}
-
-#[test]
-fn the_question_of_an_app_that_may_not_remember_offers_no_always() {
-    use tilo_portal::consent::AccessQuestion;
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.access",
-        serde_json::to_value(AccessQuestion {
-            capability: "camera".to_owned(),
-            reason: Some("Look at the barcode".to_owned()),
-            may_remember: false,
-            text: None,
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session.portal().expect("portal sheet").dialog().unwrap();
-    assert_eq!(dialog.detail, "Look at the barcode");
-    assert_eq!(
-        dialog.body,
-        Body::Choices(vec![
-            "Allow once".to_owned(),
-            "Allow for this session".to_owned(),
-        ])
-    );
-    press(&mut session, PortalEffect::CANCEL.id, serde_json::json!({}));
-    pump(&mut session, &mut [], |_, _| questions.pending().is_empty());
-    assert!(
-        asked.now_or_never().expect("answered").is_none(),
-        "declined"
-    );
-}
-
-#[test]
-fn every_portal_question_kind_is_asked_on_the_sheet() {
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let source = serde_json::json!({
-        "choice": "output:HEADLESS-1",
-        "kind": "output",
-        "label": "HEADLESS-1",
-        "app_id": null,
-    });
-    let asked_kinds = [
-        (
-            "portal.account",
-            serde_json::json!({"reason": "Check your calendar"}),
-        ),
-        (
-            "portal.email",
-            serde_json::json!({
-                "addresses": ["ada@example.org"],
-                "cc": [],
-                "bcc": [],
-                "subject": "Holiday",
-                "attachments": [],
-            }),
-        ),
-        (
-            "portal.background",
-            serde_json::json!({"name": "Backing up photos"}),
-        ),
-        (
-            "portal.wallpaper",
-            serde_json::json!({
-                "uri": "file:///var/home/you/beach.png",
-                "set_on": "both",
-                "preview": false,
-            }),
-        ),
-        (
-            "portal.print",
-            serde_json::json!({
-                "title": "notes.odt",
-                "printers": ["Office"],
-                "selected": 0,
-                "copies": 1,
-            }),
-        ),
-        (
-            "portal.screenshot",
-            serde_json::json!({"parent_window": null, "modal": true}),
-        ),
-        (
-            "portal.launcher",
-            serde_json::json!({
-                "name": "Inbox",
-                "editable_name": true,
-                "editable_icon": true,
-                "icon": "",
-                "target": "https://example.org",
-            }),
-        ),
-        (
-            "portal.screencast",
-            serde_json::json!({
-                "sources": [source],
-                "multiple": false,
-                "may_remember": true,
-                "devices": [],
-            }),
-        ),
-        (
-            "portal.remote-desktop",
-            serde_json::json!({
-                "sources": [source],
-                "multiple": false,
-                "may_remember": true,
-                "devices": ["keyboard"],
-            }),
-        ),
-    ];
-    for (kind, details) in asked_kinds {
-        let asked = ask(&questions, kind, details);
-        session.step(Duration::from_millis(1)).expect("step");
-        assert!(
-            session.portal().expect("portal sheet").dialog().is_some(),
-            "{kind} is asked on the sheet"
-        );
-        press(&mut session, PortalEffect::CANCEL.id, serde_json::json!({}));
-        pump(&mut session, &mut [], |_, _| questions.pending().is_empty());
-        assert!(
-            asked.now_or_never().expect("answered").is_none(),
-            "{kind} declined"
-        );
-    }
-}
-
-#[test]
-fn the_colour_picker_answers_what_was_typed_into_the_sheet() {
-    use tilo_portal::screenshot::ScreenshotQuestion;
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.pick-color",
-        serde_json::to_value(ScreenshotQuestion {
-            parent_window: None,
-            modal: true,
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let error = session
-        .portal()
-        .expect("portal sheet")
-        .dialog()
-        .and_then(|dialog| dialog.error);
-    assert!(error.is_some(), "nothing typed is no colour");
-    assert_eq!(questions.pending().len(), 1, "the question waits");
-    for (at, value) in ["0.5", " 0.25 ", "1"].iter().enumerate() {
-        press(
-            &mut session,
-            PortalEffect::TYPE.id,
-            serde_json::json!({"field": format!("draft-{at}"), "text": value}),
-        );
-    }
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    let values: Vec<&str> = answer.values.iter().map(|value| value.as_str()).collect();
-    assert_eq!(values, ["0.5", " 0.25 ", "1"]);
-}
-
-#[test]
-fn the_usb_question_answers_the_ticked_devices() {
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.usb",
-        serde_json::json!({
-            "devices": [
-                { "id": "usb-1", "label": "Reader", "writable": false },
-                { "id": "usb-2", "label": null, "writable": true },
-            ],
-        }),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session.portal().expect("portal sheet").dialog().unwrap();
-    assert_eq!(
-        dialog.body,
-        Body::Devices(vec![
-            tilo_sheets::portal::Device {
-                label: "Reader".to_owned(),
-                writable: false,
-                selected: true,
-            },
-            tilo_sheets::portal::Device {
-                label: "usb-2".to_owned(),
-                writable: true,
-                selected: true,
-            },
-        ])
-    );
-    press(
-        &mut session,
-        PortalEffect::TOGGLE.id,
-        serde_json::json!({"index": 1}),
-    );
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.uris, ["usb-1"], "only what stayed ticked");
-}
-
-#[test]
-fn the_app_chooser_answers_the_app_chosen_and_starts_on_the_last_one() {
-    use tilo_portal::app_chooser::{AppChoice, AppChooserQuestion};
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.app-chooser",
-        serde_json::to_value(AppChooserQuestion {
-            choices: vec![
-                AppChoice {
-                    id: "org.example.Viewer".to_owned(),
-                    name: "Viewer".to_owned(),
-                    icon: None,
-                },
-                AppChoice {
-                    id: "org.example.Editor".to_owned(),
-                    name: "Editor".to_owned(),
-                    icon: None,
-                },
-            ],
-            last_choice: Some("org.example.Editor".to_owned()),
-            content_type: Some("image/png".to_owned()),
-            uri: None,
-            filename: Some("beach.png".to_owned()),
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session.portal().expect("portal sheet").dialog().unwrap();
-    assert_eq!(dialog.title, "Open with what?");
-    assert_eq!(dialog.selected, 1, "the app chosen last time");
-    press(
-        &mut session,
-        PortalEffect::SELECT.id,
-        serde_json::json!({"index": 0}),
-    );
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.choice, Some(0));
-}
-
-#[test]
-fn the_shortcut_question_answers_the_keys_pressed_in_the_sheet() {
-    use tilo_portal::global_shortcuts::{BIND_AS_PROPOSED, ShortcutRow, ShortcutsQuestion};
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let shortcuts = ShortcutsQuestion {
-        shortcuts: vec![ShortcutRow {
-            id: "record".to_owned(),
-            description: Some("Start recording".to_owned()),
-            trigger: Some("Ctrl+Shift+K".to_owned()),
-            status: None,
-            taken_by: None,
-        }],
-    };
-    let asked = ask(
-        &questions,
-        "portal.global-shortcuts",
-        serde_json::to_value(&shortcuts).unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session.portal().expect("portal sheet").dialog().unwrap();
-    assert_eq!(
-        dialog.body,
-        Body::Shortcuts(vec![tilo_sheets::portal::Shortcut {
-            name: "Start recording".to_owned(),
-            keys: Some("Ctrl + Shift + K".to_owned()),
-            status: None,
-        }])
-    );
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.choice, Some(BIND_AS_PROPOSED));
-
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.global-shortcuts",
-        serde_json::to_value(&shortcuts).unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    press(
-        &mut session,
-        PortalEffect::BIND.id,
-        serde_json::json!({"keys": "ALT+KEYJ"}),
-    );
-    let keys = session
-        .portal()
-        .expect("portal sheet")
-        .dialog()
-        .map(|dialog| dialog.body);
-    assert_eq!(
-        keys,
-        Some(Body::Shortcuts(vec![tilo_sheets::portal::Shortcut {
-            name: "Start recording".to_owned(),
-            keys: Some("Alt + J".to_owned()),
-            status: None,
-        }]))
-    );
-    press(
-        &mut session,
-        PortalEffect::CONFIRM.id,
-        serde_json::json!({}),
-    );
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.uris, ["record=ALT+KEYJ"]);
-}
-
-#[test]
-fn a_key_without_a_modifier_is_not_taken_as_a_shortcut() {
-    use tilo_portal::global_shortcuts::{ShortcutRow, ShortcutsQuestion};
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let _asked = ask(
-        &questions,
-        "portal.global-shortcuts",
-        serde_json::to_value(ShortcutsQuestion {
-            shortcuts: vec![ShortcutRow {
-                id: "record".to_owned(),
-                description: None,
-                trigger: None,
-                status: None,
-                taken_by: None,
-            }],
-        })
-        .unwrap(),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    press(
-        &mut session,
-        PortalEffect::BIND.id,
-        serde_json::json!({"keys": "KEYJ"}),
-    );
-    let body = session
-        .portal()
-        .expect("portal sheet")
-        .dialog()
-        .map(|dialog| dialog.body);
-    let Some(Body::Shortcuts(rows)) = body else {
-        panic!("the sheet shows its rows");
-    };
-    assert_eq!(rows.first().and_then(|row| row.keys.clone()), None);
-    assert!(rows.first().and_then(|row| row.status.clone()).is_some());
-}
-
-#[test]
-fn the_file_chooser_question_is_answered_with_the_file_chosen() {
-    let _settled = ui::motion::testing::settled();
-    // The portal's chooser starts in the person's home and may go no
-    // further than it, so the picture is made inside.
-    let home = tempfile::Builder::new()
-        .prefix("tilo-chooser-")
-        .tempdir_in(tilo_paths::home().expect("a home to browse"))
-        .unwrap();
-    std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
-    let (mut session, questions) = asking();
-    let asked = ask(
-        &questions,
-        "portal.file-chooser",
-        serde_json::json!({
-            "parent_window": null,
-            "title": "Choose a picture",
-            "save": false,
-            "directory": false,
-            "writable_directory": false,
-            "multiple": false,
-            "accept_label": null,
-            "current_name": null,
-            "filters": [],
-        }),
-    );
-    session.step(Duration::from_millis(1)).expect("step");
-    let seat = session.file_picker().expect("file chooser").clone();
-    let beach = home.path().join("beach.png");
-    // The chooser reads the folder off the loop: walk into the folder once
-    // its start is listed, and choose once the folder is.
-    pump(&mut session, &mut [], |_, _| {
-        seat.request().is_some_and(|request| {
-            request.handle.ends_with("portal.file-chooser") && request.title == "Choose a picture"
-        }) && !seat.listing().reading
-    });
-    let navigate = FilePickerEffect::NAVIGATE.id;
-    let sheet = publisher(&session, navigate).expect("the chooser publishes walking");
-    session
-        .invoke(
-            &sheet,
-            navigate,
-            &arguments(serde_json::json!({"path": home.path().to_string_lossy()})),
-        )
-        .expect("go");
-    pump(&mut session, &mut [], |_, _| {
-        let listing = seat.listing();
-        !listing.reading && listing.entries.iter().any(|entry| entry.path == beach)
-    });
-    // Choosing takes the choice at once; confirming checks it off the loop.
-    let select = FilePickerEffect::SELECT.id;
-    let sheet = publisher(&session, select).expect("the chooser publishes choosing");
-    session
-        .invoke(
-            &sheet,
-            select,
-            &arguments(serde_json::json!({"path": beach.to_string_lossy()})),
-        )
-        .expect("select");
-    pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
-    session
-        .invoke(
-            &sheet,
-            FilePickerEffect::CONFIRM.id,
-            &serde_json::Map::new(),
-        )
-        .expect("confirm");
-    let answer = answered(&mut session, &questions, asked);
-    assert_eq!(answer.uris.len(), 1);
-    assert!(
-        answer.uris[0].ends_with("/beach.png"),
-        "the file chosen: {}",
-        answer.uris[0]
-    );
-}
-
-#[test]
-fn the_password_of_an_administrator_question_is_answered_as_it_was_typed() {
-    use tilo_polkit_agent::questions::AuthenticateDetails;
-    let _settled = ui::motion::testing::settled();
-    let (mut session, questions) = asking();
-    let asked = questions.ask(tilo_service::Question {
-        handle: "polkit:cookie-1".to_owned(),
-        kind: "polkit.authenticate".to_owned(),
-        app_id: None,
-        label: "Authentication is required to install software".to_owned(),
-        details: serde_json::to_value(AuthenticateDetails {
-            message: "Authentication is required to install software".to_owned(),
-            action_id: "org.freedesktop.packagekit.package-install".to_owned(),
-            identities: vec!["person".to_owned()],
-            identity: 0,
-            prompt: "Password:".to_owned(),
-            echo: false,
-            notice: None,
-        })
-        .unwrap(),
-    });
-    session.step(Duration::from_millis(1)).expect("step");
-    let dialog = session.portal().expect("portal sheet").dialog().unwrap();
-    assert_eq!(
-        dialog.title,
-        "Authentication is required to install software"
-    );
-    assert!(matches!(dialog.body, Body::Secret(_)), "a password prompt");
-    press(
-        &mut session,
-        PortalEffect::TYPE_SECRET.id,
-        serde_json::json!({"field": 0, "value": "hunter2"}),
-    );
-    press(&mut session, PortalEffect::SUBMIT.id, serde_json::json!({}));
-    let answer = answered(&mut session, &questions, asked);
-    let values: Vec<&str> = answer.values.iter().map(|value| value.as_str()).collect();
-    assert_eq!(values, ["hunter2"]);
-}
+#[path = "session/secret_captures.rs"]
+mod secret_captures;
 
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
@@ -2073,15 +2092,14 @@ delegate_noop!(Seen: ignore WlSurface);
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session");
     let arrangement = |session: &mut Session| {
@@ -2123,57 +2141,6 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     assert_eq!(corners.len(), 2, "side by side again: {extended:?}");
 }
 
-/// A screenshot the portal asks for is the session's frames: the loop is
-/// woken and answers with a PNG of every display, side by side.
-#[test]
-fn the_portals_screenshot_is_a_picture_of_every_display() {
-    use tilo_portal::Capture as _;
-
-    let _settled = ui::motion::testing::settled();
-    let directory = tempfile::tempdir().unwrap();
-    let wake = tilo_service::LoopWake::default();
-    let (capture, captures) =
-        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            wake,
-            captures: Some(captures),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).unwrap();
-    let asked = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(capture.screenshot())
-    });
-    let started = std::time::Instant::now();
-    while !asked.is_finished() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the screenshot was never answered"
-        );
-        session.step(Duration::from_secs(1)).unwrap();
-    }
-    let path = asked.join().unwrap().expect("a screenshot");
-    assert!(path.starts_with(directory.path()));
-    let picture = image::open(&path).unwrap().to_rgba8();
-    assert_eq!(
-        picture.dimensions(),
-        (
-            u32::try_from(WIDTH * 2).unwrap(),
-            u32::try_from(HEIGHT).unwrap()
-        )
-    );
-}
-
 // =====================================================================
 // Side-by-side capture harness against the old shell's `shots`
 // =====================================================================
@@ -2188,35 +2155,6 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
 // Frames are written to `$PIXEL_PARITY_OUT` (default
 // `~/.cache/pixel-parity/new`) and named after the old shell's scenes.
 
-/// Where the parity frames are written.
-fn parity_dir() -> std::path::PathBuf {
-    std::env::var_os("PIXEL_PARITY_OUT").map_or_else(
-        || {
-            let home = std::env::var("HOME").expect("HOME");
-            std::path::PathBuf::from(home).join(".cache/pixel-parity/new")
-        },
-        std::path::PathBuf::from,
-    )
-}
-
-/// Write the screen as `name.png` into [`parity_dir`].
-fn capture(session: &mut Session, name: &str) {
-    let dir = parity_dir();
-    std::fs::create_dir_all(&dir).expect("create the parity directory");
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("screenshot");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("write the frame");
-}
-
 /// Step `frames` frames of a millisecond each, so what a state's arrival
 /// animates has arrived (motion reads settled, the panels still lay out).
 fn settle(session: &mut Session, frames: u32) {
@@ -2225,168 +2163,8 @@ fn settle(session: &mut Session, frames: u32) {
     }
 }
 
-/// A session drawing the desk in the light theme.
-fn light_session() -> Session {
-    fn light() -> ui::application::ComponentRunnerInputs {
-        let mut inputs = ui::headless::fixture_runner_inputs();
-        inputs.theme = ui::theme::Theme::light();
-        inputs
-    }
-    Session::headless(
-        Options {
-            presentation: light,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
-}
-
-/// Run frames until `done` holds, with no client to pump.
-#[track_caller]
-fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one harness captures the whole parity set in a fixed order"
-)]
-fn pixel_parity_frames_match_the_old_shells_scenes() {
-    let _settled = ui::motion::testing::settled();
-    std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-
-    // The empty desk, both themes: the old shell's `empty-desk` and
-    // `empty-desk` at `--theme light`.
-    {
-        let mut session = session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-desk");
-        let mut session = light_session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-desk-light");
-    }
-
-    // One window: the old shell's `desktop` (one tabbed group).
-    {
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        capture(&mut session, "one-window");
-        drop(client);
-    }
-
-    // Two windows side by side in the strip, and the overview over them.
-    {
-        let mut session = session();
-        let a = mapped(&mut session, "org.example.Terminal");
-        let b = mapped(&mut session, "so.tilo.file-explorer");
-        settle(&mut session, 6);
-        capture(&mut session, "two-windows");
-        invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
-        settle(&mut session, 8);
-        capture(&mut session, "overview");
-        drop((a, b));
-    }
-
-    // Quick settings, by the bar's own action.
-    {
-        let (mut session, _host) = session_with_quick_settings();
-        settle(&mut session, 2);
-        invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
-        settle(&mut session, 8);
-        capture(&mut session, "quick-settings");
-    }
-
-    // Search, opened from the desk.
-    {
-        use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE};
-        let mut session = session();
-        settle(&mut session, 2);
-        invoke(&mut session, DESK_RESOURCE, "open-search");
-        until_session(&mut session, |session| {
-            find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
-        });
-        settle(&mut session, 8);
-        capture(&mut session, "search");
-    }
-
-    // One notification banner over the desk, saying what the old shell's
-    // `notifications-one` says.
-    {
-        use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
-        let mut session = session();
-        settle(&mut session, 2);
-        let arrived = ui::time::now()
-            .checked_sub(Duration::from_secs(2))
-            .unwrap_or_else(ui::time::now);
-        session.banners().publish(BannerFeed {
-            banners: vec![Banner {
-                notification: Notification::new("Build finished", "All 524 tests passed")
-                    .with_severity(NotificationSeverity::Info)
-                    .with_shown_at(arrived),
-                actions: Vec::new(),
-            }],
-            locked: false,
-            held: false,
-        });
-        settle(&mut session, 12);
-        capture(&mut session, "notification");
-    }
-
-    // A dialog over a window: the portal asking to share a screen.
-    {
-        use tilo_sheets::Seat as _;
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        let seat = session.portal().expect("portal sheet").clone();
-        seat.presentation().open(false);
-        seat.show(Some(Dialog {
-            handle: "request-1".to_owned(),
-            title: "Share your screen?".to_owned(),
-            heading: "Meet".to_owned(),
-            detail: "Meet asks to record your screen".to_owned(),
-            body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-            confirm_label: "Allow".to_owned(),
-            cancel_label: "Cancel".to_owned(),
-            ..Dialog::default()
-        }));
-        settle(&mut session, 8);
-        capture(&mut session, "dialog");
-        drop(client);
-    }
-
-    // The lock screen over the desk.
-    {
-        let mut session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                user: "ada".to_owned(),
-                verifier: std::sync::Arc::new(Sesame),
-                collab: false,
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 2);
-        invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-        settle(&mut session, 8);
-        assert!(session.compositor().locked(), "the session locked");
-        capture(&mut session, "lock");
-        drop(client);
-    }
-}
+#[path = "session/desk.rs"]
+mod desk;
 
 /// The id of the tab the desk holds for `app`.
 fn tab_of(session: &Session, app: &str) -> u64 {
@@ -2972,4 +2750,63 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
     assert_eq!(bytes, text);
+}
+
+#[test]
+fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Editor");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let before = session.accessible_labels();
+    key(&mut session, keys::LEFT_META, true);
+    key(&mut session, keys::LEFT_SHIFT, true);
+    tap(&mut session, keys::D);
+    key(&mut session, keys::LEFT_SHIFT, false);
+    key(&mut session, keys::LEFT_META, false);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["session"].is_number())
+    });
+    assert_eq!(
+        session.read("dictation:session").expect("dictation reads")["status"],
+        "preparing",
+        "the key asks for a dictation"
+    );
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        labels.contains("Checking the focused editable field"),
+        "the card is up on the session's own sheet: {labels}"
+    );
+    assert_ne!(session.accessible_labels(), before, "and it is new");
+
+    // Escape is the card's to answer, and the person's typing is not: the
+    // field they were in keeps seeing every other key.
+    tap(&mut session, keys::A);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.contains(&(keys::A, true))
+    });
+    tap(&mut session, keys::ESCAPE);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session
+            .read("dictation:session")
+            .is_some_and(|reading| reading["status"] == "idle")
+    });
+    let labels = session.accessible_labels().join("\n");
+    assert!(
+        !labels.contains("Checking the focused editable field"),
+        "the card is gone: {labels}"
+    );
+    assert!(
+        !client
+            .seen
+            .keys
+            .iter()
+            .any(|(code, _)| *code == keys::ESCAPE),
+        "Escape was the card's, never the window's: {:?}",
+        client.seen.keys
+    );
 }

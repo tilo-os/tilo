@@ -32,8 +32,9 @@ impl PeerPublicationMut<'_> {
     /// compaction. `seal` seals that document's snapshot under the channel's
     /// current epoch with [`ContentRetention::Checkpoint`] retention. The
     /// compaction is signed by `key` and admitted here through the same
-    /// checks every keyless replica applies, so `key` must hold the room's
-    /// owner role.
+    /// checks every keyless replica applies, so `key` must be a device the
+    /// record admits as a writer of it (or the room's governor, compacting
+    /// by its `compact` governance action).
     ///
     /// # Errors
     ///
@@ -497,11 +498,15 @@ impl PeerPublication<'_> {
 }
 
 impl StatePeer {
-    /// This replica's own sealed writes (the compactions it minted) that
-    /// `before` does not hold. A governed snapshot cannot carry sealed
-    /// history, so they are published as themselves.
-    pub(super) fn own_sealed_publications(&self, before: Option<&Self>) -> Vec<NeighbourMsg> {
-        let author = Ed25519PublicKey::from_bytes(self.core.authority.device_public_key);
+    /// The sealed writes the device `author` minted here (its compactions)
+    /// that `before` does not hold. A snapshot cannot carry sealed history,
+    /// so they are published as themselves.
+    pub(super) fn own_sealed_publications(
+        &self,
+        author: [u8; 32],
+        before: Option<&Self>,
+    ) -> Vec<NeighbourMsg> {
+        let author = Ed25519PublicKey::from_bytes(author);
         let mut messages = Vec::new();
         for (route, document) in &self.core.documents {
             let prior = before.and_then(|before| before.core.documents.get(route));
@@ -553,6 +558,13 @@ pub(super) fn supersede(
     compaction: &SignedOp,
 ) -> Result<Vec<SignedOp>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
+    if history.is_empty() && floors.is_empty() {
+        // Nothing of this route is here to supersede: its key holder's
+        // compaction is the whole record, the first thing a replica that
+        // holds none of it receives, as a device catching up from a store
+        // that keeps only ciphertext does.
+        return Ok(vec![compaction.clone()]);
+    }
     let (superseded, kept): (Vec<&SignedOp>, Vec<&SignedOp>) =
         history.iter().partition(|write| wrapper.covers(write));
     if superseded.is_empty() {

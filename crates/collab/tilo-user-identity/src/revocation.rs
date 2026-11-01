@@ -240,8 +240,8 @@ mod tests {
     }
 
     /// What a root signs to revoke a device is fixed: hosts and the browser
-    /// end-to-end check (`tilo-room-service/dev/auth-e2e.mjs`, which signs
-    /// one with a page's root) compute the same digest.
+    /// runtime's end-to-end checks (which sign one with a page's root)
+    /// compute the same digest.
     #[test]
     fn the_revocation_digest_is_pinned() {
         let entry = RevocationEntry {
