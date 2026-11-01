@@ -39,13 +39,16 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=WaylandSurfaceRenderElement<R>,
-    /// A hosted surface's layer.
-    Hosted=MemoryRenderBufferRenderElement<R>,
+    /// A hosted surface's layer, or a client surface's HDR rendition where
+    /// the surface itself would be.
+    Memory=MemoryRenderBufferRenderElement<R>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
-    /// A client surface under the magnifier.
-    ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
-    /// A hosted surface's layer under the magnifier.
+    /// A client surface drawn scaled: under the magnifier, or as the lock
+    /// screen filling a display it was not made for.
+    ScaledSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// A hosted surface's layer, or a client surface's HDR rendition, under
+    /// the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
     /// A client surface inside the magnifier's lens.
     LensSurface=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
@@ -112,9 +115,9 @@ where
 {
     match element {
         OutputRenderElement::Surface(e) => {
-            OutputRenderElement::ZoomedSurface(scaled(e, centre, zoom))
+            OutputRenderElement::ScaledSurface(scaled(e, centre, zoom))
         }
-        OutputRenderElement::Hosted(e) => {
+        OutputRenderElement::Memory(e) => {
             OutputRenderElement::ZoomedHosted(scaled(e, centre, zoom))
         }
         OutputRenderElement::Dim(e) => OutputRenderElement::ZoomedDim(scaled(e, centre, zoom)),
@@ -147,9 +150,9 @@ where
         OutputRenderElement::Surface(e) => Some(OutputRenderElement::LensSurface(cropped(
             e, centre, zoom, crop, scale,
         )?)),
-        // A hosted layer and a window's frame are drawn the same way: a
+        // A memory buffer and a window's frame are drawn the same way: a
         // crop of a scaled copy.
-        OutputRenderElement::Hosted(e) => Some(OutputRenderElement::Frame(cropped(
+        OutputRenderElement::Memory(e) => Some(OutputRenderElement::Frame(cropped(
             e, centre, zoom, crop, scale,
         )?)),
         OutputRenderElement::Frame(e) => Some(OutputRenderElement::LensFrame(cropped(
@@ -288,7 +291,7 @@ where
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
             match hosted_layer(renderer, &layer, location) {
-                Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
+                Ok(element) => elements.push(OutputRenderElement::Memory(element)),
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
             }
         }
@@ -356,12 +359,25 @@ where
             continue;
         }
         let at = location.to_f64() - window.geometry().loc.to_f64() - origin;
-        elements.extend(window.render_elements::<OutputRenderElement<R>>(
+        let hdr = crate::hdr::pieces(
             renderer,
+            &state.hdr,
+            window,
             at.to_physical_precise_round(scale),
-            Scale::from(scale),
+            scale,
             1.0,
-        ));
+        );
+        match hdr {
+            Some(pieces) => {
+                elements.extend(pieces.into_iter().map(crate::hdr::Piece::into_output));
+            }
+            None => elements.extend(window.render_elements::<OutputRenderElement<R>>(
+                renderer,
+                at.to_physical_precise_round(scale),
+                Scale::from(scale),
+                1.0,
+            )),
+        }
         // What the window drew is kept while it stands, so its close has a
         // frame to animate even once its surface is gone.
         state.record_snapshot(renderer, window);
@@ -397,6 +413,7 @@ where
         frame: closing.frame,
         images: &state.frame_images,
         snapshots: &state.snapshots,
+        hdr: &state.hdr,
     };
     // The frame the window last drew, kept before its surface went: the
     // desktop animates that away.
@@ -441,8 +458,8 @@ where
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state.hosts.iter().rev().filter(|host| {
-            // While locked only the lock screen shows; until then never.
-            host.lock_screen() == locked && host.below_windows() == below
+            // While locked only the lock client shows.
+            !locked && host.below_windows() == below
         }) {
             for picture in host.window_pictures().iter().rev() {
                 if let Some(window) = window_of(picture.window) {
@@ -461,14 +478,14 @@ where
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
                 match hosted_layer(renderer, &layer, location.to_f64()) {
-                    Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
+                    Ok(element) => elements.push(OutputRenderElement::Memory(element)),
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
                 }
             }
         }
     };
     if locked {
-        hosted(renderer, &mut elements, false);
+        // The lock client's surfaces, and nothing of the session's.
         elements.extend(state.lock_elements(renderer, output));
         return elements;
     }

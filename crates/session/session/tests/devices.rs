@@ -769,6 +769,9 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
 #[test]
 fn this_device_s_row_does_nothing() {
     let _settled = ui::motion::testing::settled();
+    // The steps this test takes change nothing, the bar's own clock included:
+    // a minute turning over on it is not the frame it checks.
+    let _clock = tilo_test_env::held_wall_clock();
     let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
     let mut harness = session(&link, Rc::clone(&host));
@@ -784,6 +787,8 @@ fn this_device_s_row_does_nothing() {
 #[test]
 fn a_row_a_device_left_behind_is_a_press_on_nothing() {
     let _settled = ui::motion::testing::settled();
+    // As above: the bar's clock keeps still while the frames are compared.
+    let _clock = tilo_test_env::held_wall_clock();
     let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
     let mut harness = session(&link, Rc::clone(&host));

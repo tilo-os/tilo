@@ -49,6 +49,95 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
+/// The centre up, with its search field, and nothing changing: the part draws no frame.
+/// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
+#[test]
+fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, _link) = part_with(DeskReading {
+        here: "centre".to_owned(),
+        notices: vec![NoticeReading {
+            key: "1".to_owned(),
+            title: "Backup finished".to_owned(),
+            body: "12 GB safe".to_owned(),
+            origin_app: "Settings".to_owned(),
+            kind: "info".to_owned(),
+            read: true,
+            group: "Settings".to_owned(),
+            ..NoticeReading::default()
+        }],
+        ..reading()
+    });
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.control_bounds("Backup finished").is_some(),
+        "the centre shows the notice"
+    );
+    let before = part.work();
+    for _ in 0..20 {
+        part.prepare_frame();
+    }
+    let after = part.work();
+    assert_eq!(
+        (after.turns - before.turns, after.drawn - before.drawn),
+        (0, 0),
+        "idle, the centre runs and draws nothing"
+    );
+}
+
+/// The centre's presses are `session.notify` effects, which carry a tuple: Clear all and a
+/// notice's Dismiss each reach the session as the desk's own action, at that press rather
+/// than at the next input.
+#[test]
+fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(DeskReading {
+        here: "centre".to_owned(),
+        notices: vec![NoticeReading {
+            key: "1".to_owned(),
+            title: "Backup finished".to_owned(),
+            body: "12 GB safe".to_owned(),
+            origin_app: "Settings".to_owned(),
+            kind: "info".to_owned(),
+            read: true,
+            group: "Settings".to_owned(),
+            ..NoticeReading::default()
+        }],
+        ..reading()
+    });
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    // Each press is answered, as the session's turn answers it, before the next.
+    let mut served = Vec::new();
+    for name in ["Dismiss", "Clear all"] {
+        click(&mut part, name);
+        link.serve(|ask| {
+            served.push(ask.clone());
+            Ok(())
+        });
+    }
+    assert_eq!(
+        served,
+        vec![
+            Ask {
+                resource: DESK_RESOURCE.to_owned(),
+                action: "dismiss-notice".to_owned(),
+                arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+            },
+            Ask {
+                resource: DESK_RESOURCE.to_owned(),
+                action: "clear-notices".to_owned(),
+                arguments: BTreeMap::new(),
+            },
+        ],
+        "refusals {:?}",
+        part.refusals()
+    );
+}
+
 #[test]
 fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     let (mut part, link) = part();

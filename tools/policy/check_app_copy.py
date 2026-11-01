@@ -9,10 +9,10 @@ shipping a catalogue of its own. Settings, and the desktop surface with the
 desktop that draws it, also route keys through conditionals and tables, so
 their key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
-A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, or
-`tilo_onboarding::t` from a crate whose root declares
-`ui::embedded_catalog!(pub fn, ..)`) is checked in that crate's catalogue, the
-one it is looked up in.
+A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, a `t`
+the file imports from it, or `tilo_onboarding::t` from a crate whose root
+declares `ui::embedded_catalog!(pub fn, ..)`) is checked in that crate's
+catalogue, the one it is looked up in.
 """
 
 from __future__ import annotations
@@ -40,6 +40,10 @@ QUALIFIED = re.compile(r"::(?:t|t_args|tr|tr_args)\s*\(")
 # A crate root that declares its own lookups (`ui::embedded_catalog!(pub fn, ..)`) resolves
 # `<crate>::t(` as well as `<crate>::i18n::t(`.
 ROOT_CATALOGUE = re.compile(r"\bembedded_catalog!\s*\(\s*pub\s+fn\b")
+# `use tilo_desktop_surface::i18n::{t, t_args};` makes an unqualified `t(` look up that
+# crate's catalogue, as a qualified call does.
+RESOLVERS = ("t", "t_args", "tr", "tr_args")
+IMPORT = re.compile(r"\buse\s+([^;]+);")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALLS = (re.compile(r"Button::new\s*\("), re.compile(r"device_read::thread\s*\("))
 MACHINE_METHOD = re.compile(r"\.(?:with_id|thread_name|name|start_job)\s*\(")
@@ -175,10 +179,36 @@ def qualified_calls(code: str) -> list[Qualified]:
     return calls
 
 
+def imported_calls(code: str, modules: dict[str, Path]) -> list[Qualified]:
+    """Resolver calls a file makes through a resolver it imports from another crate's `i18n`:
+    `use tilo_desktop_surface::i18n::{t, t_args};` then `t("workspace-settings-title")`."""
+    calls = []
+    for statement in IMPORT.finditer(code):
+        path, brace, listed = statement.group(1).partition("{")
+        module = path.strip().rstrip(":")
+        if brace:
+            entries = listed.partition("}")[0].split(",")
+        else:
+            module, _, entries = module.rpartition("::")
+            entries = [entries]
+        if module.strip() not in modules:
+            continue
+        for entry in entries:
+            name, _, alias = entry.partition(" as ")
+            if name.strip() not in RESOLVERS:
+                continue
+            local = (alias or name).strip()
+            pattern = re.compile(rf"\b{re.escape(local)}\s*\(")
+            calls.extend(Qualified(module.strip(), call.end())
+                         for call in pattern.finditer(code))
+    return calls
+
+
 def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[Qualified, Path]]:
-    """Resolver calls qualified with another crate's `i18n` module or catalogue root."""
-    return [(call, modules[call.group(1)]) for call in qualified_calls(code)
-            if call.group(1) in modules]
+    """Resolver calls qualified with another crate's `i18n` module or catalogue root, or made
+    through a resolver this file imports from one."""
+    calls = qualified_calls(code) + imported_calls(code, modules)
+    return [(call, modules[call.group(1)]) for call in calls if call.group(1) in modules]
 
 
 def used_keys(text: str, namespaces: set[str],
@@ -292,8 +322,8 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
                 directories.setdefault(name, manifest.parent)
     readers = [(crate, crate) for crate in crates]
     readers.extend(
-        (directories[name], crate) for name, crate in sorted(modules.items())
-        if name in directories and directories[name] not in crates
+        (directories[root], crate) for name, crate in sorted(modules.items())
+        if (root := name.partition("::")[0]) in directories and directories[root] not in crates
     )
     return readers
 

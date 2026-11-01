@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
@@ -27,7 +28,9 @@ use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::owner::{
     Change, DocumentRead, FileHost, NativeWorkspaceOwner, open_file_with, owner_file_of,
 };
+use tilo_user_identity::RevocationList;
 
+use crate::channels;
 use crate::sync;
 
 /// The engine's record, under this device's state directory.
@@ -109,6 +112,14 @@ pub struct Engine {
     owner: NativeWorkspaceOwner,
     slots: Arc<Slots>,
     identity: HostIdentity,
+    /// Where the rooms' channels find this device's keys, once the channel
+    /// service is running: the session opens the rooms before it opens the
+    /// service, and every reader of a sealed record goes through this.
+    keys: ChannelKeyProvider,
+    /// The room transport of this session's collaboration plane, once it
+    /// runs: a record the room's hosts send only once asked is asked for
+    /// here, and the plane is gone while this is `None`.
+    link: std::sync::Mutex<Option<Arc<channels::ChannelLink>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -148,6 +159,8 @@ impl Engine {
             owner,
             slots,
             identity,
+            keys: ChannelKeyProvider::default(),
+            link: std::sync::Mutex::new(None),
         })
     }
 
@@ -177,24 +190,111 @@ impl Engine {
     /// document as the room last admitted it, which is what the workspace
     /// shows of it — also what it held before this device joined.
     ///
+    /// A record the room keeps sealed opens with this device's channel keys,
+    /// so a room's history reads whole here: the keys a member holds reach
+    /// back past the membership it joined in. Reading one is taking part in
+    /// its channel ([`Self::join_channel`]): a device that holds none of its
+    /// keys yet asks the room for them, and reads the record once they are
+    /// here.
+    ///
+    /// A record the room's hosts send a device only once it asks (an
+    /// on-demand record, or a part of a chain behind its head) is asked for
+    /// on its first read, and reads as nothing yet until its history arrived
+    /// ([`Self::asks_for_record`]).
+    ///
     /// # Errors
-    /// The room is not held here, this device may not read the record, or
-    /// the document cannot be read now.
+    /// The room is not held here, this device may not read the record, the
+    /// record is sealed and this device holds no keys of it, or the document
+    /// cannot be read now.
     pub fn record(&self, room: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         let room = RoomId::parse(room).ok_or("that is not a room")?;
+        if self.asks_for_record(room, app, record)? {
+            return Ok(None);
+        }
+        let sealed = self.owner.with_current(room, |view| {
+            Ok(view.peer().publication().is_sealed_record(app, record))
+        })?;
+        if sealed && !self.join_channel(room, app, record)? {
+            return Ok(None);
+        }
         let reader = self.identity.device_cert.device_public_key;
+        let keys = &self.keys;
         self.owner.with_current(room, |view| {
-            match view.read_document(
+            match view.read_document_with_history(
                 reader,
-                app,
-                record,
+                (app, record),
                 None,
                 MAX_DOCUMENT_BYTES,
                 SystemTime::now(),
+                &mut |write| {
+                    keys.get()
+                        .ok_or("this session's channel service is not running")?
+                        .open_history_write(room, write)
+                },
             )? {
                 DocumentRead::Captured(document) => Ok(Some(document.bytes)),
                 DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
             }
+        })
+    }
+
+    /// Take part in the channel of `record` of `room`, whose keys this device
+    /// reads it with: the channel service asks the room's devices for access
+    /// the first time, and the room's governance answers with the group. Says
+    /// whether the keys are here; while they are not, the record reads as
+    /// nothing, and the answer arrives as the room's other messages do.
+    fn join_channel(&self, room: RoomId, app: &str, record: &str) -> Result<bool, String> {
+        let Some(keys) = self.keys.get() else {
+            // Without a channel service there is nothing to take part with,
+            // and the read says so itself.
+            return Ok(true);
+        };
+        let route = collab_types::ChannelRoute::new(app, record);
+        match keys.access_record(room, &route).0 {
+            ChannelAccess::Ready(_) => Ok(true),
+            ChannelAccess::Waiting | ChannelAccess::Removed => Ok(false),
+            ChannelAccess::NoSecretStore => {
+                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            }
+            ChannelAccess::Unavailable => {
+                Err("this device takes part in no channel of the record".to_owned())
+            }
+        }
+    }
+
+    /// Ask `room`'s hosts for the record on `channel` the first time it is
+    /// read, and say whether it is one they send only once asked (an
+    /// on-demand record, or a part of a chain behind its head): its history
+    /// then arrives as the room's other documents do, and later reads ask
+    /// nobody.
+    fn asks_for_record(&self, room: RoomId, app: &str, record: &str) -> Result<bool, String> {
+        if neighbour_wire::record_sync(record) == neighbour_wire::RecordSync::Eager {
+            return Ok(false);
+        }
+        let held = self
+            .owner
+            .with_current(room, |view| Ok(view.peer().document(app, record).is_some()))?;
+        // With no plane there is no one to ask: the read answers for itself.
+        let Some(link) = self.link.lock_recover().clone().filter(|_| !held) else {
+            return Ok(false);
+        };
+        link.ask_record(room, neighbour_wire::app_document_channel(app, record));
+        Ok(true)
+    }
+
+    /// The devices the room `room` admits, by the publisher each of their
+    /// sessions is known by: the roster its window streams carry between
+    /// ([`channels::roster_of`]).
+    ///
+    /// # Errors
+    /// The room is not held here, or its governance cannot be read.
+    pub fn roster(&self, room: &str) -> Result<Vec<String>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        channels::roster_of(self, room).map(|roster| {
+            roster
+                .into_iter()
+                .map(|(device, _)| device.to_string())
+                .collect()
         })
     }
 
@@ -221,9 +321,79 @@ impl Engine {
         })
     }
 
+    /// The revocations the room `room`'s governance records, as the room
+    /// last admitted them: the devices of any of its people the room refuses
+    /// to hear from. `None` when this device holds no room of that name, so
+    /// nothing of it is known.
+    ///
+    /// What is checked against this: whether a shortcut's saver may still
+    /// start it here, and whether an app of the room may still be believed
+    /// about who saved one.
+    #[must_use]
+    pub fn revocations(&self, room: &str) -> Option<RevocationList> {
+        let room = RoomId::parse(room)?;
+        self.owner
+            .with_current(room, |view| {
+                let mut list = RevocationList::new();
+                for entry in view.peer().revocations() {
+                    // The room verified every entry when it admitted it: an
+                    // entry that does not verify now leaves the room's
+                    // refusals unknown rather than trusting the rest.
+                    list.insert(entry).map_err(|error| error.to_string())?;
+                }
+                Ok(list)
+            })
+            .ok()
+    }
+
+    /// Who governs the room `room`, as the id its governance names: the
+    /// owner the room was made under, whose devices sign for it. A workspace
+    /// joined keeps the owner its host's governance has, never the person who
+    /// joined; one made here has this person's.
+    ///
+    /// # Errors
+    /// The room is not held here yet, or its governance cannot be read now.
+    pub fn owner_of(&self, room: &str) -> Result<String, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        self.owner.with_current(room, |view| {
+            let owner = view.peer().governance().owner_user_public_key();
+            if owner == [0; 32] {
+                // A room whose governance names nobody has no owner to carry:
+                // a claim made here would be this device's, not the room's.
+                return Err("the room's governance names no owner".to_owned());
+            }
+            Ok(hex::encode(owner))
+        })
+    }
+
     /// The engine's owner, for what holds the room's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner
+    }
+
+    /// Where a read asks the rooms' hosts for a record they send only once
+    /// asked: the plane this session's channels travel on.
+    pub(crate) fn attach_link(&self, link: Arc<channels::ChannelLink>) {
+        *self.link.lock_recover() = Some(link);
+    }
+
+    /// Where this device's channels hear its rooms' governance and tell which
+    /// devices each admits: the plane's side of them, `None` when this session
+    /// runs no channel service.
+    pub(crate) fn link(&self) -> Option<Arc<channels::ChannelLink>> {
+        self.link.lock_recover().clone()
+    }
+
+    /// Where this session's channel service installs this device's keys: the
+    /// broker, the room host and every sealed read meet here.
+    pub(crate) fn keys(&self) -> ChannelKeyProvider {
+        self.keys.clone()
+    }
+
+    /// This device's collaboration identity: the key its endpoint and its
+    /// channels sign with, and the certificate that says whose it is.
+    pub(crate) fn identity(&self) -> &HostIdentity {
+        &self.identity
     }
 
     /// Name the workspace a join is installing into as the room's: an
@@ -238,6 +408,18 @@ impl Engine {
     pub(crate) fn unbind(&self, workspace: WorkspaceId) {
         self.slots.0.lock_recover().remove(&workspace);
     }
+}
+
+/// A room's revocations, as the threads beside the session's loop ask for
+/// them: the broker decides on its own thread and the automation host arms
+/// shortcuts on the loop, and both refuse a device the room revoked.
+pub(crate) type Revocations = Arc<dyn Fn(&str) -> Option<RevocationList> + Send + Sync>;
+
+/// What a room of this device's engine revokes, for the callers that ask
+/// from another thread. A session that holds no room knows of none.
+pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
+    let engine = engine.cloned();
+    Arc::new(move |room: &str| engine.as_ref().and_then(|engine| engine.revocations(room)))
 }
 
 /// Where this device's rooms are kept under `state`.

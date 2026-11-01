@@ -244,6 +244,9 @@ pub(crate) struct PersonState {
     app_id: &'static str,
     app_title: &'static str,
     me: String,
+    /// The ids they went by before this device had an identity, under which
+    /// what they changed is still theirs.
+    earlier: Vec<String>,
     /// The open records, by the app that owns them and their kind.
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
     /// The records of the person's other apps keep, held here too.
@@ -364,24 +367,28 @@ impl PersonState {
         app_title: &'static str,
     ) -> Self {
         let me = records.author().0.clone();
-        Self::named(Some(records), own, me, app_id, app_title)
+        Self::named(Some(records), own, me, Vec::new(), app_id, app_title)
     }
 
     /// The person `me`, whose shared records this host does not hold: their
     /// undo and redo of the settings sections are published all the same,
-    /// and read the sections' history in the settings document.
+    /// and read the sections' history in the settings document. `earlier`
+    /// are the ids they went by before this device had an identity, whose
+    /// changes are theirs too.
     pub(crate) fn without_records(
         me: String,
+        earlier: Vec<String>,
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
-        Self::named(None, None, me, app_id, app_title)
+        Self::named(None, None, me, earlier, app_id, app_title)
     }
 
     fn named(
         records: Option<PersonRecords>,
         own: Option<PersonRecords>,
         me: String,
+        earlier: Vec<String>,
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
@@ -391,6 +398,7 @@ impl PersonState {
             app_id,
             app_title,
             me,
+            earlier,
             opened: RefCell::default(),
             others: RefCell::default(),
             owners: Rc::default(),
@@ -577,7 +585,11 @@ impl PersonState {
         {
             return door;
         }
-        let door = Rc::new(SectionDoor::new(kind));
+        let door = Rc::new(SectionDoor::new(
+            kind,
+            self.me.clone(),
+            self.earlier.clone(),
+        ));
         let stepping = Rc::downgrade(&door);
         self.publish(
             key,
@@ -597,7 +609,10 @@ impl PersonState {
     /// The person's records `owner` keeps: this app's own, or another app's,
     /// opened once.
     fn records_of(&self, owner: &'static str) -> Option<PersonRecords> {
-        if owner == self.app_id {
+        // A host that keeps the person's shared records lends this app its
+        // own as well: a second writer of them here would store nowhere the
+        // host stores or syncs.
+        if owner == self.app_id && !self.records.as_ref()?.shared_by_host() {
             return self.records.clone();
         }
         let mut others = self.others.borrow_mut();

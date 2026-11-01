@@ -107,7 +107,7 @@ pub enum ChatEffect {
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
     /// whole text and the agent's record of its work. A message is the
-    /// room's: this read is what discloses its row, under the reader's own
+    /// workspace's: this read is what discloses its row, under the reader's own
     /// policy, where the row's views (show the reasoning, reveal it) are the
     /// window's own.
     #[effect(

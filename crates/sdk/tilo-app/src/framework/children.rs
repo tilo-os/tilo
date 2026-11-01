@@ -345,7 +345,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 (Some(live), _) => Arrival::Ready(live.get()),
                 (None, Some(reason)) => Arrival::Failed(reason.clone()),
                 (None, None) => Arrival::Pending {
-                    from: ui_core::room_sync::source(),
+                    from: ui_core::workspace_sync::source(),
                 },
             };
             match arrivals.get(&id) {

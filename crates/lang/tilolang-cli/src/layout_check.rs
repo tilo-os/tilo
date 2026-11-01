@@ -1039,14 +1039,15 @@ mod traditional_desktop {
                 badge.x1 <= f64::from(width),
                 "the badge {badge:?} stays on the output at {at}"
             );
-            // The count stands beside the bell, over no control.
+            // The count stands on the bell's corner, over the bell and no other control.
             let under: Vec<&Rect> = pressed
                 .iter()
                 .filter(|r| r.intersect(badge).area() > 0.0)
                 .collect();
-            assert!(
-                under.is_empty(),
-                "the badge {badge:?} covers {under:?} at {at}"
+            assert_eq!(
+                under.len(),
+                1,
+                "the badge {badge:?} stands on the bell alone at {at}: {under:?}"
             );
         }
     }

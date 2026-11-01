@@ -199,7 +199,7 @@ pub enum PdfEffect {
     },
     /// Open PDF from content
     ///
-    /// Pins a PDF the room keeps as content (an attachment, a shared file,
+    /// Pins a PDF the workspace keeps as content (an attachment, a shared file,
     /// an export) as the document this record marks up, so read-text and
     /// look-page read it and markup is made on it, and answers with its
     /// name and page count. A record marks up one PDF: the PDF it holds

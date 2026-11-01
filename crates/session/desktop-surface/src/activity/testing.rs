@@ -1,6 +1,6 @@
-//! A causal room and a host for the activity pane's own tests.
+//! A causal workspace and a host for the activity pane's own tests.
 //!
-//! [`TestTree`] pairs a desktop projection with its room document and writes
+//! [`TestTree`] pairs a desktop projection with its workspace document and writes
 //! through the same `desktop_doc` mutations a native host uses, so the pane
 //! reads real Automerge history. [`TestHost`] answers for a device with a
 //! fixed local user and keeps its private read state in memory.
@@ -83,7 +83,7 @@ impl TestTree {
         tree
     }
 
-    /// Home with four apps open, plus empty Research and Design rooms.
+    /// Home with four apps open, plus empty Research and Design workspaces.
     pub fn bootstrap_demo() -> Self {
         let ws_id = WorkspaceId(next_id());
         let strip_id = StripId(next_id());
@@ -206,7 +206,7 @@ impl TestTree {
     }
 
     /// Let an app reach a sandboxed resource, as `grantor`, who must be
-    /// allowed to grant in the room.
+    /// allowed to grant in the workspace.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
@@ -369,7 +369,7 @@ impl ActivityTree for TestTree {
     }
 }
 
-/// A device that may mutate the room, answers for [`LOCAL_USER`] and keeps
+/// A device that may mutate the workspace, answers for [`LOCAL_USER`] and keeps
 /// its private read state in memory.
 #[derive(Default)]
 pub(crate) struct TestHost {

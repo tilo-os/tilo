@@ -23,6 +23,7 @@ use crate::resource::{
     HIT_OVERLAY_FLAG, INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, Osk, OskPreferences, PURPOSE_OPTION,
 };
 use crate::service::{self, InputMethodChoice};
+use crate::session::{self, Said};
 use crate::{InputPurpose, OskWidget};
 
 /// The screenshot scenarios: a field of each kind the keyboard serves, the
@@ -56,6 +57,10 @@ pub struct OskSurface {
     /// Focus changes the input method reports, while the keyboard serves the
     /// session through one.
     focus: Option<service::FocusChanges>,
+    /// What the session says the keyboard does, while it runs as an app of
+    /// one: whether it belongs on screen, which the input method alone cannot
+    /// say.
+    said: Option<Said>,
     context: Option<service::ContextChanges>,
     /// The scenario to stage on the next sync.
     staged: Rc<RefCell<Option<Scenario>>>,
@@ -92,6 +97,7 @@ impl OskSurface {
             vocabulary: None,
             vocabulary_identity: (None, 0),
             focus: None,
+            said: None,
             context: None,
             staged: Rc::default(),
         }
@@ -190,6 +196,7 @@ impl OskSurface {
         } else {
             InputMethodChoice::Auto
         };
+        self.said = session::follow(cx.waker());
         match service::connect(choice, cx.waker()) {
             Ok(connection) => {
                 // Driven by the input method, the keyboard waits hidden for
@@ -238,6 +245,13 @@ impl Decorator for OskSurface {
             for transition in focus.take() {
                 self.keyboard.follow_input_method(transition);
             }
+        }
+        // The session's own word on whether the keyboard belongs on screen
+        // comes after the input method's: an always-on keyboard is up with no
+        // field focused at all, and one the person is not typing on the glass
+        // stays down even as a field takes the focus.
+        if let Some(visible) = self.said.as_ref().and_then(Said::visible) {
+            self.keyboard.set_visible(visible);
         }
         if let Some(context) = &mut self.context {
             for transition in context.take() {

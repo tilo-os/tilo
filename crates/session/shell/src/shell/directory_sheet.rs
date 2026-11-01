@@ -68,20 +68,21 @@ fn role_label(role: RoomRole) -> String {
     })
 }
 
-/// How lively a listing is, and how many belong to it, in a line.
+/// How lively a listing is: the row's secondary line.
 pub(crate) fn activity_line(listing: &DirectoryListing, now_ms: u64) -> String {
-    let activity = match listing.activity(now_ms) {
+    match listing.activity(now_ms) {
         Activity::HereNow(count) => t_args("directory-here-now", &[("count", count.into())]),
         Activity::ActiveToday => t("directory-active-today"),
         Activity::ActiveThisWeek => t("directory-active-week"),
         Activity::Quiet => t("directory-quiet"),
-    };
+    }
+}
+
+/// How many belong, in the row's column; `None` when it says nothing.
+pub(crate) fn members_line(listing: &DirectoryListing) -> Option<String> {
     match listing.entry.members {
-        0 => activity,
-        members => format!(
-            "{activity} · {}",
-            t_args("directory-members", &[("count", members.into())])
-        ),
+        0 => None,
+        members => Some(t_args("directory-members", &[("count", members.into())])),
     }
 }
 
@@ -325,6 +326,7 @@ impl DirectorySheet {
                             )
                         },
                     ),
+                    members: failure.map_or_else(|| members_line(listing), |_| None),
                     joins_as: joins_as(listing),
                     here: listing
                         .entry
@@ -523,18 +525,16 @@ mod tests {
     }
 
     #[test]
-    fn the_activity_line_says_who_is_here_and_how_many_belong() {
+    fn who_is_here_and_how_many_belong_are_two_facts() {
         let mut busy = listing("Busy", false);
         busy.entry.here_count = 3;
         busy.entry.members = 12;
-        let line = activity_line(&busy, 0);
-        assert!(line.contains('3'), "{line}");
-        assert!(line.contains("12"), "{line}");
-        assert_eq!(
-            line.matches(" · ").count(),
-            1,
-            "a row says one thing: {line}"
-        );
+        let activity = activity_line(&busy, 0);
+        assert!(activity.contains('3'), "{activity}");
+        assert!(!activity.contains("12"), "{activity}");
+        let members = members_line(&busy).expect("a listing with members");
+        assert!(members.contains("12"), "{members}");
+        assert!(!members.contains('3'), "{members}");
         assert!(joins_as(&busy).contains(&role_label(RoomRole::Commenter)));
     }
 }

@@ -297,7 +297,7 @@ fn named_in(data_home: &Path, package: &str, room: &str) -> Vec<(String, String)
     let Some(doc) = load(&directory.join(DOCUMENT_FILE)) else {
         return Vec::new();
     };
-    ui::record::room::discoverable_references(&doc)
+    ui::record::index::discoverable_references(&doc)
         .into_iter()
         .map(|record| {
             (

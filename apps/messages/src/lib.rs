@@ -115,10 +115,17 @@ pub enum MessagesEffect {
     #[effect(view, idempotent)]
     SelectSetupAccount { service: String, account: String },
     /// Show the native host's short-lived private linking code.
-    #[effect(attended, job, sensitive, cancellable, label = "messages-start-link")]
+    #[effect(
+        attended,
+        job,
+        sensitive,
+        cancellable,
+        returns,
+        label = "messages-start-link"
+    )]
     BeginLink { service: String, account: String },
     /// Confirm the displayed attempt on the explicitly selected account.
-    #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
+    #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteLink {
         service: String,
         account: String,
@@ -130,6 +137,7 @@ pub enum MessagesEffect {
         job,
         sensitive,
         cancellable,
+        returns,
         label = "messages-first-account-prepare"
     )]
     BeginFirstEnrollment { service: String },
@@ -140,21 +148,22 @@ pub enum MessagesEffect {
         sensitive,
         cancellable,
         idempotent,
+        returns,
         label = "messages-first-sms"
     )]
     ListSmsSims,
     /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
-    #[effect(job, sensitive, cancellable, label = "messages-select-sim")]
+    #[effect(job, sensitive, cancellable, returns, label = "messages-select-sim")]
     SelectSmsSim { selection: String },
     /// Verify the exact unpublished pairing and review its self identity.
-    #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
+    #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteFirstEnrollment {
         service: String,
         account: String,
         attempt: String,
     },
     /// Confirm self identity and propose access for protected Passwords review.
-    #[effect(job, sensitive, cancellable, label = "messages-first-confirm")]
+    #[effect(job, sensitive, cancellable, returns, label = "messages-first-confirm")]
     ReviewFirstEnrollment {
         service: String,
         account: String,
@@ -235,8 +244,9 @@ pub enum MessagesEffect {
     },
     /// Send through the currently authorized broker connection. It remains
     /// unavailable until the host supplies that connection; no local append
-    /// or delivery state substitutes for a transport operation.
-    #[effect(job, sensitive)]
+    /// or delivery state substitutes for a transport operation. Answers the
+    /// operation it reserved and how far the service took it.
+    #[effect(job, sensitive, returns)]
     Send {
         choice: String,
         operation: String,

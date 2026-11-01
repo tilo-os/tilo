@@ -643,7 +643,7 @@ impl CenterLayout {
     /// Complete rows the panel shows from `start`, where `shapes` sizes
     /// every row. A history that fits
     /// ends on the panel padding and has no pager; only one that overflows
-    /// gives the pager band its room — the same rule
+    /// gives the pager band its workspace — the same rule
     /// [`Self::preferred_height`] sizes the panel by, so the two never leave
     /// a blank band or draw the pager over the last row.
     pub fn visible_rows_in(&self, shapes: &[RowShape], start: usize) -> usize {

@@ -1,4 +1,4 @@
-//! Who may close, move or rename what is on a desktop a room shares.
+//! Who may close, move or rename what is on a desktop a workspace shares.
 //!
 //! A shared desktop keeps, beside its tree, who made each strip and opened
 //! each window (`authors`, by strip or tab id). People close, move and
@@ -6,14 +6,14 @@
 //! Doing it to what someone else made acts on other people's content, which
 //! is moderation ([`tilo_action_policy::roles::MODERATION_FIELD`]): it is
 //! decided on that strip's or window's `moderation` node, which the
-//! Moderator and Owner roles allow and an Editor's denies, and which a room
-//! can grant anyone ([`act_node`]). What nobody made (a strip the room
+//! Moderator and Owner roles allow and an Editor's denies, and which a workspace
+//! can grant anyone ([`act_node`]). What nobody made (a strip the workspace
 //! itself lists) is nobody's own, so only moderation changes it.
 //!
-//! What someone who has left the room made is released ([`released`]):
+//! What someone who has left the workspace made is released ([`released`]):
 //! it is no longer anyone's own, and whoever writes there closes or moves
 //! it as their own, so a window of someone gone never stays stuck on
-//! everyone's desktop. Who is still in the room is its governance's member
+//! everyone's desktop. Who is still in the workspace is its governance's member
 //! list ([`crate::projection::room_members`]).
 //!
 //! [`foreign_acts`] names what one desktop value did to another's strips
@@ -31,9 +31,9 @@ use tilo_action_policy::{Level, TreePath};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::tree::DesktopTree;
 
-/// The app a room's shared desktop is published under.
+/// The app a workspace's shared desktop is published under.
 pub const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-/// The record of [`DESKTOP_APP`] holding a room's shared desktop.
+/// The record of [`DESKTOP_APP`] holding a workspace's shared desktop.
 pub const DESKTOP_RECORD: &str = "desktop";
 /// The resource kind of a shared desktop in the published tree.
 pub const DESKTOP_KIND: &str = "tilo.desktop";
@@ -42,7 +42,7 @@ pub const DESKTOP_KIND: &str = "tilo.desktop";
 /// or tab id, as person ids.
 pub type Authors = BTreeMap<u64, String>;
 
-/// A shared desktop as a room holds it: the tree and who made what.
+/// A shared desktop as a workspace holds it: the tree and who made what.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SharedDesktop {
     #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
@@ -55,7 +55,7 @@ pub struct SharedDesktop {
 }
 
 impl SharedDesktop {
-    /// The shared desktop in the JSON text a room's desktop record holds.
+    /// The shared desktop in the JSON text a workspace's desktop record holds.
     pub fn parse(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|error| format!("read the shared desktop: {error}"))
     }
@@ -100,7 +100,7 @@ pub struct Touched {
 }
 
 /// The node `touched` is decided on in `room`:
-/// `room › desktop app › desktop › desktop › item › moderation › act`.
+/// `workspace › desktop app › desktop › desktop › item › moderation › act`.
 #[must_use]
 pub fn act_node(room: &str, touched: &Touched) -> TreePath {
     TreePath::room(room)
@@ -113,9 +113,9 @@ pub fn act_node(room: &str, touched: &Touched) -> TreePath {
 }
 
 /// Every strip's and window's moderation on `room`'s shared desktop: what a
-/// desktop asks the room whether its person may do before it offers to
+/// desktop asks the workspace whether its person may do before it offers to
 /// close or move what others made. A grant on one window alone does not
-/// cover it; the room's moderators' does.
+/// cover it; the workspace's moderators' does.
 #[must_use]
 pub fn moderation_node(room: &str) -> TreePath {
     TreePath::room(room)
@@ -134,7 +134,7 @@ pub fn made_by(authors: &Authors, id: u64, person: &str) -> bool {
 }
 
 /// Whether the strip or window `id` is released: someone made it who is no
-/// longer among the room's `members`. `None` while the members are not
+/// longer among the workspace's `members`. `None` while the members are not
 /// known: then nothing is released, so nobody's window is taken early.
 #[must_use]
 pub fn released(authors: &Authors, id: u64, members: Option<&BTreeSet<String>>) -> bool {
@@ -170,7 +170,7 @@ fn index(tree: &DesktopTree) -> Index {
 }
 
 /// What `after` did to the strips and windows of `before` that `writer` did
-/// not make and that are not [`released`] (`members`: the room's current
+/// not make and that are not [`released`] (`members`: the workspace's current
 /// members, when known), each once, in the order `before` holds them: windows closed or
 /// moved, strips removed or renamed, and anything whose maker changed. A
 /// window `writer` opened, or one opened since `before`, is theirs to
@@ -423,8 +423,8 @@ mod tests {
             .collect()
     }
 
-    /// Ben has left the room: closing his window is no act on anyone's,
-    /// while the strip nobody made stays the room's.
+    /// Ben has left the workspace: closing his window is no act on anyone's,
+    /// while the strip nobody made stays the workspace's.
     #[test]
     fn what_someone_who_left_made_is_released() {
         let mut after = desktop();

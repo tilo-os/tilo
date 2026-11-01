@@ -210,6 +210,12 @@ pub(crate) struct RouteJoin {
 pub(crate) struct OwnerRoute {
     pub(crate) route: RouteSpec,
     pub(crate) owners: Vec<HistoryOwner>,
+    /// Whether this app publishes what changes in the record. A record it
+    /// only reads is joined and merged from the route, and nothing local is
+    /// sent there: the identity service signs no change of another app's
+    /// record, and a refusal stops the whole collaboration
+    /// ([`HistoryOwner::publishes_record`]).
+    pub(crate) publishes: bool,
     /// Heads whose changes the transport accepted. Advanced only after a
     /// successful hand-off, so a refused change is offered again.
     pub(crate) sent_heads: Vec<ChangeHash>,
@@ -301,7 +307,14 @@ impl OwnerDocumentRoutes {
         }
         for entry in &held {
             current.push((
-                HistoryOwner::record(entry.store.clone(), entry.checkout.clone(), &entry.lifetime),
+                HistoryOwner::record(
+                    entry.store.clone(),
+                    entry.checkout.clone(),
+                    &entry.lifetime,
+                    // A record held for a live owner's tree is that owner's
+                    // own: the app publishes it.
+                    true,
+                ),
                 true,
             ));
         }
@@ -446,9 +459,11 @@ impl OwnerDocumentRoutes {
                     route: route.clone(),
                     record_kind: record_kind.clone(),
                 });
+                let publishes = owner.publishes_record();
                 self.owners.push(OwnerRoute {
                     route,
                     owners: vec![owner],
+                    publishes,
                     sent_heads: super::sorted_heads(doc.base_heads()),
                     needs_snapshot: true,
                     pending: PendingRemote::default(),

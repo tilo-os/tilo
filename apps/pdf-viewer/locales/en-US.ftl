@@ -79,7 +79,7 @@ pdf-note-imported = { $count ->
    *[other] Added { $count } pages. Save a copy to keep a PDF with them.
 }
 pdf-note-import-failed = Those pages couldn't be imported. Choose a PDF or an image and try again.
-pdf-note-imported-arriving = Imported pages are on their way from someone in this room.
+pdf-note-imported-arriving = Imported pages are on their way from someone in this workspace.
 pdf-note-imported-waiting = Imported pages come in once someone who has them is online.
 pdf-note-imported-unavailable = Imported pages aren't on this device. They come in once someone who has them is online.
 pdf-note-imported-unshown = Imported pages can't be shown on this device.

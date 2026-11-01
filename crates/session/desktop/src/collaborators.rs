@@ -78,7 +78,7 @@ pub struct RosterRow {
     pub color: Color,
     /// Software, not a person: an agent or a bot.
     pub is_agent: bool,
-    /// One of the room's bots (then also [`Self::is_agent`]): tagged Bot,
+    /// One of the workspace's bots (then also [`Self::is_agent`]): tagged Bot,
     /// never Agent.
     pub is_bot: bool,
     pub role: Option<String>,
@@ -190,7 +190,7 @@ pub struct CollaboratorsModel<'a> {
     /// The workspace's name, the panel's title.
     pub workspace: &'a str,
     pub rows: &'a [RosterRow],
-    /// Why nobody can be shown (the room is unreachable), instead of rows.
+    /// Why nobody can be shown (the workspace is unreachable), instead of rows.
     pub unavailable: Option<&'a str>,
     /// Who can see or control which of your windows right now. Never hidden
     /// while it is true: it leads the list.
@@ -200,7 +200,7 @@ pub struct CollaboratorsModel<'a> {
     /// header offers to.
     pub may_pin: bool,
     pub followed_id: Option<&'a str>,
-    /// Ephemeral room-local attachments, expressed using roster ids.
+    /// Ephemeral workspace-local attachments, expressed using roster ids.
     pub following_pairs: &'a [(String, String)],
     /// The roster id whose recent changes are open. Ignored when that row
     /// has nothing recent.
@@ -993,7 +993,7 @@ impl CollaboratorsOverlay {
                     ui::widget::SurfaceLevel::Floating.color(ctx.theme),
                 );
             };
-            // Software is tagged after its name: Bot for the room's bots,
+            // Software is tagged after its name: Bot for the workspace's bots,
             // Agent for agents.
             let tags = [(
                 if row.is_bot {
@@ -1489,7 +1489,7 @@ impl CollaboratorsOverlay {
     }
 
     /// The voice channel behind a painted Join button: the one the person
-    /// at this row index is in. The host revalidates it against the room's
+    /// at this row index is in. The host revalidates it against the workspace's
     /// calls before joining.
     pub fn join_target(&self, index: usize) -> Option<&VoiceChannel> {
         self.shown_rows.get(index).and_then(|row| row.join.as_ref())
@@ -1960,7 +1960,7 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
     // Presence publication updates the active workspace and the legacy
     // tree-wide mirror together, but readers can observe one side of that
     // handoff before the other (and old control clients still update only
-    // the mirror). Merge by stable participant id, preferring the room row's
+    // the mirror). Merge by stable participant id, preferring the workspace row's
     // richer activity fields, so nobody temporarily disappears from People.
     let mut roster = desktop
         .active_workspace()
@@ -2066,15 +2066,15 @@ fn rows_of(
     rows
 }
 
-/// The role id a room without workspace grants (an ephemeral, hosted
-/// roster) sets on a participant that is software, not a person.
+/// The role id a workspace with no grants (an ephemeral, hosted roster) sets
+/// on a participant that is software, not a person.
 pub const AGENT_ROLE_MARKER: &str = "agent";
 
 fn has_agent_marker(participant: &Collaborator) -> bool {
     participant.role_id.as_deref() == Some(AGENT_ROLE_MARKER)
 }
 
-/// Whether `participant` is one of `workspace`'s bots, as the room's
+/// Whether `participant` is one of `workspace`'s bots, as the workspace's
 /// governance names them.
 fn is_room_bot(workspace: &tilo_desktop_model::Workspace, participant: &Collaborator) -> bool {
     workspace.bots.iter().any(|bot| bot.is(&participant.id))
@@ -2108,7 +2108,7 @@ fn display_role_id(id: &str) -> String {
 /// What colour each person on `roster` is drawn in, with `local` the
 /// principal this device speaks as. One function so cursor and avatar cannot
 /// disagree and read as two participants: both go through
-/// [`ui::presence::assign_peer_colors`], which settles the whole room at
+/// [`ui::presence::assign_peer_colors`], which settles the whole workspace at
 /// once. An explicit [`Collaborator::cursor_color`] outranks anything
 /// computed and is held back from the assignment; the local user is
 /// included in the settled set (never the avatar stack) so every host
@@ -2377,11 +2377,11 @@ mod tests {
 
     #[test]
     fn a_rooms_bot_is_tagged_as_a_bot_never_as_a_person() {
-        use tilo_desktop_model::{RoomBot, Workspace, WorkspaceId};
+        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
 
         let device = "ab".repeat(32);
         let mut workspace = Workspace::new(WorkspaceId(72), "Lounge");
-        workspace.bots.push(RoomBot {
+        workspace.bots.push(WorkspaceBot {
             name: "Standup".into(),
             installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
             device: Some(device.clone()),

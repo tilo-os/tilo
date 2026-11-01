@@ -1,4 +1,4 @@
-//! The overview's keyboard and pointer: the rooms and the pictured windows
+//! The overview's keyboard and pointer: the workspaces and the pictured windows
 //! walked by keys, presses that go somewhere, a window carried to another
 //! workspace or strip, a middle click that closes one, and a strip's name
 //! typed in place.
@@ -34,7 +34,7 @@ impl OverviewPanel {
     }
 
     /// The window selected by the keyboard is gone: the keyboard goes back
-    /// to the room you are in, and the Enter that was meant for the window
+    /// to the workspace you are in, and the Enter that was meant for the window
     /// does nothing.
     pub(super) fn reconcile_window_selection(&mut self) {
         if let Some(tab) = self.window_selection
@@ -50,7 +50,7 @@ impl OverviewPanel {
         }
     }
 
-    /// Arrows keep the ring of rooms; Tab adds the rows that make or join
+    /// Arrows keep the ring of workspaces; Tab adds the rows that make or join
     /// one, Home and End reach its ends; the pictured windows take Left,
     /// Right, Up and Down once the keyboard is among them.
     fn navigation_key(&mut self, key: &Key, shift: bool) -> bool {
@@ -100,7 +100,7 @@ impl OverviewPanel {
     }
 
     /// The last row the keyboard reaches: Join, New workspace, or the last
-    /// room.
+    /// workspace.
     fn last_row(&self, count: usize) -> usize {
         count
             .saturating_add(usize::from(self.can_add()))
@@ -117,7 +117,7 @@ impl OverviewPanel {
             count
         };
         let mut current = self.selection.or_else(|| self.here_index()).unwrap_or(0);
-        // Making and joining are outside the arrows' ring of rooms.
+        // Making and joining are outside the arrows' ring of workspaces.
         if !tab && current >= count {
             current = if back { 0 } else { count.saturating_sub(1) };
         }
@@ -213,7 +213,7 @@ impl OverviewPanel {
     }
 
     /// Put the keyboard on pictured window `tab`; the picture is this
-    /// workspace's, so the room you are in is selected with it.
+    /// workspace's, so the workspace you are in is selected with it.
     pub fn select_window(&mut self, tab: TabId) {
         self.window_selection = Some(tab);
         self.window_interrupted = false;
@@ -452,7 +452,10 @@ impl OverviewPanel {
             self.choose(OverviewPick::LeaveWorkspace(id));
             return;
         }
-        match self.hit_room(p).and_then(|idx| self.desk.cards.get(idx)) {
+        match self
+            .hit_workspace(p)
+            .and_then(|idx| self.desk.cards.get(idx))
+        {
             Some(card) => {
                 let id = card.id;
                 self.choose(OverviewPick::Workspace(id));
@@ -607,7 +610,7 @@ impl OverviewPanel {
     /// strip.
     fn drop_window(&mut self, tab: TabId, at: Point) {
         if let Some(card) = self
-            .hit_room(at)
+            .hit_workspace(at)
             .filter(|room| Some(*room) != self.here_index())
             .and_then(|room| self.desk.cards.get(room))
         {
@@ -659,7 +662,7 @@ impl OverviewPanel {
         true
     }
 
-    /// Put the keyboard on room or row `index` (past the rooms: New
+    /// Put the keyboard on workspace or row `index` (past the workspaces: New
     /// workspace, then Join).
     pub(super) fn focus_row(&mut self, index: usize) {
         self.selection = Some(index);

@@ -8,7 +8,7 @@
 //! [`Workspace::reopen_closed`] puts the newest one back exactly where it was.
 //!
 //! This is this device's own history, never the workspace's state: it is not
-//! written to the workspace's document, not projected into the room and not
+//! written to the workspace's document, not projected into the workspace and not
 //! sent to a peer. A window reopens in this device's layout, with this
 //! device's launch of the app, which is where the person closed it; reopening
 //! it on another device would put a window where nobody is looking.
@@ -97,9 +97,11 @@ impl ClosedTabs {
 
 impl Workspace {
     /// Remember the window at `strip`, `group` and `tab` (indices) as closed,
-    /// so [`Self::reopen_closed`] puts it back. Called by the removal path
-    /// every close goes through, so whatever closed a window — its ✕, a
-    /// chord, a menu row, a window closed whole — the close can be undone.
+    /// so [`Self::reopen_closed`] puts it back, and end the shares it showed
+    /// ([`Self::end_window_shares`]): a window that closes stops being shared.
+    /// Called by the removal path every close goes through, so whatever closed
+    /// a window — its ✕, a chord, a menu row, a window closed whole — the
+    /// close can be undone and the workspace stops showing it.
     /// Returns whether there was such a window.
     pub fn note_close(&mut self, strip: usize, group: usize, tab: usize) -> bool {
         let Some((strip_id, holding)) = self
@@ -112,6 +114,7 @@ impl Workspace {
         let Some(closing) = holding.tabs.get(tab) else {
             return false;
         };
+        let closing_id = closing.id;
         let entry = ClosedTab {
             strip: strip_id,
             group: holding.id,
@@ -122,6 +125,7 @@ impl Workspace {
             tab: closing.relaunchable(),
         };
         self.closed_tabs.push(entry);
+        self.end_window_shares(closing_id);
         true
     }
 
@@ -132,8 +136,8 @@ impl Workspace {
     }
 
     /// Hold `from`'s closes in place of this workspace's: how a workspace
-    /// rebuilt from the room's layout keeps the closes this device made in
-    /// it, which the room never carried.
+    /// rebuilt from the workspace's layout keeps the closes this device made in
+    /// it, which the workspace never carried.
     pub fn keep_closed_tabs(&mut self, from: &Self) {
         self.closed_tabs = from.closed_tabs.clone();
     }

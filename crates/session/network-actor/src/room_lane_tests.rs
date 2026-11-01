@@ -48,7 +48,11 @@ fn direct(connection: &Connection, bytes: Vec<u8>) -> Direct {
     Direct {
         addr: EndpointAddr::new(connection.remote_id()),
         cached: Some(connection.clone()),
-        msg: NeighbourMsg::RemoteAction { frame: Vec::new() },
+        msg: NeighbourMsg::RemoteInput {
+            peer: 0,
+            surface: 0,
+            event: Vec::new(),
+        },
         bytes,
         // Longer than the test: a write to a device that never reads stays
         // stalled throughout.
@@ -115,8 +119,8 @@ async fn a_stalled_send_in_one_room_does_not_delay_another_rooms_send() {
     sender.close().await;
 }
 
-/// Room 7 holds only `stalled` besides this device; send it `sends` remote
-/// actions too big for a device that never reads.
+/// Room 7 holds only `stalled` besides this device; send it `sends` record
+/// pieces too big for a device that never reads.
 async fn stall_room_7(
     cmd: &mpsc::Sender<NetCmd>,
     stalled: EndpointId,
@@ -133,13 +137,20 @@ async fn stall_room_7(
         .await
         .unwrap();
     for _ in 0..sends {
-        cmd.send(NetCmd::PublishRemoteAction {
+        cmd.send(NetCmd::PublishRecordContent(RecordContentDelivery {
             ws: 7,
-            target: stalled,
-            msg: NeighbourMsg::RemoteAction {
-                frame: vec![0; STALLING_BYTES],
+            target: Some(stalled),
+            msg: NeighbourMsg::RecordContentPiece {
+                responder: 0,
+                requester: 0,
+                app_id: "so.tilo.notes".into(),
+                cluster_id: "notes".into(),
+                hash: "00".into(),
+                total: STALLING_BYTES as u64,
+                offset: 0,
+                bytes: vec![0; STALLING_BYTES],
             },
-        })
+        }))
         .await
         .unwrap();
     }
@@ -161,7 +172,7 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
     a.lookup.add_endpoint_info(stalled.addr());
 
     // In room 7, the one other device takes what is sent to it and never
-    // reads it: each remote action waits out its whole budget.
+    // reads it: each piece waits out its whole budget.
     let _rx_7 = stall_room_7(cmd_a, stalled.id(), STALLED_SENDS).await;
 
     // What goes to the other device of the person still goes through, and

@@ -1,4 +1,4 @@
-//! What the agent can be *asked*: named tools over the room's own surface.
+//! What the agent can be *asked*: named tools over the workspace's own surface.
 //!
 //! Discovery is queried through separate tools instead of a single flat list.
 //! This keeps the set of operations independent from response size, preserves
@@ -28,7 +28,7 @@
 //! The discovery tools are read-only in the shape of what they return rather
 //! than by promise: a listing is labels and addresses, with no callback,
 //! token or handle anywhere in one — "what can I do here" must be free to
-//! ask, so that a caller exploring an unfamiliar room can explore it safely.
+//! ask, so that a caller exploring an unfamiliar workspace can explore it safely.
 //!
 //! [`PLAN`] performs nothing either: it ends the conversation with an answer,
 //! which the caller validates against a freshly taken survey before anything
@@ -266,14 +266,14 @@ pub fn opened_app(offer: &Offer) -> Option<&str> {
     })
 }
 
-/// What an open does, said next to it: open a document the room already
+/// What an open does, said next to it: open a document the workspace already
 /// has, start a closed application, or — when the application already
 /// publishes operations — a second window on a new, empty document, as the
 /// launcher does for a person.
 fn open_note(catalogue: &Catalogue, offer: &Offer, app: &str) -> String {
     if surface::opens_record(offer.address()).is_some() {
         format!(
-            " (opens this document of {app} the room already has; its operations then appear \
+            " (opens this document of {app} the workspace already has; its operations then appear \
              and change it: to edit an existing document, open it this way)"
         )
     } else if catalogue
@@ -498,13 +498,14 @@ pub fn bound_reply(reply: &str) -> String {
 fn list_applications_definition() -> ToolDefinition {
     ToolDefinition {
         name: LIST_APPLICATIONS.into(),
-        description: ("Every application in this room. Says which are open and which are not, \
+        description:
+            ("Every application in this workspace. Says which are open and which are not, \
              and how many operations each is exporting right now. An application \
              exporting nothing has nothing open in it yet — opening it onto \
              something is an ordinary step, and what it does is put that \
              application's own operations on the list. Call this first when the \
              request might involve an application you have not seen.")
-            .into(),
+                .into(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
     }
 }
@@ -512,14 +513,15 @@ fn list_applications_definition() -> ToolDefinition {
 fn list_operations_definition() -> ToolDefinition {
     ToolDefinition {
         name: LIST_OPERATIONS.into(),
-        description: ("What can be done in this room, right now. Every filter is optional and \
+        description:
+            ("What can be done in this workspace, right now. Every filter is optional and \
              they combine; with none of them you get everything, capped. Use `kind` \
              to ask what may be done to a kind of thing in any application at all \
              (`files.entry`, `word_processor.section`), `resource` for one named \
              thing, `application` for one application, and `search` to match the \
              applications' own words. The ids that come back, like those already \
              listed with the request, are the ones `plan` and `invoke` accept.")
-            .into(),
+                .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -1270,7 +1272,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
             .iter()
             .filter(|o| o.app == application && o.descriptor.resource_kind != APPLICATION_KIND)
             .count();
-        // The operation that would open it — if the room granted one. A
+        // The operation that would open it — if the workspace granted one. A
         // denied open is *absent* from the catalogue, so it is absent here
         // too: the application is named, no route to opening it is given.
         let opener = catalogue
@@ -1309,7 +1311,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
                 );
                 if o.wants_content() {
                     s.push_str(
-                        ", which opens onto the content this room already denotes. Leave \
+                        ", which opens onto the content this workspace already denotes. Leave \
                          its argument null: that content is filled in from what is here",
                     );
                 }
@@ -1386,7 +1388,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         .flatten()
         .collect();
         let what = if asked.is_empty() {
-            "anything — this room exports nothing the agent may perform".to_string()
+            "anything — this workspace exports nothing the agent may perform".to_string()
         } else {
             asked.join(", ")
         };
@@ -1855,9 +1857,9 @@ mod tests {
         }
     }
 
-    /// A room with the word processor open and holding operations, plus a
+    /// A workspace with the word processor open and holding operations, plus a
     /// resource `describe_operation` has a fact but no action for.
-    fn room() -> Catalogue {
+    fn workspace() -> Catalogue {
         Catalogue {
             held: vec!["word-processor", "files"],
             offers: vec![
@@ -1941,7 +1943,7 @@ mod tests {
     /// operations one of them publishes.
     #[test]
     fn the_summary_keeps_opens_and_every_application_in_view() {
-        let mut catalogue = room();
+        let mut catalogue = workspace();
         for n in 0..50 {
             catalogue.offers.push(offer(
                 "word-processor",
@@ -2151,7 +2153,7 @@ mod tests {
     /// says so: opening again makes a second window.
     #[test]
     fn an_open_of_an_already_open_application_says_so() {
-        let mut catalogue = room();
+        let mut catalogue = workspace();
         let mut open = offer(
             "desktop",
             "desktop:app:word-processor",
@@ -2173,7 +2175,7 @@ mod tests {
     /// such everywhere the model meets it, and the model is told it waits.
     #[test]
     fn an_operation_needing_confirmation_is_listed_and_marked() {
-        let mut catalogue = room();
+        let mut catalogue = workspace();
         let mut send = offer(
             "mail",
             "mail.inbox",
@@ -2209,7 +2211,7 @@ mod tests {
     /// A refused argument says what the operation takes and how to pass it.
     #[test]
     fn a_parameter_hint_names_each_parameter_and_an_example() {
-        let catalogue = room();
+        let catalogue = workspace();
         let rename = &catalogue.offers[2];
         let hint = parameter_hint(rename);
         assert!(hint.contains("`value`: text (required)"), "{hint}");
@@ -2222,7 +2224,7 @@ mod tests {
             let mut revealed = Revealed::new();
             let out = operations(
                 &json!({"kind": "word_processor.document"}),
-                &room(),
+                &workspace(),
                 &mut revealed,
             );
             assert!(out.contains("insert-table"), "{out}");
@@ -2230,9 +2232,9 @@ mod tests {
         }
 
         {
-            let mut room = room();
+            let mut catalogue = workspace();
             for i in 0..MOST_LISTED + 5 {
-                room.offers.push(offer(
+                catalogue.offers.push(offer(
                     "files",
                     &format!("files.entry:/home/q/f{i}.md"),
                     "files.entry",
@@ -2242,12 +2244,12 @@ mod tests {
                 ));
             }
             let mut revealed = Revealed::new();
-            let out = operations(&json!({}), &room, &mut revealed);
+            let out = operations(&json!({}), &catalogue, &mut revealed);
             assert!(out.contains("more not listed"), "{out}");
             assert!(out.contains("narrower"), "{out}");
             let narrowed = operations(
                 &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
-                &room,
+                &catalogue,
                 &mut revealed,
             );
             assert!(
@@ -2259,7 +2261,7 @@ mod tests {
         {
             let out = describe(
                 &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
-                &room(),
+                &workspace(),
                 &mut Revealed::new(),
             );
             assert!(out.contains("value: text (required)"), "{out}");
@@ -2269,7 +2271,7 @@ mod tests {
         {
             let out = describe(
                 &json!({"operation": "word-processor.document#place-image"}),
-                &room(),
+                &workspace(),
                 &mut Revealed::new(),
             );
             assert!(out.contains("content, not words"), "{out}");
@@ -2281,12 +2283,12 @@ mod tests {
             let absent_id = "nothing.at#all";
             let hidden = describe(
                 &json!({"operation": hidden_id}),
-                &room(),
+                &workspace(),
                 &mut Revealed::new(),
             );
             let absent = describe(
                 &json!({"operation": absent_id}),
-                &room(),
+                &workspace(),
                 &mut Revealed::new(),
             );
 
@@ -2332,7 +2334,7 @@ mod tests {
                 "{refused}"
             );
 
-            let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            let listed = operations(&json!({"kind": "files.entry"}), &workspace(), &mut revealed);
             assert!(
                 listed.contains("files.entry:/home/q/harbour.png#rename"),
                 "{listed}"
@@ -2349,7 +2351,7 @@ mod tests {
 
         {
             let mut revealed = Revealed::new();
-            let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            let _ = operations(&json!({"kind": "files.entry"}), &workspace(), &mut revealed);
             let operation = "files.entry:/home/q/harbour.png#rename";
             let call = json!({
                 "steps": [
@@ -2511,8 +2513,8 @@ mod tests {
     fn the_plan_tool_set_is_byte_stable_and_a_plan_names_what_was_shown() {
         let before = serde_json::to_string(&definitions(STEPS)).unwrap();
         let mut revealed = Revealed::new();
-        let summary = catalogue_summary(&room(), &mut revealed, MOST_SUMMARISED);
-        let _ = operations(&json!({}), &room(), &mut revealed);
+        let summary = catalogue_summary(&workspace(), &mut revealed, MOST_SUMMARISED);
+        let _ = operations(&json!({}), &workspace(), &mut revealed);
         assert_eq!(
             serde_json::to_string(&definitions(STEPS)).unwrap(),
             before,
@@ -2536,7 +2538,7 @@ mod tests {
             "{summary}"
         );
         let mut first_turn = Revealed::new();
-        let _ = catalogue_summary(&room(), &mut first_turn, MOST_SUMMARISED);
+        let _ = catalogue_summary(&workspace(), &mut first_turn, MOST_SUMMARISED);
         let answer = read_plan(
             &json!({
                 "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
@@ -2599,7 +2601,7 @@ mod tests {
     #[test]
     fn the_loop_tool_set_is_generic_and_invoke_names_only_what_was_shown() {
         let mut revealed = Revealed::new();
-        let summary = catalogue_summary(&room(), &mut revealed, MOST_SUMMARISED);
+        let summary = catalogue_summary(&workspace(), &mut revealed, MOST_SUMMARISED);
         assert!(
             summary.contains("word-processor.document#insert-table"),
             "{summary}"
@@ -2834,7 +2836,7 @@ mod tests {
         assert!(hint.contains("\"name\": …"), "{hint}");
         assert!(!hint.contains("\"content\": …"), "{hint}");
         assert!(hint.contains("`content` is filled in"), "{hint}");
-        let place = &room().offers[1];
+        let place = &workspace().offers[1];
         assert_eq!(
             parameter_signature(place),
             "{takes what the previous step produced}"

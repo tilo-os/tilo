@@ -75,6 +75,10 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
+/// Custody is decided against the accounts' keeper, which is the person's
+/// own record: without that record there is nothing to decide.
+#[cfg(feature = "person")]
+pub mod custody;
 pub mod email;
 pub mod handoff;
 pub mod thunderbird;

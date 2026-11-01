@@ -1,14 +1,18 @@
-//! The lock screen: the session's own, shown on the first display while the
+//! The lock screen: the session's own, shown on every display while the
 //! session is locked, over nothing (the compositor draws no window or other
-//! surface then, and the other displays stay dark).
+//! surface then, and each display shows the screen scaled to its own size).
 //!
 //! It is one quiet screen: the time and its date in poster type, whose
 //! session this is, and the one password field that unlocks it. Typing the
 //! password and unlocking are the app's effects, so a person, an assistive
 //! tool and a headless run reach the same door. The password never leaves the
-//! seat's zeroizing buffer except to the session, which verifies it
-//! ([`LockSeat::take_attempts`]) and either lifts the lock or says it was
-//! wrong ([`LockSeat::refuse`]).
+//! seat's zeroizing buffer except to the session, which checks it and either
+//! lifts the lock or says it was wrong.
+//!
+//! The screen runs as its own process: the session publishes what it shows as
+//! a resource of its own ([`Shown`]), the app reads it and asks through the
+//! same actions as any other app, and what the screen asks of the session
+//! arrives as its effects.
 //!
 //! Everything a device says about itself — the network, the battery, the
 //! keyboard layout — arrives as plain data in [`Shown`], so the screen reads
@@ -25,9 +29,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ui::LocalStateWriter;
 use ui::advanced::WindowEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
@@ -72,11 +78,6 @@ const CARD_WIDTH: f32 = 400.0;
 /// How long the screen waits for input before it goes quiet.
 const IDLE: Duration = Duration::from_secs(20);
 
-/// How long the screen is given to dissolve before the lock is lifted
-/// anyway: leaving is an animation, and an animation never holds a session
-/// locked.
-const DISSOLVE_LIMIT: Duration = Duration::from_secs(1);
-
 /// What the screen's own motion follows. Whatever put the lock up — a key, a
 /// timer, an agent — the person in front of it watches it come and go, so it
 /// moves as a surface they opened does instead of landing like a shortcut's
@@ -93,8 +94,9 @@ const BLANK: MotionSpec = MotionSpec {
     shortcut: Shortcut::Lands,
 };
 
-/// The lock screen's resource: the door unlocking is published on. It holds
-/// nothing; the lock is the session's.
+/// The lock screen's resource: what it shows and what it asks. The session
+/// publishes it as its own, and the screen's process reaches it as it reaches
+/// any other app's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct LockScreen {}
 
@@ -138,12 +140,15 @@ pub enum LockEffect {
     /// Shut the computer down
     #[effect(own_device, destructive, keywords = "shutdown, power off")]
     ShutDown,
+    /// The screen has finished leaving: the lock may lift
+    #[effect(own_device)]
+    Dissolved,
 }
 
 /// What plays, as the screen says it: the song and what the player in front
 /// can be asked to do about it. A locked screen shows no more than that —
 /// no queue, no scrubber, no choice of player.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each is an independent capability the player reports"
@@ -165,7 +170,7 @@ pub struct Media {
 }
 
 /// The battery, as the screen says it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Battery {
     /// How full it is, when the device says.
     pub percent: Option<u8>,
@@ -174,7 +179,7 @@ pub struct Battery {
 }
 
 /// What the device says about itself, shown under the card.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     /// The network the person is on, when there is one.
     pub network: Option<String>,
@@ -194,7 +199,7 @@ pub struct Status {
 }
 
 /// What the lock screen shows: plain data the session keeps current.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one independent fact each about what the screen shows and what the session lets it do"
@@ -210,19 +215,29 @@ pub struct Shown {
     pub error: Option<String>,
     /// The password is being checked.
     pub checking: bool,
-    /// Whether the keyboard's Caps Lock is on, as the typed letters say.
+    /// Whether the keyboard's Caps Lock is on, as the typed letters say: the
+    /// screen's own, which it fills in as it draws.
     pub caps_lock: bool,
     /// What the device says about itself.
     pub status: Status,
     /// What plays, while a player says.
     pub media: Option<Media>,
-    /// The keyboard drawn on the screen is up, for unlocking by touch.
+    /// The keyboard drawn on the screen is up, for unlocking by touch: the
+    /// screen's own, which it fills in as it draws.
     pub keyboard: bool,
     /// The password was accepted: the screen is dissolving.
     pub unlocking: bool,
 }
 
 impl Shown {
+    /// What the session published, as the screen draws it.
+    ///
+    /// # Errors
+    /// The reading is not a lock's state: nothing of it is drawn.
+    pub fn from_reading(reading: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(reading)
+    }
+
     /// The line under the field: the answer to the last attempt, the check
     /// in flight, the keyboard's Caps Lock, or the quiet waiting hint.
     fn notice(&self) -> (String, Tone) {
@@ -238,22 +253,35 @@ impl Shown {
     }
 }
 
-/// What the session lends the lock screen: whether it is up, what it shows,
-/// the password field's buffer, the attempts to unlock, and what the screen
-/// asked of the session besides unlocking.
+/// What the screen's process is lent: what it shows, the password field's
+/// buffer, the session's word on the lock, and how what it asks reaches the
+/// session.
+///
+/// The screen is an app of its own, so nothing here crosses the two: each
+/// reading the session publishes is written into the local the view draws, by
+/// the worker that watches it ([`Self::reaching_session`]), and each effect
+/// the screen binds goes out through the channel the app opened with
+/// [`Self::ask_with`].
 #[derive(Clone, Default)]
 pub struct LockSeat {
     presentation: Presentation,
     shown: Rc<RefCell<Shown>>,
     local: Rc<RefCell<Option<LocalState<Shown>>>>,
     secret: Arc<Mutex<String>>,
-    attempts: Rc<RefCell<Vec<Zeroizing<String>>>>,
-    asked: Rc<RefCell<Vec<LockEffect>>>,
-    /// The screen has finished dissolving.
-    ready: Rc<Cell<bool>>,
-    /// When the dissolve started, so it can be outlasted.
-    dissolving: Rc<Cell<Option<ui::time::Instant>>>,
+    /// Where the screen's effects go: the session's resource, which takes
+    /// them as the app's actions.
+    outgoing: Rc<RefCell<Option<Sender<LockEffect>>>>,
+    /// Where the app reaching the session is opened, handed the local its
+    /// view draws.
+    reaching: Rc<RefCell<Option<Reach>>>,
+    /// The app was handed its local: reaching the session is done once.
+    reached: Rc<Cell<bool>>,
+    /// The screen was told it may go: it says so once.
+    told_gone: Rc<Cell<bool>>,
 }
+
+/// How the app lending the seat reaches the session.
+type Reach = Rc<dyn Fn(LocalStateWriter<Shown>)>;
 
 impl std::fmt::Debug for LockSeat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -273,7 +301,7 @@ impl crate::Seat for LockSeat {
 impl LockSeat {
     /// Show `shown`, when it is not what shows already.
     pub fn show(&self, shown: Shown) {
-        if *self.shown.borrow() == shown {
+        if self.shown() == shown {
             return;
         }
         if let Some(local) = self.local.borrow().as_ref() {
@@ -283,70 +311,73 @@ impl LockSeat {
         self.presentation.wake();
     }
 
-    /// What the lock screen shows now.
+    /// What the lock screen shows now: the view's local once it draws one,
+    /// which is where each reading of the session's lands.
     pub fn shown(&self) -> Shown {
+        if let Some(local) = self.local.borrow().as_ref() {
+            return local.get();
+        }
         self.shown.borrow().clone()
     }
 
-    /// The passwords given to unlock since the session last asked, oldest
-    /// first; each zeroes itself when dropped.
-    pub fn take_attempts(&self) -> Vec<Zeroizing<String>> {
-        std::mem::take(&mut *self.attempts.borrow_mut())
+    /// The screen's effects go `outgoing` from here on: the app opened the
+    /// session's resource and hands what the screen asks to it.
+    pub fn ask_with(&self, outgoing: Sender<LockEffect>) {
+        *self.outgoing.borrow_mut() = Some(outgoing);
     }
 
-    /// What the screen asked of the session beyond unlocking — the next
-    /// keyboard layout, the on-screen keyboard, a power action — oldest
-    /// first.
-    pub fn take_asked(&self) -> Vec<LockEffect> {
-        std::mem::take(&mut *self.asked.borrow_mut())
+    /// The app lending this seat reaches the session as `reach` says, handed
+    /// the local its view draws: each reading the session publishes is
+    /// written there.
+    pub fn reaching_session(&self, reach: impl Fn(LocalStateWriter<Shown>) + 'static) {
+        *self.reaching.borrow_mut() = Some(Rc::new(reach));
     }
 
-    /// Whether the lock may be lifted now: the screen has finished leaving,
-    /// or it was given long enough to leave.
-    pub fn dissolve_finished(&self) -> bool {
-        let Some(since) = self.dissolving.get() else {
-            return false;
-        };
-        self.ready.get()
-            || ui::time::now()
-                .checked_duration_since(since)
-                .is_some_and(|leaving| leaving >= DISSOLVE_LIMIT)
+    /// Hand the app lending the seat its local, once, so what the session
+    /// publishes reaches the screen.
+    pub fn reach(&self, showing: LocalStateWriter<Shown>) {
+        if self.reached.replace(true) {
+            return;
+        }
+        let reaching = self.reaching.borrow().clone();
+        if let Some(reaching) = reaching {
+            reaching(showing);
+        }
     }
 
-    /// The password did not unlock: say `why` and let the person try again.
-    pub fn refuse(&self, why: String) {
-        self.show(Shown {
-            error: Some(why),
-            checking: false,
-            ..self.shown()
-        });
-    }
-
-    /// The lock is lifted: forget what was typed and what was said.
-    pub fn lifted(&self) {
+    /// Hand what the field holds to the session, which checks it and says
+    /// what came of it; an empty field gives nothing.
+    fn submit(&self) -> Result<(), String> {
+        let password = self
+            .secret
+            .lock()
+            .map(|held| Zeroizing::new(held.clone()))
+            .map_err(|_| no_password())?;
+        if password.is_empty() {
+            return Err(no_password());
+        }
         self.wipe();
-        self.ready.set(false);
-        self.dissolving.set(None);
+        self.ask(LockEffect::TypePassword {
+            password: password.to_string(),
+        });
+        self.ask(LockEffect::Unlock);
+        // What was typed is in the session's hands now; the keyboard has
+        // done its work.
         self.show(Shown {
             error: None,
-            checking: false,
-            caps_lock: false,
-            unlocking: false,
+            checking: true,
+            keyboard: false,
             ..self.shown()
         });
+        Ok(())
     }
 
-    /// The password was accepted: dissolve the screen, then say so through
-    /// [`Self::dissolve_finished`].
-    pub fn unlocking(&self) {
-        self.ready.set(false);
-        self.dissolving.set(Some(ui::time::now()));
-        self.show(Shown {
-            error: None,
-            checking: false,
-            unlocking: true,
-            ..self.shown()
-        });
+    /// The screen finished leaving: the session may lift the lock.
+    fn gone(&self) {
+        if self.told_gone.replace(true) {
+            return;
+        }
+        self.ask(LockEffect::Dissolved);
     }
 
     /// What the password field holds, for the view to build the field with
@@ -375,37 +406,12 @@ impl LockSeat {
         }
     }
 
-    /// Hand what the field holds to the session; an empty field gives
-    /// nothing.
-    fn attempt(&self) -> Result<(), String> {
-        let password = self
-            .secret
-            .lock()
-            .map(|held| Zeroizing::new(held.clone()))
-            .map_err(|_| t("lock-no-password"))?;
-        if password.is_empty() {
-            return Err(t("lock-no-password"));
-        }
-        self.wipe();
-        self.attempts.borrow_mut().push(password);
-        self.show(Shown {
-            error: None,
-            checking: true,
-            // What was typed is in the field's hands now; the keyboard has
-            // done its work.
-            keyboard: false,
-            ..self.shown()
-        });
-        Ok(())
-    }
-
-    /// What the screen asks of the session besides unlocking.
+    /// Hand `effect` to the session: the app opened its resource, and what
+    /// the screen asked is an action on it like any other.
     fn ask(&self, effect: LockEffect) {
-        self.asked.borrow_mut().push(effect);
-    }
-
-    fn ready(&self) {
-        self.ready.set(true);
+        if let Some(outgoing) = self.outgoing.borrow().as_ref() {
+            let _ = outgoing.send(effect);
+        }
     }
 
     fn wipe(&self) {
@@ -425,6 +431,12 @@ pub fn wrong_password() -> String {
 #[must_use]
 pub fn unavailable() -> String {
     t("lock-unavailable")
+}
+
+/// What it says when there is no password to unlock with.
+#[must_use]
+pub fn no_password() -> String {
+    t("lock-no-password")
 }
 
 /// The lock screen as an app.
@@ -452,7 +464,10 @@ impl ResourceApp for LockApp {
             .fixture::<Shown>()
             .map_or_else(|| seat.shown(), |shown| (*shown).clone());
         let shown = cx.local(initial);
+        // What the session publishes is what the screen draws: the worker
+        // that watches it writes each reading into the local the view draws.
         *seat.local.borrow_mut() = Some(shown.clone());
+        seat.reach(shown.writer());
         seat.presentation().wake_with(cx.waker());
         let acting = seat.clone();
         cx.effects(move |effect: LockEffect, _cx| {
@@ -461,13 +476,16 @@ impl ResourceApp for LockApp {
                     let password = Zeroizing::new(password);
                     acting.type_password(&password);
                 }
-                LockEffect::Unlock => acting.attempt()?,
+                LockEffect::Unlock => acting.submit()?,
                 // The keyboard is the screen's own: opening it is nothing the
                 // session has to do.
                 LockEffect::ShowKeyboard => acting.show(Shown {
                     keyboard: true,
                     ..acting.shown()
                 }),
+                // The screen says it has left itself, once, as the
+                // dissolve ends: see `Stage::advance`.
+                LockEffect::Dissolved => {}
                 asked => acting.ask(asked),
             }
             Ok(Effected::done())
@@ -740,6 +758,10 @@ fn person(shown: &Shown) -> Element {
 
 /// The one password field, with the arrow that submits it.
 fn field(shown: &Shown, seat: &LockSeat) -> TextInput {
+    // What is typed is the screen's at every keystroke, not at the next
+    // frame: a reading of the session's may draw the screen again in
+    // between, and the field it draws says what the person has typed so far.
+    let typed = seat.clone();
     let mut field = TextInput::local()
         .with_id(PROMPT_ID)
         .with_secret(true)
@@ -750,6 +772,7 @@ fn field(shown: &Shown, seat: &LockSeat) -> TextInput {
         .with_trailing_accessory(Icon::ArrowRight, &t("lock-unlock"), AccessoryAction::Submit)
         .with_external_buffer(Arc::clone(&seat.secret))
         .with_initial_value(&seat.secret_text())
+        .on_change(move |text| typed.type_password(text))
         .with_read_only(shown.checking);
     // The field is where the keyboard goes: the screen has one thing to do.
     Widget::set_focus(&mut field, true);
@@ -962,7 +985,7 @@ impl Stage {
             self.ask_until();
         }
         if shown.unlocking && !self.presence.is_moving(now) {
-            self.seat.ready();
+            self.seat.gone();
         }
     }
 
@@ -1173,7 +1196,8 @@ impl ui::widget::Decorator for Stage {
                 field.insert_at_cursor(text);
                 *ctx.handled = true;
             }
-            if field.take_submit() && !checking {
+            let submit = field.take_submit();
+            if submit && !checking {
                 self.dispatch.effect(&LockEffect::Unlock);
             }
         }

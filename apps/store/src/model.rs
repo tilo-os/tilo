@@ -172,8 +172,9 @@ pub enum ActionKind {
     /// Flatpak but the host has no `flatpak` binary — offer a link to
     /// Flathub's install docs instead.
     NeedsFlatpakHost,
-    /// A directory bot → **Add to a room…**. A bot never installs on the
-    /// device; it runs in a room, added through that room's governance.
+    /// A directory bot → **Add to a workspace…**. A bot never installs on
+    /// the device; it runs in a workspace, added through that workspace's
+    /// governance.
     AddBot,
 }
 

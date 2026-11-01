@@ -140,7 +140,7 @@ fn typed_field(
 /// there that only it can: running an action by address through its action
 /// host, starting an app, opening an address.
 pub trait SearchHost {
-    /// What to search beyond the desktop's own, in the workspace of room
+    /// What to search beyond the desktop's own, in the workspace
     /// `room`, narrowed to it unless `scope` is
     /// [`SearchScope::All`](ui::search::system::SearchScope::All): then the
     /// rows of every workspace are offered too, each saying which workspace
@@ -872,7 +872,7 @@ impl DesktopSurface {
         }
         if matches!(choice, Some(Target::Launch { .. })) {
             // The person opened something from search themselves: what
-            // the desktop opens on its own (a room's home app) teaches
+            // the desktop opens on its own (a workspace's home app) teaches
             // nothing.
             ui::control_hints::performed::note(
                 ui::control_hints::performed::Performed::OpenedWindow,

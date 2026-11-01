@@ -206,6 +206,37 @@ fn a_hugging_grid_keeps_each_item_as_tall_as_its_content() {
     assert!(r[0].y0.abs() < 0.5, "at the top of its row");
 }
 
+/// A hugging grid's own box holds every item it places: an item as tall as its content is
+/// never taller than the grid that shows it, at any display scale (a dashboard's cards, each
+/// as tall as what it lists, reached the grid's edge and past it by a device pixel).
+#[test]
+fn a_hugging_grid_holds_the_items_it_places() {
+    for scale in [1.0, 1.5, 2.0] {
+        let theme = Theme::dark();
+        let _held = crate::widget::enter_device_scale(scale);
+        let item = |height: f32, width: f32| {
+            Box::new(
+                Stack::stack()
+                    .push(boxed(height))
+                    .push(Box::new(Spacer::fixed(width)) as crate::widget::Element),
+            ) as crate::widget::Element
+        };
+        let mut grid = Grid::columns(2)
+            .hugging()
+            .push(item(20.0, 30.3))
+            .push(item(100.3, 44.7))
+            .push(item(57.1, 12.2));
+        solve(&mut grid, &theme, 601.3);
+        let bounds = grid.get_rect();
+        for (index, r) in rects(&grid).into_iter().enumerate() {
+            assert!(
+                r.y1 <= bounds.y1 + 0.01 && r.x1 <= bounds.x1 + 0.01,
+                "at {scale}x, item {index} {r:?} is inside the grid {bounds:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_grid_item_spans_columns() {
     let theme = Theme::dark();

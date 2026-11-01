@@ -7,7 +7,7 @@
 //! and joining one. Beside it on a wide display, inside it on a narrow
 //! one, a picture shows each strip of the workspace you are in under its
 //! name, its windows left to right at their share of the display
-//! ([`crate::overview_picture`]). Keys walk the rooms and the windows; a
+//! ([`crate::overview_picture`]). Keys walk the workspaces and the windows; a
 //! window is pressed to go there, middle-clicked to close it, carried onto
 //! another workspace or strip to move it there; a strip is renamed in place
 //! and moved up or down.
@@ -38,7 +38,7 @@ use vello::kurbo::{Affine, Point, Rect, Size};
 use winit::event::{ElementState, Ime, WindowEvent};
 
 use crate::i18n::{t, t_args};
-use crate::overview::{OverviewPress, RoomCard};
+use crate::overview::{OverviewPress, WorkspaceCard};
 use crate::overview_picture::{GridMetrics, StripPlace};
 use crate::window_flight::WindowFlight;
 
@@ -50,7 +50,7 @@ pub use layout::{PANEL_RISE_PX, PANEL_START_SCALE, panel_curve};
 #[derive(Clone, Debug, Default)]
 pub struct OverviewDesk {
     /// Every workspace, in order; the one you are in is marked current.
-    pub cards: Vec<RoomCard>,
+    pub cards: Vec<WorkspaceCard>,
     /// Each window group's size on its display; a group not given one is
     /// drawn at its share of the display.
     pub group_sizes: HashMap<GroupId, Size>,
@@ -78,7 +78,7 @@ pub struct OverviewDesk {
 
 impl OverviewDesk {
     /// `cards`, with nothing else known: a new workspace can be made.
-    pub fn of(cards: Vec<RoomCard>) -> Self {
+    pub fn of(cards: Vec<WorkspaceCard>) -> Self {
         Self {
             cards,
             can_add: true,
@@ -164,7 +164,7 @@ pub struct OverviewPanel {
     reduce_motion: bool,
     /// The list's scroll.
     scroll_y: f64,
-    /// The keyboard's room, by its place among the cards; past them, New
+    /// The keyboard's workspace, by its place among the cards; past them, New
     /// workspace and then Join.
     selection: Option<usize>,
     /// The pictured window the keyboard is on.
@@ -252,13 +252,13 @@ impl OverviewPanel {
     }
 
     /// Open over `cards` (every workspace, as
-    /// [`crate::overview::room_cards`] returns them), or close.
-    pub fn set_open(&mut self, open: bool, cards: Vec<RoomCard>) {
+    /// [`crate::overview::workspace_cards`] returns them), or close.
+    pub fn set_open(&mut self, open: bool, cards: Vec<WorkspaceCard>) {
         self.open_on(open, OverviewDesk::of(cards));
     }
 
     /// Open over `desk`, or close. Each opening starts the keyboard on the
-    /// room you are in.
+    /// workspace you are in.
     pub fn open_on(&mut self, open: bool, desk: OverviewDesk) {
         if open {
             self.desk = desk;
@@ -276,7 +276,7 @@ impl OverviewPanel {
     }
 
     /// Show `cards` while open, keeping the keyboard where it is.
-    pub fn show(&mut self, cards: Vec<RoomCard>) {
+    pub fn show(&mut self, cards: Vec<WorkspaceCard>) {
         let desk = OverviewDesk {
             cards,
             ..std::mem::take(&mut self.desk)
@@ -315,7 +315,7 @@ impl OverviewPanel {
         self.picks.pop_front()
     }
 
-    /// The room the keyboard is on, by its place among the cards.
+    /// The workspace the keyboard is on, by its place among the cards.
     pub fn selection(&self) -> Option<usize> {
         self.selection
     }
@@ -385,9 +385,9 @@ impl OverviewPanel {
         self.open || self.progress() > 0.0
     }
 
-    /// Where room `index`'s row is (the "you are here" block for the room
+    /// Where workspace `index`'s row is (the "you are here" block for the workspace
     /// you are in), for a host's tests and scripts.
-    pub fn room_rect(&self, index: usize) -> Option<Rect> {
+    pub fn workspace_rect(&self, index: usize) -> Option<Rect> {
         (self.open && index < self.desk.cards.len()).then(|| self.row_rect(index))
     }
 
@@ -425,7 +425,7 @@ impl OverviewPanel {
                     .any(|idx| self.leave_rect(idx).is_some_and(|r| r.contains(p))),
             ) << 2)
             | (control << 3);
-        (self.hit_room(p), self.window_at(p), strip, rows)
+        (self.hit_workspace(p), self.window_at(p), strip, rows)
     }
 
     // ---- What assistive technology reads ----
@@ -655,7 +655,7 @@ impl Widget for OverviewPanel {
             return None;
         }
         let pressable = self.window_at(point).is_some()
-            || self.hit_room(point).is_some()
+            || self.hit_workspace(point).is_some()
             || self.add_hit_rect().is_some_and(|r| r.contains(point))
             || self.join_hit_rect().is_some_and(|r| r.contains(point));
         pressable.then_some(winit::window::CursorIcon::Pointer)
@@ -665,7 +665,7 @@ impl Widget for OverviewPanel {
         self.open.then_some(self.rect)
     }
 
-    /// The open overview holds the keyboard: its rooms and windows are
+    /// The open overview holds the keyboard: its workspaces and windows are
     /// walked by keys, Tab included.
     fn is_focusable(&self) -> bool {
         self.open
@@ -808,7 +808,7 @@ impl Widget for OverviewPanel {
         }
     }
 
-    /// Every target a script presses, by name: each room's row in order
+    /// Every target a script presses, by name: each workspace's row in order
     /// (`overview_card[i]`), the rows that make and join a workspace, each
     /// pictured window, each strip's name.
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -874,7 +874,9 @@ impl Widget for OverviewPanel {
 )]
 mod tests {
     use super::*;
-    use crate::overview::{OverviewGroup, OverviewStrip, OverviewTab, RoomCard, RoomShare};
+    use crate::overview::{
+        OverviewGroup, OverviewStrip, OverviewTab, WorkspaceCard, WorkspaceShare,
+    };
     use crate::window_switcher::WindowApp;
     use ui::widget::AppKind;
     use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -894,8 +896,8 @@ mod tests {
         }
     }
 
-    fn card(id: u64, name: &str, current: bool, windows: &[&str]) -> RoomCard {
-        RoomCard {
+    fn card(id: u64, name: &str, current: bool, windows: &[&str]) -> WorkspaceCard {
+        WorkspaceCard {
             id: WorkspaceId(id),
             name: name.into(),
             is_current: current,
@@ -956,9 +958,9 @@ mod tests {
         let join = panel.join_hit_rect().unwrap();
         assert!(design.y1 <= add.y0 && add.y1 <= join.y0);
         assert!(panel.panel_rect().contains(add.center()));
-        assert_eq!(panel.hit_room(research.center()), Some(1));
+        assert_eq!(panel.hit_workspace(research.center()), Some(1));
         assert_eq!(
-            panel.hit_room(Point::new(1.0, 1.0)),
+            panel.hit_workspace(Point::new(1.0, 1.0)),
             None,
             "outside the panel"
         );
@@ -1187,7 +1189,7 @@ mod tests {
     fn the_share_list_collapses_rather_than_growing() {
         let mut desk = desk();
         desk.cards[0].shares = (0..9)
-            .map(|i| RoomShare {
+            .map(|i| WorkspaceShare {
                 what: format!("Folder {i}"),
                 with: vec!["Ada".into()],
                 writable: false,

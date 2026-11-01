@@ -146,6 +146,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_asked": "wakes the host's loop when an invocation arrives: it runs the app's own "
     "frame, and activates no control",
     "on_effect": "activates a published native effect action",
+    "on_choose": "publishes the row's own press as its view action `choose`, which a person, "
+    "a screen reader, a script and an agent all reach",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
     "on_activate_view": "activates the widget's published view action for the entry it opened",

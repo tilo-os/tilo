@@ -10,7 +10,7 @@
 //! into it (a seeded scenario, an import, an integration relaying a text)
 //! and messages *written* in it, queued for a person to send. The person
 //! approved giving agents access to that content. An agent works on a
-//! room's records only through their published operations, in a confined
+//! workspace's records only through their published operations, in a confined
 //! worker with no network and no account, so a conversation it is to read
 //! or answer has to be in the record it holds, as Mail's delivered mail is.
 //! Whoever the record is shared with reads these messages, so nothing
@@ -437,7 +437,7 @@ impl Messages {
 }
 
 /// What `export-content` answers once the transcript is kept as `hash`:
-/// its content address (also as the operation's resource, so the room keeps
+/// its content address (also as the operation's resource, so the workspace keeps
 /// it), the format and how much it holds.
 #[must_use]
 pub fn exported(

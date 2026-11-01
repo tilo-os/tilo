@@ -258,6 +258,33 @@ fn saved(record: &PersonRecord<Saved>) -> Vec<String> {
     videos
 }
 
+#[test]
+fn an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy() {
+    use std::rc::Rc;
+    use tilo_app::record::{RecordKind, RecordOwners, person::PersonRecords};
+
+    let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    let held = PersonRecords::open(
+        &mut owners,
+        QueueApp::ID,
+        tilo_app::permissions::UserId(ada()),
+    )
+    .unwrap();
+    let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();
+    let owned = app.shared_person::<Saved>().unwrap();
+    owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
+
+    let kept = held
+        .open_existing_record(RecordKind::new(Saved::KIND))
+        .unwrap()
+        .expect("the host keeps the record the app changed");
+    assert_eq!(
+        kept.heads(),
+        owned.record().heads(),
+        "the app's edit is in the copy the host stores and syncs"
+    );
+}
+
 /// Another app, adding to the history the queue app keeps.
 struct EditorApp;
 

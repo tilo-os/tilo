@@ -349,11 +349,6 @@ impl ActorState {
         self.sibling_hello_sent = Some(hello_fingerprint(&own));
         self.siblings.insert(peer, sibling);
         self.tell_siblings(event).await;
-        for (ws, target) in self.pending_remote_actions.targets() {
-            if target == peer {
-                self.flush_pending_remote_actions(ws, peer);
-            }
-        }
     }
 
     /// `peer` sent `heard` on the session of membership `epoch`.

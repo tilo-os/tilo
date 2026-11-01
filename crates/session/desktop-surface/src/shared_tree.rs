@@ -1,4 +1,4 @@
-//! Snapshot compatibility for hosts whose room carries a desktop tree.
+//! Snapshot compatibility for hosts whose workspace carries a desktop tree.
 //! Stream bindings and presentation belong to the receiving device.
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, TabId, TileContent, WindowWidth, WorkspaceId,

@@ -112,6 +112,10 @@ process.exit(0);
 
 
 class ChromeProcessCleanup(unittest.TestCase):
+    def setUp(self):
+        if shutil.which('node') is None:
+            self.skipTest('the Chromium lifecycle fixture runs under Node.js, which is not installed here')
+
     def fixture(self, root):
         root.mkdir()
         executable = root / 'fake-chrome'

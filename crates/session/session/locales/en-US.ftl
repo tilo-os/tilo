@@ -82,7 +82,7 @@ session-displays-next = Next display arrangement
 session-displays-set = Arrange the displays
 session-displays-open-sheet = Choose where the desktop appears
 session-displays-close-sheet = Put the display sheet away
-session-param-displays-mode = How the displays are used together: extend, mirror, built-in or external
+session-display-builtin = Built-in display
 session-clipboard = Clipboard
 session-clipboard-paste-files = Paste files here
 session-param-paste-destination = The folder the copied files are pasted into
@@ -122,3 +122,7 @@ device-wake-not-rejoined = { $device } did not wake up
 device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
 device-wake-failed = { $device } could not be woken
 device-wake-failed-body = No wake-up signal could be sent on its network.
+
+## What a screen reader says about a pointer: whose it is, and the
+## window they are over.
+people-pointer-where = { $who } is in { $where }

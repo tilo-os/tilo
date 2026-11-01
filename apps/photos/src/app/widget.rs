@@ -1461,7 +1461,7 @@ impl Photos {
             *ctx.handled = true;
             return;
         }
-        // The photograph has the screen: the keys that show it to a room are
+        // The photograph has the screen: the keys that show it to a workspace are
         // here, where the picture is — full screen, the slide show, and
         // stepping through the collection. Ctrl+= / Ctrl+- / Ctrl+0 reach the
         // picture through `ContentZoom` before any widget sees them.

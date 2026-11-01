@@ -1237,11 +1237,10 @@ impl ShellOverlayHost {
 
     /// Lift `id` under the hand, or set it down.
     fn set_desk_lift(&mut self, id: WidgetId, up: bool, now: Instant) {
-        // Lifting under the hand is the control-change motion, at its own pace.
         let timing = ui::motion::ControlChange::MOVE.timing(
             ui::motion::Direction::of(up),
             self.desk.motion,
-            ui::tokens::MotionSource::Pointer,
+            ui::tokens::MotionSource::Gesture,
         );
         self.desk
             .lifts
@@ -1937,10 +1936,13 @@ impl ShellOverlayHost {
             theme,
             content: &content,
         };
-        let spec = ui::motion::Transient::READOUT;
         for leaving in self.desk.leaving.clone() {
-            let gone =
-                ui::motion::Transient::exit_progress(spec, leaving.since, now, self.desk.motion);
+            let gone = ui::motion::CROSS_FADE.progress_after(
+                ui::motion::Direction::Exit,
+                self.desk.motion,
+                ui::tokens::MotionSource::Pointer,
+                now.saturating_duration_since(leaving.since),
+            );
             if gone < 1.0 {
                 self.paint_leaving(&mut pass, leaving, gone, &mut painted);
             }

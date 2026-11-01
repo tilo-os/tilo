@@ -990,12 +990,12 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::Appearance {
                     network_status,
-                    room_sync,
+                    workspace_sync,
                     ..
                 } => {
                     // A room that has not synced shows so in every empty
                     // state, so what it shows changes with it.
-                    if crate::room_sync::set(room_sync.clone()) {
+                    if crate::workspace_sync::set(workspace_sync.clone()) {
                         self.layout.layout_dirty = true;
                         self.layout.request_rebuild();
                     }
@@ -1132,7 +1132,7 @@ impl App {
     fn reattach_after_floating_service_loss(&mut self) {
         // A window still waiting for the shell's first word never gets
         // it: what its room holds says it cannot arrive.
-        if crate::room_sync::shell_lost() {
+        if crate::workspace_sync::shell_lost() {
             self.layout.layout_dirty = true;
             self.layout.request_rebuild();
         }

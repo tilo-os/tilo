@@ -758,9 +758,13 @@ readers = [
 
 [[cargo]]
 package = "tilolang"
-# The multi-package tests resolve and compile the built-in packages.
-inputs = ["apps/tl/"]
-readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
+# The multi-package tests resolve and compile the built-in packages, and the coverage check
+# reads the toolkit's sources for the components it describes.
+inputs = ["apps/tl/", "crates/sdk/ui-core/"]
+readers = [
+  "crates/lang/tilolang/tests/it/coverage.rs",
+  "crates/lang/tilolang/tests/it/multifile.rs",
+]
 
 [[cargo]]
 package = "tilolang-cli"
@@ -806,16 +810,17 @@ readers = [
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
+  "crates/platform/tilolang-tilo/tests/naming.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
+  "crates/platform/tilolang-tilo/tests/shell_record.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
-  "crates/platform/tilolang-tilo/tests/upgrade_it.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
@@ -830,17 +835,12 @@ readers = [
   "crates/platform/tilolang-host/tests/own_records.rs",
 ]
 
-[[cargo]]
-package = "tilo-session"
-# The desk's top bar and overlays compile the tilolang shell package from its
-# sources and ids lock, every file of it.
-inputs = ["apps/tl/shell/"]
-readers = ["crates/session/session/src/shell.rs"]
 
 [[cargo]]
 package = "tilo-surface-host"
-# The part's tests read the shell package's sources and ids lock they lay out.
-inputs = ["apps/tl/shell/"]
+# The part embeds and compiles the shell package's sources and ids lock, and the packages its
+# views reach (`notes`, `tasks`, `chat`), every file of each.
+inputs = ["apps/tl/"]
 readers = ["crates/session/surface-host/src/shell_part.rs"]
 
 [[cargo]]
@@ -1411,6 +1411,9 @@ inputs = [
   "docs/architecture/dictation-whistle-aot-review.json",
   "docs/architecture/dictation-whistle-aot-image.json",
   "docs/architecture/dictation-whistle-aot-image-120s.json",
+  # The registry the session and the shell both decode, as builds that kept
+  # lifecycle records wrote it.
+  "crates/session/fixtures/",
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
@@ -1436,6 +1439,7 @@ readers = [
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
   "crates/session/shell/src/shell/settings_records.rs",
+  "crates/session/shell/src/shell/mls_vault.rs",
 ]
 
 
@@ -1444,13 +1448,18 @@ readers = [
 [[cargo]]
 package = "tilo-session"
 # The first-boot unit the image ships, and the components that name where
-# each binary is installed.
+# each binary is installed; the shell package it compiles from source.
 inputs = [
+  "apps/tl/shell/",
   "os/usr/lib/systemd/system/shell-firstboot.service",
   "os/components.toml",
+  # The registry both vaults decode, as builds that kept lifecycle records wrote it.
+  "crates/session/fixtures/",
 ]
-readers = ["crates/session/session/tests/firstboot.rs"]
-
+readers = [
+  "crates/session/session/tests/firstboot.rs",
+  "crates/session/session/src/channels/vault.rs",
+]
 
 [[cargo]]
 package = "tilo-browser-peer"

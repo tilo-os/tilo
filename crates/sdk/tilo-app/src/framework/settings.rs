@@ -427,7 +427,7 @@ impl ViewStorage {
         let door = if let Some(person) = &self.person {
             person.open_section(kind)
         } else {
-            let door = Rc::new(SectionDoor::new(kind));
+            let door = Rc::new(SectionDoor::new(kind, String::new(), Vec::new()));
             self.section_doors
                 .borrow_mut()
                 .push(Rc::clone(&door) as Rc<dyn RecordDoor>);

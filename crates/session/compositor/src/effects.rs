@@ -86,6 +86,8 @@ pub(crate) struct Framing<'a> {
     pub(crate) images: &'a FrameImages,
     /// The frames the windows last drew, kept for their close.
     pub(crate) snapshots: &'a crate::snapshot::Snapshots,
+    /// The HDR planes of the windows that carry one.
+    pub(crate) hdr: &'a crate::hdr::HdrSurfaces,
 }
 
 /// What a window's effect draws: its live surfaces, or the last frame it
@@ -116,10 +118,16 @@ impl Content<'_> {
     }
 }
 
-/// One drawn piece of a window moved, scaled and clipped, its corners cut
-/// to the desktop's rounding.
-pub type TransformedElement<R> =
-    RoundedElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>;
+smithay::backend::renderer::element::render_elements! {
+    /// One drawn piece of a window moved, scaled and clipped, its corners cut
+    /// to the desktop's rounding: a surface as usual, or the rendition of a
+    /// surface that carries an HDR signal.
+    pub TransformedElement<R> where R: ImportAll + ImportMem;
+    /// A client surface.
+    Surface=RoundedElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
+    /// An HDR surface's rendition.
+    Hdr=RoundedElement<RescaleRenderElement<MemoryRenderBufferRenderElement<R>>>,
+}
 
 /// A closed window's last frame, drawn where the window stood.
 pub type SnapshotElement<T> = RoundedElement<RescaleRenderElement<TextureRenderElement<T>>>;
@@ -289,6 +297,91 @@ struct Placement {
     radius: f64,
 }
 
+/// `window` as `placement` draws it: its surfaces, with a surface that
+/// carries an HDR signal drawn as its rendition and given to the output as a
+/// layer of its own.
+fn draw_window<R>(
+    renderer: &mut R,
+    framing: Framing<'_>,
+    window: &Window,
+    origin: Point<i32, Physical>,
+    output_scale: f64,
+    placement: &Placement,
+    radius: f64,
+) -> Vec<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let id = crate::state::window_id(window);
+    let elements = match crate::hdr::pieces(
+        renderer,
+        framing.hdr,
+        window,
+        origin,
+        output_scale,
+        placement.opacity,
+    ) {
+        None => window
+            .render_elements::<WaylandSurfaceRenderElement<R>>(
+                renderer,
+                origin,
+                Scale::from(output_scale),
+                placement.opacity,
+            )
+            .into_iter()
+            .map(|element| {
+                let scaled =
+                    RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
+                OutputRenderElement::Transformed(TransformedElement::Surface(RoundedElement::new(
+                    scaled,
+                    radius,
+                    placement.clip,
+                )))
+            })
+            .collect(),
+        Some(pieces) => pieces
+            .into_iter()
+            .map(|piece| {
+                let scaled = match piece {
+                    crate::hdr::Piece::Surface(element) => {
+                        TransformedElement::Surface(RoundedElement::new(
+                            RescaleRenderElement::from_element(
+                                element,
+                                placement.pivot,
+                                placement.scale,
+                            ),
+                            radius,
+                            placement.clip,
+                        ))
+                    }
+                    crate::hdr::Piece::Rendered(element) => {
+                        TransformedElement::Hdr(RoundedElement::new(
+                            RescaleRenderElement::from_element(
+                                element,
+                                placement.pivot,
+                                placement.scale,
+                            ),
+                            radius,
+                            placement.clip,
+                        ))
+                    }
+                };
+                OutputRenderElement::Transformed(scaled)
+            })
+            .collect(),
+    };
+    // What the window drew is kept while it stands, so its close has a
+    // frame to animate even once its surface is gone: its texture, or, for
+    // a window drawn as its HDR rendition, that rendition.
+    if let Some(id) = id {
+        framing
+            .snapshots
+            .record_shown(id, framing.hdr, renderer, window);
+    }
+    elements
+}
+
 /// `content` and its frame placed as `placement` says on an output of
 /// `output_scale`, front first.
 fn placed<R>(
@@ -310,43 +403,46 @@ where
     );
     let radius = placement.radius * placement.scale * output_scale;
     let mut elements: Vec<OutputRenderElement<R>> = match content {
-        Content::Window(window) => {
-            let elements = window.render_elements::<WaylandSurfaceRenderElement<R>>(
-                renderer,
-                origin,
-                Scale::from(output_scale),
-                placement.opacity,
-            );
-            // What the window drew is kept while it stands, so its close
-            // has a frame to animate even once its surface is gone.
-            if let Some(id) = crate::state::window_id(window) {
-                framing.snapshots.record(id, renderer, window);
-            }
-            elements
-                .into_iter()
-                .map(|element| {
+        Content::Window(window) => draw_window(
+            renderer,
+            framing,
+            window,
+            origin,
+            output_scale,
+            placement,
+            radius,
+        ),
+        Content::Snapshot(snapshot) => {
+            match snapshot.element(renderer, unscaled.loc.to_f64(), placement.opacity) {
+                Some(element) => {
                     let scaled = RescaleRenderElement::from_element(
                         element,
                         placement.pivot,
                         placement.scale,
                     );
-                    OutputRenderElement::Transformed(RoundedElement::new(
+                    vec![OutputRenderElement::Snapshot(RoundedElement::new(
                         scaled,
                         radius,
                         placement.clip,
-                    ))
-                })
-                .collect()
+                    ))]
+                }
+                // A window that showed an HDR rendition animates that.
+                None => snapshot
+                    .rendition(renderer, unscaled.loc.to_f64(), placement.opacity)
+                    .map(|element| {
+                        let scaled = RescaleRenderElement::from_element(
+                            element,
+                            placement.pivot,
+                            placement.scale,
+                        );
+                        OutputRenderElement::Transformed(TransformedElement::Hdr(
+                            RoundedElement::new(scaled, radius, placement.clip),
+                        ))
+                    })
+                    .into_iter()
+                    .collect(),
+            }
         }
-        Content::Snapshot(snapshot) => snapshot
-            .element(renderer, unscaled.loc.to_f64(), placement.opacity)
-            .map(|element| {
-                let scaled =
-                    RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
-                OutputRenderElement::Snapshot(RoundedElement::new(scaled, radius, placement.clip))
-            })
-            .into_iter()
-            .collect(),
     };
     // The shadow and the edge sit under the window, so they come after it.
     let unscaled_size = size.to_f64();

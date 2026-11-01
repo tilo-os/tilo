@@ -2165,12 +2165,12 @@ mod tests {
     );
 
     fn activity_of(tree: &mut WorkspaceTree) -> ActivitySnapshot {
-        let mut pane = tilo_desktop::activity::RoomActivityPane::new();
+        let mut pane = tilo_desktop::activity::WorkspaceActivityPane::new();
         pane.set_host(std::rc::Rc::new(
             crate::shell::room_activity::NativeActivityHost::default(),
         ));
         pane.set_scope(
-            crate::shell::room_activity::RoomScope::AllWorkspaces,
+            crate::shell::room_activity::WorkspaceScope::AllWorkspaces,
             &*tree,
         );
         pane.refresh(tree);

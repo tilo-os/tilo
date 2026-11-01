@@ -305,7 +305,7 @@ impl State {
                     None,
                     Kind::Cursor,
                 ) {
-                    Ok(element) => vec![OutputRenderElement::Hosted(element)],
+                    Ok(element) => vec![OutputRenderElement::Memory(element)],
                     Err(error) => {
                         tracing::warn!(?error, "cursor image not imported");
                         Vec::new()

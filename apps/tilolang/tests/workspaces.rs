@@ -1,15 +1,15 @@
 //! Until the window has synced with its workspace's host, a tilolang app says so where it would
 //! say the workspace is empty, exactly as a native app does: the platform's empty state follows what
-//! the shell tells the window (`ui::room_sync`), and the app's own sentence shows only once the
+//! the shell tells the window (`ui::workspace_sync`), and the app's own sentence shows only once the
 //! workspace has synced.
 
 use ui::framework::testing::HostedApp;
 use ui::headless::InspectionNode;
-use ui::room_sync::{RoomSync, RoomSyncState};
+use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
 
 /// What the shell tells a window in the workspace "Lounge" about its state.
-fn told(state: RoomSyncState) -> RoomSync {
-    RoomSync {
+fn told(state: WorkspaceSyncState) -> WorkspaceSync {
+    WorkspaceSync {
         state,
         workspace: "Lounge".into(),
         writable: None,
@@ -55,7 +55,7 @@ fn an_unsynced_workspace_says_it_is_connecting_and_a_synced_empty_workspace_says
     let connecting_to_lounge =
         |said: &[String]| said.iter().filter(|said| said.contains("Lounge")).count();
 
-    ui::room_sync::set(Some(told(RoomSyncState::Connecting)));
+    ui::workspace_sync::set(Some(told(WorkspaceSyncState::Connecting)));
     let connecting = said(&mut app);
     assert!(
         !connecting.iter().any(|said| said == "No notes yet"),
@@ -66,7 +66,7 @@ fn an_unsynced_workspace_says_it_is_connecting_and_a_synced_empty_workspace_says
         "the list and the note's column each say the workspace is connecting: {connecting:?}"
     );
 
-    ui::room_sync::set(Some(told(RoomSyncState::HostNeedsUpdate)));
+    ui::workspace_sync::set(Some(told(WorkspaceSyncState::HostNeedsUpdate)));
     let behind = said(&mut app);
     assert!(
         !behind
@@ -75,14 +75,14 @@ fn an_unsynced_workspace_says_it_is_connecting_and_a_synced_empty_workspace_says
         "nor while the host has to update first, which says so instead: {behind:?}"
     );
 
-    ui::room_sync::set(Some(told(RoomSyncState::Synced)));
+    ui::workspace_sync::set(Some(told(WorkspaceSyncState::Synced)));
     let synced = said(&mut app);
     assert!(
         synced.iter().any(|said| said == "No notes yet") && connecting_to_lounge(&synced) == 0,
         "once the workspace synced, its emptiness is the app's to say: {synced:?}"
     );
 
-    ui::room_sync::set(None);
+    ui::workspace_sync::set(None);
     assert!(
         said(&mut app).iter().any(|said| said == "No notes yet"),
         "and in a workspace that syncs with no host"

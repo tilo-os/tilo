@@ -22,8 +22,6 @@ pub(crate) type Place = (i32, i32, u32, u32);
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
-    /// The lock screen: drawn while the session is locked, and only then.
-    lock_screen: bool,
     /// The displays as the compositor last said they are.
     outputs: Vec<(i32, i32, i32, i32)>,
     /// The app answers its actions and draws while the sheet is down too: a
@@ -58,7 +56,6 @@ impl<S: Seat> Sheet<S> {
         Ok(Self {
             host: AppHost::new(app, placement),
             seat,
-            lock_screen: false,
             outputs: Vec::new(),
             always_serving: false,
             typing_through: false,
@@ -78,13 +75,6 @@ impl<S: Seat> Sheet<S> {
     /// person's typing where it was.
     pub(crate) const fn typing_through(mut self) -> Self {
         self.typing_through = true;
-        self
-    }
-
-    /// Show it as the lock screen: while the session is locked, over
-    /// nothing else.
-    pub(crate) const fn locking(mut self) -> Self {
-        self.lock_screen = true;
         self
     }
 
@@ -138,24 +128,6 @@ impl<S: Seat> Sheet<S> {
                 .collect();
             self.seat.covers(displays);
         }
-    }
-
-    /// Where a point on any display is on the lock screen, in the app's own
-    /// place: the lock draws one screen and shows it on every display, so a
-    /// press on any of them is the press at the same place on that screen.
-    fn on_the_lock_screen(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        if !self.lock_screen {
-            return None;
-        }
-        let placement = self.host.placement();
-        let (ox, oy) = (f64::from(placement.origin.0), f64::from(placement.origin.1));
-        let (width, height) = (f64::from(placement.size.0), f64::from(placement.size.1));
-        self.outputs.iter().copied().find_map(|(x0, y0, w, h)| {
-            let (x0, y0) = (f64::from(x0), f64::from(y0));
-            let (w, h) = (f64::from(w), f64::from(h));
-            let inside = w > 0.0 && h > 0.0 && x >= x0 && y >= y0 && x < x0 + w && y < y0 + h;
-            inside.then(|| (ox + (x - x0) * width / w, oy + (y - y0) * height / h))
-        })
     }
 }
 
@@ -231,67 +203,38 @@ impl<S: Seat> Published for Sheet<S> {
     fn offered(&self) -> bool {
         self.always_serving || self.open()
     }
-
-    /// The lock screen up withholds everything else.
-    fn exclusive(&self) -> bool {
-        self.lock_screen
-    }
 }
 
 impl<S: Seat> SurfaceHost for Sheet<S> {
-    fn lock_screen(&self) -> bool {
-        self.lock_screen
-    }
-
-    /// What the person typed into a secret field of the sheet's card, and
-    /// the lock screen itself, which asks for the password the whole time it
-    /// is up: a capture draws such a sheet as the placeholder, the display
-    /// keeps showing it.
+    /// What the person typed into a secret field of the sheet's card: a
+    /// capture draws such a sheet as the placeholder, the display keeps
+    /// showing it.
     fn withholds_captures(&self) -> bool {
-        (self.lock_screen && self.drawn()) || self.host.withholds_captures()
+        self.host.withholds_captures()
     }
 
     fn layers(&self) -> Vec<HostLayer> {
         if !self.drawn() {
             return Vec::new();
         }
-        let layers = self.host.layers();
-        if !self.lock_screen || self.outputs.is_empty() {
-            return layers;
-        }
-        // The lock covers every display: what the screen drew on one of them
-        // is what each of them shows, as the compositor shows a lock client's
-        // surface on every output rather than only the one it was made for.
-        self.outputs
-            .iter()
-            .copied()
-            .flat_map(|(x, y, w, h)| {
-                layers.iter().map(move |layer| HostLayer {
-                    location: (x, y),
-                    size: (w, h),
-                    frame: layer.frame.clone(),
-                })
-            })
-            .collect()
+        self.host.layers()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         // A sheet is modal: a press beside its card is still the sheet's,
         // which takes it as one outside.
-        self.open()
-            && (self.on_the_lock_screen(x, y).is_some() || {
-                let placement = self.host.placement();
-                let (ox, oy) = placement.origin;
-                let (w, h) = placement.size;
-                x >= f64::from(ox)
-                    && y >= f64::from(oy)
-                    && x < f64::from(ox) + f64::from(w)
-                    && y < f64::from(oy) + f64::from(h)
-            })
+        self.open() && {
+            let placement = self.host.placement();
+            let (ox, oy) = placement.origin;
+            let (w, h) = placement.size;
+            x >= f64::from(ox)
+                && y >= f64::from(oy)
+                && x < f64::from(ox) + f64::from(w)
+                && y < f64::from(oy) + f64::from(h)
+        }
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        let (x, y) = self.on_the_lock_screen(x, y).unwrap_or((x, y));
         self.host.pointer_motion(x, y);
     }
 

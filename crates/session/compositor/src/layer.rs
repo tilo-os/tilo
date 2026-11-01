@@ -27,7 +27,7 @@ use smithay::desktop::utils::{
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle};
+use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::wayland::compositor::{get_parent, with_states};
@@ -184,10 +184,13 @@ impl State {
         let Some(placed) = self.layers.surfaces.get(index) else {
             return;
         };
-        // A surface that named no output goes on the first one there is.
+        // A surface that named no output goes where the session connected
+        // its client for — the on-screen keyboard stands on the display the
+        // person types on — and on the first output otherwise.
         let output = placed
             .output
             .clone()
+            .or_else(|| self.client_output(placed.surface.wl_surface()))
             .or_else(|| self.space.outputs().next().cloned());
         let geometry = output
             .as_ref()
@@ -210,6 +213,20 @@ impl State {
         if placed.surface.has_pending_changes() {
             placed.surface.send_configure();
         }
+    }
+
+    /// The output the client of `surface` was connected for, while it is
+    /// attached: a client the session placed on a display of its own.
+    fn client_output(&self, surface: &WlSurface) -> Option<Output> {
+        let name = surface.client().and_then(|client| {
+            client
+                .get_data::<ClientState>()
+                .and_then(|state| state.output().map(str::to_owned))
+        })?;
+        self.space
+            .outputs()
+            .find(|output| output.name() == name)
+            .cloned()
     }
 
     /// A layer surface's client committed on it: it may show now, at the

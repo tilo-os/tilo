@@ -55,7 +55,6 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand_core.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
-libc.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tilo-actions = { version = "0.1.0", path = "../actions" }
@@ -86,7 +85,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serial_test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }

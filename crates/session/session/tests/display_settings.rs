@@ -109,14 +109,23 @@ fn scale(session: &mut Session, connector: &str) -> Option<f64> {
 }
 
 /// Let the session run until `done` holds.
+///
+/// Counting steps would not do: the display tool answers on its own socket
+/// and thread, and a loaded machine can take many steps' worth of time to get
+/// to it.
+#[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..500 {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         session.step(Duration::from_millis(2)).expect("step");
         if done(session) {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition not reached"
+        );
     }
-    panic!("condition not reached");
 }
 
 /// The question standing on the person's displays now, if one does.
@@ -359,6 +368,9 @@ fn walking_away_puts_the_previous_layout_back_and_takes_the_question_down() {
 fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembered() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
+    // The card is what changed between the pictures this test compares: the
+    // bar's own minute turning over is not.
+    let _clock = tilo_test_env::held_wall_clock();
     let mut session = session(2);
     attached(&mut session);
     let mine = DisplayTool::new(
@@ -370,25 +382,49 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
     tool.until_heads(&mut session);
 
     let before_right = shot(&mut session, "HEADLESS-2");
-    // A scale the display in use never showed: risky, so it is asked about.
-    tool.rescale(&mut session, "HEADLESS-1", 2.0);
+    // The question waits for the person and not for the machine: the clock
+    // the change's wait is counted on is held from the change to the answer,
+    // so drawing the pictures this test checks cannot run it out.
+    let (card_left, card_right) =
+        tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+            // A scale the display in use never showed: risky, so it is asked about.
+            tool.rescale(&mut session, "HEADLESS-1", 2.0);
 
-    until(&mut session, |session| {
-        asking(session).is_some_and(|question| question.displays.len() == 2)
-    });
-    let asked = asking(&session).expect("the question stands");
-    assert_eq!(
-        asked.tool.as_deref(),
-        Some(mine.name()),
-        "the question names the tool that made the change"
-    );
-    assert!(lit(&mut session, "HEADLESS-1") && lit(&mut session, "HEADLESS-2"));
-    assert!((scale(&mut session, "HEADLESS-1").expect("the display") - 2.0).abs() < f64::EPSILON);
+            until(&mut session, |session| {
+                asking(session).is_some_and(|question| question.displays.len() == 2)
+            });
+            let asked = asking(&session).expect("the question stands");
+            assert_eq!(
+                asked.tool.as_deref(),
+                Some(mine.name()),
+                "the question names the tool that made the change"
+            );
+            assert!(lit(&mut session, "HEADLESS-1") && lit(&mut session, "HEADLESS-2"));
+            assert!(
+                (scale(&mut session, "HEADLESS-1").expect("the display") - 2.0).abs()
+                    < f64::EPSILON
+            );
 
-    // The card stands on the display the change did not touch, centred on
-    // it: what the person would miss is drawn on every display.
-    let card_left = shot(&mut session, "HEADLESS-1");
-    let card_right = shot(&mut session, "HEADLESS-2");
+            // The card stands on the display the change did not touch, and
+            // on the one it did.
+            let card_left = shot(&mut session, "HEADLESS-1");
+            let card_right = shot(&mut session, "HEADLESS-2");
+
+            // Keep and stop asking about this tool: the third answer, after
+            // Keep and Revert in the keyboard's order.
+            tap(&mut session, KEY_TAB);
+            tap(&mut session, KEY_TAB);
+            tap(&mut session, KEY_ENTER);
+            until(&mut session, |session| asking(session).is_none());
+            for _ in 0..5 {
+                session.step(Duration::from_millis(2)).expect("step");
+            }
+            assert!(asking(&session).is_none(), "the question stays down");
+            (card_left, card_right)
+        });
+
+    // The card is centred on the display the change did not touch: what the
+    // person would miss is drawn in the middle of every display.
     let (_, (x0, y0, x1, y1)) = changed(&before_right, &card_right);
     assert!(x1 > x0 && y1 > y0, "nothing was drawn on it");
     let middle = (
@@ -399,17 +435,6 @@ fn a_tools_risky_change_asks_on_every_display_and_keeping_it_for_good_is_remembe
         middle.0.abs() < 40 && middle.1.abs() < 40,
         "the card sits at the middle of the display: {x0} {y0} {x1} {y1}"
     );
-
-    // Keep and stop asking about this tool: the third answer, after Keep and
-    // Revert in the keyboard's order.
-    tap(&mut session, KEY_TAB);
-    tap(&mut session, KEY_TAB);
-    tap(&mut session, KEY_ENTER);
-    until(&mut session, |session| asking(session).is_none());
-    for _ in 0..5 {
-        session.step(Duration::from_millis(2)).expect("step");
-    }
-    assert!(asking(&session).is_none(), "the question stays down");
 
     // Answering took the card down on every display: each one's middle
     // shows the desktop again.
@@ -484,18 +509,23 @@ impl Tool {
         self.connection.flush().expect("flush");
     }
 
-    /// Let the tool and the session talk until `done` holds.
+    /// Let the tool and the session talk until `done` holds, for as long as a
+    /// loaded machine takes: the answer comes over the tool's own socket.
     #[track_caller]
     fn pump(&mut self, session: &mut Session, mut done: impl FnMut(&ToolState) -> bool) {
-        for _ in 0..500 {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
             self.exchange();
             session.step(Duration::from_millis(2)).expect("step");
             self.exchange();
             if done(&self.state) {
                 return;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not reached"
+            );
         }
-        panic!("condition not reached");
     }
 
     fn until_heads(&mut self, session: &mut Session) {

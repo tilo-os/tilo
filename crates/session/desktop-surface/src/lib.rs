@@ -27,7 +27,13 @@ pub mod person_cursor;
 pub mod session;
 mod shared_tree;
 pub mod surface;
+pub mod warmth;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use surface::peer_view::{
+    NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,
+    PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId,
+};
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, NotificationOutcome, OpenActivity,

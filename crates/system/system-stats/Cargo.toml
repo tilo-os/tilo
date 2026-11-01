@@ -24,7 +24,6 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 wire-frame = { path = "../wire-frame" }
-workspace-hack = { version = "0.1" }
 
 # The session lists the machine's block devices with lsblk.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -35,6 +34,11 @@ zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"]
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
+
+# The workspace-hack's native feature set does not build for wasm32, and the
+# browser builds the desktop, and so this service, for it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

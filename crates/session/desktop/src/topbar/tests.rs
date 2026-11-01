@@ -1951,10 +1951,10 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
     assert!(!name.contains("unidentified session"), "{name}");
 }
 
-/// The people control says who is here and nothing else: unread room
+/// The people control says who is here and nothing else: unread workspace
 /// activity is told by the activity pill in the centre (and History),
 /// never by a badge on the people. The badge it had sat half above the
-/// bar, white on white, on the empty room's Invite seat.
+/// bar, white on white, on the empty workspace's Invite seat.
 #[test]
 fn unread_activity_paints_nothing_on_the_people_control() {
     let mut tree = DesktopTree {

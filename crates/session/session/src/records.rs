@@ -2,7 +2,7 @@
 //! brings one of them into the workspace in front.
 //!
 //! A workspace holds a record by naming it: each of its apps keeps a room
-//! index ([`ui::record::room`]) saying which records the workspace holds and
+//! index ([`ui::record::index`]) saying which records the workspace holds and
 //! what kind each one is, one document per app and workspace. Every app of
 //! the workspace writes that index as a shared writer, so this session writes
 //! it too: naming a record there is the same act as the app naming it, and
@@ -14,7 +14,7 @@
 //! one a peer brought into a room — is found by its name. Bringing it here is
 //! then one write, a reference into the workspace in front: no bytes move
 //! between the two workspaces' documents and no id is minted, because the id
-//! is the record. [`ui::record::room::duplicate`] is the deliberate act of
+//! is the record. [`ui::record::index::duplicate`] is the deliberate act of
 //! copying one instead.
 //!
 //! Reading happens away from the session's loop: the indexes are small files
@@ -197,7 +197,7 @@ impl Records {
                     }
                 };
                 let mut doc = index.load_or_new();
-                if ui::record::room::reference(&mut doc, &record.id, &record.kind)
+                if ui::record::index::reference(&mut doc, &record.id, &record.kind)
                     && let Err(error) = index.append(&mut doc)
                 {
                     tracing::warn!(%error, package, room, "a record's reference is not kept");
@@ -276,7 +276,7 @@ fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCh
     // the last write that completed, which is what the app itself loads.
     let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
     match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => ui::record::room::discoverable_references(&doc),
+        Ok(doc) => ui::record::index::discoverable_references(&doc),
         Err(error) => {
             tracing::warn!(%error, package, room, "a room's index does not load");
             Vec::new()

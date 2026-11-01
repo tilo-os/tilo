@@ -47,7 +47,7 @@ impl ShellOverlayHost {
 
     pub(super) fn apply_room_activity_outcome(
         chrome: &Chrome,
-        outcome: crate::shell::room_activity::RoomActivityOutcome,
+        outcome: crate::shell::room_activity::WorkspaceActivityOutcome,
     ) {
         // A full revert, comparison or name is the person's own
         // action and shows in History itself; only a partial undo has
@@ -422,7 +422,7 @@ impl ShellOverlayHost {
     }
 
     /// The room-activity sheet, for tests and for the shots driver.
-    pub fn room_activity(&self) -> &crate::shell::room_activity::RoomActivityPane {
+    pub fn room_activity(&self) -> &crate::shell::room_activity::WorkspaceActivityPane {
         &self.room_activity
     }
 
@@ -436,7 +436,7 @@ impl ShellOverlayHost {
 
     /// Mutable handle to the room-activity sheet, so a test can pin its clock
     /// or drive a filter without synthesising a click.
-    pub fn room_activity_mut(&mut self) -> &mut crate::shell::room_activity::RoomActivityPane {
+    pub fn room_activity_mut(&mut self) -> &mut crate::shell::room_activity::WorkspaceActivityPane {
         &mut self.room_activity
     }
 

@@ -13,6 +13,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 # A monitor's identity, read from its EDID, is the key a saved display
 # layout follows between ports.
 settings-store = { path = "../../system/settings-store" }
+# The colour a display reports is the colour pipeline's to describe; this
+# crate only parses the bytes that carry it.
+tilo-color-pipeline = { path = "../color-pipeline" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

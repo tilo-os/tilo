@@ -7,15 +7,27 @@
 //! and open history, and not enough to create commits, admit or remove
 //! anyone, or answer a Welcome. When the device's group moves to a new
 //! epoch the service hands the app a fresh value.
+//!
+//! The same keys derive the per-stream keys a call's media frames are
+//! sealed with ([`ChannelContentKeys::media_key`]), so a call needs no key
+//! exchange of its own and no key server.
 
 use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
 use serde::{Deserialize, Serialize};
+use tilo_seal::SymmetricKey;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::content::ContentKeyring;
 use crate::{Error, Result};
 
 const WIRE_VERSION: u8 = 1;
+
+/// Length of the tag naming one media stream: its lane and its source.
+pub const MEDIA_STREAM_TAG_LEN: usize = 2;
+
+/// Domain of the per-stream media keys, so a key one of them derives is
+/// never one derived for another purpose.
+const MEDIA_KEY_DOMAIN: &[u8] = b"tilo-call-media-v1";
 
 /// Content keys of one channel, as handed to an application endpoint.
 #[derive(Clone)]
@@ -116,6 +128,44 @@ impl ChannelContentKeys {
             ));
         }
         self.open_content(artifact, metadata, payload)
+    }
+
+    /// The key that seals one device's frames of one media stream under
+    /// `epoch`: a BLAKE3 keyed hash, under that epoch's content key, of
+    /// `"tilo-call-media-v1" ‖ channel ‖ epoch ‖ sender ‖ stream`.
+    ///
+    /// `sender` is the sending device's public key and `stream` the two
+    /// bytes naming the lane and, within it, the source (a call lane's own
+    /// vocabulary, so nothing but bytes of it lives here). Every holder of
+    /// the epoch's content key derives the same value, which is why a member
+    /// that joined later opens frames a lagging sender still seals under an
+    /// earlier epoch, exactly as it reads that epoch's content. The sender,
+    /// the stream and the channel are hashed in, so a frame cannot be
+    /// replayed as another device's, on another stream or in another
+    /// channel's call. A device removed before `epoch` holds no key for it
+    /// and derives nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] when this endpoint holds no content key
+    /// for `epoch`.
+    pub fn media_key(
+        &self,
+        epoch: u64,
+        sender: [u8; 32],
+        stream: [u8; MEDIA_STREAM_TAG_LEN],
+    ) -> Result<SymmetricKey> {
+        let content = self
+            .keyring
+            .get(epoch)
+            .ok_or(Error::MissingContentKey(epoch))?;
+        let mut hash = blake3::Hasher::new_keyed(content.expose_secret());
+        hash.update(MEDIA_KEY_DOMAIN);
+        hash.update(self.channel.0.as_bytes());
+        hash.update(&epoch.to_le_bytes());
+        hash.update(&sender);
+        hash.update(&stream);
+        Ok(SymmetricKey::from_bytes(*hash.finalize().as_bytes()))
     }
 
     /// Encode for the session service's local socket to the app.
@@ -222,5 +272,24 @@ mod tests {
         bytes.push(0);
         assert!(ChannelContentKeys::from_bytes(&bytes).is_err());
         assert!(!format!("{decoded:?}").contains("key:"));
+    }
+
+    #[test]
+    fn media_keys_follow_the_epoch_sender_and_stream_and_need_the_epoch_key() {
+        let channel = ChannelId::new();
+        let group = ChannelGroup::create(channel, MemberKey::generate("owner").unwrap()).unwrap();
+        let owner = group.content_keys().unwrap();
+        // Another endpoint of the same channel and epoch, keys and all.
+        let elsewhere = ChannelContentKeys::from_bytes(&owner.to_bytes().unwrap()).unwrap();
+        let epoch = group.epoch();
+        let key = owner.media_key(epoch, [1; 32], [0, 0]).unwrap();
+        assert_eq!(key, elsewhere.media_key(epoch, [1; 32], [0, 0]).unwrap());
+        assert_ne!(key, owner.media_key(epoch, [2; 32], [0, 0]).unwrap());
+        assert_ne!(key, owner.media_key(epoch, [1; 32], [0, 1]).unwrap());
+        assert_ne!(key, owner.media_key(epoch, [1; 32], [1, 0]).unwrap());
+        assert!(matches!(
+            owner.media_key(epoch + 1, [1; 32], [0, 0]),
+            Err(Error::MissingContentKey(missing)) if missing == epoch + 1
+        ));
     }
 }

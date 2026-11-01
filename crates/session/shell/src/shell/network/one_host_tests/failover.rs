@@ -315,7 +315,7 @@ fn held_on(device: &Device, room: RoomId) -> usize {
 
 /// How many writes to `room` the apps in it are told are not yet synced.
 fn unsynced(room: RoomId) -> u32 {
-    tilo_network_actor::room_sync::unsynced_writes(crate::shell::network::room_topic_id(room))
+    tilo_network_actor::workspace_sync::unsynced_writes(crate::shell::network::room_topic_id(room))
 }
 
 #[test]

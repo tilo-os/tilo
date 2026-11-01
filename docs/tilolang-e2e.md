@@ -44,7 +44,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **hosted-here**: one PNG of the session per app as first opened, with that
   app in front (`first-*.png`). The session's own workspace is a room this
   device governs and hosts itself, so its apps wait on no other host
-  (`room_sync` in `state-dump` is `null`, or `synced` with this device's own
+  (`workspace_sync` in `state-dump` is `null`, or `synced` with this device's own
   workspace host): each shows its own state at once, as native Notes does.
 - **snapshots**: one PNG of the session per app, with that app in front.
 - **native**: native Notes (`so.tilo.notes`) opens beside them, presents a

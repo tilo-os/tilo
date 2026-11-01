@@ -175,4 +175,59 @@ mod tests {
             "the receipt goes once what it says has been read"
         );
     }
+
+    /// A screenshot is saved into the workspace's files from its receipt, and
+    /// the studio says the name it landed under.
+    ///
+    /// What lands in the files is the session's to prove: the studio never
+    /// touches them.
+    #[test]
+    fn a_capture_can_be_saved_into_the_workspace() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let path = folder.path().join("Screenshot 1.png");
+        std::fs::write(&path, b"the screenshot").expect("a screenshot");
+        let seat = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(seat.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        let start = ui::time::now();
+        let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
+        seat.presentation().open(false);
+        poll_at(&mut frame, step(1), "the bar comes up");
+        seat.link().publish(Scene {
+            kept: Some(capture(path.clone())),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(2), "the receipt shows");
+        press(&mut frame, step(3), "capture.send-screenshot");
+        poll_at(&mut frame, step(4), "the picker is offered");
+        assert!(
+            rect_at(&frame, step(4), "capture.send-to-workspace").area() > 0.0,
+            "the workspace's files are offered"
+        );
+        press(&mut frame, step(5), "capture.send-to-workspace");
+        poll_at(&mut frame, step(6), "the pick is answered");
+        assert_eq!(
+            seat.link().take_asks(),
+            [Ask::SendLastToWorkspace],
+            "the session is asked to save the last capture"
+        );
+        assert!(
+            seat.presentation().is_open(),
+            "the receipt stays up until the session says what became of the save"
+        );
+        seat.link().publish(Scene {
+            kept: Some(capture(path)),
+            sent: Some(Sent::saved("Screenshot 1.png".into())),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(7), "what became of it is said");
+        assert!(
+            rect_at(&frame, step(7), "capture.send-status").area() > 0.0,
+            "the studio names the file it was saved as"
+        );
+    }
 }

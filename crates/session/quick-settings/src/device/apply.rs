@@ -6,7 +6,7 @@ use os_actions as qs;
 
 use super::reads::{BluetoothReading, FastReading, FieldReading, WifiJoinResult};
 use crate::i18n::{t, t_args};
-use crate::{BtDevice, BtNearby, DisplayBrightness, PowerProfile, QuickSettingsState, WifiNetwork};
+use crate::{BtDevice, BtNearby, PowerProfile, QuickSettingsState, WifiNetwork};
 
 /// The panel's three-way profile, from the daemon's.
 pub(crate) const fn ui_power_profile(profile: qs::PowerProfile) -> PowerProfile {
@@ -29,8 +29,6 @@ pub(crate) const fn os_power_profile(profile: PowerProfile) -> qs::PowerProfile 
 /// Everything the panel shows, read on opening.
 pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     let FastReading {
-        brightness,
-        displays,
         bluetooth,
         bluetooth_available,
         power,
@@ -48,7 +46,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     if let Some(profiles) = power_profiles {
         qs.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
     }
-    brightness_levels(qs, brightness, displays);
     if let Some(radios) = radios {
         self::radios(qs, radios);
     }
@@ -81,9 +78,6 @@ pub(crate) fn field(qs: &mut QuickSettingsState, reading: FieldReading) {
         FieldReading::Wired(Some(wired)) => qs.wired = Some(wired),
         FieldReading::Power(Some(profile)) => qs.power_profile = ui_power_profile(profile),
         FieldReading::Vpns(Some(vpns)) => qs.vpns = vpns,
-        FieldReading::Brightness(brightness, displays) => {
-            brightness_levels(qs, brightness, Some(displays));
-        }
         // Not read: leave the control as it is.
         FieldReading::Radios(None)
         | FieldReading::Bluetooth(None)
@@ -104,31 +98,6 @@ pub(crate) fn radios(qs: &mut QuickSettingsState, radios: qs::RadioState) {
         }
     }
     qs.radios = radios;
-}
-
-/// `displays: None` means the monitor list was not read this time, so
-/// neither the list nor the slider's availability changes. The display the
-/// person works on gets the first slider.
-pub(crate) fn brightness_levels(
-    qs: &mut QuickSettingsState,
-    brightness: Option<f32>,
-    displays: Option<Vec<DisplayBrightness>>,
-) {
-    let brightness = match displays {
-        Some(mut displays) => {
-            crate::focused_display_first(&mut displays, qs.focused_display.as_deref());
-            qs.brightness_available = brightness.is_some() || !displays.is_empty();
-            let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
-            if qs.displays != displays {
-                qs.displays = displays;
-            }
-            brightness
-        }
-        None => brightness,
-    };
-    if let Some(level) = brightness {
-        qs.brightness = level;
-    }
 }
 
 pub(crate) fn wifi_networks(qs: &mut QuickSettingsState, networks: Vec<qs::WifiNetworkInfo>) {
@@ -261,8 +230,6 @@ pub(crate) fn wifi_join(
 
 /// How far Louder and Quieter move the volume.
 pub(crate) const VOLUME_STEP: f64 = 0.05;
-/// How far Brighter and Dimmer move the brightness.
-pub(crate) const BRIGHTNESS_STEP: f64 = 0.1;
 
 /// A level the panel sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -277,22 +244,6 @@ pub(crate) enum LevelChange {
 /// The volume `step` from the level it is at, as Louder and Quieter ask.
 pub(crate) fn volume_step(qs: &QuickSettingsState, step: f64) -> LevelChange {
     LevelChange::Volume((f64::from(qs.volume_level()) + step).clamp(0.0, 1.0))
-}
-
-/// The brightness `step` away, as Brighter and Dimmer ask: from the level
-/// of the display the person works on, when the desktop spans several that
-/// can be dimmed, else from the one brightness.
-pub(crate) fn brightness_step(qs: &QuickSettingsState, step: f64) -> LevelChange {
-    let moved = |level: f32| (f64::from(level) + step).clamp(0.0, 1.0);
-    let focused = qs.focused_display.as_deref().and_then(|focused| {
-        qs.displays
-            .iter()
-            .find(|display| display.connector == focused)
-    });
-    match focused {
-        Some(display) => LevelChange::Display(display.connector.clone(), moved(display.level)),
-        None => LevelChange::Brightness(moved(qs.brightness)),
-    }
 }
 
 /// A level as the readings keep it.
@@ -326,30 +277,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steps_move_the_display_in_use_and_stay_in_range() {
+    fn the_volume_step_stays_in_range() {
         let mut qs = QuickSettingsState::fixture();
-        qs.brightness = 0.95;
-        assert_eq!(
-            brightness_step(&qs, BRIGHTNESS_STEP),
-            LevelChange::Brightness(1.0)
-        );
-        qs.displays = vec![
-            DisplayBrightness {
-                connector: "eDP-1".into(),
-                name: "Built-in display".into(),
-                level: 0.5,
-            },
-            DisplayBrightness {
-                connector: "DP-2".into(),
-                name: "Dell".into(),
-                level: 0.25,
-            },
-        ];
-        qs.focused_display = Some("DP-2".into());
-        assert_eq!(
-            brightness_step(&qs, -BRIGHTNESS_STEP),
-            LevelChange::Display("DP-2".into(), 0.25 - BRIGHTNESS_STEP)
-        );
         qs.set_volume_level(0.02);
         assert_eq!(volume_step(&qs, -VOLUME_STEP), LevelChange::Volume(0.0));
     }

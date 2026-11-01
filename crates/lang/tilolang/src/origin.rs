@@ -226,11 +226,6 @@ pub const KINDS: &[OriginKind] = &[
                 "The others here in the workspace in front.",
             ),
             field(
-                "title",
-                "Text",
-                "What the bar names the desk: the workspace in front, and the strip after it.",
-            ),
-            field(
                 "here",
                 "Text",
                 "The surface the desk shows over its windows: `none`, `desk`, `overview`, \

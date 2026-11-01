@@ -1834,7 +1834,7 @@ mod tests {
     }
 
     /// Someone the workspace does not let add a strip (a spectator, a
-    /// public room's visitor) is offered none.
+    /// public workspace's visitor) is offered none.
     #[test]
     fn whoever_may_not_add_a_strip_is_offered_none() {
         let (mut s, _) = switcher(&["Lounge", "Research"]);

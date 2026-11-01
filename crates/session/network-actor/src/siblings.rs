@@ -90,6 +90,7 @@ pub(crate) async fn spawn_ticking(
             protocols,
             held_writes: state.join("held-writes"),
         }),
+        Vec::new(),
     );
     let host = RoomHost::open(
         HostConfig::new(state.join("room-host"), HostMode::Device),

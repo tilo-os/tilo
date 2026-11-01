@@ -33,26 +33,26 @@ pub trait WorkspaceAuthority {
     fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision;
     fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool;
     /// Record the sandbox capability `cap`, as `grantor`, who must be
-    /// allowed to grant in the room. The capability's id.
+    /// allowed to grant in the workspace. The capability's id.
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
     /// Drop the sandbox capability or grant with id `id`, as `revoker`, who
-    /// must be allowed to revoke in the room.
+    /// must be allowed to revoke in the workspace.
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
-    /// Whether `user` may grant in the room.
+    /// Whether `user` may grant in the workspace.
     fn may_administer(&self, user: &UserId) -> bool;
     /// Whether `user` is allowed, without asking first, an action of `kind`
-    /// at `relative`, a path below the room.
+    /// at `relative`, a path below the workspace.
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
     fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
-    /// The sandbox actor a person is in this room.
+    /// The sandbox actor a person is in this workspace.
     fn actor_for_person(&self, user: &UserId) -> Actor;
-    /// The sandbox actor an app's code is in this room.
+    /// The sandbox actor an app's code is in this workspace.
     fn actor_for_app(&self, app_id: &str) -> Actor;
-    /// The sandbox actor an agent is in this room.
+    /// The sandbox actor an agent is in this workspace.
     fn actor_for_agent(&self, agent: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
-    /// Agents admitted to the room, with the kinds of action their room
+    /// Agents admitted to the workspace, with the kinds of action their workspace
     /// grants allow.
     fn agent_members(&self) -> Vec<(String, KindSet)>;
     /// The grants naming one person each that reach `node`.

@@ -1,7 +1,7 @@
 //! Bounded retained-notification bytes, using the native desktop's format.
 //! Hosts provide storage; restart restores provenance and age while
 //! sender actions and remote routes remain scoped to their original session.
-//! Host-scheduled occurrence targets are durable and retain their exact room.
+//! Host-scheduled occurrence targets are durable and retain their exact workspace.
 use super::{MAX_HISTORY, Notification, NotificationSeverity};
 use serde::{Deserialize, Serialize};
 use ui::time::{Duration, Instant, SystemTime, UNIX_EPOCH};

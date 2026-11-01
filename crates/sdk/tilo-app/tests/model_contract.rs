@@ -332,7 +332,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
         .collect();
     assert!(!carried.is_empty());
     let origin = tilo_app::record::identity(&source).expect("record identity");
-    let from = tilo_app::record::room_scope(&source).expect("room scope");
+    let from = tilo_app::record::workspace_scope(&source).expect("room scope");
     let target = RecordId::minted();
     let mut arrived = tilo_app::record::transfer::rehome(
         &source,

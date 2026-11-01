@@ -13,19 +13,23 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use tilo_actions::ActionAddress;
+use tilo_actions::{ActionAddress, DoorError};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_surface_host::DeskGesture;
+use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 use xkeysym::key as keysyms;
 
 use crate::Shared;
+use crate::displays;
 use crate::mount::services::answered;
-
+use crate::mount::shell::OVERLAYS;
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
@@ -74,19 +78,38 @@ impl Invocation {
 /// Invocations waiting for the session's door.
 pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
-/// Quick settings' resource, whose effects the level and radio keys run.
+/// Chords pressed that run a saved shortcut's keyboard trigger, waiting for
+/// the automation host to fire them.
+pub type PressedChords = Rc<RefCell<Vec<KeyChord>>>;
+
+/// What the keys hand the rest of the session: the shortcuts the person's
+/// presses invoked, and the chords an armed shortcut answers, which the
+/// automation host starts its run on.
+#[derive(Clone, Default)]
+pub(crate) struct Presses {
+    pub invocations: Invocations,
+    pub triggered: PressedChords,
+}
+
+/// Quick settings' resource, whose effects the notification and paste keys
+/// run.
 pub const QUICK_SETTINGS: &str = "quick-settings.panel";
 /// What plays: the audio service's media, whose own controls reach the
 /// player in front.
 pub const MEDIA: &str = tilo_audio_service::media::MEDIA;
+/// The sound: the audio service's, which owns the outputs, the level and the
+/// mute.
+pub const SOUND: &str = tilo_audio_service::sound::SOUND;
 /// The microphone: the audio service's sound resource.
-pub const MICROPHONE: &str = tilo_audio_service::sound::SOUND;
+pub const MICROPHONE: &str = SOUND;
+/// The radios: the connectivity service's network, which owns airplane mode.
+const NETWORK: &str = tilo_connectivity_service::NETWORK;
 /// This device's input devices, the session's own.
 const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
 /// The keyboard's backlight, the system service's.
 pub const KEYBOARD_BACKLIGHT: &str = tilo_system_service::KEYBOARD_BACKLIGHT;
-/// The display modes (mirror, extend, …), the session's own.
-const DISPLAYS: &str = crate::controls::DISPLAYS_RESOURCE;
+/// The displays: the session's own, their arrangements and their brightness.
+const DISPLAYS: &str = crate::displays::RESOURCE;
 /// The machine's power policy, the power service's: what the power key does.
 pub const SLEEP: &str = tilo_session_power::SLEEP;
 /// The capture studio, whose `screenshot` action the Print key is.
@@ -95,6 +118,19 @@ const CAPTURE_STUDIO: &str = tilo_capture_studio::RESOURCE;
 /// `XF86XK_RFKill`, which the keysym tables predate: laptops send it for
 /// the airplane-mode key; `XF86WLAN` is the older spelling.
 const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
+
+/// How long a key's readout waits for the device to answer it before what it
+/// showed stands as it is.
+const READOUT_SETTLE: Duration = Duration::from_millis(250);
+
+/// A key's readout whose action the device took and has not answered yet.
+#[derive(Debug)]
+pub(crate) struct PendingReadout {
+    pub(crate) kind: OsdKind,
+    /// What the readout showed when the key ran.
+    pub(crate) before: Osd,
+    pub(crate) at: Instant,
+}
 
 /// A hardware key: the action it runs, whether holding it repeats it, and
 /// whether it works on the lock screen (it changes a level and reveals
@@ -105,6 +141,9 @@ struct Hardware {
     while_locked: bool,
     /// The readout that answers it on screen.
     readout: Option<OsdKind>,
+    /// Shift on the key asks for every display, as it does on the brightness
+    /// key: the invocation carries `all`.
+    shift_all: bool,
 }
 
 /// What a hardware key runs: an action of the session's resources, or one of
@@ -130,6 +169,7 @@ const fn hardware(
         repeats,
         while_locked,
         readout: None,
+        shift_all: false,
     }
 }
 
@@ -141,6 +181,7 @@ const fn desktop(action: ShortcutAction, repeats: bool, while_locked: bool) -> H
         repeats,
         while_locked,
         readout: None,
+        shift_all: false,
     }
 }
 
@@ -149,29 +190,34 @@ impl Hardware {
         self.readout = Some(kind);
         self
     }
+
+    /// Shift on it moves every display that can be dimmed.
+    const fn together(mut self) -> Self {
+        self.shift_all = true;
+        self
+    }
 }
 
 /// The hardware key `keysym` is, if it is one.
 fn classify(keysym: u32) -> Option<Hardware> {
     Some(match keysym {
         keysyms::XF86_AudioRaiseVolume => {
-            hardware(QUICK_SETTINGS, "volume-up", true, true).reads(OsdKind::Volume)
+            hardware(SOUND, "volume-up", true, true).reads(OsdKind::Volume)
         }
         keysyms::XF86_AudioLowerVolume => {
-            hardware(QUICK_SETTINGS, "volume-down", true, true).reads(OsdKind::Volume)
+            hardware(SOUND, "volume-down", true, true).reads(OsdKind::Volume)
         }
         keysyms::XF86_AudioMute => {
-            hardware(QUICK_SETTINGS, "toggle-muted", false, true).reads(OsdKind::Volume)
+            hardware(SOUND, "toggle-muted", false, true).reads(OsdKind::Volume)
         }
-        keysyms::XF86_MonBrightnessUp => {
-            hardware(QUICK_SETTINGS, "brightness-up", true, true).reads(OsdKind::Brightness)
-        }
-        keysyms::XF86_MonBrightnessDown => {
-            hardware(QUICK_SETTINGS, "brightness-down", true, true).reads(OsdKind::Brightness)
-        }
+        keysyms::XF86_MonBrightnessUp => hardware(DISPLAYS, "brightness-up", true, true)
+            .reads(OsdKind::Brightness)
+            .together(),
+        keysyms::XF86_MonBrightnessDown => hardware(DISPLAYS, "brightness-down", true, true)
+            .reads(OsdKind::Brightness)
+            .together(),
         keysyms::XF86_WLAN | KEY_XF86_RFKILL => {
-            hardware(QUICK_SETTINGS, "toggle-airplane-mode", false, false)
-                .reads(OsdKind::AirplaneMode)
+            hardware(NETWORK, "toggle-airplane-mode", false, false).reads(OsdKind::AirplaneMode)
         }
         keysyms::XF86_AudioMicMute => {
             hardware(MICROPHONE, "toggle-input-muted", false, true).reads(OsdKind::Microphone)
@@ -282,6 +328,24 @@ impl GuideKeys {
     }
 }
 
+/// What stands over the desk and what the keys owe it: Escape folds the card
+/// a desk widget has open, and closes the topmost surface of the stack that
+/// answers Escape. Neither hears keys itself, so both say here what theirs
+/// are worth.
+#[derive(Clone, Default)]
+pub(crate) struct DeskKeys {
+    fold: DeskFold,
+    overlays: Overlays,
+}
+
+impl DeskKeys {
+    /// The desk's fold and the surfaces over it, as the session holds them.
+    #[must_use]
+    pub(crate) fn new(fold: DeskFold, overlays: Overlays) -> Self {
+        Self { fold, overlays }
+    }
+}
+
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the
@@ -291,6 +355,9 @@ pub(crate) struct SessionKeys {
     /// there, and once it is, the chord moves inside it instead.
     displays: Option<tilo_sheets::Presentation>,
     invocations: Invocations,
+    /// The chords pressed that run a saved shortcut's keyboard trigger: the
+    /// automation host starts them, on the pass that follows.
+    triggered: PressedChords,
     /// The apps' shortcuts, which work wherever the keyboard is.
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     /// The shortcut guide's keys while it is up: what it holds back from
@@ -300,6 +367,10 @@ pub(crate) struct SessionKeys {
     /// is under the windows and hears no keys itself, so it says here what
     /// its keys are worth.
     fold: DeskFold,
+    /// What stands over the desk: Escape closes the topmost surface that
+    /// answers it, and while one holds the keyboard a press is that
+    /// surface's and not the window's.
+    overlays: Overlays,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -313,21 +384,27 @@ pub(crate) struct SessionKeys {
 impl SessionKeys {
     pub(crate) fn new(
         shortcuts: Rc<RefCell<ShortcutConfig>>,
-        invocations: Invocations,
+        presses: Presses,
         portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
         guide: GuideKeys,
-        fold: DeskFold,
+        desk: DeskKeys,
         displays: Option<tilo_sheets::Presentation>,
         controller: Rc<Cell<Option<ui::ControllerFamily>>>,
         controller_keys: Rc<Cell<bool>>,
     ) -> Self {
+        let Presses {
+            invocations,
+            triggered,
+        } = presses;
         Self {
             shortcuts,
             displays,
             invocations,
+            triggered,
             portal,
             guide,
-            fold,
+            fold: desk.fold,
+            overlays: desk.overlays,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -338,6 +415,15 @@ impl SessionKeys {
     /// has open, and what sits behind the desk does not hear it.
     fn folds_the_desk(&self, key: &HostKey) -> bool {
         key.unmodified_keysym == keysyms::Escape && self.fold.is_open()
+    }
+
+    /// The surface `key` closes, by the stack's dismissal table: Escape, for
+    /// the topmost surface that answers it. The surface is drawn elsewhere,
+    /// so this surface is the one that hears it.
+    fn closes_the_top_surface(&self, key: &HostKey) -> Option<Slot> {
+        (key.unmodified_keysym == keysyms::Escape)
+            .then(|| self.overlays.escape())
+            .flatten()
     }
 
     /// Whether `key` is the display sheet's chord, which puts the sheet up:
@@ -384,6 +470,20 @@ impl SessionKeys {
         tilo_desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
     }
 
+    /// The chord of this press that runs a saved shortcut's keyboard trigger,
+    /// which the session claims and the automation host fires. The chord is
+    /// the table's because the automation put it there when it armed the
+    /// shortcut, and it stays the session's until the next arming drops it.
+    fn trigger_chord(&self, key: &HostKey) -> Option<KeyChord> {
+        let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
+        let chord = tilo_desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
+        let shortcuts = self.shortcuts.borrow();
+        shortcuts
+            .action_for(&chord)
+            .filter(|bound| tilo_action_broker::automation::is_shortcut_target(&bound.target))
+            .map(|_| chord)
+    }
+
     /// The invocation a press is, and how it is claimed. `inhibited` while a
     /// focused client holds the desktop's shortcuts (a virtual machine, a
     /// remote desktop): only a hardware key and locking the session stay the
@@ -407,6 +507,9 @@ impl SessionKeys {
                 HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
                 HardwareAction::Shortcut(action) => Invocation::shortcut(action),
             };
+            if hardware.shift_all && key.modifiers.shift {
+                invocation = invocation.with("all", true);
+            }
             invocation.readout = hardware.readout;
             return Some((invocation, claim));
         }
@@ -508,12 +611,25 @@ impl SurfaceHost for SessionKeys {
             // volume keys, F1) is no chord and answers as it does without
             // the guide.
             if classify(key.keysym).is_none() {
+                if self.trigger_chord(key).is_some() {
+                    return KeyClaim::Take;
+                }
                 return self
                     .resolve(key, locked, inhibited)
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
+        if self.closes_the_top_surface(key).is_some() {
+            return KeyClaim::Take;
+        }
         if self.folds_the_desk(key) {
+            return KeyClaim::Take;
+        }
+        // A chord that runs a saved shortcut is the session's, as a chord of
+        // the desktop's own table is: the shortcut fires rather than the
+        // window behind it. A locked session, or one whose focused client
+        // holds the shortcuts, answers neither.
+        if !locked && !inhibited && self.trigger_chord(key).is_some() {
             return KeyClaim::Take;
         }
         self.resolve(key, locked, inhibited)
@@ -541,8 +657,20 @@ impl SurfaceHost for SessionKeys {
             self.guide_key(key);
             return;
         }
+        if let Some(slot) = self.closes_the_top_surface(key) {
+            self.invocations
+                .borrow_mut()
+                .push(Invocation::new(OVERLAYS, "close").with("slot", slot.as_str()));
+            return;
+        }
         if self.folds_the_desk(key) {
             self.fold.ask();
+            return;
+        }
+        // A chord of a saved shortcut's keyboard trigger starts the shortcut:
+        // the automation host is handed the press on this pass.
+        if let Some(chord) = self.trigger_chord(key) {
+            self.triggered.borrow_mut().push(chord);
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
@@ -619,41 +747,95 @@ impl Shared {
                         .unwrap_or(Err(error))
                 });
             match outcome {
-                Ok(_) => {
+                Ok(started) => {
                     if let Some(kind) = invocation.readout {
-                        self.show_readout(self.reading(kind));
+                        let now = self.reading(kind);
+                        self.show_readout(now);
+                        if started == ResourceOperationStart::Accepted {
+                            // The device has not answered yet: the readout
+                            // shows where it started, and again where the
+                            // device left it once the reading says so.
+                            self.waiting.borrow_mut().push(PendingReadout {
+                                kind,
+                                before: now,
+                                at: Instant::now(),
+                            });
+                        }
                     }
                 }
-                Err(error) => tracing::debug!(
-                    ?error,
-                    address = %invocation.address.encode(),
-                    "nothing carried out a key's action"
-                ),
+                Err(error) => {
+                    if invocation.readout == Some(OsdKind::Brightness)
+                        && Self::says_nothing_to_dim(&error)
+                    {
+                        self.show_readout(Osd {
+                            kind: OsdKind::NoBacklight,
+                            level: 0.0,
+                            on: true,
+                        });
+                    }
+                    tracing::debug!(
+                        ?error,
+                        address = %invocation.address.encode(),
+                        "nothing carried out a key's action"
+                    );
+                }
             }
         }
         ran
     }
 
-    /// The readout of `kind` as the device reads now.
+    /// The readout of `kind` as the device's own service publishes it now.
     pub(crate) fn reading(&self, kind: OsdKind) -> Osd {
-        let readings = self.readings.borrow();
-        let state = readings
-            .as_ref()
-            .map(tilo_quick_settings::host::Feed::current);
-        let (level, on) = match (kind, state) {
-            (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
-            (OsdKind::Microphone, Some(state)) => (
-                0.0,
-                !state
-                    .microphone
-                    .as_ref()
-                    .is_some_and(|microphone| microphone.muted),
-            ),
-            (OsdKind::Brightness, Some(state)) => (state.brightness, true),
-            (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
+        let services = self.services.borrow();
+        let read = |resource: &str| services.read(resource);
+        let sound = || {
+            read(SOUND).and_then(|reading| {
+                serde_json::from_value::<tilo_audio_service::sound::Sound>(reading).ok()
+            })
+        };
+        let (level, on) = match kind {
+            OsdKind::Volume => sound().map_or((0.0, true), |sound| {
+                (sound.volume.unwrap_or(0.0), !sound.muted)
+            }),
+            OsdKind::Microphone => sound().map_or((0.0, true), |sound| (0.0, !sound.input_muted)),
+            OsdKind::Brightness => read(displays::RESOURCE)
+                .and_then(|reading| serde_json::from_value::<displays::Reading>(reading).ok())
+                .map_or((0.0, true), |reading| {
+                    (reading.brightness().unwrap_or(0.0), true)
+                }),
+            OsdKind::AirplaneMode => read(NETWORK)
+                .and_then(|reading| {
+                    serde_json::from_value::<tilo_connectivity_service::model::Network>(reading)
+                        .ok()
+                })
+                .map_or((0.0, true), |network| (0.0, network.airplane_mode)),
             _ => (0.0, true),
         };
         Osd { kind, level, on }
+    }
+
+    /// Show the readouts a device answered since the key was pressed, where it
+    /// left them: the level a person sees is the one their key produced, not
+    /// the one before it.
+    pub(crate) fn show_answered_readouts(&self) {
+        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
+        let now = Instant::now();
+        let mut unanswered = Vec::new();
+        for pending in waiting {
+            let answered = self.reading(pending.kind);
+            if answered != pending.before {
+                self.show_readout(answered);
+            } else if now.saturating_duration_since(pending.at) < READOUT_SETTLE {
+                unanswered.push(pending);
+            }
+        }
+        *self.waiting.borrow_mut() = unanswered;
+    }
+
+    /// Whether `error` is the session saying that no display here can be
+    /// dimmed.
+    fn says_nothing_to_dim(error: &DoorError) -> bool {
+        matches!(error, DoorError::Unavailable { code, .. } if code == "no-backlight")
     }
 
     /// Show `osd` through the readout's published action.
@@ -688,10 +870,10 @@ mod tests {
     fn keys() -> SessionKeys {
         SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             GuideKeys::default(),
-            DeskFold::default(),
+            DeskKeys::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -705,10 +887,10 @@ mod tests {
         guide.set_up(true);
         let keys = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             guide.clone(),
-            DeskFold::default(),
+            DeskKeys::default(),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),
@@ -727,7 +909,7 @@ mod tests {
         assert_eq!(
             keys.resolve(&volume, true, false),
             Some((
-                Invocation::new(QUICK_SETTINGS, "volume-up").showing(OsdKind::Volume),
+                Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume),
                 KeyClaim::TakeRepeating
             ))
         );
@@ -736,8 +918,7 @@ mod tests {
         assert_eq!(
             keys.resolve(&airplane, false, false),
             Some((
-                Invocation::new(QUICK_SETTINGS, "toggle-airplane-mode")
-                    .showing(OsdKind::AirplaneMode),
+                Invocation::new(NETWORK, "toggle-airplane-mode").showing(OsdKind::AirplaneMode),
                 KeyClaim::Take
             ))
         );
@@ -848,7 +1029,7 @@ mod tests {
         keys.key(&volume);
         assert_eq!(
             keys.invocations.borrow().as_slice(),
-            [Invocation::new(QUICK_SETTINGS, "volume-up").showing(OsdKind::Volume)]
+            [Invocation::new(SOUND, "volume-up").showing(OsdKind::Volume)]
         );
         assert_eq!(guide.take_caught(), []);
     }
@@ -930,14 +1111,84 @@ mod tests {
     }
 
     #[test]
+    fn a_shortcuts_chord_is_claimed_and_handed_to_the_automation_host() {
+        let shortcuts = Rc::new(RefCell::new(ShortcutConfig::default()));
+        let triggered = PressedChords::default();
+        let mut keys = SessionKeys::new(
+            Rc::clone(&shortcuts),
+            Presses {
+                invocations: Invocations::default(),
+                triggered: Rc::clone(&triggered),
+            },
+            None,
+            GuideKeys::default(),
+            DeskKeys::default(),
+            None,
+            Rc::new(Cell::new(None)),
+            Rc::new(Cell::new(false)),
+        );
+        let chord = KeyChord::parse("ctrl+alt+j").expect("a chord");
+        // Nothing armed: the chord is nobody's, and types into what is up.
+        assert_eq!(
+            keys.claim_key(
+                &key(
+                    keysyms::j,
+                    Some('j'),
+                    KeyModifiers {
+                        ctrl: true,
+                        alt: true,
+                        ..KeyModifiers::default()
+                    }
+                ),
+                false,
+                false
+            ),
+            KeyClaim::Pass
+        );
+        // The automation armed a shortcut on that chord: the session answers
+        // it, and hands the press on once.
+        let mut table = shortcuts.borrow().clone();
+        assert!(tilo_action_broker::automation::replace_trigger_chords(
+            &mut table,
+            vec![settings_store::hardware::ActionChord {
+                chord: chord.clone(),
+                target: tilo_action_broker::automation::chord_target("room", "tidy"),
+                label: "Run Tidy".into(),
+            }],
+        ));
+        *shortcuts.borrow_mut() = table;
+        let press = key(
+            keysyms::j,
+            Some('j'),
+            KeyModifiers {
+                ctrl: true,
+                alt: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(keys.claim_key(&press, false, false), KeyClaim::Take);
+        assert_eq!(
+            keys.claim_key(&press, true, false),
+            KeyClaim::Pass,
+            "a locked session runs no shortcut"
+        );
+        keys.key(&press);
+        assert_eq!(triggered.borrow().as_slice(), [chord]);
+        assert!(
+            keys.invocations.borrow().is_empty(),
+            "the shortcut starts on the automation host, not as a desktop action"
+        );
+    }
+
+    #[test]
     fn escape_folds_the_card_a_widget_has_open_and_nothing_behind_it_hears_it() {
         let fold = DeskFold::default();
         let mut keys = SessionKeys::new(
             Rc::new(RefCell::new(ShortcutConfig::default())),
-            Invocations::default(),
+            Presses::default(),
             None,
             GuideKeys::default(),
-            fold.clone(),
+            DeskKeys::new(fold.clone(), Overlays::new()),
             None,
             Rc::new(Cell::new(None)),
             Rc::new(Cell::new(false)),

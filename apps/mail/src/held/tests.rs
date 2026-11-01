@@ -1,4 +1,4 @@
-//! Mail held in the room, as an agent uses it: delivered, read, searched,
+//! Mail held in the workspace, as an agent uses it: delivered, read, searched,
 //! drafted to and exported, without an account and never sent.
 
 use serde_json::json;

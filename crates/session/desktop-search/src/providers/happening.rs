@@ -39,12 +39,13 @@ pub fn happening_kind() -> ResourceKind {
 const LEAD_INTENT: f32 = 1.0;
 
 /// Someone in a workspace, as the desk's collaborators list them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PersonHere {
     /// Their id within the workspace's roster: their face is theirs.
     pub id: String,
     pub name: String,
-    /// Their presence colour, `(r, g, b)`.
+    /// Their presence colour, `(r, g, b)`: the one they chose, or their
+    /// identity's.
     pub colour: (u8, u8, u8),
     pub agent: bool,
     /// They are away from their machine: the face dims.
@@ -58,7 +59,7 @@ impl PersonHere {
         RowFace {
             name: self.name.clone(),
             identity: self.id.clone(),
-            colour: ui::peniko::Color::from_rgb8(self.colour.0, self.colour.1, self.colour.2),
+            colour: ui::presence::presence_colour(self.colour),
             is_agent: self.agent,
             dimmed: self.away,
         }
@@ -66,7 +67,7 @@ impl PersonHere {
 }
 
 /// A call in progress in a workspace.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CallHere {
     /// Chat's id of the voice channel.
     pub channel: String,
@@ -77,7 +78,7 @@ pub struct CallHere {
 }
 
 /// One window someone is in: its title and who is there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WindowHere {
     pub tab: u64,
     pub title: String,
@@ -85,7 +86,7 @@ pub struct WindowHere {
 }
 
 /// One workspace and who is here in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceHere {
     /// The workspace's id, as the desktop numbers it.
     pub id: u64,

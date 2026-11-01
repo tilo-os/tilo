@@ -98,8 +98,11 @@ pub struct Listing {
     pub host: String,
     /// Whose own workspace it is, for a site's community workspace.
     pub tag: Option<String>,
-    /// How lively it is and how many belong, or why the last join failed.
+    /// How lively it is, or why the last join failed: the row's secondary
+    /// line.
     pub activity: String,
+    /// How many belong, in the row's column; `None` when it says nothing.
+    pub members: Option<String>,
     /// The role people who join get, as its button describes it.
     pub joins_as: String,
     /// Who is in it now: names and identities, and how many in all.
@@ -309,6 +312,7 @@ fn sample_directory() -> Directory {
         host: "tilo.coffee".to_owned(),
         tag: None,
         activity: format!("{here} here now"),
+        members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
         joins_as: "You join as an editor".to_owned(),
         here: (0..here.min(FACES_SHOWN))
             .map(|n| (format!("Person {n}"), format!("person-{n}")))
@@ -468,6 +472,9 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
     .trailing(Box::new(trailing));
     if let Some(tag) = &listing.tag {
         row = row.badge(tag.clone());
+    }
+    if let Some(members) = &listing.members {
+        row = row.meta(members.clone());
     }
     Box::new(row)
 }

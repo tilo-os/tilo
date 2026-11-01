@@ -20,7 +20,7 @@ fn capability_grants_start_empty_and_round_trip() {
     {
         // Both `Workspace::default()` (used by `..Default::default()`
         // sweeps) and `Workspace::new(...)` must start empty, and an
-        // empty room must deny rather than default-allow.
+        // empty workspace must deny rather than default-allow.
         for ws in [
             Workspace::default(),
             Workspace::new(WorkspaceId::from(1), "Demo"),

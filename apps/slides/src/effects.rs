@@ -114,7 +114,7 @@ pub enum SlidesEffect {
     ReadDeck,
     /// Import presentation from content
     ///
-    /// Open a `.pptx` the room holds as content (an attachment, a shared
+    /// Open a `.pptx` the workspace holds as content (an attachment, a shared
     /// file, an export) into this deck while it is new and untouched; a deck
     /// someone wrote is never replaced. Answers the imported outline.
     #[effect(returns, kind = "undoable", audience = "agents")]

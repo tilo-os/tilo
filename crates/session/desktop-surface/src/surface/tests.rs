@@ -1482,7 +1482,7 @@ fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::Windo
 }
 
 /// A desktop of one window with someone else's Notes, just arrived from
-/// the room, three windows further along the strip than the view reaches.
+/// the workspace, three windows further along the strip than the view reaches.
 fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     crate::i18n::ensure();
     let (width, height) = (1440_u32, 900_u32);
@@ -1521,7 +1521,7 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
         frame.relayout();
     }
     // The window that had the strip to itself narrows to give the new ones
-    // room; its motion runs on presented frames.
+    // workspace; its motion runs on presented frames.
     play_frames(&mut frame, 40);
     (frame, notes)
 }
@@ -1620,8 +1620,8 @@ fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     assert!(arrivals::opened_elsewhere(&before, &new_strip, &[]).is_empty());
 }
 
-/// A page opening its room's app before the room's desktop arrived finds
-/// the room's window of it once it has, instead of adding one of its own
+/// A page opening its workspace's app before the workspace's desktop arrived finds
+/// the workspace's window of it once it has, instead of adding one of its own
 /// for everyone: a visitor's arrival never puts a window in the strip.
 #[test]
 fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
@@ -1640,7 +1640,7 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     )
     .unwrap();
     handle.dispatch(&open, "g").unwrap();
-    // The room's desktop, with its window of the app, lands first.
+    // The workspace's desktop, with its window of the app, lands first.
     handle.replace_tree(room);
     for _ in 0..3 {
         frame.relayout();

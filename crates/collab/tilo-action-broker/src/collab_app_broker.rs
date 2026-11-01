@@ -1968,6 +1968,16 @@ use witness::requires_store_witness;
 mod workspace_open;
 pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
+/// The host the person's other devices reach this device's actions through:
+/// a request is admitted for the caller its own device's signature named,
+/// under no connection's custody and no step of a run's, so what it may do is
+/// decided by that caller alone.
+pub(crate) fn device_host(
+    state: Arc<AppBrokerState>,
+) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
+    Arc::new(action_host::BrokerDoor::new(state))
+}
+
 pub use launchable::launchable_provider;
 #[path = "peer_action_broker.rs"]
 pub(crate) mod peer_action_broker;
@@ -8861,15 +8871,17 @@ fn delegate_browser_service_session_command(
     bytes: &[u8],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
     let refused = || BrokerError::failed("private service-session request refused".into());
-    if context.app_id() != "so.tilo.browser"
-        || context.workspace_id().is_empty()
-        || context.person().is_empty()
-    {
+    if context.workspace_id().is_empty() || context.person().is_empty() {
         return Err(refused());
     }
     context.revalidate().map_err(|_| refused())?;
     let command =
         runtime_collab::BrowserServiceSessionCommand::decode(bytes).map_err(|_| refused())?;
+    // Website sessions are Browser's alone; an account secret is authorized
+    // by the custodian for the app asking.
+    if command.browser_only() && context.app_id() != "so.tilo.browser" {
+        return Err(refused());
+    }
     let service = services
         .browser_service_sessions
         .as_ref()
@@ -9988,7 +10000,7 @@ fn bind_socket_stage(
             bound: false,
             published: false,
         };
-        match std::os::unix::net::UnixListener::bind(&stage.socket) {
+        match tilo_files::native::socket::bind(&stage.socket) {
             Ok(listener) => {
                 stage.bound = true;
                 stage.identity = Some(staged_socket_identity(&stage.socket)?);
@@ -10129,7 +10141,7 @@ fn bind_owned_socket(
     private_socket_parent(path)?;
     let lease = acquire_socket_path_lease(path)?;
     match socket_identity(path) {
-        Ok(stale_candidate) => match std::os::unix::net::UnixStream::connect(path) {
+        Ok(stale_candidate) => match tilo_files::native::socket::connect(path) {
             Ok(_) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,

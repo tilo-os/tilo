@@ -106,13 +106,17 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// What a page calls the stream: the application, and what it plays.
+    /// What a page calls the stream: the application that owns it.
     #[must_use]
     pub fn label(&self) -> String {
-        match self.media.as_deref().filter(|media| !media.is_empty()) {
-            Some(media) => format!("{} — {media}", self.app),
-            None => self.app.clone(),
-        }
+        self.app.clone()
+    }
+
+    /// What it plays or records, when the application says: a page shows it
+    /// beside the application, as its own fact.
+    #[must_use]
+    pub fn plays(&self) -> Option<&str> {
+        self.media.as_deref().filter(|media| !media.is_empty())
     }
 }
 

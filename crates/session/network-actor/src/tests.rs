@@ -162,44 +162,6 @@ fn only_a_remote_party_needs_this_device_reachable() {
 }
 
 #[test]
-fn a_remote_action_with_no_route_waits_for_that_peer_and_expires() {
-    let mut pending = PendingRemoteActions::default();
-    let peer = iroh::SecretKey::generate().public();
-    let other = iroh::SecretKey::generate().public();
-    let start = Instant::now();
-    pending.hold(1, peer, b"open".to_vec(), start);
-    pending.hold(1, other, b"other".to_vec(), start);
-    pending.hold(1, peer, b"again".to_vec(), start);
-    assert_eq!(pending.targets(), vec![(1, peer), (1, other)]);
-    assert_eq!(
-        pending.take_for(1, peer, start),
-        vec![b"open".to_vec(), b"again".to_vec()]
-    );
-    assert!(
-        pending.take_for(2, other, start).is_empty(),
-        "held per workspace"
-    );
-    assert_eq!(pending.take_for(1, other, start), vec![b"other".to_vec()]);
-
-    for index in 0..MAX_PENDING_REMOTE_ACTIONS {
-        pending.hold(2, peer, vec![u8::try_from(index).unwrap()], start);
-    }
-    pending.hold(2, peer, b"newest".to_vec(), start);
-    let kept = pending.take_for(2, peer, start);
-    assert_eq!(kept.len(), MAX_PENDING_REMOTE_ACTIONS);
-    assert_eq!(kept[0], vec![1]);
-    assert_eq!(kept.last().expect("kept"), b"newest");
-
-    pending.hold(3, peer, b"stale".to_vec(), start);
-    assert!(
-        pending
-            .take_for(3, peer, start + PENDING_REMOTE_ACTION_TTL)
-            .is_empty(),
-        "a request is not run long after it was sent"
-    );
-}
-
-#[test]
 fn upkeep_is_armed_only_while_something_needs_it() {
     const EVERY: Duration = Duration::from_secs(5);
     let before = Instant::now();

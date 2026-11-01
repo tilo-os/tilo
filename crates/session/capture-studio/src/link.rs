@@ -71,37 +71,63 @@ pub struct Recording {
     pub paused: bool,
 }
 
-/// What became of sending the last screenshot to one of the person's other
-/// devices.
+/// What became of sending the last screenshot: to one of the person's other
+/// devices, or into this workspace's files.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sent {
-    /// The device it went to, as the person sees it named.
-    pub device: String,
-    /// Why it was not offered, when it was not.
-    pub refused: Option<Refusal>,
+pub enum Sent {
+    /// Offered to one of the person's other devices, as the person sees it
+    /// named: its person accepts it there.
+    Offered {
+        /// The device it went to.
+        device: String,
+    },
+    /// Nothing was offered to one of the person's other devices, and why.
+    Refused {
+        /// The device it did not go to.
+        device: String,
+        /// Why it was not offered.
+        why: Refusal,
+    },
+    /// Copied into this workspace's files under `name`: the name the person
+    /// finds it by there.
+    Saved {
+        /// The file's name in the workspace's `Screenshots` folder.
+        name: String,
+    },
+    /// Nothing was written into this workspace's files, and why.
+    NotSaved {
+        /// Why it was not saved.
+        why: Refusal,
+    },
 }
 
 impl Sent {
     /// Offered to `device`: its person accepts it there.
     #[must_use]
     pub fn offered(device: String) -> Self {
-        Self {
-            device,
-            refused: None,
-        }
+        Self::Offered { device }
     }
 
     /// Nothing was offered to `device`, and why.
     #[must_use]
-    pub fn refused(device: String, refused: Refusal) -> Self {
-        Self {
-            device,
-            refused: Some(refused),
-        }
+    pub fn refused(device: String, why: Refusal) -> Self {
+        Self::Refused { device, why }
+    }
+
+    /// Saved into the workspace's files under `name`.
+    #[must_use]
+    pub fn saved(name: String) -> Self {
+        Self::Saved { name }
+    }
+
+    /// Nothing was saved into the workspace's files, and why.
+    #[must_use]
+    pub fn not_saved(why: Refusal) -> Self {
+        Self::NotSaved { why }
     }
 }
 
-/// Why a screenshot did not go to the device it was sent to.
+/// Why a screenshot did not go where it was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// This session runs on no device fabric, so it reaches none of the
@@ -117,6 +143,17 @@ pub enum Refusal {
     NoFolder { path: PathBuf },
     /// Larger than one Nearby send carries.
     TooLarge { bytes: u64, limit: u64 },
+    /// No workspace is mounted for this session, so its files are not here.
+    NoWorkspace,
+    /// The file has no name of its own to be saved under.
+    NoFileName { path: PathBuf },
+    /// The workspace's `Screenshots` folder could not be made, in the
+    /// filesystem's words.
+    CreateFailed { folder: PathBuf, error: String },
+    /// The copy could not be written, in the filesystem's words.
+    NotSaved(String),
+    /// Every name the screenshot could be saved under in `folder` is taken.
+    NoFreeName { folder: PathBuf },
     /// The device's fabric or spool would not take it, in its own words.
     Refused(String),
 }
@@ -159,8 +196,8 @@ pub struct Scene {
     /// The person's other devices that are here now: who a screenshot may be
     /// sent to, and what became of the last send.
     pub devices: Vec<ScreenshotSendDevice>,
-    /// What became of sending the last screenshot to a device, while its
-    /// receipt shows that.
+    /// What became of sending the last screenshot, to a device or into the
+    /// workspace's files, while its receipt shows that.
     pub sent: Option<Sent>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
@@ -210,6 +247,9 @@ pub enum Ask {
     /// Offer the last screenshot to one of the person's other devices, by its
     /// [`Scene::devices`] id.
     SendLastTo(String),
+    /// Copy the last screenshot into this workspace's files, under
+    /// `Screenshots`.
+    SendLastToWorkspace,
 }
 
 #[derive(Default)]

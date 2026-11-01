@@ -1,4 +1,4 @@
-//! What the room's apps currently have open, and what may be done to it.
+//! What the workspace's apps currently have open, and what may be done to it.
 //!
 //! An app on the Tilo action model publishes a [`Resource`](tilo_actions::ResourceSpec) tree and the
 //! operations each resource exports, and
@@ -76,12 +76,12 @@ pub const APP_RESOURCE: &str = "app";
 /// The stable kind tag on that resource, shared across every app.
 pub const APPLICATION_KIND: &str = "applications.app";
 
-/// The resource prefix of an open of a document the room already has:
+/// The resource prefix of an open of a document the workspace already has:
 /// `record.<app id>.<record id>#open`. Opening it puts that document's
 /// operations on the list; `app.<app id>#open` creates a new one.
 pub const RECORD_OPEN_PREFIX: &str = "record.";
 
-/// The address that opens `record`, a document of `app_id` the room
+/// The address that opens `record`, a document of `app_id` the workspace
 /// already has.
 pub fn open_record_address(app_id: &str, record: &str) -> ActionAddress {
     ActionAddress::new(
@@ -110,7 +110,7 @@ pub fn opens_record(address: &ActionAddress) -> Option<(&str, &str)> {
 
 /// The app `address` would open, or `None` when it opens nothing: a new
 /// document of it (`app.<app id>#open`, `<namespace>.app#open`), or one the
-/// room already has ([`opens_record`]).
+/// workspace already has ([`opens_record`]).
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
@@ -125,7 +125,7 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
     (tail == APP_RESOURCE).then_some(namespace)
 }
 
-/// One operation the room exports right now.
+/// One operation the workspace exports right now.
 ///
 /// Inert: the address and the words the app puts on it, and nothing that
 /// could perform it — there is no callback, token or handle in it.
@@ -394,19 +394,19 @@ pub struct ResourceFacts {
     pub notes: Vec<String>,
 }
 
-/// What the room exports and what it says about itself, taken together, at
+/// What the workspace exports and what it says about itself, taken together, at
 /// the same moment against the same documents — asking separately would be
-/// reading two different rooms.
+/// reading two different workspaces.
 #[derive(Clone, Debug, Default)]
 pub struct Catalogue {
     /// Everything the agent may perform. Denied is absent, as in [`offers`](Self::offers).
     pub offers: Vec<Offer>,
-    /// Every resource the room's apps publish, gate or no gate: showing a
+    /// Every resource the workspace's apps publish, gate or no gate: showing a
     /// resource is non-destructive and needs no permission, acting on one
     /// does — and the only way to ask for a fact is to name an address that
     /// already passed the gate to be in [`Self::offers`].
     pub facts: Vec<ResourceFacts>,
-    /// The namespaces of the apps the room is actually holding, read off
+    /// The namespaces of the apps the workspace is actually holding, read off
     /// the held replicas rather than inferred from [`Self::offers`]: an app
     /// that is here but has nothing open exports no operations and is also
     /// offered as openable, so guessing "open" from the offers would report
@@ -559,7 +559,7 @@ fn score(offer: &Offer, words: &[String]) -> usize {
 /// sentence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoMatch {
-    /// Nothing the room exports carries a word of the instruction.
+    /// Nothing the workspace exports carries a word of the instruction.
     Nothing,
     /// Several operations answer it equally well, and choosing between them
     /// would be a guess. Carries their labels.
@@ -903,9 +903,9 @@ mod tests {
         let make = |record: &str| {
             serde_json::from_value::<ui::collaboration::BrokerActionSurface>(serde_json::json!({
                 "peer_id": 0,
-                "provider": format!("launch:room:so.tilo.notes:{record}"),
+                "provider": format!("launch:workspace:so.tilo.notes:{record}"),
                 "app_id": "so.tilo.notes",
-                "cluster_id": "room",
+                "cluster_id": "workspace",
                 "record_id": record,
                 "live": false,
                 "actions": [{
@@ -933,7 +933,7 @@ mod tests {
             );
             assert_eq!(
                 offer.broker_provider.as_deref(),
-                Some(format!("launch:room:so.tilo.notes:{record}").as_str())
+                Some(format!("launch:workspace:so.tilo.notes:{record}").as_str())
             );
             assert_eq!(decode_address(&offer.id()), Some(offer.address().clone()));
             assert_eq!(find(&offers, &offer.id()), Some(offer));
