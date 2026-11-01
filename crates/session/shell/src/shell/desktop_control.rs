@@ -275,6 +275,7 @@ pub fn revoke_always(tree: &mut WorkspaceTree, room: &str, package: &str) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn me() -> Holder {
         let pid = std::process::id();
@@ -287,7 +288,7 @@ mod tests {
         let mut grants = DesktopControlGrants::default();
         let mut shell = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("a tab's shell");
         let pid = shell.id();
         let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("its stat");

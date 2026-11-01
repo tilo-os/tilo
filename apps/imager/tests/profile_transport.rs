@@ -4,6 +4,7 @@ use imager::{model, profile};
 use imager_backend::destination::media_profile;
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn prepared_profile_survives_live_transport_and_rejects_mutations() {
@@ -42,7 +43,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
             .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
             .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
             .env("TILO_INSTALLER_PROFILE_OUT_DIR", &output)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );
@@ -74,7 +75,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
         ))
         .args(["preflight-profile", "--source-dir"])
         .arg(&output)
-        .output()
+        .output_locked()
         .unwrap()
     };
     assert!(preflight().status.success());

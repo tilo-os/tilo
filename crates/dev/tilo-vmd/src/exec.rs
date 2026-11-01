@@ -204,6 +204,7 @@ pub fn run_bounded(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
 
@@ -247,7 +248,7 @@ mod tests {
         let output = Command::new("env")
             .args(args.get(after_env..).expect("env has arguments"))
             .env("XDG_RUNTIME_DIR", "/run/user/0")
-            .output()
+            .output_locked()
             .expect("run env");
         assert!(
             output.status.success(),

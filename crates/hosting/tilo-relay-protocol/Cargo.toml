@@ -45,6 +45,7 @@ uuid.workspace = true
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 

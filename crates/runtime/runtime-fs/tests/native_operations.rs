@@ -16,6 +16,8 @@ use runtime_fs::{
 };
 use std::{fs, sync::Arc, time::Instant};
 use tempfile::TempDir;
+#[cfg(target_os = "macos")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn name(value: &str) -> EntryName {
     EntryName::new(value.into()).unwrap()
@@ -476,7 +478,7 @@ fn receipt_publication_rejects_directory_acl_before_any_effect() {
         Command::new("/bin/chmod")
             .args(["+a", "everyone allow read,write,file_inherit,only_inherit"])
             .arg(root.path())
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );

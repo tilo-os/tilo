@@ -6,6 +6,7 @@
     reason = "in a test fixture helper this is the assertion, not a hazard"
 )]
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
@@ -19,7 +20,7 @@ fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
         .arg(&cache)
         .arg("--mount-point")
         .arg(&mount)
-        .output()
+        .output_locked()
         .expect("run production Files CLI");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files namespace"));
@@ -36,7 +37,7 @@ fn status_is_read_only_and_does_not_require_identity() {
         .env("TILO_IDENTITY_ROOT", dir.path().join("identity"))
         .args(["workspace-status", "--cache-dir"])
         .arg(&cache)
-        .output()
+        .output_locked()
         .expect("run production Files CLI");
     assert!(
         output.status.success(),
@@ -108,7 +109,7 @@ impl Profile {
         for (name, value) in overrides {
             command.env(name, value);
         }
-        command.output().expect("run production Files CLI")
+        command.output_locked().expect("run production Files CLI")
     }
 }
 

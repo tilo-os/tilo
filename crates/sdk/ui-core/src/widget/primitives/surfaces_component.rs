@@ -245,6 +245,15 @@ pub struct FloatingPanelProps {
 pub struct DeclaredPanel {
     panel: FloatingPanel,
     rect: Rect,
+    /// The one-view slot being changed ([`Described::slot_views`]): the header or the footer.
+    editing: PanelSlot,
+}
+
+/// A floating panel's slot that holds one view, or none.
+#[derive(Clone, Copy)]
+enum PanelSlot {
+    Header,
+    Footer,
 }
 
 impl DeclaredPanel {
@@ -264,7 +273,22 @@ impl DeclaredPanel {
         Self {
             panel,
             rect: Rect::ZERO,
+            editing: PanelSlot::Header,
         }
+    }
+
+    fn slot(&mut self) -> &mut Option<Element> {
+        match self.editing {
+            PanelSlot::Header => self.panel.header_mut(),
+            PanelSlot::Footer => self.panel.footer_mut(),
+        }
+    }
+
+    fn put(&mut self, mut view: Element) {
+        if matches!(self.editing, PanelSlot::Header) {
+            FloatingPanel::embed_header(view.as_mut());
+        }
+        *self.slot() = Some(view);
     }
 
     /// The panel, for a host to place.
@@ -354,6 +378,67 @@ impl Described for DeclaredPanel {
 
     fn from_props(_key: &str, props: FloatingPanelProps) -> Self {
         Self::new(props)
+    }
+
+    /// Each slot's views change by key in place, so a change of what the body or footer
+    /// shows keeps the header's field, and with it focus and what is being typed.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
+        match slot {
+            "body" => {
+                let column = self
+                    .panel
+                    .body_mut()
+                    .as_any_mut()?
+                    .downcast_mut::<Container>()?
+                    .child_mut()?
+                    .as_any_mut()?
+                    .downcast_mut::<crate::widget::arrange::Arranged<
+                        crate::widget::arrange::FlexLayout,
+                    >>()?;
+                Some(column)
+            }
+            "header" => {
+                self.editing = PanelSlot::Header;
+                Some(self)
+            }
+            "footer" => {
+                self.editing = PanelSlot::Footer;
+                Some(self)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The view of the header or footer being changed: one, or none.
+impl crate::component::SlotViews for DeclaredPanel {
+    fn len(&self) -> usize {
+        let slot = match self.editing {
+            PanelSlot::Header => self.panel.has_header(),
+            PanelSlot::Footer => self.panel.has_footer(),
+        };
+        usize::from(slot)
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        if index != 0 {
+            return None;
+        }
+        self.slot().as_mut()
+    }
+
+    fn insert(&mut self, _index: usize, view: Element) {
+        self.put(view);
+    }
+
+    fn remove(&mut self, _index: usize) {
+        *self.slot() = None;
+    }
+
+    fn move_view(&mut self, _from: usize, _to: usize) {}
+
+    fn replace(&mut self, _index: usize, view: Element) {
+        self.put(view);
     }
 }
 

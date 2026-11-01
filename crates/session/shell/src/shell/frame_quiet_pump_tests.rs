@@ -4,6 +4,60 @@
 use super::*;
 use automerge::ReadDoc as _;
 
+/// A desktop whose one window is a peer's, in a workspace whose authority
+/// has not arrived here yet.
+fn awaiting_its_workspace() -> WorkspaceTree {
+    use crate::shell::state::{
+        Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId, next_id,
+    };
+    let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "shared");
+    let tab = next_id();
+    let mut strip = Strip::new(StripId::from(next_id()), "Main");
+    strip.window_groups.push(WindowGroup {
+        id: next_id(),
+        active_tab: tab,
+        tabs: vec![Tab {
+            id: tab,
+            title: "Draft".into(),
+            tile: TileContent::PeerWindow {
+                app_id: "so.tilo.notes".into(),
+                label: "Available on another device".into(),
+                note: String::new(),
+                missing: None,
+            },
+            app_title: None,
+        }],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    workspace.strips.push(strip);
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.desktop.workspaces = vec![workspace];
+    tree
+}
+
+/// A peer's window that waits for its workspace's authority waits for the
+/// room's news, and that news wakes the loop: the frame sets no deadline of
+/// its own for it. A 250 ms poll for it woke an untouched desktop four times
+/// a second, each a whole loop turn, for as long as the window waited.
+#[test]
+fn a_window_waiting_for_its_room_sets_no_wake_deadline() {
+    let mut frame = FrameBuilder::with_tree(awaiting_its_workspace(), (1280, 800));
+    for _ in 0..3 {
+        frame.pump_room_contents();
+    }
+    assert!(
+        crate::shell::peer_windows::any_pending(&frame.chrome().tree()),
+        "the window still waits for its workspace"
+    );
+    assert_eq!(
+        frame.peer_windows_poll(),
+        None,
+        "a window waiting for its room's news asks for no round of its own"
+    );
+}
+
 /// A wake that changes nothing still runs the model pump. On the
 /// populated desktop that pump must announce no tree write (every
 /// generation-gated phase of the loop would walk the tree again on the

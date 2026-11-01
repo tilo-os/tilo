@@ -2551,6 +2551,7 @@ fn stage_sandbox_account(
 #[cfg(test)]
 mod sandbox_account_tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn handoff_preserves_a_service_source_in_the_account_child_slot() {
@@ -2587,7 +2588,7 @@ mod sandbox_account_tests {
                 place_child_fds(&mut pairs)
             });
         }
-        let output = command.output().expect("fixture child");
+        let output = command.output_locked().expect("fixture child");
         assert!(output.status.success(), "{:?}", output.stderr);
         assert_eq!(output.stdout, expected.as_bytes());
     }

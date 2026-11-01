@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use anyhow::{Result, anyhow, ensure};
 use ed25519_dalek::SigningKey;
@@ -53,7 +54,7 @@ fn run(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
         .arg("--data-dir")
         .arg(directory)
         .args(arguments)
-        .output()
+        .output_locked()
 }
 
 fn show(directory: &Path, pubkey: &str) -> Result<serde_json::Value> {

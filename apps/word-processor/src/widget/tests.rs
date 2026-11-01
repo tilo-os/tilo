@@ -14,6 +14,7 @@ use crate::compact_swatch_palette::PaletteKind;
 use crate::effects::WordProcessorEffect;
 use crate::file_menu::FileChoice;
 use crate::style_menu::StyleMenuAction;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::{PresenceCtx, clipboard_paste};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -4191,7 +4192,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

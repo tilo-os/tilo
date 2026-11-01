@@ -37,6 +37,24 @@ pub(crate) type DeskKey = (
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
 
+/// The desk as a view of another language reaches it: its verbs ([`DeskEffect`]), which the
+/// shell's views run as typed calls (`device.show_surface(device.desk, "quick-settings")`),
+/// each through the desk's door as a script's or an agent's runs. The rest of what the desk
+/// holds reaches the shell as the shell's own record (`root Desk`), so this names only the
+/// surface that is up.
+#[must_use]
+pub fn surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<DeskSurface, DeskEffect>("desk", "Desk")
+}
+
+/// The desk's reading as [`surface`] publishes it: a slice of [`DeskReading`], by its keys.
+#[derive(tilo_resource::JsonSchema)]
+struct DeskSurface {
+    /// The surface up over the desk's windows (`none`, `centre`, `quick-settings`, …).
+    #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+    here: String,
+}
+
 /// What the desk offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.desk")]
@@ -59,7 +77,7 @@ pub(crate) enum DeskEffect {
     /// Show the surface `surface` over the desk's windows, or close it when it is up.
     ShowSurface {
         #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces`, `composer` or `conversation`"
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
         )]
         surface: String,
     },
@@ -702,7 +720,7 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_history();
+            self.notices.clear_all();
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps } = &effect {

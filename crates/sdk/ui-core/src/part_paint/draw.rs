@@ -75,9 +75,9 @@ pub fn cached_parts() -> usize {
 /// A settled part is drawn once per size, state and tokens and replayed
 /// from then on; a moving one is drawn every frame; one that shows the
 /// backdrop is drawn every frame into `scene` itself, which the backdrop
-/// pass records it against. Only floating chrome and bars show the
-/// backdrop, as [`crate::backdrop::fill_role`] says; elsewhere a backdrop
-/// brush is its fallback.
+/// pass records it against. Windows, floating chrome and bars may show
+/// the backdrop, as their painter says; a control's backdrop brush is its
+/// fallback.
 pub fn paint_part(
     scene: &mut Scene,
     transform: Affine,
@@ -120,7 +120,10 @@ pub fn paint_part(
         return None;
     };
     let hit = painted.hit.as_ref().map(|hit| to_caller * hit.clone());
-    let sampled = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar);
+    let sampled = matches!(
+        role,
+        SurfaceRole::Window | SurfaceRole::Floating | SurfaceRole::Bar
+    );
     if sampled && painted.scene.samples_backdrop() {
         encode(scene, placed, (&painted.scene.ops, true), theme, &tokens);
         return Some(Painted { hit });
@@ -238,8 +241,9 @@ fn encode(
                     },
                 ..
             } => {
-                let shown = sampled
-                    && crate::backdrop::fill_backdrop_sample(
+                use crate::backdrop::Shown;
+                let shown = if sampled {
+                    crate::backdrop::fill_backdrop_sample(
                         out,
                         transform,
                         path,
@@ -250,13 +254,24 @@ fn encode(
                         },
                         theme,
                         tokens.fill,
-                    );
-                if !shown {
+                    )
+                } else {
+                    Shown::Fallback
+                };
+                if shown == Shown::Fallback {
                     out.fill(Fill::NonZero, transform, *fallback, None, path);
                 }
                 // A glaze shows no backdrop of its own.
                 encode(out, transform, (glaze, false), theme, tokens);
-                if shown {
+                // The pass compresses its own sample into the band; a glaze
+                // lit over it, or a sample the host provided, is held in it
+                // here.
+                let held = match shown {
+                    Shown::Fallback => false,
+                    Shown::Compressed => !glaze.is_empty(),
+                    Shown::Provided => true,
+                };
+                if held {
                     crate::backdrop::hold_in_band(out, transform, path, theme, tokens.fill);
                 }
             }

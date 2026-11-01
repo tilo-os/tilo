@@ -26,6 +26,7 @@
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Set in the child so the same test function runs the child body.
 const CHILD_MARKER: &str = "TILO_WARMUP_NO_ADAPTER_CHILD";
@@ -81,7 +82,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
         .env_remove("TILO_STARTUP_METRICS_PATH")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .spawn()
+        .spawn_locked()
         .expect("spawn child test process");
 
     // Bounded wait: the child builds a throw-away FontSystem, which is

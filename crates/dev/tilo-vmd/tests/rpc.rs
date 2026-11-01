@@ -7,6 +7,7 @@
 
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::Digest as _;
 
@@ -41,7 +42,7 @@ impl Daemon {
             .arg(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let stdin = child.stdin.take().unwrap();
@@ -467,7 +468,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
             .arg(root.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut input = child.stdin.take().unwrap();
         let mut output = BufReader::new(child.stdout.take().unwrap());
@@ -913,7 +914,7 @@ fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::
         .args(["--base", "/nonexistent", "--booted", booted])
         .arg("--root")
         .arg(root)
-        .output()
+        .output_locked()
         .unwrap()
 }
 

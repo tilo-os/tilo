@@ -456,6 +456,29 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
     s.bar_shown and shows(s.bar_showing, d.bar_reached, d.bar_covered)
 }
 
+/// Whether the desk's bar lists the window in front's actions now: the traditional desktop's
+/// bar always does (its window menu, at every width), and another bar does while it shows the
+/// app's menus part with the room to keep it (`roomy`: the output is expanded or wide, where
+/// the part does not give way). Each window's frame is told this fact
+/// (`ui.WindowFrame(lists_actions:)`), so its header's actions give way to that menu, not to
+/// a door of their own; a window behind has them there once it is in front, as on every
+/// desktop.
+fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
+    if not bar_shows(s, d) {
+        return false
+    }
+    if bar_is_traditional(s) {
+        return true
+    }
+    roomy and s.bar_parts.any(p -> p.slot == Slot.app_menu and p.shown)
+}
+
+/// Whether the bar is the traditional desktop's own (`traditional_bar`): its preset, unchanged
+/// in what it is based on.
+fn bar_is_traditional(s: Shell) -> Bool {
+    s.based_on == .windows_desktop and s.preset == .windows_desktop
+}
+
 /// Whether the dock shows now.
 fn dock_shows(s: Shell, d: Desk) -> Bool {
     s.dock_shown and shows(s.dock_showing, d.dock_reached, d.dock_covered)

@@ -16,8 +16,8 @@ view notices(d: Desk) {
     lens query: Text = ""
     let all = d.notices.sort_by(n -> n.key)
     let shown = all.matching(query)
-    row(at: .top_trailing, padding: .related) {
-        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }) {
+    row(fill, distribute: .end, padding: .related) {
+        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }, fill: if space.compact { 1.0 } else { 0.0 }) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)

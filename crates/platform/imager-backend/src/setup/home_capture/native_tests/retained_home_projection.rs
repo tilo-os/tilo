@@ -39,6 +39,8 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 const SOURCE_UID: u32 = 31001;
 const SOURCE_GID: u32 = 31001;
 const SOURCE_GROUP: u32 = 31003;
@@ -1879,7 +1881,10 @@ fn native_alias_stdio_child() {
         assert_eq!(std::fs::read(&fixed).unwrap(), b"original source bytes");
     }
     assert!(
-        Command::new("/usr/bin/true").status().unwrap().success(),
+        Command::new("/usr/bin/true")
+            .status_locked()
+            .unwrap()
+            .success(),
         "required runtime binaries remain executable"
     );
     assert!(std::fs::read(alias_path().join("outside-file")).is_err());
@@ -1891,7 +1896,7 @@ fn native_alias_stdio_child() {
             std::fs::metadata(&executable).unwrap().mode() & 0o111,
             0o111
         );
-        let error = Command::new(executable).status().unwrap_err();
+        let error = Command::new(executable).status_locked().unwrap_err();
         assert_eq!(error.raw_os_error(), Some(libc::EACCES));
     }
     let private = Path::new("/run/tilo/app/alias-private-state");

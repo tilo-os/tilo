@@ -3,6 +3,7 @@
 use super::*;
 use crate::setup::flatpak_transfer::{NativeRunner, discover};
 use std::ffi::CString;
+use tilo_test_env::SpawnUnderEnvLock as _;
 const TEST: &str = "setup::flatpak_transfer::portable::native_tests::system::real_named_system_producer_and_native_target_restore";
 #[path = "native_selected_state_tests.rs"]
 mod selected;
@@ -68,7 +69,7 @@ fn public_directories(path: &Path) {
     }
 }
 fn required_child(program: &str, args: &[&str]) {
-    let result = Command::new(program).args(args).output().unwrap();
+    let result = Command::new(program).args(args).output_locked().unwrap();
     assert!(
         result.status.success(),
         "required native namespace operation failed: {}",
@@ -82,7 +83,7 @@ fn namespace_parent() {
         .args([active_test(), "--exact", "--nocapture"])
         .env(CHILD, "namespace")
         .env("TMPDIR", "/tmp")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -297,7 +298,7 @@ fn namespace_initialize() {
             fixture_root.join("capacity-target"),
         )
         .env("TMPDIR", "/tmp")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

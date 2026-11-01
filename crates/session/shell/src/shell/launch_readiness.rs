@@ -205,6 +205,7 @@ pub(super) fn command_token(command: &super::launcher::LaunchCommand) -> Option<
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[tokio::test]
     async fn exact_adoption_returns_public_window_identity_without_kernel_pid() {
@@ -269,7 +270,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = Command::new("/bin/kill")
                 .args(["-TERM", "--", &format!("-{}", self.0.id())])
-                .status();
+                .status_locked();
             let _ = self.0.wait();
         }
     }
@@ -281,7 +282,7 @@ mod tests {
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
                 .stdout(Stdio::piped())
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let mut output = BufReader::new(process.0.stdout.take().unwrap());
@@ -349,7 +350,7 @@ mod tests {
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
                 .stdout(Stdio::piped())
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let mut output = BufReader::new(process.0.stdout.take().unwrap());

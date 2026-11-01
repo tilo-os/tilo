@@ -8,6 +8,7 @@
 //! process per test never would.
 #![cfg(test)]
 
+use tilo_test_env::SpawnUnderEnvLock as _;
 /// Names the one test a re-executed test binary runs in its own process.
 const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
 
@@ -22,7 +23,7 @@ pub(crate) fn in_own_process(test: &str) -> bool {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(OWN_PROCESS_TEST, test)
-        .output()
+        .output_locked()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

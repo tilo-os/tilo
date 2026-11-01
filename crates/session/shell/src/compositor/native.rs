@@ -14759,6 +14759,10 @@ pub fn run() {
                 ),
                 ("text-commit", state.text_commit_deadline()),
                 ("app-liveness", state.app_liveness_deadline()),
+                (
+                    "launch-expiry",
+                    crate::shell::launcher::next_placement_expiry(),
+                ),
                 ("super-hold", super_tap.deadline()),
                 ("screen-reader-hold", screen_reader_chord.deadline()),
                 (

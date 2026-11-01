@@ -19,6 +19,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use rustix::fs::{CWD, FileType, Mode, OFlags, fstat, openat};
 use tilo_firstboot_files::{
@@ -183,7 +184,7 @@ fn killed_partial_temporary_never_becomes_default_or_intent() {
             .env(KILL_CHILD, work.path().join(name))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .status_locked()
             .unwrap();
         assert_eq!(status.signal(), Some(9), "{name}: {status:?}");
         assert!(!work.path().join(name).exists(), "{name}");
@@ -496,7 +497,7 @@ fn helper(args: &[&OsStr], stdin: &[u8]) -> Output {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     // The helper may fail before it reads its input.
     let _ = child.stdin.take().unwrap().write_all(stdin);

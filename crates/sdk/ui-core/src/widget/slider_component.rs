@@ -1,7 +1,7 @@
 //! [`Slider`] as a described component.
 
 use super::Slider;
-use crate::component::{Bound, Component, Described, Value};
+use crate::component::{Bound, Component, Described, Event, Value};
 
 /// A value along a track: a level, a volume, a share. Dragging the knob or pressing the track
 /// sets it, and the arrow keys step it; Shift drags finely. It reads its own value when said.
@@ -23,6 +23,11 @@ pub struct SliderProps {
     pub shows_value: bool,
     /// Whether it can be moved now.
     pub enabled: bool,
+    /// The person moved it: carries the value it is at now. What a slider over a value the
+    /// view does not hold runs (a device's volume, changed by its own action), as its value
+    /// is given rather than bound.
+    #[component(event(value = f64))]
+    pub change: Event,
 }
 
 impl Default for SliderProps {
@@ -35,6 +40,7 @@ impl Default for SliderProps {
             step: None,
             shows_value: false,
             enabled: true,
+            change: Event::None,
         }
     }
 }
@@ -51,10 +57,14 @@ impl Described for Slider {
             step,
             shows_value,
             enabled,
+            change,
         } = props;
         let edits = value.clone();
         let mut slider = Self::from_state(&value.state)
-            .on_change(move |number| edits.edited(Value::Float(number)))
+            .on_change(move |number| {
+                edits.edited(Value::Float(number));
+                change.fire(Some(Value::Float(number)));
+            })
             .with_id(key)
             .with_enabled(enabled);
         if let Some(label) = label {

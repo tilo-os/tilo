@@ -46,8 +46,30 @@ scenario "an afternoon at the desk" {
     seed_notices(d)
 }
 
-/// The overview of that desk: the strips of the workspace in front, their windows as places,
-/// and a search typed across the other workspaces.
+/// The overview of that desk: the strips of the workspace in front, their windows as places.
+scenario "the overview" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:31 PM"
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "overview"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
+    d.rooms.insert(Room(key: "studio", name: "Studio", current: true, members: "Ada, Mia, Fieldwork", present: 2, activity: "Mia edited Release planning"))
+    d.rooms.insert(Room(key: "home", name: "Home", members: "Ada", present: 0, activity: "Your notes from the weekend"))
+    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", icon: "notebook", strip: "Drafts", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", icon: "list_checks", strip: "Drafts", workspace: "Studio", recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", icon: "layout_grid", strip: "Drafts", workspace: "Studio", recency: 3, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 6, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", icon: "table", strip: "Money", workspace: "Home", recency: 15, focused: false, preview: "live"))
+}
+
+/// The same overview opened while the person's last search still stands: what that search
+/// found across the other workspaces.
 scenario "the overview, searching" {
     let d = root Desk
     d.person = "Ada Lovelace"
@@ -182,6 +204,13 @@ scenario "the notification centre, all read" {
     d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
 }
 
+/// The quick settings over the desk, on a computer that publishes no sound, display or
+/// battery: the tiles stand, and the sliders and the battery line wait for what is there.
+scenario "the quick settings" {
+    let d = root Desk
+    d.here = "quick-settings"
+}
+
 /// The centre with nothing in it: what a person sees after Clear all.
 scenario "an empty notification centre" {
     let d = root Desk
@@ -254,6 +283,39 @@ scenario "a conversation with the agent" {
     d.clock = "10:42 AM"
     d.workspace = "Studio"
     d.here = "conversation"
+    seed_run(d)
+}
+
+/// The conversation as a place on the spaces canvas (shell.md §8.1): the run's place stands as
+/// its conversation, beside a terminal in its well.
+scenario "a conversation on the canvas" -> Arrangement {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:42 AM"
+    d.workspace = "Studio"
+    seed_run(d)
+    let v = viewing
+    v.showing = .spaces
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let s = a_strip(a, row, "Spaces", 667)
+    let strip = a.strips.find(st -> st.key == s)
+    if let held = strip {
+        held.canvas_x = 0
+        held.canvas_y = 0
+        held.canvas_width = 1100
+        held.canvas_height = 1200
+        held.placed = true
+    }
+    a.places.insert(ArrangementPlace(key: "x-run", strip: s, shows: "so.tilo.shell", shown_as: "conversation", record: "agent-run:r1", title: "Tidy the launch notes", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
+    a
+}
+
+/// The run a conversation starts from: what Ada asked, the agent's words between its steps, a
+/// program it ran that printed two notes, one that changed a note, one of Ada's own that did not
+/// compile, and the agent's answer.
+action seed_run(d: Desk) {
     d.runs.insert(Run(key: "r1", title: "Tidy the launch notes", agent: "claude", phase: "done", active: false))
     d.run_entries.insert(RunEntry(key: "r1/1", run: "r1", seq: 1, author: "ada", text: "Tidy the launch notes: pin the checklist and drop the old draft title."))
     d.run_entries.insert(RunEntry(key: "r1/2", run: "r1", seq: 2, author: "agent:claude", by_agent: true, text: "I will look for the launch notes first."))
@@ -493,6 +555,76 @@ scenario "the traditional desktop" {
         strip.active = "p1"
     }
     v.focused = desk
+}
+
+/// The traditional desktop with a terminal in front: a window the shell has no record for, so
+/// the top bar offers the shell's own commands on it — its name, moving it to another row and
+/// closing it — where an app's window would offer the app's.
+scenario "the traditional desktop, a terminal in front" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.workspace = "Studio"
+    d.strip = "Desk"
+    d.here = "none"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.windows.insert(Win(key: "w1", title: "A terminal", origin_app: "Terminal", icon: "terminal", strip: "Desk", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .windows_desktop)
+    let v = viewing
+    v.showing = .desktop
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    a_workspace(a, "Errands")
+    let desk = a_strip(a, row, "Desk", 667)
+    if let held = a.strips.find(st -> st.key == desk) {
+        held.canvas_x = 120
+        held.canvas_y = 80
+        held.canvas_width = 640
+        held.canvas_height = 420
+        held.placed = true
+    }
+    a_foreign_place(a, desk, 1, "A terminal")
+    v.focused = desk
+}
+
+/// The agent at work in the conversation: the person's ask, its first step done, and the words
+/// it is saying now as the model streams them, before its turn ends.
+scenario "a conversation, the agent answering" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:44 AM"
+    d.workspace = "Studio"
+    d.here = "conversation"
+    d.runs.insert(Run(key: "r2", title: "Find the launch date", agent: "claude", phase: "executing", active: true, live: "The checklist names the 14th, but Mia's note from Tuesday moves it to"))
+    d.run_entries.insert(RunEntry(key: "r2/1", run: "r2", seq: 1, author: "ada", text: "When is the launch now? Mia moved it, I think."))
+    d.run_entries.insert(RunEntry(key: "r2/2", run: "r2", seq: 2, author: "agent:claude", by_agent: true, step: true, text: "find(notes.Note, \"launch\")", outcome: "done", answer: "n1 \"Launch checklist\"\nn3 \"Notes from Tuesday\""))
+    d.entry_refs.insert(EntryRef(key: "r2/2/0", entry: "r2/2", resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist"))
+    d.entry_refs.insert(EntryRef(key: "r2/2/1", entry: "r2/2", resource: "tl:so.tilo.lang.notes:n3", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Notes from Tuesday"))
+}
+
+/// The default shell with the agents on the bar: the person showed the Agents part, and the
+/// two agents working for them stand there, each a chip that opens its menu.
+scenario "the agents on the bar" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "none"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
+    d.agents.insert(Agent(key: "claude", name: "Claude", state: "done", doing: "Tidied the launch notes"))
+    seed(shell)
+    let s = shell
+    if let part = s.bar_parts.find(p -> p.slot == Slot.agent) {
+        show_part(s, part, true)
+    }
 }
 
 /// The text channel named `name` in the chat's sidebar, standing alone or in a category.

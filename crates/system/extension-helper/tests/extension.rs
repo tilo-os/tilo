@@ -13,6 +13,7 @@ mod support;
 
 use std::fs;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use support::{BASE_PACKAGES, Fake, Machine, Publish, ROGUE, catalogue_dir, repo, rpm, rpm_with};
@@ -111,7 +112,7 @@ fn the_command_line_reports_usage_with_status_2() {
         &["upgrade:media-codecs"],
         &["install", "media-codecs"],
     ] {
-        let out = Command::new(helper()).args(argv).output().unwrap();
+        let out = Command::new(helper()).args(argv).output_locked().unwrap();
         assert_eq!(out.status.code(), Some(2), "{argv:?}");
         assert!(
             String::from_utf8_lossy(&out.stderr).starts_with("tilo-extension: "),
@@ -121,13 +122,13 @@ fn the_command_line_reports_usage_with_status_2() {
     }
     let out = Command::new(helper())
         .arg("install:Media")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "tilo-extension: invalid extension id\n"
     );
-    let out = Command::new(helper()).output().unwrap();
+    let out = Command::new(helper()).output_locked().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "tilo-extension: expected exactly one argument: activate, refresh:all, live:<phase> or <verb>:<id>\n"
@@ -138,7 +139,7 @@ fn the_command_line_reports_usage_with_status_2() {
 fn status_of_an_id_this_image_lacks_is_a_usage_error() {
     let out = Command::new(helper())
         .arg("status:no-such-extension-anywhere")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(

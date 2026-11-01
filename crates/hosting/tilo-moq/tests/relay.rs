@@ -30,6 +30,7 @@ use tilo_moq::relay::{
     Denied, Direction, LoopbackRelay, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
 };
 use tilo_moq::voice::{FRAME_SAMPLES, VoiceObject};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn shared_ingress_route_requires_exact_raw_authority_and_target() {
@@ -72,7 +73,7 @@ fn isolated_proof_endpoint_rejects_nonloopback_binding() {
             "--identities",
             "/unused",
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("loopback"));

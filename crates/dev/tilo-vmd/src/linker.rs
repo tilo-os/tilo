@@ -92,6 +92,7 @@ pub fn configure(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn driver_preserves_arguments_and_a_sysroot_with_spaces() {
@@ -115,7 +116,7 @@ mod tests {
                 "object with spaces.o",
                 "'; touch /unexpected; #",
             ])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(output.status.success());
         assert_eq!(

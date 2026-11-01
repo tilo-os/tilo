@@ -14,6 +14,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use tilo_image_policy_check::{Failure, Trust, check};
@@ -456,7 +457,7 @@ fn release_trust_is_read_strictly() {
 }
 
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
-    let output = Command::new(binary()).args(args).output().unwrap();
+    let output = Command::new(binary()).args(args).output_locked().unwrap();
     (
         output.status.code(),
         String::from_utf8(output.stdout).unwrap(),

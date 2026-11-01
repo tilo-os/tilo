@@ -658,8 +658,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             Ok(Control::Capture) if ready && microphone.is_none() && !finishing => {
                 check_vocabulary(io)?;
                 microphone = Some(
-                    Microphone::open(io.cancel)
-                        .map_err(|_| RuntimeError::MicrophoneUnavailable)?,
+                    Microphone::open(io.cancel).map_err(|_| RuntimeError::MicrophoneUnavailable)?,
                 );
                 if io.cancel.load(Ordering::Acquire) {
                     return Err(RuntimeError::Canceled);
@@ -750,6 +749,7 @@ fn audio(pipe: &mut Pipe, capture: &mut Microphone) -> Result<(), RuntimeError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn finish_interrupts_stale_worker_draft_without_leaking_preview() {
@@ -806,7 +806,7 @@ while True: time.sleep(1)",
         ]);
         command.stdout(Stdio::piped()).stderr(Stdio::null());
         bounded_command::own_process_tree(&mut command);
-        let mut worker = Process(command.spawn().unwrap());
+        let mut worker = Process(command.spawn_locked().unwrap());
         let mut output = worker.0.stdout.take().unwrap();
         let mut byte = [0];
         output.read_exact(&mut byte).unwrap();
@@ -1083,7 +1083,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         let mut command = peer_command("backpressure", &pid);
         command.stdin(Stdio::piped()).stdout(Stdio::piped());
         bounded_command::own_process_tree(&mut command);
-        let mut child = Process(command.spawn().unwrap());
+        let mut child = Process(command.spawn_locked().unwrap());
         let mut output = child.0.stdin.take().unwrap();
         let mut input = child.0.stdout.take().unwrap();
         nonblocking(input.as_raw_fd()).unwrap();

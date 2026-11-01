@@ -276,9 +276,11 @@ pub struct AppWindow {
 
 impl AppWindow {
     /// A part of a shell (its top bar, a dock) receiving its views over `transport`: the root
-    /// view's tree shown as it is, at the top of the area the part is given, with no window
-    /// shell, header or ground of its own. What the area holds beyond the view stays clear, so
-    /// what lies under the part shows through, and what the view opens (a menu) has room.
+    /// view's tree shown as it is, over the whole area the part is given, with no window
+    /// shell, header or ground of its own. The view fills the area, so what it places at the
+    /// area's edges (a dock at the foot) stands there however little it shows between them;
+    /// what it does not draw stays clear, so what lies under the part shows through, and what
+    /// the view opens (a menu) has room.
     #[must_use]
     pub fn part(transport: Box<dyn Transport>) -> Self {
         let mut window = Self::new(transport, Vec::new());
@@ -289,7 +291,7 @@ impl AppWindow {
                 .fill_height()
                 .push_slot(slot(
                     Box::new(Pane::new(Box::new(Absent::new()))),
-                    Fit::hug(),
+                    Fit::fill(1.0),
                 ))
                 .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
                 .push_slot(slot(Box::new(Absent::new()), Fit::hug())),
@@ -950,6 +952,14 @@ impl AppWindow {
     }
 
     // ----- what the person did -------------------------------------------------------------
+
+    /// Whether the window holds something for the app it has not sent yet: a layout that gave
+    /// a view a new space ([`Self::follow_spaces`]) tells the app at the next
+    /// [`Self::flush`], and a host that flushes only when it has work owes one then.
+    #[must_use]
+    pub fn telling(&self) -> bool {
+        !self.out.is_empty()
+    }
 
     /// Send the app what the person did since the last frame: one batch.
     pub fn flush(&mut self) {

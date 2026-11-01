@@ -9,6 +9,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{
@@ -27,7 +28,7 @@ fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
         .arg("--data-dir")
         .arg(data_dir)
         .args(arguments)
-        .output()
+        .output_locked()
         .unwrap()
 }
 

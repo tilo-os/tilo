@@ -422,3 +422,161 @@ fn forced_colours_draw_with_the_toolkits_own_painters() {
     assert!(theme.forced_colors);
     assert_eq!(theme.painter(SurfaceRole::Control), builtin::default_set());
 }
+
+/// `tokens` with `name` stated at `value`, replacing what it stated before.
+fn with_param(tokens: &PartTokens, name: &str, value: f32) -> PartTokens {
+    let mut params: Vec<Param> = tokens.params.iter().cloned().collect();
+    params.retain(|param| param.name != name);
+    params.push(Param {
+        name: name.into(),
+        value,
+    });
+    PartTokens {
+        params: params.into(),
+        ..tokens.clone()
+    }
+}
+
+/// The straight stretches of the Liquid rim on a 200×100 floating panel lit
+/// from `light_angle`: each solid fill in the theme's light, by its bounds
+/// and opacity.
+fn liquid_rim_stretches(light_angle: f32) -> Vec<(Rect, f32)> {
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let color = Color::from_rgb8(0x30, 0x34, 0x40);
+    let mut tokens = part_tokens(&theme, SurfaceRole::Floating, (color, color, color), color);
+    tokens.radius = 12.0;
+    let tokens = with_param(&tokens, "edge_highlight", 0.5);
+    let tokens = with_param(&tokens, "light_angle", light_angle);
+    let painted = builtin::liquid_set()
+        .painter()
+        .paint(
+            Part::FloatingPanel,
+            Size::new(200.0, 100.0),
+            PartState::settled(States::REST),
+            1.0,
+            &tokens,
+        )
+        .expect("liquid draws a floating panel");
+    painted
+        .scene
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Fill {
+                path,
+                brush: Brush::Solid(color),
+                ..
+            } if color.components[..3] == tokens.light.components[..3] => {
+                Some((path.bounding_box(), color.components[3]))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The Liquid rim is a thin edge lit from the theme's light angle: the
+/// stretch facing the light at the full `edge_highlight`, the far one
+/// faintly, the two side on dark; turning the light turns the rim.
+#[test]
+fn the_liquid_rim_is_lit_from_the_light_angle() {
+    use vello::kurbo::Vec2;
+    // The light on a normal facing it, side on and facing away.
+    let up = Vec2::new(0.0, -1.0);
+    assert!((builtin::rim_light(up, up) - 1.0).abs() < 1e-6);
+    assert!(builtin::rim_light(Vec2::new(1.0, 0.0), up).abs() < 1e-6);
+    let far = builtin::rim_light(Vec2::new(0.0, 1.0), up);
+    assert!(far > 0.0 && far < 0.5, "the far side is faint: {far}");
+
+    let edge = |stretches: &[(Rect, f32)], which: fn(&Rect) -> bool| {
+        stretches
+            .iter()
+            .find(|(rect, _)| which(rect))
+            .map(|(_, alpha)| *alpha)
+            .expect("a rim stretch there")
+    };
+    let top = |rect: &Rect| rect.y0 < 1.0 && rect.width() > 100.0;
+    let bottom = |rect: &Rect| rect.y1 > 99.0 && rect.width() > 100.0;
+    let left = |rect: &Rect| rect.x0 < 1.0 && rect.height() > 50.0;
+    // Light from above (90°): the top stretch is the brightest, the bottom
+    // faint, the sides unlit.
+    let above = liquid_rim_stretches(90.0);
+    assert!((edge(&above, top) - 0.5).abs() < 1e-4, "{above:?}");
+    assert!(edge(&above, bottom) < edge(&above, top) / 2.0);
+    assert!(
+        edge(&above, bottom) > 0.0,
+        "light leaves through the far side"
+    );
+    assert!(edge(&above, left) < 1e-4);
+    // The rim is thin: a stretch is one and a half pixels deep.
+    let top_rect = above.iter().find(|(rect, _)| top(rect)).expect("top").0;
+    assert!((top_rect.height() - 1.5).abs() < 1e-9);
+    // Light from the left (180°): the left stretch takes it.
+    let beside = liquid_rim_stretches(180.0);
+    assert!((edge(&beside, left) - 0.5).abs() < 1e-4);
+    assert!(edge(&beside, top) < 1e-4);
+}
+
+/// The Liquid set, counting the faces it is asked to draw.
+struct CountedLiquid {
+    calls: AtomicUsize,
+}
+
+impl PartPainter for CountedLiquid {
+    fn paint(
+        &self,
+        part: Part,
+        size: Size,
+        state: PartState,
+        progress: f32,
+        tokens: &PartTokens,
+    ) -> Option<PaintedPart> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        builtin::liquid_set()
+            .painter()
+            .paint(part, size, state, progress, tokens)
+    }
+}
+
+/// A settled Liquid face is cached under every parameter the set reads:
+/// drawn again with the same tokens it is replayed, and one whose band,
+/// light angle, dispersion or refraction differs is drawn anew.
+#[test]
+fn the_part_cache_keys_on_every_liquid_parameter() {
+    let painter = Arc::new(CountedLiquid {
+        calls: AtomicUsize::new(0),
+    });
+    let set = PainterSet::new("test.counted-liquid", painter.clone());
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let color = Color::from_rgb8(0x50, 0x54, 0x60);
+    let base = part_tokens(&theme, SurfaceRole::Control, (color, color, color), color);
+    let draw = |tokens: &PartTokens| {
+        paint_part(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 91.0, 29.0),
+            (&set, Part::ControlFace, SurfaceRole::Control),
+            Moment::settled(States::REST),
+            tokens,
+            &theme,
+        );
+        painter.calls.load(Ordering::Relaxed)
+    };
+    let first = with_param(&base, "band", 10.0);
+    let once = draw(&first);
+    assert_eq!(draw(&first), once, "the same tokens replay");
+    for (name, value) in [
+        ("band", 11.0),
+        ("light_angle", 45.0),
+        ("dispersion", 0.2),
+        ("refraction", 3.0),
+    ] {
+        let tokens = with_param(&first, name, value);
+        let before = painter.calls.load(Ordering::Relaxed);
+        assert_eq!(
+            draw(&tokens),
+            before + 1,
+            "another {name} is another drawing"
+        );
+        assert_eq!(draw(&tokens), before + 1, "and is kept under it");
+    }
+}

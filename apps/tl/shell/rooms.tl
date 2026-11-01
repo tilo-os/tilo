@@ -16,7 +16,7 @@ view workspaces(d: Desk) {
             }
         }
         row(gap: .related, align: .end, wrap: true) {
-            ui.TextInput(value: name, placeholder: "Name a new workspace") {
+            ui.TextInput(value: name, placeholder: "Name a new workspace", fill) {
                 on submit: create_room(d, name)
             }
             ui.Button("Create", icon: .plus, role: .primary) {
@@ -43,6 +43,6 @@ view room_card(r: Room) {
                 }
             }
         }
-        on activate: switch_to_key(r.key, r.current)
+        on activate: switch_to_key(r)
     }
 }

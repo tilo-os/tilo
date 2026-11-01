@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -77,7 +78,7 @@ fn copy_tree(source: &Path, destination: &Path) -> TestResult {
 }
 
 fn checked(command: &mut Command) -> TestResult<String> {
-    let output = command.output()?;
+    let output = command.output_locked()?;
     require(
         output.status.success(),
         &String::from_utf8_lossy(&output.stderr),

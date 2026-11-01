@@ -775,6 +775,8 @@ impl Drop for Lease {
 mod tests {
     use super::*;
     use tilo_action_policy::Subject;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn action_authority_export_releases_file_custody_and_revokes_dropped_runtime() {
@@ -1071,7 +1073,7 @@ mod tests {
     fn live_child() -> std::process::Child {
         std::process::Command::new("sleep")
             .arg("60")
-            .spawn()
+            .spawn_locked()
             .unwrap()
     }
 

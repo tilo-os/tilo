@@ -2291,12 +2291,16 @@ impl FrameBuilder {
         // changed; while a window is owed a look, every round walks.
         // A tab that asks for an app drawn here (saved so, or a peer's)
         // opens as the app's own window, before the pending windows are
-        // counted.
+        // counted. Only then is the tree written: a write wakes every
+        // generation-gated reader of it.
         {
             let chrome = self.chrome.borrow();
-            let moved =
-                self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &chrome.tree()));
-            if moved {
+            let reopen = {
+                let tree = chrome.tree();
+                self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &tree))
+                    && crate::shell::tab_binding::has_app_tabs_to_reopen(&tree)
+            };
+            if reopen {
                 crate::shell::tab_binding::reopen_app_tabs_as_processes(&mut chrome.tree_mut());
             }
         }
@@ -4878,19 +4882,21 @@ impl FrameBuilder {
         .min()
     }
 
-    /// A round soon while a peer's window waits to be opened here: its room's
-    /// update may land after this round's decision, with nothing left to wake
-    /// an idle session for it (a window waiting on its record, too). The tabs
-    /// are walked only when the tree may have changed since the last round
+    /// A round soon while a peer's window waits for something that announces
+    /// nothing: its record on its way to the disk through a store's own
+    /// thread ([`crate::shell::peer_windows::waits_on_disk`]), or a card's
+    /// retry or install queued outside the tree. Every other wait (the
+    /// room's news, a launch's window or deadline) wakes the loop itself.
+    /// The tabs are walked only when the tree may have moved since a round
     /// found none owed a look.
     fn peer_windows_poll(&self) -> Option<Instant> {
-        let owed = {
+        let waits_on_disk = crate::shell::peer_windows::waits_on_disk() && {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
             self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &tree))
                 && crate::shell::peer_windows::any_pending(&tree)
         };
-        (owed
+        (waits_on_disk
             || crate::shell::peer_windows::retry_requested()
             || crate::shell::peer_windows::install_requested())
         .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))

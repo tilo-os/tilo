@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherAllowlist, PublisherRow, Storage};
@@ -15,7 +16,7 @@ fn add_publisher(data_dir: &Path, arguments: &[&str]) -> Output {
         .arg(data_dir)
         .arg("add-publisher")
         .args(arguments)
-        .output()
+        .output_locked()
         .unwrap()
 }
 

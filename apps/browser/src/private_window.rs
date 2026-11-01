@@ -60,6 +60,8 @@ fn launch_executable(executable: &Path, url: Option<&str>) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// This test module's test `name` as libtest names it in whichever
     /// crate compiles the module in: its path without the crate's name.
@@ -89,7 +91,7 @@ mod tests {
                 .env("TILO_RUNTIME_RESUME_LIVE", "so.tilo.browser")
                 .env("TILO_RUNTIME_PROFILE", "/fixture/runtime")
                 .env("TILO_RUNTIME_BINARY", "/fixture/tilo-runtime-mcp")
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(
                 result.status.success(),

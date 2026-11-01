@@ -525,6 +525,7 @@ mod tests {
     use super::*;
     use crate::entry::parse;
     use std::path::Path;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn entry(src: &str, id: &str) -> DesktopEntry {
         parse(src, id, Path::new("/usr/share/applications/x.desktop"), &[]).expect("parses")
@@ -793,7 +794,10 @@ mod tests {
                 },
             )
             .expect("plans");
-            let output = launch.to_command().output().expect("run environment probe");
+            let output = launch
+                .to_command()
+                .output_locked()
+                .expect("run environment probe");
             assert!(output.status.success());
             let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
             for expected in [

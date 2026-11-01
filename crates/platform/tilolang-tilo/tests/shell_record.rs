@@ -54,9 +54,35 @@ fn room() -> Replica {
                 include_str!("../../../../apps/tl/tasks/app.tl"),
                 include_str!("../../../../apps/tl/tasks/app.ids"),
             ),
-            (source.as_str(), IDS),
         ],
     );
+    // It reads the device's and Settings' published resources too (the quick settings), whose
+    // packages the platform describes from their surfaces, as the session loads them.
+    let mut imports: Vec<_> = [
+        "so.tilo.lang.chat",
+        "so.tilo.lang.notes",
+        "so.tilo.lang.tasks",
+    ]
+    .iter()
+    .map(|app| replica.host.package(app).unwrap().meta)
+    .collect();
+    for meta in tilolang_tilo::platform_apps::platform_packages().unwrap() {
+        replica.host.runtime().load_foreign(meta.clone()).unwrap();
+        imports.push(meta);
+    }
+    let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).unwrap();
+    let compiled = tilolang_tilo::tilolang::compile_package(&source, &lock, &imports)
+        .unwrap_or_else(|diagnostics| {
+            panic!(
+                "{}",
+                diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.render("shell"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
+    replica.host.load_compiled(&compiled).unwrap();
     // The person's shell record, made as the session makes it, and the package's migration
     // seeding it: the bar's parts and the dock's items, on a shell never arranged.
     let meta = replica.host.package(APP).unwrap().meta;
@@ -458,6 +484,46 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
     );
 }
 
+/// The desk's quick settings stand over the desk with every tile, read from the device's and
+/// Settings' published resources: here none is published, so each reads as absent (off, empty).
+#[test]
+fn the_quick_settings_stand_over_the_desk() {
+    let mut r = room();
+    let root = r.host.root_record(APP, "4jk2lkpt").unwrap();
+    let meta = r.host.package(APP).unwrap().meta;
+    let id = crate::fixtures::field_id(&meta, "Desk", "here");
+    r.host
+        .runtime()
+        .apply_origin(
+            "session",
+            vec![OriginWrite::Set {
+                target: root,
+                fields: vec![(id, Value::text("quick-settings"))],
+            }],
+            None,
+        )
+        .expect("the desk's surface is the session's to write");
+    for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
+        r.host.runtime().set_reading(&target, "{}").unwrap();
+    }
+    r.commit();
+    let view = desk_view(&r);
+    for words in [
+        "Quick settings",
+        "Bluetooth",
+        "Dark mode",
+        "Do not disturb",
+        "Lock",
+    ] {
+        assert!(
+            says(&view, words),
+            "the panel shows {words}: {:?}",
+            view.tree()
+        );
+    }
+}
+
 /// The session writes what the screen says of its edges, as it does every turn: one fact on
 /// the shell's own record, through the origin write the session's door applies
 /// (`SessionLink::publish_edges`), which the host then commits.
@@ -571,6 +637,42 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     assert_eq!(
         wells[0].props.get("place"),
         Some(&Value::Text("c-terminal".to_owned()))
+    );
+}
+
+/// A run of the session's agent placed on the canvas is the shell's own resource, so its place
+/// stands as the conversation over it (shell.md §8.1) and keeps no well.
+#[test]
+fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
+    let r = room();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "a conversation on the canvas");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    for words in [
+        "Tidy the launch notes: pin the checklist and drop the old draft title.",
+        "I will look for the launch notes first.",
+        "find(notes.Note, ",
+        "Launch checklist",
+        "The checklist is pinned and the old draft is called Launch day now.",
+    ] {
+        assert!(says(&view, words), "the run's place says {words:?}");
+    }
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "only the terminal keeps a well: {wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
     );
 }
 

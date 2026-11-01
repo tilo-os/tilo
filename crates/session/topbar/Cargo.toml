@@ -20,6 +20,7 @@ winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 base64.workspace = true
 libc.workspace = true
 tempfile.workspace = true

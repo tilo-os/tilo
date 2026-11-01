@@ -1,5 +1,6 @@
 use super::*;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const OPERATION: &str = "0f273186-e49a-4f14-8507-e13c6c16925a";
 
@@ -13,7 +14,7 @@ fn helper(frame: &str) -> Capture {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("spawn capture fixture");
     Capture::attach(
         child,
@@ -79,7 +80,7 @@ fn drop_reaps_before_releasing_request_directory() {
         .arg(&marker)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let capture = Capture::attach(child, request, OPERATION).unwrap();
     drop(capture);

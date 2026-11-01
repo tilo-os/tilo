@@ -11,6 +11,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
@@ -122,7 +123,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .arg(&key_path)
         .arg("--valid-for-seconds")
         .arg("3600")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -159,7 +160,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .arg(&key_path)
         .arg("--valid-for-seconds")
         .arg("3600")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         second.status.success(),
@@ -178,7 +179,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .arg(&key_path)
         .arg("--valid-for-seconds")
         .arg("3600")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         rollback.status.success(),
@@ -202,7 +203,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .arg("sign-snapshot")
         .arg("--owner-key-file")
         .arg(&key_path)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!refused.status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 3);
@@ -229,7 +230,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
         .arg("3600")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     wait_for_registry_lock_waiter(signer.id());
     storage.save_identity(&identity(&owner_b)).unwrap();
@@ -252,7 +253,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
             .arg(&key_path)
             .arg("--valid-for-seconds")
             .arg("3600")
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             signed.status.success(),
@@ -275,7 +276,7 @@ fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lo
         .arg("3600")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     wait_for_registry_lock_waiter(rollback.id());
     storage.save_identity(&identity(&owner_b)).unwrap();

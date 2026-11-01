@@ -179,20 +179,39 @@ impl Foreign {
             Some(Reading::Inside(inside)) => (inside.parent.clone(), inside.steps.clone()),
             _ => (at.clone(), Vec::new()),
         };
-        let (value, records) = {
-            let Some((json, _)) = self.source(&at) else {
+        let found = match self.source(&at) {
+            Some((json, _)) => held(json, field),
+            // A record the reading leaves out stands where the reading would hold it: it has
+            // no fields of its own there.
+            None if matches!(self.readings.get(&at), Some(Reading::Inside(_))) => None,
+            None => {
                 return Err(format!(
                     "no reading of `{}` arrived yet: its app publishes it through the session",
                     target.id_string()
                 ));
-            };
-            let held = json.get(&field.name).or_else(|| json.get(&field.id));
-            let Some(json) = held else {
-                return crate::host_res::declared_default(&field.ty, field.default.as_ref())
-                    .map_err(|why| {
-                        format!("`{}` has no `{}`: {why}", target.id_string(), field.name)
-                    });
-            };
+            }
+        };
+        let Some((step, json)) = found else {
+            // A record the reading leaves out (a device without Wi-Fi publishes its network
+            // with none) stands where it would be, and its own fields read as absent too: off,
+            // empty, none.
+            if let Ty::Record(key) = &field.ty {
+                let mut steps = base;
+                steps.push(held_key(field).to_owned());
+                let value = referred(
+                    &format!("{}.{}", target.id_string(), field.name),
+                    key,
+                    author,
+                )?;
+                if let Value::Ref(record) = &value {
+                    self.place(&record.target, steps, parent);
+                }
+                return Ok(value);
+            }
+            return crate::host_res::declared_default(&field.ty, field.default.as_ref())
+                .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), field.name));
+        };
+        let (value, records) = {
             let mut decoder = Decoder {
                 author,
                 registry,
@@ -200,7 +219,7 @@ impl Foreign {
                 steps: base,
                 records: Vec::new(),
             };
-            let value = decoder.down(&field.name, json, &field.ty);
+            let value = decoder.down(step, json, &field.ty);
             (value, decoder.records)
         };
         let value =
@@ -379,7 +398,7 @@ impl Decoder<'_> {
                 )
             })?;
         for field in &info.fields {
-            let Some(value) = json.get(&field.name).or_else(|| json.get(&field.id)) else {
+            let Some((step, value)) = held(json, field) else {
                 // A field the reading leaves out is none, or the value the type declares for
                 // it; one that has neither is missing, not empty.
                 if matches!(field.ty, Ty::Option(_)) || field.default.is_some() {
@@ -390,7 +409,7 @@ impl Decoder<'_> {
                     field.name, info.name
                 ));
             };
-            self.down(&field.name, value, &field.ty)
+            self.down(step, value, &field.ty)
                 .map_err(|why| format!("`{}` of `{}`: {why}", field.name, info.name))?;
         }
         // A record names itself with its `id` when the reading gives one (a menu's row), and
@@ -428,6 +447,23 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
             .map(|who| Value::Principal(crate::ids::Principal::new(who))),
     };
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
+}
+
+/// The key a reading holds `field` under: the end of its id, which keeps the key a kebab-cased
+/// reading spells (`user-switching`) where the name is an identifier (`user_switching`).
+fn held_key(field: &crate::registry::FieldInfo) -> &str {
+    field
+        .id
+        .rsplit_once('.')
+        .map_or(field.name.as_str(), |(_, key)| key)
+}
+
+/// `field` of the record `json` spells out, and the key it stands under: by its name, the key
+/// its id keeps, or its id.
+fn held<'a>(json: &'a Json, field: &'a crate::registry::FieldInfo) -> Option<(&'a str, &'a Json)> {
+    [field.name.as_str(), held_key(field), field.id.as_str()]
+        .into_iter()
+        .find_map(|key| json.get(key).map(|value| (key, value)))
 }
 
 /// What `json` holds when it is the runtime's own encoding of a value tagged `tag`

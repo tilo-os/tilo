@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs;
+use tilo_test_env::SpawnUnderEnvLock as _;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -18,7 +19,7 @@ fn run(args: &[&str], input: &[u8]) -> TestResult<Output> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn_locked()?;
     child
         .stdin
         .take()

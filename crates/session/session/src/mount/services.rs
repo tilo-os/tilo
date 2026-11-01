@@ -202,6 +202,7 @@ pub(crate) fn start_action_plane(
             agent_runs: Some(agent_runs),
             sealed,
             own_device,
+            engine: sync.and_then(crate::sync::Client::engine).cloned(),
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

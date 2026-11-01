@@ -11,6 +11,8 @@
 )]
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::fixtures;
 use ed25519_dalek::SigningKey;
@@ -257,7 +259,7 @@ fn signal_runtime_loader_executes_after_signed_thin_package_unpack() {
     let root = output.path().join("runtime");
     unpack(&decoded.meta, &packed, &root).unwrap();
     let process = std::process::Command::new(root.join(loader))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(process.status.success());
     assert_eq!(process.stdout, b"loader started\n");
@@ -317,7 +319,7 @@ fn thin_runtime_restores_only_its_signed_entrypoint_execute_bits() {
         0
     );
     let process = std::process::Command::new(root.join("engine-host"))
-        .output()
+        .output_locked()
         .unwrap();
     assert!(process.status.success());
     assert_eq!(process.stdout, b"thin engine started\n");

@@ -65,7 +65,9 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("TILO_IDENTITY_ROOT", environment.join("identity"))
             .env("TILO_USER_ID", MISLEADING_TILO_USER_ID);
-        let mut child = child.spawn().expect("spawn isolated native-consent test");
+        let mut child = child
+            .spawn_locked()
+            .expect("spawn isolated native-consent test");
         let status = wait_for_native_consent_child(&mut child, test_name);
         assert!(
             status.success(),

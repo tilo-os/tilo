@@ -39,7 +39,7 @@
 
 use std::cell::RefCell;
 
-use vello::kurbo::{Affine, Rect, RoundedRect, Shape};
+use vello::kurbo::{Affine, Rect, RoundedRect, Shape, Vec2};
 use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
@@ -59,8 +59,209 @@ pub struct Sample {
     /// The lens: refraction at the rim, and whether the sample is shown as
     /// cells.
     pub lens: Lens,
-    /// The part's corner radius, which the lens rings follow.
+    /// The part's corner radius, whose outline the lens bends along.
     pub radius: f64,
+}
+
+/// How a region's backdrop is bent, in the pixels of the space it is
+/// recorded or drawn in: a convex lens along the rim of a rounded rect.
+/// Within `band` of the outline each pixel shows what lies below a point
+/// moved toward the inside along the outline's normal, by `strength` at
+/// the outline easing quadratically to none at the band's inner side; the
+/// rest shows what lies below straight. The backdrop pass evaluates it
+/// together with the blur ([`Self::displacement`] is the same arithmetic),
+/// so a bent surface costs no more to draw than a blurred one and a
+/// settled one draws nothing new.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Refraction {
+    /// Displacement at the outline.
+    pub strength: f64,
+    /// Width of the band along the outline the displacement eases across.
+    pub band: f64,
+    /// Corner radius of the rounded rect the region is.
+    pub radius: f64,
+    /// Red and blue set apart by this fraction of the displacement (blue
+    /// bent further, as glass bends it); `0` none.
+    pub dispersion: f64,
+}
+
+impl Refraction {
+    /// No bend: the backdrop shows straight.
+    pub const NONE: Self = Self {
+        strength: 0.0,
+        band: 0.0,
+        radius: 0.0,
+        dispersion: 0.0,
+    };
+
+    /// The bend `lens` asks for over a body of `radius`, in its logical
+    /// pixels. A lens that states no band eases across two and a half
+    /// times its displacement.
+    #[must_use]
+    pub fn of(lens: Lens, radius: f64) -> Self {
+        let strength = f64::from(lens.refraction);
+        let band = if lens.band > 0.0 {
+            f64::from(lens.band)
+        } else {
+            strength * 2.5
+        };
+        Self {
+            strength,
+            band,
+            radius: radius.max(0.0),
+            dispersion: f64::from(lens.dispersion),
+        }
+    }
+
+    /// Whether anything is bent.
+    #[must_use]
+    pub fn bends(&self) -> bool {
+        self.strength.is_finite() && self.band.is_finite() && self.strength > 0.0 && self.band > 0.0
+    }
+
+    /// Whether the lens asks for what lies below even unblurred: it bends,
+    /// or it states a band, as a Liquid lens at no strength does (clear
+    /// glass, never its opaque fallback). A lens stating neither leaves an
+    /// unblurred surface its fallback, as before lenses had bands.
+    #[must_use]
+    pub fn shows_through(&self) -> bool {
+        self.bends() || (self.band.is_finite() && self.band > 0.0)
+    }
+
+    /// This bend in a space `scale` pixels per pixel of its own.
+    #[must_use]
+    pub fn scaled(self, scale: f64) -> Self {
+        Self {
+            strength: self.strength * scale,
+            band: self.band * scale,
+            radius: self.radius * scale,
+            dispersion: self.dispersion,
+        }
+    }
+
+    /// Where the backdrop a pixel at `point` of a region of `size` shows
+    /// lies, relative to it: toward the region's inside along its rounded
+    /// outline's normal, by `strength` at the outline, easing to nothing
+    /// `band` in (the band held to half the region's shorter side, so the
+    /// two sides of a bar never cross). The backdrop pass's `bend` computes
+    /// the same.
+    #[must_use]
+    pub fn displacement(&self, point: vello::kurbo::Point, size: vello::kurbo::Size) -> Vec2 {
+        if !self.bends() || size.width <= 0.0 || size.height <= 0.0 {
+            return Vec2::ZERO;
+        }
+        let half = Vec2::new(size.width / 2.0, size.height / 2.0);
+        let shorter = half.x.min(half.y);
+        let radius = self.radius.clamp(0.0, shorter);
+        let p = point.to_vec2() - half;
+        let sign = |v: f64| if v < 0.0 { -1.0 } else { 1.0 };
+        let q = Vec2::new(p.x.abs() - (half.x - radius), p.y.abs() - (half.y - radius));
+        let outside = Vec2::new(q.x.max(0.0), q.y.max(0.0));
+        let distance = outside.hypot() + q.x.max(q.y).min(0.0) - radius;
+        let normal = if q.x > 0.0 && q.y > 0.0 {
+            let n = outside / outside.hypot();
+            Vec2::new(n.x * sign(p.x), n.y * sign(p.y))
+        } else if q.x > q.y {
+            Vec2::new(sign(p.x), 0.0)
+        } else {
+            Vec2::new(0.0, sign(p.y))
+        };
+        let band = self.band.min(shorter);
+        let t = (1.0 + distance / band).clamp(0.0, 1.0);
+        -normal * (self.strength.min(shorter) * t * t)
+    }
+}
+
+/// The luminance range what shows through a translucent surface is
+/// compressed into, so ink chosen against the surface's ground stays
+/// legible over anything below it: the material's band
+/// ([`material_band`]) as relative luminances. The backdrop pass maps what
+/// it sampled into it ([`Self::tone`] is the same arithmetic): luminance
+/// is compressed evenly in contrast (a contrast ratio below becomes a
+/// smaller, fixed power of itself), and each colour keeps its chromaticity,
+/// so a bright photo shows dimmed but in its own colours and shapes, never
+/// as one flat colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Legible {
+    /// Relative luminance black maps to.
+    pub dark: f64,
+    /// Relative luminance white maps to.
+    pub light: f64,
+}
+
+impl Default for Legible {
+    fn default() -> Self {
+        Self::ANY
+    }
+}
+
+impl Legible {
+    /// No compression: what lies below shows as it is.
+    pub const ANY: Self = Self {
+        dark: 0.0,
+        light: 1.0,
+    };
+
+    /// The range a surface of `ground` under `theme` holds what shows
+    /// through it in.
+    #[must_use]
+    pub fn of(theme: &Theme, ground: Color) -> Self {
+        let (dark, light) = material_band(theme, ground);
+        let (dark, light) = (
+            crate::color::relative_luminance(dark),
+            crate::color::relative_luminance(light),
+        );
+        Self {
+            dark: dark.min(light),
+            light: dark.max(light),
+        }
+    }
+
+    /// Whether anything is compressed.
+    #[must_use]
+    pub fn compresses(&self) -> bool {
+        self.dark > 0.0 || self.light < 1.0
+    }
+
+    /// `rgb` (sRGB-encoded, 0–1) as it shows through: its relative
+    /// luminance `y` mapped so `(y + 0.05) / 0.05` becomes that ratio to
+    /// the power the band allows over the whole 21:1 range, its linear
+    /// channels scaled to it, and pulled toward grey only where a channel
+    /// would leave the gamut. The backdrop pass's `tone` computes the same.
+    #[must_use]
+    pub fn tone(&self, rgb: [f64; 3]) -> [f64; 3] {
+        if !self.compresses() {
+            return rgb;
+        }
+        let linear = rgb.map(|c| {
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        let y = 0.0722f64.mul_add(linear[2], 0.2126f64.mul_add(linear[0], 0.7152 * linear[1]));
+        let power = ((self.light + 0.05) / (self.dark + 0.05)).ln() / 21f64.ln();
+        let target = (self.dark + 0.05) * ((y + 0.05) / 0.05).powf(power) - 0.05;
+        let mut out = if y <= 1e-5 {
+            [target; 3]
+        } else {
+            linear.map(|c| c * target / y)
+        };
+        let top = out[0].max(out[1]).max(out[2]);
+        if top > 1.0 {
+            let pull = (1.0 - target) / (top - target);
+            out = out.map(|c| (c - target).mul_add(pull, target));
+        }
+        out.map(|c| {
+            let c = c.clamp(0.0, 1.0);
+            if c <= 0.003_130_8 {
+                c * 12.92
+            } else {
+                1.055f64.mul_add(c.powf(1.0 / 2.4), -0.055)
+            }
+        })
+    }
 }
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
@@ -158,8 +359,10 @@ fn paint_body(
     );
     tokens.radius = crate::num::f32_of_f64(radius);
     tokens.params = finish.params().clone();
-    tokens.backdrop = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar)
-        && !(theme.reduce_transparency || theme.forced_colors)
+    tokens.backdrop = matches!(
+        role,
+        SurfaceRole::Window | SurfaceRole::Floating | SurfaceRole::Bar
+    ) && !(theme.reduce_transparency || theme.forced_colors)
         && takes_backdrop(scene);
     if let Some(clip) = &clip {
         scene.push_clip_layer(Fill::NonZero, transform, clip);
@@ -208,54 +411,6 @@ fn body_of(shape: &impl Shape) -> (Rect, f64, Option<vello::kurbo::BezPath>) {
     (shape.bounding_box(), 0.0, Some(shape.to_path(0.1)))
 }
 
-/// Draw the blurred backdrop `brush` in `body` as a thick lens bends it:
-/// rings toward the rim show what is under them magnified about the body's
-/// centre, the outermost by `refraction` logical pixels, easing to none a
-/// rim's width in. Each ring is the body inset concentrically, drawn outer
-/// first, so every pixel takes exactly one ring's sample.
-fn refract(
-    scene: &mut Scene,
-    transform: Affine,
-    body: &RoundedRect,
-    brush: &ImageBrush,
-    brush_transform: Affine,
-    refraction: f32,
-) {
-    /// Rings across the rim: enough that the steps read as one bend once
-    /// blurred, few enough to stay a handful of fills.
-    const RINGS: u32 = 4;
-    let rect = body.rect();
-    let radius = body.radii().top_left;
-    let rim = (f64::from(refraction) * 2.5).min(rect.width().min(rect.height()) / 3.0);
-    let centre = rect.center();
-    for ring in 0..=RINGS {
-        let inset = rim * f64::from(ring) / f64::from(RINGS);
-        let shape = RoundedRect::from_rect(rect.inset(-inset), (radius - inset).max(0.0));
-        if shape.rect().width() <= 0.0 || shape.rect().height() <= 0.0 {
-            break;
-        }
-        // Displacement at this ring: the full refraction at the rim, easing
-        // quadratically to nothing at the rim's inner edge.
-        let t = 1.0 - f64::from(ring) / f64::from(RINGS);
-        let shift = f64::from(refraction) * t * t;
-        let scale_x = 1.0 - 2.0 * shift / rect.width().max(1.0);
-        let scale_y = 1.0 - 2.0 * shift / rect.height().max(1.0);
-        // A point `p` of the ring shows the backdrop at `centre + (p -
-        // centre) * scale`: the image is magnified about the centre by the
-        // inverse.
-        let lens = Affine::translate(centre.to_vec2())
-            * Affine::scale_non_uniform(1.0 / scale_x.max(0.1), 1.0 / scale_y.max(0.1))
-            * Affine::translate(-centre.to_vec2());
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            brush,
-            Some(lens * brush_transform),
-            &shape,
-        );
-    }
-}
-
 /// Whether a surface drawn into `scene` now would be recorded for the
 /// backdrop pass: a recording is active, `scene` is one of its layers and a
 /// region is left this frame.
@@ -272,14 +427,18 @@ fn takes_backdrop(scene: &Scene) -> bool {
 
 /// Fill `path` with what lies below it, for a painter's backdrop brush
 /// (`crate::part_paint`): under an active [`BackdropRecording`], the
-/// backdrop blurred by `blur` logical pixels and bent by `refraction` at
-/// the rim of the `radius`-rounded box around the path. `tint` is the
-/// colour the painter lays over it, which the placeholder shows where no
-/// pass substitutes it. `false`, and nothing drawn, where nothing may be
-/// translucent or nothing records: the caller draws the brush's fallback.
+/// backdrop blurred by `blur` logical pixels and bent by the lens along the
+/// rim of the `radius`-rounded box around the path ([`Refraction`]; the
+/// pass bends it, the scene draws the result as it draws a blur). `tint`
+/// is the colour the painter lays over it, which the placeholder shows
+/// where no pass substitutes it. `false`, and nothing drawn, where nothing
+/// may be translucent or nothing records: the caller draws the brush's
+/// fallback.
 ///
-/// The caller then draws the painter's glaze and holds the whole in the
-/// material's band with [`hold_in_band`], last.
+/// The backdrop pass compresses what it samples into the material's band
+/// ([`Legible`]). Light a painter glazes over the sample, and a backdrop
+/// the host provided ready-made (not the pass's), the caller holds in the
+/// band with [`hold_in_band`] after the glaze.
 pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
@@ -287,23 +446,28 @@ pub(crate) fn fill_backdrop_sample(
     sample: Sample,
     theme: &Theme,
     tint: Color,
-) -> bool {
+) -> Shown {
     let Sample { blur, lens, radius } = sample;
-    // Unblurred, a cell-sampled backdrop is still a backdrop: the
-    // Pixelated set shows what lies below without smoothing it.
-    let blurring = if lens.sampling == Sampling::Blocky {
-        if theme.reduce_transparency || theme.forced_colors {
-            return false;
-        }
-        blur
-    } else if theme.reduce_transparency || theme.forced_colors || blur <= 0.0 {
-        return false;
-    } else {
-        blur
-    };
-    let recorded = record(scene, transform, path, blurring, lens, tint);
-    let Some((image, brush_transform)) = recorded else {
-        return false;
+    if theme.reduce_transparency || theme.forced_colors {
+        return Shown::Fallback;
+    }
+    // Unblurred, a cell-sampled or a bent backdrop is still a backdrop:
+    // the Pixelated set shows what lies below without smoothing it, the
+    // Liquid set bends it and leaves it sharp.
+    let refraction = Refraction::of(lens, radius);
+    if lens.sampling == Sampling::Smooth && blur <= 0.0 && !refraction.shows_through() {
+        return Shown::Fallback;
+    }
+    let legible = Legible::of(theme, tint);
+    let recorded = record(
+        scene,
+        transform,
+        path,
+        (blur, lens, refraction, legible),
+        tint,
+    );
+    let Some((image, brush_transform, provided)) = recorded else {
+        return Shown::Fallback;
     };
     // A cell-sampled backdrop is a few texels across, each one cell: drawn
     // up at the cell grid, its texels are the cells, so it reads as pixels
@@ -315,63 +479,31 @@ pub(crate) fn fill_backdrop_sample(
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
         .with_quality(quality);
-    if lens.refraction > 0.0 {
-        let body = RoundedRect::from_rect(path.bounding_box(), radius);
-        // The rings fill the rounded box; a path that is not that box
-        // keeps them inside it.
-        let clipped = !same_outline(&body.to_path(0.1), path);
-        if clipped {
-            scene.push_clip_layer(Fill::NonZero, transform, path);
-        }
-        refract(
-            scene,
-            transform,
-            &body,
-            &brush,
-            brush_transform,
-            lens.refraction,
-        );
-        if clipped {
-            scene.pop_layer();
-        }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        path,
+    );
+    if provided {
+        Shown::Provided
     } else {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(brush_transform),
-            path,
-        );
+        Shown::Compressed
     }
-    true
 }
 
-/// Whether `a` and `b` trace one outline: the same elements at points a
-/// float rounding apart. A body rebuilt from its own path's bounds is not
-/// bit-identical to that path, and an outline that is the body must not
-/// take a clip it does not need (its edge would be antialiased twice).
-fn same_outline(a: &vello::kurbo::BezPath, b: &vello::kurbo::BezPath) -> bool {
-    use vello::kurbo::{PathEl, Point};
-    /// Far below a device pixel's antialiasing step at any zoom.
-    const APART: f64 = 1e-6;
-    let near = |p: Point, q: Point| (p - q).hypot() <= APART;
-    a.elements().len() == b.elements().len()
-        && a.elements()
-            .iter()
-            .zip(b.elements())
-            .all(|pair| match pair {
-                (PathEl::MoveTo(p), PathEl::MoveTo(q)) | (PathEl::LineTo(p), PathEl::LineTo(q)) => {
-                    near(*p, *q)
-                }
-                (PathEl::QuadTo(p1, p2), PathEl::QuadTo(q1, q2)) => {
-                    near(*p1, *q1) && near(*p2, *q2)
-                }
-                (PathEl::CurveTo(p1, p2, p3), PathEl::CurveTo(q1, q2, q3)) => {
-                    near(*p1, *q1) && near(*p2, *q2) && near(*p3, *q3)
-                }
-                (PathEl::ClosePath, PathEl::ClosePath) => true,
-                _ => false,
-            })
+/// How [`fill_backdrop_sample`] filled a backdrop brush.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shown {
+    /// Not at all: the caller draws the brush's fallback.
+    Fallback,
+    /// With the pass's sample, which the pass compresses into the band;
+    /// a glaze over it is the caller's to hold.
+    Compressed,
+    /// With a backdrop the host provided, which the caller holds in the
+    /// band ([`hold_in_band`]).
+    Provided,
 }
 
 /// Hold what was drawn in `path` over a backdrop inside the material's band
@@ -425,12 +557,16 @@ pub(crate) fn fill_with_ground(
         let tint = see_through_fill(theme, ground);
         if blurs(Material::Floating, theme)
             && tint.components[3] < 1.0
-            && let Some((image, brush_transform)) = record(
+            && let Some((image, brush_transform, _)) = record(
                 scene,
                 transform,
                 shape,
-                theme.tokens.colors.surfaces.material_blur_px,
-                Lens::default(),
+                (
+                    theme.tokens.colors.surfaces.material_blur_px,
+                    Lens::default(),
+                    Refraction::NONE,
+                    Legible::ANY,
+                ),
                 ground,
             )
         {
@@ -478,7 +614,10 @@ pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
 /// the band's light end, none darker than its dark end. Each channel of
 /// the ground lies between the two, so the tint drawn over it stays
 /// inside too, and a panel's text keeps its contrast over a white page, a
-/// black one or a busy one. Inside the band the backdrop shows as it is.
+/// black one or a busy one. What the backdrop pass sampled is already
+/// compressed into the band ([`Legible`]); this holds what it did not
+/// sample (a provided backdrop, the desktop picture) and light glazed over
+/// it.
 fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Theme, ground: Color) {
     use vello::peniko::{BlendMode, Compose, Mix};
     let (dark_end, light_end) = material_band(theme, ground);
@@ -521,6 +660,10 @@ pub struct RecordedBackdrop {
     pub sampling: crate::part_paint::Sampling,
     /// The cell's side in recording pixels, for [`crate::part_paint::Sampling::Blocky`].
     pub cell_px: f64,
+    /// How the backdrop is bent, in recording pixels.
+    pub refraction: Refraction,
+    /// The range what shows through is compressed into.
+    pub legible: Legible,
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
@@ -550,6 +693,8 @@ impl RecordedBackdrop {
             blur_px: self.blur_px * scale,
             sampling: self.sampling,
             cell_px: self.cell_px * scale,
+            refraction: self.refraction.scaled(scale),
+            legible: self.legible,
             below: below(self.below),
             ground: self.ground,
         }
@@ -775,7 +920,10 @@ pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usi
             end_open_layers(&mut below);
             surface.below = below;
             surface.bounds = transform.transform_rect_bbox(surface.bounds);
-            surface.blur_px *= transform.determinant().abs().sqrt();
+            let scale = transform.determinant().abs().sqrt();
+            surface.blur_px *= scale;
+            surface.cell_px *= scale;
+            surface.refraction = surface.refraction.scaled(scale);
             if let Some(layer) = parent_layer {
                 surface.layer = layer;
                 recording.surfaces.push(surface);
@@ -795,10 +943,9 @@ fn record(
     scene: &Scene,
     transform: Affine,
     shape: &impl Shape,
-    blur_px: f32,
-    lens: Lens,
+    (blur_px, lens, refraction, legible): (f32, Lens, Refraction, Legible),
     ground: Color,
-) -> Option<(ImageData, Affine)> {
+) -> Option<(ImageData, Affine, bool)> {
     RECORDING.with(|slot| {
         let mut slot = slot.borrow_mut();
         let recording = slot.as_mut()?;
@@ -830,6 +977,14 @@ fn record(
                 let cell = f64::from(lens.cell.max(1.0));
                 (cells(bounds.width(), cell), cells(bounds.height(), cell))
             }
+            // A sharp sample (blurred less than a texel, as a bent but
+            // unblurred lens is) at one texel per pixel, so what lies below
+            // shows as crisply through the glass as beside it.
+            crate::part_paint::Sampling::Smooth
+                if f64::from(blur_px) * device_scale < PLACEHOLDER_TEXEL =>
+            {
+                (cells(bounds.width(), 1.0), cells(bounds.height(), 1.0))
+            }
             crate::part_paint::Sampling::Smooth => {
                 (texels(bounds.width()), texels(bounds.height()))
             }
@@ -838,8 +993,9 @@ fn record(
         // pixels at the part's own coordinates.
         let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
-        let image =
-            provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
+        let given = provided(key, width, height);
+        let ready_made = given.is_some();
+        let image = given.unwrap_or_else(|| placeholder(key, width, height, ground));
         // Brush space is the fill's space: undo `transform`, then map the
         // image onto the surface's bounds in recording coordinates, so the
         // backdrop stays put while the surface scales or slides in.
@@ -857,6 +1013,8 @@ fn record(
             blur_px: f64::from(blur_px) * device_scale,
             sampling: lens.sampling,
             cell_px: cell_px * device_scale,
+            refraction: refraction.scaled(device_scale),
+            legible,
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
@@ -870,7 +1028,7 @@ fn record(
         } else {
             recording.pending.push((address, surface));
         }
-        Some((image, brush_transform))
+        Some((image, brush_transform, ready_made))
     })
 }
 
@@ -955,6 +1113,10 @@ pub struct BackdropRegion {
     pub sampling: Sampling,
     /// The cell's side in target pixels, for [`Sampling::Blocky`].
     pub cell_px: f64,
+    /// How the backdrop is bent, in target pixels.
+    pub refraction: Refraction,
+    /// The range what shows through is compressed into.
+    pub legible: Legible,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
     /// The opaque panel ground: what the backdrop shows where nothing below
@@ -996,6 +1158,18 @@ struct Pass {
     step: vec2<f32>,
     sigma: f32,
     radius: i32,
+    // The lens, for the last pass (`Refraction`, in target pixels): the
+    // region's size, its corner radius, the band, the displacement at the
+    // rim and the dispersion. `strength` 0 bends nothing.
+    size: vec2<f32>,
+    corner: f32,
+    band: f32,
+    strength: f32,
+    dispersion: f32,
+    // The luminance range the last pass compresses what it shows into
+    // (`Legible`); `0`, `1` none.
+    dark: f32,
+    light: f32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -1027,9 +1201,7 @@ fn fs_halve(in: VertexOut) -> @location(0) vec4<f32> {
     return textureSampleLevel(source, bilinear, source_uv(in.uv), 0.0);
 }
 
-@fragment
-fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
-    let centre = source_uv(in.uv);
+fn blur_at(centre: vec2<f32>) -> vec4<f32> {
     let falloff = -0.5 / (pass_.sigma * pass_.sigma);
     var sum = textureSampleLevel(source, bilinear, centre, 0.0);
     var total = 1.0;
@@ -1043,9 +1215,85 @@ fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
     }
     return sum / total;
 }
+
+fn away(v: f32) -> f32 {
+    return select(1.0, -1.0, v < 0.0);
+}
+
+// Where the backdrop the region's pixel at `point` shows lies, relative to
+// it: toward the inside along the rounded outline's normal, `strength` at
+// the outline easing quadratically to nothing `band` in. The same
+// arithmetic as `Refraction::displacement`.
+fn bend(point: vec2<f32>) -> vec2<f32> {
+    let half = pass_.size * 0.5;
+    let shorter = min(half.x, half.y);
+    let corner = clamp(pass_.corner, 0.0, shorter);
+    let p = point - half;
+    let q = abs(p) - (half - vec2<f32>(corner));
+    let outside = max(q, vec2<f32>(0.0));
+    let distance = length(outside) + min(max(q.x, q.y), 0.0) - corner;
+    var normal: vec2<f32>;
+    if (q.x > 0.0 && q.y > 0.0) {
+        normal = outside / length(outside) * vec2<f32>(away(p.x), away(p.y));
+    } else if (q.x > q.y) {
+        normal = vec2<f32>(away(p.x), 0.0);
+    } else {
+        normal = vec2<f32>(0.0, away(p.y));
+    }
+    let t = clamp(1.0 + distance / min(pass_.band, shorter), 0.0, 1.0);
+    return -normal * (min(pass_.strength, shorter) * t * t);
+}
+
+fn linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+fn encoded(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+// What shows through, compressed into the legible range: luminance mapped
+// evenly in contrast, chromaticity kept, pulled toward grey only where a
+// channel would leave the gamut. The same arithmetic as `Legible::tone`.
+fn tone(c: vec4<f32>) -> vec4<f32> {
+    if (pass_.dark <= 0.0 && pass_.light >= 1.0) {
+        return c;
+    }
+    let lin = linear(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    let y = dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let power = log((pass_.light + 0.05) / (pass_.dark + 0.05)) / log(21.0);
+    let aim = (pass_.dark + 0.05) * pow((y + 0.05) / 0.05, power) - 0.05;
+    var out = vec3<f32>(aim);
+    if (y > 1e-5) {
+        out = lin * (aim / y);
+    }
+    let top = max(out.r, max(out.g, out.b));
+    if (top > 1.0) {
+        out = vec3<f32>(aim) + (out - vec3<f32>(aim)) * ((1.0 - aim) / (top - aim));
+    }
+    return vec4<f32>(encoded(clamp(out, vec3<f32>(0.0), vec3<f32>(1.0))), c.a);
+}
+
+// The blur, and in the last pass the lens and the legible range: the
+// kernel is taken about the point the lens shows, so the bend costs one
+// displaced lookup (three where red and blue part).
+@fragment
+fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
+    if (pass_.strength <= 0.0 || pass_.band <= 0.0) {
+        return tone(blur_at(source_uv(in.uv)));
+    }
+    let shift = bend(in.uv * pass_.size) / pass_.size;
+    let seen = blur_at(source_uv(in.uv + shift));
+    if (pass_.dispersion <= 0.0) {
+        return tone(seen);
+    }
+    let red = blur_at(source_uv(in.uv + shift * (1.0 - pass_.dispersion)));
+    let blue = blur_at(source_uv(in.uv + shift * (1.0 + pass_.dispersion)));
+    return tone(vec4<f32>(red.r, seen.g, blue.b, seen.a));
+}
 ";
 
-const PASS_BYTES: u64 = 32;
+const PASS_BYTES: u64 = 64;
 
 /// What [`BackdropBlur::prepare`] did, for frame profiling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1068,11 +1316,16 @@ struct Plan {
     /// Target pixels rendered as the backdrop: the region plus the blur's
     /// reach, clipped to the target and rounded out.
     source: Rect,
-    /// Texture sizes from the half-resolution backdrop down to the level
-    /// the blur runs on.
+    /// Texture sizes from the backdrop (rendered at `ground_texel`) down to
+    /// the level the blur runs on.
     levels: Vec<(u32, u32)>,
+    /// Target pixels per texel of the rendered backdrop: two, or one for a
+    /// sample blurred less than two pixels (a sharp lens), which would
+    /// show the half resolution as softness.
+    ground_texel: f64,
     /// Target pixels per texel of the last level.
     texel: f64,
+    /// The blur's deviation in texels of the last level; `0` none.
     sigma: f64,
 }
 
@@ -1305,7 +1558,10 @@ impl BackdropBlur {
         let mut below = Scene::new();
         below.append(
             &region.below,
-            Some(Affine::scale(0.5) * Affine::translate((-plan.source.x0, -plan.source.y0))),
+            Some(
+                Affine::scale(1.0 / plan.ground_texel)
+                    * Affine::translate((-plan.source.x0, -plan.source.y0)),
+            ),
         );
         // The material is opaque: a target cleared to transparency (an
         // offscreen capture) must not let the scene under the placeholder
@@ -1367,16 +1623,23 @@ impl BackdropBlur {
         let Some(last) = last else {
             return false;
         };
-        let across = ensure_texture(
-            device,
-            &mut self.across,
-            last_size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            None,
-        )
-        .view
-        .clone();
-        self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+        // A sharp sample's horizontal pass is one tap, a copy: the last
+        // pass reads the level itself.
+        let across = if plan.sigma > 0.0 {
+            let across = ensure_texture(
+                device,
+                &mut self.across,
+                last_size,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                None,
+            )
+            .view
+            .clone();
+            self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+            across
+        } else {
+            last
+        };
         pass = pass.saturating_add(1);
         if self.outputs.len() <= slot {
             self.outputs.resize_with(slot.saturating_add(1), || None);
@@ -1480,8 +1743,12 @@ fn region_sigma(region: &BackdropRegion) -> f64 {
     }
 }
 
+/// Below this deviation (target pixels) a backdrop is rendered at full
+/// resolution: halving it would show as softness the blur does not hide.
+const SHARP_SIGMA: f64 = 2.0;
+
 /// Decide the source rectangle, the halvings and the kernel for `region`,
-/// or `None` when it has nothing to blur.
+/// or `None` when it has nothing to blur or bend.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1489,7 +1756,12 @@ fn region_sigma(region: &BackdropRegion) -> f64 {
 )]
 fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
     let sigma = region_sigma(region);
-    if !sigma.is_finite() || sigma <= 0.0 || region.image.width == 0 || region.image.height == 0 {
+    if !sigma.is_finite()
+        || sigma < 0.0
+        || (sigma == 0.0 && !region.refraction.shows_through())
+        || region.image.width == 0
+        || region.image.height == 0
+    {
         return None;
     }
     if region.rect.intersect(target).area() <= 0.0 {
@@ -1506,10 +1778,11 @@ fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
     if source.width() < 1.0 || source.height() < 1.0 {
         return None;
     }
-    let half = |edge: f64| ((edge / 2.0).ceil().max(1.0) as u32).min(max_edge.max(1));
-    let mut size = (half(source.width()), half(source.height()));
+    let ground_texel = if sigma < SHARP_SIGMA { 1.0 } else { 2.0 };
+    let rendered = |edge: f64| ((edge / ground_texel).ceil().max(1.0) as u32).min(max_edge.max(1));
+    let mut size = (rendered(source.width()), rendered(source.height()));
     let mut levels = vec![size];
-    let mut texel = 2.0;
+    let mut texel = ground_texel;
     while sigma / texel > MAX_SIGMA_TEXELS
         && size.0.min(size.1) >= 8
         && levels.len() <= MAX_HALVINGS as usize
@@ -1523,6 +1796,7 @@ fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
         first_pass: 0,
         source,
         levels,
+        ground_texel,
         texel,
         sigma: sigma / texel,
     })
@@ -1535,13 +1809,30 @@ fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
     reason = "shader parameters are f32 by definition; the values are small texture coordinates"
 )]
 fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
-    let mut push = |offset: [f64; 2], scale: [f64; 2], step: [f64; 2], sigma: f64, radius: i32| {
+    let mut push = |offset: [f64; 2],
+                    scale: [f64; 2],
+                    step: [f64; 2],
+                    (sigma, radius): (f64, i32),
+                    (lens, legible): (Refraction, Legible)| {
         for value in [
             offset[0], offset[1], scale[0], scale[1], step[0], step[1], sigma,
         ] {
             bytes.extend_from_slice(&(value as f32).to_le_bytes());
         }
         bytes.extend_from_slice(&radius.to_le_bytes());
+        let bends = lens.bends();
+        for value in [
+            region.rect.width(),
+            region.rect.height(),
+            lens.radius,
+            lens.band,
+            if bends { lens.strength } else { 0.0 },
+            lens.dispersion.max(0.0),
+            legible.dark,
+            legible.light,
+        ] {
+            bytes.extend_from_slice(&(value as f32).to_le_bytes());
+        }
     };
     for pair in plan.levels.windows(2) {
         if let [source, target] = pair {
@@ -1549,25 +1840,37 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
                 2.0 * f64::from(target.0) / f64::from(source.0),
                 2.0 * f64::from(target.1) / f64::from(source.1),
             ];
-            push([0.0, 0.0], scale, [0.0, 0.0], 1.0, 0);
+            push(
+                [0.0, 0.0],
+                scale,
+                [0.0, 0.0],
+                (1.0, 0),
+                (Refraction::NONE, Legible::ANY),
+            );
         }
     }
     let (width, height) = plan.levels.last().copied().unwrap_or((1, 1));
     let (width, height) = (f64::from(width), f64::from(height));
-    let radius = (plan.sigma * KERNEL_REACH)
-        .ceil()
-        .clamp(1.0, f64::from(MAX_KERNEL_RADIUS));
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "clamped to 1..=MAX_KERNEL_RADIUS"
-    )]
-    let radius = radius as i32;
+    // Unblurred (a sharp lens), each pass is one tap.
+    let kernel = if plan.sigma > 0.0 {
+        let radius = (plan.sigma * KERNEL_REACH)
+            .ceil()
+            .clamp(1.0, f64::from(MAX_KERNEL_RADIUS));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped to 1..=MAX_KERNEL_RADIUS"
+        )]
+        let radius = radius as i32;
+        (plan.sigma, radius)
+    } else {
+        (1.0, 0)
+    };
     push(
         [0.0, 0.0],
         [1.0, 1.0],
         [1.0 / width, 0.0],
-        plan.sigma,
-        radius,
+        kernel,
+        (Refraction::NONE, Legible::ANY),
     );
     // The level's texel `j` covers target pixels `source.x0 + j * texel`
     // onward, so the region's rectangle is this sub-rectangle of it.
@@ -1579,7 +1882,15 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
         region.rect.width() / plan.texel / width,
         region.rect.height() / plan.texel / height,
     ];
-    push(offset, scale, [0.0, 1.0 / height], plan.sigma, radius);
+    // The last pass bends: it resamples onto the placeholder, whose texels
+    // are the region's, about the point the lens shows.
+    push(
+        offset,
+        scale,
+        [0.0, 1.0 / height],
+        kernel,
+        (region.refraction, region.legible),
+    );
 }
 
 /// `slot`'s texture at exactly `size`, reallocated when it differs. A

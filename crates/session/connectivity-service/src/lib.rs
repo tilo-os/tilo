@@ -389,6 +389,19 @@ fn phase2_auth(inner_auth: Option<String>) -> Result<Option<String>, DoorError> 
     }
 }
 
+/// The network resource as a view of another language reads and changes it: its reading
+/// ([`Network`]) as its fields and its actions as its verbs.
+#[must_use]
+pub fn network_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Network, NetworkAction>("network", "Network")
+}
+
+/// The Bluetooth resource as a view of another language reads and changes it.
+#[must_use]
+pub fn bluetooth_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Bluetooth, BluetoothAction>("bluetooth", "Bluetooth")
+}
+
 /// The `network` resource reading `network`.
 #[must_use]
 pub fn network_resource(network: &Network) -> ResourceSpec {

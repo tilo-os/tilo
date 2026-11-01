@@ -29,6 +29,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
+use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
@@ -138,6 +139,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/presets.tl"),
     ),
     (
+        "quick.tl",
+        include_str!("../../../../apps/tl/shell/quick.tl"),
+    ),
+    (
         "rooms.tl",
         include_str!("../../../../apps/tl/shell/rooms.tl"),
     ),
@@ -156,10 +161,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
-    ),
-    (
-        "system.tl",
-        include_str!("../../../../apps/tl/shell/system.tl"),
     ),
     (
         "traditional.tl",
@@ -239,8 +240,9 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     );
-    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
         out.iter().map(|c| c.meta.clone()).collect();
+    imports.extend(platform_packages()?);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -713,6 +715,9 @@ pub struct SessionLink {
     handed: Cell<u64>,
     served: Cell<u64>,
     answers: RefCell<BTreeMap<Ask, Result<(), String>>>,
+    /// What the door refused of what the shell asked, in its words: each refusal, kept for
+    /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
+    refused: RefCell<Vec<String>>,
 }
 
 impl SessionLink {
@@ -758,10 +763,19 @@ impl SessionLink {
             let answer = invoke(ask);
             if let Err(why) = &answer {
                 tracing::warn!(?ask, why, "the session refused what the shell asked");
+                self.refused
+                    .borrow_mut()
+                    .push(format!("{} on {}: {why}", ask.action, ask.resource));
             }
             self.answers.borrow_mut().insert(ask.clone(), answer);
         }
         !asked.is_empty()
+    }
+
+    /// What the door refused of what the shell asked since the session started, in its words.
+    #[must_use]
+    pub fn refused(&self) -> Vec<String> {
+        self.refused.borrow().clone()
     }
 
     /// Whether the shell asked something the session has not run yet.
@@ -872,22 +886,28 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
     }
 }
 
-/// The ask `session.run` carries: `(resource, action, (argument, value)…)`. The shell names the
+/// The ask `session.run` carries: `(resource, action, [(argument, value)…])`, an action
+/// invocation as every caller of the action protocol addresses one. The shell names the
 /// session's own resource and action, as the door publishes them (a window's `focus` on
 /// `desktop:tab:7`, the chrome's `move-tab-to-strip`), and each argument by the name the
-/// action's own fields have. `session.notify` is the same, on the notification centre.
+/// action's own fields have. `session.notify` is the same, on the notification centre. The
+/// tilolang checker holds every such effect to this shape (`tilolang::origin::payload_type`).
 fn run_ask(payload: &Json, capability: &str) -> Result<Ask, String> {
+    let shape =
+        || format!("{capability} takes (resource, action, [(argument, value)…]), not {payload}");
     let Json::Array(items) = payload else {
-        return Err(format!(
-            "{capability} takes (resource, action, (argument, value)…), not {payload}"
-        ));
+        return Err(shape());
     };
-    let (Some(Json::String(resource)), Some(Json::String(action))) = (items.first(), items.get(1))
+    let [
+        Json::String(resource),
+        Json::String(action),
+        Json::Array(given),
+    ] = items.as_slice()
     else {
-        return Err(format!("{capability} names its resource and action first"));
+        return Err(shape());
     };
     let mut arguments = BTreeMap::new();
-    for argument in items.iter().skip(2) {
+    for argument in given {
         let Json::Array(pair) = argument else {
             return Err(format!(
                 "{capability} takes each argument as (name, value), not {argument}"
@@ -1874,6 +1894,20 @@ struct ShellPlatform {
 
 impl Platform for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
+        // The device's and Settings' packages first: the shell's views read their resources
+        // (`device.sound`) from the readings the session publishes, and pressing their actions
+        // asks the session, as a place's composed view does.
+        match platform_packages() {
+            Ok(packages) => {
+                for meta in packages {
+                    let app = meta.app.clone();
+                    if let Err(error) = host.runtime().load_foreign(meta) {
+                        tracing::error!(app, %error, "a platform package did not load");
+                    }
+                }
+            }
+            Err(why) => tracing::error!(why, "the platform's packages do not read"),
+        }
         // The packages the shell uses are other apps' here: their records are the ones their
         // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
         // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
@@ -2284,6 +2318,14 @@ impl ShellPart {
             })
     }
 
+    /// Draw the shell with `theme`, the person's as their appearance settings make it: a
+    /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
+    /// the bar and every surface over the desk in it.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.widgets.set_theme(theme);
+        self.again = true;
+    }
+
     /// The edges the shell's chrome stands on, as the session read them from the shell's
     /// record: where the part covers the outputs. A change moves the part to the edges it
     /// now names.
@@ -2528,7 +2570,11 @@ impl ShellPart {
         let Some(window) = self.window() else {
             return;
         };
-        for (kind, text) in window.take_notices() {
+        let notices = window.take_notices();
+        // A window that refused what the view sent shows the platform's error state: that
+        // is the shell refusing to show itself, heard once.
+        let failed = window.failed().map(str::to_owned);
+        for (kind, text) in notices {
             match kind {
                 tilo_render_protocol::patch::NoticeKind::Error => {
                     tracing::warn!(text, "the shell refused what was asked of it");
@@ -2539,6 +2585,11 @@ impl ShellPart {
                 }
             }
         }
+        if let Some(why) = failed
+            && !self.refusals.contains(&why)
+        {
+            self.refusals.push(why);
+        }
     }
 
     /// What the shell refused since it started, in its own words.
@@ -2547,8 +2598,14 @@ impl ShellPart {
         &self.refusals
     }
 
-    fn due(&self) -> bool {
-        self.input || self.again || self.origin.borrow().due()
+    /// Whether the part owes a turn: input, a turn that ran out of exchanges, the session's
+    /// work, or its window holding something for the instance — a layout at a new size (its
+    /// display told after it settled) gave the bar a new space, which the views read.
+    fn due(&mut self) -> bool {
+        self.input
+            || self.again
+            || self.origin.borrow().due()
+            || self.window().is_some_and(|window| window.telling())
     }
 }
 
