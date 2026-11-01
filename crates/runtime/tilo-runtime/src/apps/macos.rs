@@ -173,7 +173,7 @@ impl Capture {
         let policy: std::sync::Arc<dyn Policy> =
             std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
                 grants: apps.device_grants()?,
-                room: apps.workspace.clone(),
+                workspace: apps.workspace.clone(),
                 app: app.package_id.clone(),
                 declared,
                 consent: move |device: DeviceKind| {
