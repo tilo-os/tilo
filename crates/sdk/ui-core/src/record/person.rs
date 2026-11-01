@@ -573,10 +573,14 @@ impl StoredRecord {
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.package_and_home();
-        let room = uuid::Uuid::parse_str(&home).ok()?;
+        let workspace = uuid::Uuid::parse_str(&home).ok()?;
         Some(
             crate::collaboration::record_content::ContentLane::record_store(
-                &crate::collaboration::RouteSpec::record(package, room, self.checkout.id.as_str()),
+                &crate::collaboration::RouteSpec::record(
+                    package,
+                    workspace,
+                    self.checkout.id.as_str(),
+                ),
             ),
         )
     }

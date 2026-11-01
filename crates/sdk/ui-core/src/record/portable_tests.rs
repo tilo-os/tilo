@@ -4,8 +4,8 @@ use super::*;
 fn portable_owner_preserves_reservation_identity_actor_and_durability() {
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
-    let store = owners.open("so.tilo.test", "room").unwrap();
-    let again = owners.open("so.tilo.test", "room").unwrap();
+    let store = owners.open("so.tilo.test", "workspace").unwrap();
+    let again = owners.open("so.tilo.test", "workspace").unwrap();
     assert!(store.same_owner(&again));
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let mut reservation = store.reserve_record(&checkout).unwrap();
@@ -32,7 +32,7 @@ fn portable_owner_preserves_reservation_identity_actor_and_durability() {
     drop(reservation);
     drop(again);
     drop(store);
-    let reopened = owners.open("so.tilo.test", "room").unwrap();
+    let reopened = owners.open("so.tilo.test", "workspace").unwrap();
     reopened.try_open_record(&checkout).unwrap();
     assert_eq!(
         reopened
@@ -50,7 +50,7 @@ fn portable_owner_preserves_reservation_identity_actor_and_durability() {
 fn portable_failed_initializer_keeps_reservation_until_drop() {
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let store = RecordOwners::portable(cache.clone())
-        .open("so.tilo.test", "room")
+        .open("so.tilo.test", "workspace")
         .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
     let mut reservation = store.reserve_record(&checkout).unwrap();
@@ -62,10 +62,10 @@ fn portable_failed_initializer_keeps_reservation_until_drop() {
 }
 
 /// What a window says it did to a record nobody else decides is said
-/// at once; in a record a room decides, once the room answered every
-/// commit that carried it, and never when the room refused the change.
+/// at once; in a record a workspace decides, once the workspace answered every
+/// commit that carried it, and never when the workspace refused the change.
 #[test]
-fn a_notice_waits_for_the_room_that_decides_the_record() {
+fn a_notice_waits_for_the_workspace_that_decides_the_record() {
     use collab_types::CommitNamed as _;
     let store = RecordStore::in_memory();
     let checkout = RecordCheckout::new(RecordId::for_tab(78), RecordKind::new("tab"));
@@ -104,7 +104,7 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
     frontier.advance(heads);
     assert!(
         store.take_said(&checkout.id).is_empty(),
-        "the room has not answered"
+        "the workspace has not answered"
     );
     store.room_settled(&checkout.id);
     assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
@@ -117,7 +117,11 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
         .unwrap();
     frontier.advance(heads);
     store
-        .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+        .withdraw_refused(
+            &checkout.id,
+            &[refused],
+            "This workspace doesn't allow that.",
+        )
         .unwrap()
         .expect("withdrawn");
     store.room_settled(&checkout.id);
@@ -127,7 +131,7 @@ fn a_notice_waits_for_the_room_that_decides_the_record() {
     );
 }
 
-/// A change the room refused leaves the record with every change built
+/// A change the workspace refused leaves the record with every change built
 /// on it, each named for the app as the action it was; what came before
 /// stays.
 #[test]
@@ -148,7 +152,11 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
     let refused = commit("body", "refused");
     commit("footer", "built on it");
     let heads = store
-        .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+        .withdraw_refused(
+            &checkout.id,
+            &[refused],
+            "This workspace doesn't allow that.",
+        )
         .unwrap()
         .expect("something was withdrawn");
     assert_eq!(
@@ -185,7 +193,7 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
     assert!(
         refusals
             .iter()
-            .all(|refusal| refusal.reason == "This room doesn't allow that.")
+            .all(|refusal| refusal.reason == "This workspace doesn't allow that.")
     );
     assert!(store.take_refusals(&checkout.id).is_empty(), "told once");
     assert_eq!(

@@ -1,15 +1,15 @@
 //! Records — the unit of state, collaboration and storage. A record has a
-//! type, a stable identity, and a home room. A file's identity is its file
+//! type, a stable identity, and a home workspace. A file's identity is its file
 //! record — the durable id the filesystem gives the file, which a rename or
 //! move keeps — and its path is only where it currently sits (see
 //! [`RecordId::identify_file`]). Records reference other records
 //! rather than nesting (annotations reference the document they mark up),
 //! so "share the book without my notes" is expressible.
 //!
-//! A record id is scoped by the room that hydrates it. Rooms hold references
-//! ([`index::reference`]), but an identical id in another room gets a distinct
-//! local document and collaboration route; explicit export/import is required
-//! to move content across that authority boundary.
+//! A record id is scoped by the workspace that hydrates it. Workspaces hold
+//! references ([`index::reference`]), but an identical id in another
+//! workspace gets a distinct local document and collaboration route; explicit
+//! export/import is required to move content across that authority boundary.
 //!
 //! One document per record is forced, not chosen: an Automerge change graph
 //! names its dependencies by hash, so a filtered stream leaves the receiver
@@ -18,7 +18,7 @@
 //! [`RecordSet`] owns the open records and hands the active one to the
 //! toolkit; [`tick`] parks the outgoing document and checks the named one
 //! in each frame. Not all app state is a record — a theme or account stays
-//! in the package-level document (the room index) instead.
+//! in the package-level document (the workspace index) instead.
 
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
@@ -57,12 +57,12 @@ const WORKSPACE: &str = "workspace";
 /// it is read where it is (see [`stored_workspace`]) and never rewritten on
 /// load: a person's records are not changed behind their back.
 pub const LEGACY_WORKSPACE_KEY: &str = "room";
-/// Key, in a room's index document, of the map of record references.
+/// Key, in a workspace's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
 /// Key, in a record's meta map, of the identities it was adopted from.
 const FORMERLY: &str = "formerly";
 
-/// Upper bound for the records an app learns from one room index at once.
+/// Upper bound for the records an app learns from one workspace index at once.
 /// This is deliberately small: the index is replicated input, not a request
 /// to allocate one local document per entry.
 pub const MAX_DISCOVERED_RECORDS: usize = 64;
@@ -126,7 +126,7 @@ pub fn init_scoped(
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
-    // Primary custody is the checked package/room namespace, never a fake
+    // Primary custody is the checked package/workspace namespace, never a fake
     // record stamp. Keep this serialized internal id stable across hosts.
     if id.is_package_primary() {
         return primary_document(doc);
@@ -320,15 +320,15 @@ fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bo
 }
 
 /// Adopt the stored document of the first former identity of `want` that
-/// exists, belongs to `want`'s kind and room, and whose custody this
-/// successor can claim. `key` names a record's storage in the room; `load`
+/// exists, belongs to `want`'s kind and workspace, and whose custody this
+/// successor can claim. `key` names a record's storage in the workspace; `load`
 /// decodes the document stored there. The former document is only read,
 /// never changed: the adopted copy is restamped and returned for the caller
 /// to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
     want: &RecordCheckout,
-    room: &str,
+    workspace: &str,
     key: impl Fn(&RecordId) -> StorageKey,
     mut load: impl FnMut(&StorageKey) -> Result<Option<AutoCommit>, app_state::StoreError>,
 ) -> Result<Option<AutoCommit>, app_state::StoreError> {
@@ -343,7 +343,7 @@ fn adopt_former(
         let Some(mut doc) = load(&former_key)? else {
             continue;
         };
-        if workspace_scope(&doc).is_some_and(|scope| scope != room)
+        if workspace_scope(&doc).is_some_and(|scope| scope != workspace)
             || identity(&doc).is_none_or(|found| found.id != *former || found.kind != want.kind)
         {
             tracing::warn!(record = %want.id, former = %former, "former record does not match; not adopting it");
@@ -359,13 +359,13 @@ fn adopt_former(
         if !restamp(&mut doc, former, want) {
             continue;
         }
-        tracing::info!(record = %want.id, former = %former, room, "adopting a record under its new identity");
+        tracing::info!(record = %want.id, former = %former, workspace, "adopting a record under its new identity");
         return Ok(Some(doc));
     }
     Ok(None)
 }
 
-/// The room this record was minted in.
+/// The workspace this record was minted in.
 pub fn home(doc: &AutoCommit) -> Option<String> {
     let m = meta_ro(doc)?;
     str_at(doc, &m, "home")
@@ -565,8 +565,8 @@ struct Parked {
 /// channel on checkout), since a channel is a property of the connection.
 pub struct RecordSet {
     package_id: String,
-    /// The room these records are being opened in — the cluster/workspace id.
-    /// Stamped as a record's home when it is first created here.
+    /// The workspace these records are opened in, which is the cluster its
+    /// route names. Stamped as a record's home when it is first created here.
     home: String,
     /// The person's own cluster, for records kept in their own scope
     /// ([`person::PERSONAL_SCOPE`]): their route names it, so one record of
@@ -576,7 +576,7 @@ pub struct RecordSet {
     /// whose identity derives no cluster.
     person: Option<uuid::Uuid>,
     open: HashMap<RecordId, Parked>,
-    /// Names currently granted by the room index.  Discovery is intentionally
+    /// Names currently granted by the workspace index.  Discovery is intentionally
     /// separate from `open`: a hostile or merely large index must not create
     /// local replicas or subscribe the app to unrelated documents.
     known: BTreeMap<RecordId, RecordKind>,
@@ -610,7 +610,7 @@ pub struct RecordSet {
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
-    /// Records the room's hosts sent everything they hold of
+    /// Records the workspace's hosts sent everything they hold of
     /// ([`RecordStore::note_room_answered`]), until something of them
     /// arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
@@ -636,10 +636,10 @@ struct Reserved {
 impl RecordSet {
     /// The launch-environment set: per-record documents under this package's
     /// state directory. The host's package id always wins over `manifest_id`
-    /// (as the room index is) — resolving it differently here would
-    /// split a package's records from its room index.
+    /// (as the workspace index is) — resolving it differently here would
+    /// split a package's records from its workspace index.
     ///
-    /// The process environment names the package and room, and the native
+    /// The process environment names the package and workspace, and the native
     /// store ([`app_state::DocStore::native_store`]) holds the documents; see
     /// [`Self::open_in`]. Hosts with an explicit profile open records through
     /// [`RecordOwners`] instead.
@@ -663,8 +663,8 @@ impl RecordSet {
     }
 
     /// The launch-environment set over an explicit store: each record is a
-    /// shared-writer document in room `home`, and pre-room package records
-    /// are imported into exactly one room on first open.
+    /// shared-writer document in workspace `home`, and pre-workspace package records
+    /// are imported into exactly one workspace on first open.
     pub fn open_in(
         store: Rc<dyn DurableStore>,
         package_id: impl Into<String>,
@@ -726,13 +726,13 @@ impl RecordSet {
         }
     }
 
-    /// The room these records are opened in.
+    /// The workspace these records are opened in.
     pub fn home(&self) -> &str {
         &self.home
     }
 
-    /// Name the room explicitly. Used by tests and by a host that opens
-    /// records on behalf of a room other than its own launch environment.
+    /// Name the workspace explicitly. Used by tests and by a host that opens
+    /// records on behalf of a workspace other than its own launch environment.
     #[must_use]
     pub fn with_home(mut self, home: impl Into<String>) -> Self {
         self.home = home.into();
@@ -782,7 +782,7 @@ impl RecordSet {
         out
     }
 
-    /// The bounded, validated names currently granted by the room index.
+    /// The bounded, validated names currently granted by the workspace index.
     /// Unlike [`Self::open_records`], this does not imply their documents
     /// were loaded, persisted, or joined on the collaboration transport.
     pub fn known_records(&self) -> Vec<RecordCheckout> {
@@ -792,12 +792,12 @@ impl RecordSet {
             .collect()
     }
 
-    /// Refresh the room-granted record names without opening any of them.
+    /// Refresh the workspace-granted record names without opening any of them.
     /// A removed/tombstoned index entry disappears from future discovery, but
     /// already-open data remains in memory: revocation stops future access;
     /// it cannot un-share bytes the process has already received.
-    pub fn discover_room(&mut self, room: &AutoCommit) -> Vec<RecordCheckout> {
-        let found = index::discoverable_references(room);
+    pub fn discover_room(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
+        let found = index::discoverable_references(workspace);
         self.known = found
             .iter()
             .map(|checkout| (checkout.id.clone(), checkout.kind.clone()))
@@ -858,7 +858,7 @@ impl RecordSet {
     pub(crate) fn checkout_with_initial(
         &mut self,
         state: &mut crate::state::State,
-        room: Option<&mut AutoCommit>,
+        workspace: Option<&mut AutoCommit>,
         want: &RecordCheckout,
         mutation: &collab_types::DocumentMutation,
     ) -> bool {
@@ -884,7 +884,7 @@ impl RecordSet {
             if !matches!(state.merge_remote_committed(mutation), Ok(Some(_))) {
                 return false;
             }
-            return self.checkout(state, room, want);
+            return self.checkout(state, workspace, want);
         }
         if let Some(slot) = self.open.get_mut(&want.id) {
             let Some(doc) = slot.doc.as_mut() else {
@@ -921,18 +921,18 @@ impl RecordSet {
                 },
             );
         }
-        self.checkout(state, room, want)
+        self.checkout(state, workspace, want)
     }
 
     /// Switch the live document to `want`: the outgoing document is parked
     /// and flushed, the incoming one loaded (or created) and referenced
-    /// into `room`'s index. Returns whether anything changed — checking
+    /// into `workspace`'s index. Returns whether anything changed — checking
     /// out the already-live record is a no-op, so a widget can declare its
     /// record every frame.
     pub fn checkout(
         &mut self,
         state: &mut crate::state::State,
-        room: Option<&mut AutoCommit>,
+        workspace: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
         if !want.is_valid() {
@@ -967,7 +967,7 @@ impl RecordSet {
                     action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
             );
-            return self.finish_checkout(state, room, want);
+            return self.finish_checkout(state, workspace, want);
         }
 
         // A malformed incoming legacy document must fail before custody of
@@ -1014,28 +1014,28 @@ impl RecordSet {
         };
 
         state.adopt_doc(incoming);
-        self.finish_checkout(state, room, want)
+        self.finish_checkout(state, workspace, want)
     }
 
     /// Stamps identity, applies declared references, and indexes the
-    /// record (and its references) into the room — shared by both
+    /// record (and its references) into the workspace — shared by both
     /// checkout routes.
     fn finish_checkout(
         &mut self,
         state: &mut crate::state::State,
-        room: Option<&mut AutoCommit>,
+        workspace: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
-        // Persistent records must always have an explicit room.  Failing
+        // Persistent records must always have an explicit workspace.  Failing
         // closed here prevents a launcher-less process from recreating the
         // old package-global record namespace.
         if self.persistent && self.home.is_empty() {
-            tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
+            tracing::error!(record = %want.id, "refusing to open a persistent record without a workspace scope");
             return false;
         }
         let scope = (!self.home.is_empty()).then_some(self.home.as_str());
         if !init_scoped(&mut state.doc, &want.id, &want.kind, &self.home, scope) {
-            tracing::warn!(record = %want.id, room = %self.home, "record identity or room scope did not match stored document");
+            tracing::warn!(record = %want.id, workspace = %self.home, "record identity or workspace scope did not match stored document");
             return false;
         }
         for (target, relation) in &want.references {
@@ -1044,12 +1044,12 @@ impl RecordSet {
                 &RecordRef::new(target.id.clone(), relation.clone()),
             );
         }
-        if let Some(room) = room {
-            index::reference(room, &want.id, &want.kind);
-            // Targets too: a room holding the annotations but not their
+        if let Some(workspace) = workspace {
+            index::reference(workspace, &want.id, &want.kind);
+            // Targets too: a workspace holding the annotations but not their
             // target would hand a member a reference they can't reach.
             for (target, _) in &want.references {
-                index::reference(room, &target.id, &target.kind);
+                index::reference(workspace, &target.id, &target.kind);
             }
         }
         self.active = Some(want.id.clone());
@@ -1115,7 +1115,7 @@ impl RecordSet {
             })
     }
 
-    /// The shared-writer document for one record in this set's room.
+    /// The shared-writer document for one record in this set's workspace.
     fn scoped_document(
         &self,
         record_key: &str,
@@ -1128,7 +1128,7 @@ impl RecordSet {
         )
     }
 
-    /// A former identity's document in this room, restamped for `want`
+    /// A former identity's document in this workspace, restamped for `want`
     /// (see [`adopt_former`]). Launch-environment route.
     fn adopt_former_scoped(
         &self,
@@ -1255,9 +1255,13 @@ impl RecordSet {
     // history are shared machinery.
 
     /// Open `want` if it is not open already, loading its document from
-    /// its own file and bringing it into `room`'s index. Returns whether
+    /// its own file and bringing it into `workspace`'s index. Returns whether
     /// this opened it.
-    pub fn open_record(&mut self, want: &RecordCheckout, room: Option<&mut AutoCommit>) -> bool {
+    pub fn open_record(
+        &mut self,
+        want: &RecordCheckout,
+        workspace: Option<&mut AutoCommit>,
+    ) -> bool {
         if !want.is_valid() {
             tracing::warn!(record = %want.id, "refusing invalid record open");
             return false;
@@ -1271,12 +1275,12 @@ impl RecordSet {
                 return false;
             };
             if self.persistent && self.home.is_empty() {
-                tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
+                tracing::error!(record = %want.id, "refusing to open a persistent record without a workspace scope");
                 return false;
             }
             let scope = (!self.home.is_empty()).then_some(self.home.as_str());
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, scope) {
-                tracing::warn!(record = %want.id, room = %self.home, "record identity or room scope did not match stored document");
+                tracing::warn!(record = %want.id, workspace = %self.home, "record identity or workspace scope did not match stored document");
                 return false;
             }
             for (target, relation) in &want.references {
@@ -1297,10 +1301,10 @@ impl RecordSet {
                 },
             );
         }
-        if let Some(room) = room {
-            index::reference(room, &want.id, &want.kind);
+        if let Some(workspace) = workspace {
+            index::reference(workspace, &want.id, &want.kind);
             for (target, _) in &want.references {
-                index::reference(room, &target.id, &target.kind);
+                index::reference(workspace, &target.id, &target.kind);
             }
         }
         self.remember(want);
@@ -1316,8 +1320,8 @@ impl RecordSet {
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
         if want.id.is_package_primary() {
-            // The package-primary document is the room's own document
-            // (`<package>/rooms/<room>`), never a minted record beneath it.
+            // The package-primary document is the workspace's own document
+            // (`<package>/rooms/<workspace>`), never a minted record beneath it.
             app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
@@ -1436,7 +1440,7 @@ impl RecordSet {
         {
             return Err(RecordOpenError::MissingRecord);
         }
-        // The room's own document is the one every window of a room-record
+        // The workspace's own document is the one every window of a workspace-record
         // app opens, each in its own process, and a relaunch overlaps the
         // instance still exiting: it joins the document's shared writers
         // (appends interleave and every load merges them) instead of
@@ -1951,7 +1955,7 @@ fn withdrawal(
     (kept, refusals)
 }
 
-/// An action whose change the room refused: the record withdrew it
+/// An action whose change the workspace refused: the record withdrew it
 /// ([`RecordStore::withdraw_refused`]), and the app that holds the record is
 /// told ([`crate::widget::AppWidget::record_refused`]) as it is of an action
 /// refused on this device.
@@ -2073,16 +2077,16 @@ pub enum RecordOpenError {
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
-    /// A record the room sends this device only once it asks
+    /// A record the workspace sends this device only once it asks
     /// ([`RecordId::arrives_on_demand`]) is not here yet: it was asked for,
     /// and the store wakes its readers when it arrives
-    /// ([`RecordStore::wake_on_arrival`]) or when the room's hosts say they
+    /// ([`RecordStore::wake_on_arrival`]) or when the workspace's hosts say they
     /// have none of it ([`RecordStore::room_answered`]).
-    #[error("the record is on its way from the room")]
+    #[error("the record is on its way from the workspace")]
     Arriving,
-    /// The record left this room (see [`transfer`]); its history stays, but
+    /// The record left this workspace (see [`transfer`]); its history stays, but
     /// it is never opened as a live document again.
-    #[error("record was moved out of this room")]
+    #[error("record was moved out of this workspace")]
     Retired,
 }
 
@@ -2155,7 +2159,7 @@ fn validate_identity(
         return if primary_document(doc)
             && !want.kind.as_str().is_empty()
             && !workspace.is_empty()
-            && workspace_scope(doc).is_none_or(|room| room == workspace)
+            && workspace_scope(doc).is_none_or(|scope| scope == workspace)
         {
             Ok(())
         } else {
@@ -2176,9 +2180,9 @@ fn validate_created_identity(
     doc: &AutoCommit,
     want: &RecordCheckout,
     workspace: &str,
-    creation_room: Option<&str>,
+    creation_workspace: Option<&str>,
 ) -> Result<(), RecordOpenError> {
-    if creation_room != Some(workspace)
+    if creation_workspace != Some(workspace)
         || workspace.is_empty()
         || !want.is_valid_local_storage_request()
         || !primary_document(doc)
@@ -2222,10 +2226,10 @@ fn validate_created_graph(
     doc: &AutoCommit,
     want: &RecordCheckout,
     workspace: &str,
-    creation_room: Option<&str>,
+    creation_workspace: Option<&str>,
     heads: &[automerge::ChangeHash],
 ) -> Result<(), RecordOpenError> {
-    validate_created_identity(doc, want, workspace, creation_room)?;
+    validate_created_identity(doc, want, workspace, creation_workspace)?;
     if doc.pending_ops() != 0 || doc.base_heads() != heads {
         return Err(RecordOpenError::IdentityMismatch);
     }
@@ -2334,7 +2338,7 @@ pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
 /// identity and the app's `initialize`d content, in one change that is byte
 /// for byte the same on every peer that creates it. The change is made by an
 /// actor derived from the record's identity, at time zero, so it hashes the
-/// same everywhere: two members of a room that each create a record another
+/// same everywhere: two members of a workspace that each create a record another
 /// member is creating too (a derived default, the same file) make the same
 /// change and converge on one record rather than two competing roots.
 /// `doc` is a fresh document of this device; what it holds so far (the
@@ -2560,7 +2564,7 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, a live New reservation's, the room's record while
+    /// the open record's, a live New reservation's, the workspace's record while
     /// it opens off the frame ([`Self::begin_opening`]), or an exact native original
     /// creation capture whose genesis the factory has yet to write. This does
     /// not make the record publishable before the owner's Initialize reply.
@@ -2690,8 +2694,8 @@ impl RecordStore {
     pub(crate) fn readable(&self) -> bool {
         self.0.try_borrow().is_ok()
     }
-    /// The package and home workspace (room) this store's records belong
-    /// to, which name their replication route.
+    /// The package and home workspace this store's records belong to, which
+    /// name their replication route.
     /// The durable store this set's records live in, when it has one.
     pub(crate) fn backend(&self) -> Option<Rc<dyn DurableStore>> {
         let set = self.0.borrow();
@@ -2748,7 +2752,7 @@ impl RecordStore {
     }
 
     /// Tell the store that a record it does not have open was just kept in
-    /// its backend by someone else (a room's replication, delivering a part
+    /// its backend by someone else (a workspace's replication, delivering a part
     /// another device started), or arrived for it to open: what follows the
     /// records it keeps ([`Self::held_parts`]) looks again, which nothing
     /// else makes it do. Callable while a frame reads the store.
@@ -2817,12 +2821,12 @@ impl RecordStore {
     }
 
     /// Every [window default record](RecordId::window_default) of `kind`
-    /// this package keeps in this room, sorted by id, each as last made
+    /// this package keeps in this workspace, sorted by id, each as last made
     /// durable: the documents an app's windows started, which it lists so a
     /// closed window's document is reached again, or left behind once it
-    /// keeps one per room. Read without taking any writer, so a window
+    /// keeps one per workspace. Read without taking any writer, so a window
     /// still showing one keeps it, and nothing here changes them. A record
-    /// that cannot be read, is retired, or is not of `kind` in this room is
+    /// that cannot be read, is retired, or is not of `kind` in this workspace is
     /// left out (and logged), never an error: one bad one must not keep the
     /// others out.
     pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
@@ -2836,7 +2840,7 @@ impl RecordStore {
         let keys = match store.records(&package, &home) {
             Ok(keys) => keys,
             Err(error) => {
-                tracing::warn!(%package, room = %home, %error, "listing the room's records failed");
+                tracing::warn!(%package, workspace = %home, %error, "listing the workspace's records failed");
                 return Vec::new();
             }
         };
@@ -2848,7 +2852,7 @@ impl RecordStore {
                 match transfer::read(&store, &package, &home, &origin) {
                     Ok(doc) => Some((id, doc)),
                     Err(error) => {
-                        tracing::warn!(record = %id, room = %home, %error, "window record not readable; left out");
+                        tracing::warn!(record = %id, workspace = %home, %error, "window record not readable; left out");
                         None
                     }
                 }
@@ -2900,7 +2904,7 @@ impl RecordStore {
         if set.portable.is_some() {
             return self.reserve_portable(&mut set, want);
         }
-        // A record the app's own channel answers (one a sealed room does not
+        // A record the app's own channel answers (one a sealed workspace does not
         // hold yet) is new, and the app makes it: reserved as without a
         // bridge. Every other new record waits for its creation admission.
         if set
@@ -2916,7 +2920,7 @@ impl RecordStore {
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        // The reservation becomes the live writer, so the room's own document
+        // The reservation becomes the live writer, so the workspace's own document
         // is joined as a shared writer here too; see `try_open_record`.
         let owner = if want.id.is_package_primary() {
             app_state::DocOwner::acquire_shared(backend, key)?
@@ -3248,7 +3252,7 @@ impl RecordStore {
 
     /// Existing-only admission for presentation owners. Loads a saved graph
     /// without seeding missing content. Package-global records retain the
-    /// existing explicit one-room migration claim and their original history.
+    /// existing explicit one-workspace migration claim and their original history.
     pub(crate) fn open_existing_record_checked(
         &self,
         want: &RecordCheckout,
@@ -3470,11 +3474,11 @@ impl RecordStore {
         let (_, package, workspace) = self
             .history_namespace(&checkout.id)
             .map_err(|error| error.to_string())?;
-        let room = uuid::Uuid::parse_str(&workspace).map_err(|error| error.to_string())?;
+        let cluster = uuid::Uuid::parse_str(&workspace).map_err(|error| error.to_string())?;
         let route = if checkout.id.is_package_primary() {
-            crate::collaboration::RouteSpec::app(package, room)
+            crate::collaboration::RouteSpec::app(package, cluster)
         } else {
-            crate::collaboration::RouteSpec::record(package, room, checkout.id.as_str())
+            crate::collaboration::RouteSpec::record(package, cluster, checkout.id.as_str())
         };
         self.with_action_state(&checkout.id, |document, _, state| {
             state
@@ -3547,7 +3551,7 @@ impl RecordStore {
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        // The room's record may still be decoding off the frame when its
+        // The workspace's record may still be decoding off the frame when its
         // route's committed history arrives: take it in first, as every open
         // of it does, so the history lands on it.
         self.0
@@ -3575,7 +3579,7 @@ impl RecordStore {
                     // Merging copies every change the receiving side lacks, so
                     // the local changes go into the snapshot rather than the
                     // other way round: a late joiner's replica is a few
-                    // changes next to a room's checkpoint. Every ancestor of
+                    // changes next to a workspace's checkpoint. Every ancestor of
                     // the heads both sides know is already in the snapshot.
                     let shared: Vec<automerge::ChangeHash> = heads
                         .iter()
@@ -3668,7 +3672,7 @@ impl RecordStore {
 
     /// Merge another replica's incremental changes (what
     /// [`Self::replication_delta`] answers there) into the open record, as
-    /// the room's broker delivers one window's changes to the others on the
+    /// the workspace's broker delivers one window's changes to the others on the
     /// record. Whether anything changed.
     ///
     /// # Errors
@@ -3686,7 +3690,7 @@ impl RecordStore {
     }
 
     /// Withdraw from the open record `id` the changes `refused` names, which
-    /// the room refused, with every local change made on top of them, and
+    /// the workspace refused, with every local change made on top of them, and
     /// note one [`RecordRefusal`] per action they carried, saying `reason`
     /// (for a person), for the app to take ([`Self::take_refusals`]).
     ///
@@ -4026,11 +4030,11 @@ impl std::fmt::Debug for RecordStore {
 pub fn tick(
     set: &mut RecordSet,
     state: &mut crate::state::State,
-    room: Option<&mut AutoCommit>,
+    workspace: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
 ) -> Option<RecordCheckout> {
     let want = crate::record::capability::record_intent(widget)?;
-    set.checkout(state, room, &want).then_some(want)
+    set.checkout(state, workspace, &want).then_some(want)
 }
 
 #[cfg(test)]

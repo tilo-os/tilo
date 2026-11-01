@@ -56,7 +56,7 @@ fn two_creators_of_one_record_make_one_identical_genesis() {
     let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
     let create = |actor: &[u8]| {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
-        genesis(&mut doc, &checkout, "room", |doc| {
+        genesis(&mut doc, &checkout, "workspace", |doc| {
             doc.put(automerge::ROOT, "title", "Untitled")
                 .map(drop)
                 .map_err(|error| error.to_string())
@@ -73,7 +73,7 @@ fn two_creators_of_one_record_make_one_identical_genesis() {
     let genesis = &changes[0];
     assert_eq!(
         genesis.actor_id(),
-        &genesis_actor_of(&checkout.id, &checkout.kind, "room")
+        &genesis_actor_of(&checkout.id, &checkout.kind, "workspace")
     );
     assert_eq!(genesis.timestamp(), 0);
     assert_eq!(
@@ -96,13 +96,17 @@ fn two_creators_of_one_record_make_one_identical_genesis() {
 /// it opens.
 #[test]
 fn a_part_stored_after_the_window_opened_is_held_and_opens() {
-    let room = uuid::Uuid::new_v4().to_string();
+    let workspace = uuid::Uuid::new_v4().to_string();
     let chain = RecordId::derived("messages", &RecordId::room_default());
     let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
-    let key = StorageKey::record("so.tilo.test-chain", &room, chain.part(0).storage_key());
+    let key = StorageKey::record(
+        "so.tilo.test-chain",
+        &workspace,
+        chain.part(0).storage_key(),
+    );
 
     let mut starter = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-    let started = starter.open("so.tilo.test-chain", &room).unwrap();
+    let started = starter.open("so.tilo.test-chain", &workspace).unwrap();
     started
         .reserve_record(&part)
         .unwrap()
@@ -116,7 +120,7 @@ fn a_part_stored_after_the_window_opened_is_held_and_opens() {
 
     let backend = Rc::new(durable_store::MemoryStore::new());
     let mut owners = RecordOwners::with_store(Rc::clone(&backend) as Rc<dyn DurableStore>);
-    let store = owners.open("so.tilo.test-chain", &room).unwrap();
+    let store = owners.open("so.tilo.test-chain", &workspace).unwrap();
     assert!(store.held_parts(&chain).is_empty());
     backend
         .write(&key, durable_store::WriteOp::Replace(bytes), None)
@@ -136,7 +140,7 @@ fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
         assert!(current.names(former));
         let id = RecordId::for_tab(7);
         let mut doc = AutoCommit::new();
-        init(&mut doc, &id, &current, "room");
+        init(&mut doc, &id, &current, "workspace");
         let meta = meta_obj(&mut doc).unwrap();
         doc.put(&meta, "kind", former).unwrap();
         doc.commit();
@@ -145,7 +149,7 @@ fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
             identity(&doc),
             Some(RecordCheckout::new(id.clone(), current.clone()))
         );
-        assert!(init_scoped(&mut doc, &id, &current, "room", None));
+        assert!(init_scoped(&mut doc, &id, &current, "workspace", None));
         doc.commit();
         assert_eq!(doc.get_heads(), heads);
     }
@@ -285,7 +289,7 @@ fn a_document_naming_two_workspaces_names_none() {
     assert_eq!(workspace_scope(&doc).as_deref(), Some("a"));
 }
 
-/// Two members of a room each create the record the room derives for
+/// Two members of a workspace each create the record the workspace derives for
 /// them, before either has heard of the other's: the same record, from
 /// the same initial content. Their documents merge into one record whose
 /// content has one value at every key, not two competing roots.
@@ -309,7 +313,7 @@ fn members_creating_the_same_record_converge_on_one() {
         .into_iter()
         .map(|member| {
             let mut owners = RecordOwners::new(temp.path().join(member));
-            let store = owners.open("so.tilo.test", "room-a").unwrap();
+            let store = owners.open("so.tilo.test", "workspace-a").unwrap();
             store
                 .reserve_record(&checkout)
                 .unwrap()
@@ -424,28 +428,28 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
         let mut doc = AutoCommit::new();
         let id = RecordId::for_file("/work/report.odt");
         let kind = RecordKind::new("document");
-        init(&mut doc, &id, &kind, "room-1");
+        init(&mut doc, &id, &kind, "workspace-1");
         let got = identity(&doc).expect("the document knows which record it is");
         assert_eq!(got.id, id);
         assert_eq!(got.kind, kind);
-        assert_eq!(home(&doc).as_deref(), Some("room-1"));
+        assert_eq!(home(&doc).as_deref(), Some("workspace-1"));
     }
 
-    // Case `re_opening_a_record_from_another_room_does_not_move_its_home`.
+    // Case `re_opening_a_record_from_another_workspace_does_not_move_its_home`.
     {
         let mut doc = AutoCommit::new();
         let id = RecordId::minted();
         let kind = RecordKind::new("book");
-        init(&mut doc, &id, &kind, "room-1");
-        init(&mut doc, &id, &kind, "room-2");
+        init(&mut doc, &id, &kind, "workspace-1");
+        init(&mut doc, &id, &kind, "workspace-2");
         assert_eq!(
             home(&doc).as_deref(),
-            Some("room-1"),
+            Some("workspace-1"),
             "a record has one home and any number of references"
         );
     }
 
-    // Case `derived_file_record_ids_are_valid_room_names`.
+    // Case `derived_file_record_ids_are_valid_workspace_names`.
     {
         let file = RecordId::for_file("/tmp/shared/report.pdf");
         let derived = RecordId::derived("annotations", &file);
@@ -454,13 +458,13 @@ fn record_identities_keys_and_homes_are_stable_and_distinct() {
 
     // Case `duplicate_is_a_different_record`.
     {
-        let mut room_doc = AutoCommit::new();
+        let mut workspace_doc = AutoCommit::new();
         let origin = RecordCheckout::new(RecordId::minted(), RecordKind::new("book"));
-        index::reference(&mut room_doc, &origin.id, &origin.kind);
-        let copy = index::duplicate(&mut room_doc, &origin);
+        index::reference(&mut workspace_doc, &origin.id, &origin.kind);
+        let copy = index::duplicate(&mut workspace_doc, &origin);
         assert_ne!(copy.id, origin.id, "copying mints a new identity");
-        assert!(index::holds(&room_doc, &copy.id));
-        assert!(index::holds(&room_doc, &origin.id));
+        assert!(index::holds(&workspace_doc, &copy.id));
+        assert!(index::holds(&workspace_doc, &origin.id));
     }
 }
 use crate::state::State;
@@ -477,7 +481,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
     {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(temp.path().join("state"));
-        let store = owners.open("so.tilo.test", "status-room").unwrap();
+        let store = owners.open("so.tilo.test", "status-workspace").unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();
         reservation
@@ -536,7 +540,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         use durable_store::{DurableStore, MemoryStore, StorageKey};
         let backend = Rc::new(MemoryStore::queued());
         let mut owners = RecordOwners::with_store(backend.clone());
-        let store = owners.open("so.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         store
             .reserve_record(&want)
@@ -565,13 +569,13 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         assert_eq!(store.canonical_namespace().unwrap().0, backend.namespace());
         drop((store, owners));
 
-        let key = StorageKey::record("so.tilo.test", "room-a", want.id.storage_key());
+        let key = StorageKey::record("so.tilo.test", "workspace-a", want.id.storage_key());
         let restarted = Rc::new(MemoryStore::queued().named(backend.namespace()));
         restarted
             .hydrate(key.clone(), backend.read(&key).unwrap().unwrap())
             .unwrap();
         let mut owners = RecordOwners::with_store(restarted);
-        let store = owners.open("so.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         assert_eq!(
             store.try_open_record(&want).unwrap(),
             RecordOpenOutcome::Loaded
@@ -613,7 +617,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let mut owners = RecordOwners::new(root);
-        let store = owners.open("so.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut token = store.reserve_record(&want).unwrap();
         let generation = token.generation;
@@ -636,7 +640,7 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
         let directory = app_state::DocStore::room_record_dir_at(
             &tmp.path().join("state"),
             "so.tilo.test",
-            "room-a",
+            "workspace-a",
             &want.id.storage_key(),
         )
         .unwrap();
@@ -689,8 +693,8 @@ fn canonical_records_persist_through_the_host_store_and_report_save_status() {
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
-        let store = owners.open("so.tilo.test", "room-a").unwrap();
-        let second = owners.open("so.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        let second = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         store
             .reserve_record(&want)
@@ -733,7 +737,7 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 #[test]
-fn rooms_hold_references_and_discover_metadata_only() {
+fn workspaces_hold_references_and_discover_metadata_only() {
     // Case `annotations_reference_the_document_rather_than_living_in_it`.
     {
         let mut markup = AutoCommit::new();
@@ -742,7 +746,7 @@ fn rooms_hold_references_and_discover_metadata_only() {
             &mut markup,
             &RecordId::minted(),
             &RecordKind::new("annotation-set"),
-            "room-1",
+            "workspace-1",
         );
         assert!(add_reference(
             &mut markup,
@@ -759,51 +763,55 @@ fn rooms_hold_references_and_discover_metadata_only() {
         assert_eq!(refs[0].relation, "marks-up");
     }
 
-    // Case `a_room_holds_references_and_can_drop_them`.
+    // Case `a_workspace_holds_references_and_can_drop_them`.
     {
-        let mut room_doc = AutoCommit::new();
+        let mut workspace_doc = AutoCommit::new();
         let a = RecordId::for_file("/work/a.odt");
         let b = RecordId::for_file("/work/b.odt");
         let kind = RecordKind::new("document");
-        assert!(index::reference(&mut room_doc, &a, &kind));
+        assert!(index::reference(&mut workspace_doc, &a, &kind));
         assert!(
-            !index::reference(&mut room_doc, &a, &kind),
+            !index::reference(&mut workspace_doc, &a, &kind),
             "referencing twice adds nothing"
         );
-        assert!(index::reference(&mut room_doc, &b, &kind));
-        assert!(index::holds(&room_doc, &a) && index::holds(&room_doc, &b));
-        assert_eq!(index::references(&room_doc).len(), 2);
+        assert!(index::reference(&mut workspace_doc, &b, &kind));
+        assert!(index::holds(&workspace_doc, &a) && index::holds(&workspace_doc, &b));
+        assert_eq!(index::references(&workspace_doc).len(), 2);
 
-        assert!(index::unreference(&mut room_doc, &a));
+        assert!(index::unreference(&mut workspace_doc, &a));
         assert!(
-            !index::holds(&room_doc, &a),
+            !index::holds(&workspace_doc, &a),
             "dropping the reference removes the access"
         );
-        assert!(index::holds(&room_doc, &b), "and touches nothing else");
+        assert!(index::holds(&workspace_doc, &b), "and touches nothing else");
     }
 
-    // Case `room_discovery_is_metadata_only_and_tracks_remote_grants`.
+    // Case `workspace_discovery_is_metadata_only_and_tracks_remote_grants`.
     {
-        let mut remote_room = AutoCommit::new();
+        let mut remote_workspace = AutoCommit::new();
         let remote = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
-        assert!(index::reference(&mut remote_room, &remote.id, &remote.kind));
+        assert!(index::reference(
+            &mut remote_workspace,
+            &remote.id,
+            &remote.kind
+        ));
 
-        // Simulate a collaborator's room-index snapshot arriving before this
+        // Simulate a collaborator's workspace-index snapshot arriving before this
         // process starts. Learning it must not manufacture a record document.
-        let mut local_room = AutoCommit::new();
-        local_room
-            .merge(&mut remote_room)
-            .expect("room indexes merge like other collaboration documents");
-        let mut set = RecordSet::in_memory().with_home("room-a");
-        assert_eq!(set.discover_room(&local_room), vec![remote.clone()]);
+        let mut local_workspace = AutoCommit::new();
+        local_workspace
+            .merge(&mut remote_workspace)
+            .expect("workspace indexes merge like other collaboration documents");
+        let mut set = RecordSet::in_memory().with_home("workspace-a");
+        assert_eq!(set.discover_room(&local_workspace), vec![remote.clone()]);
         assert_eq!(set.known_records(), vec![remote.clone()]);
         assert!(
             set.open_records().is_empty(),
             "discovery does not open replicas"
         );
 
-        assert!(index::unreference(&mut local_room, &remote.id));
-        assert!(set.discover_room(&local_room).is_empty());
+        assert!(index::unreference(&mut local_workspace, &remote.id));
+        assert!(set.discover_room(&local_workspace).is_empty());
         assert!(
             set.known_records().is_empty(),
             "revocation removes future discovery"
@@ -811,115 +819,115 @@ fn rooms_hold_references_and_discover_metadata_only() {
         assert!(set.open_records().is_empty());
     }
 
-    // Case `room_discovery_rejects_hostile_entries_and_is_bounded`.
+    // Case `workspace_discovery_rejects_hostile_entries_and_is_bounded`.
     {
-        let mut room_doc = AutoCommit::new();
-        let idx = room_doc
+        let mut workspace_doc = AutoCommit::new();
+        let idx = workspace_doc
             .put_object(&ROOT, INDEX, ObjType::Map)
-            .expect("room index");
+            .expect("workspace index");
         // Not an ID shape the host understands, and not a typed map.
-        let _ = room_doc.put(&idx, "../../escape", "annotation-set");
-        let _ = room_doc.put_object(&idx, "uuid:not-a-uuid", ObjType::Map);
+        let _ = workspace_doc.put(&idx, "../../escape", "annotation-set");
+        let _ = workspace_doc.put_object(&idx, "uuid:not-a-uuid", ObjType::Map);
         for _ in 0..(MAX_DISCOVERED_RECORDS + 8) {
             let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
             assert!(index::reference(
-                &mut room_doc,
+                &mut workspace_doc,
                 &checkout.id,
                 &checkout.kind
             ));
         }
 
-        let mut set = RecordSet::in_memory().with_home("room-a");
-        let found = set.discover_room(&room_doc);
+        let mut set = RecordSet::in_memory().with_home("workspace-a");
+        let found = set.discover_room(&workspace_doc);
         assert_eq!(found.len(), MAX_DISCOVERED_RECORDS);
         assert!(found.iter().all(RecordCheckout::is_valid));
         assert!(set.open_records().is_empty());
     }
 
-    // Case `room_discovery_never_crosses_scopes_after_restart`.
+    // Case `workspace_discovery_never_crosses_scopes_after_restart`.
     {
         let dir = tempfile::tempdir().expect("temporary state directory");
         let documents = native(dir.path());
-        let package = "so.tilo.room-discovery";
+        let package = "so.tilo.workspace-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
-        let open_room = |room: &str| {
+        let open_workspace = |workspace: &str| {
             ::collaboration::record::save::open_stored(
-                ::collaboration::record::save::room_document(&documents, package, room)
-                    .expect("room index"),
+                ::collaboration::record::save::room_document(&documents, package, workspace)
+                    .expect("workspace index"),
             )
         };
-        let (mut room_a, mut saver_a) = open_room(a);
-        assert!(index::reference(&mut room_a, &entry.id, &entry.kind));
-        saver_a.request(&mut room_a);
+        let (mut workspace_a, mut saver_a) = open_workspace(a);
+        assert!(index::reference(&mut workspace_a, &entry.id, &entry.kind));
+        saver_a.request(&mut workspace_a);
         saver_a.flush();
 
-        let (room_b, _) = open_room(b);
+        let (workspace_b, _) = open_workspace(b);
         let mut set_b = RecordSet::open_in(Rc::clone(&documents), package, b);
-        assert!(set_b.discover_room(&room_b).is_empty());
+        assert!(set_b.discover_room(&workspace_b).is_empty());
 
-        let (room_a_restarted, _) = open_room(a);
+        let (workspace_a_restarted, _) = open_workspace(a);
         let mut set_a = RecordSet::open_in(Rc::clone(&documents), package, a);
-        assert_eq!(set_a.discover_room(&room_a_restarted), vec![entry]);
+        assert_eq!(set_a.discover_room(&workspace_a_restarted), vec![entry]);
         assert!(set_a.open_records().is_empty());
     }
 
     // Case `a_records_annotations_are_found_through_the_reference`.
     {
-        let mut room_doc = AutoCommit::new();
+        let mut workspace_doc = AutoCommit::new();
         let mut set = RecordSet::in_memory();
         let mut state = State::new();
         let file = RecordId::for_file("/work/book.pdf");
-        index::reference(&mut room_doc, &file, &RecordKind::new("file"));
+        index::reference(&mut workspace_doc, &file, &RecordKind::new("file"));
 
         let markup = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
-        set.checkout(&mut state, Some(&mut room_doc), &markup);
+        set.checkout(&mut state, Some(&mut workspace_doc), &markup);
         add_reference(&mut state.doc, &RecordRef::new(file.clone(), "marks-up"));
         // Park it so `peek` can see it — the live document is not parked.
         let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
-        set.checkout(&mut state, Some(&mut room_doc), &other);
+        set.checkout(&mut state, Some(&mut workspace_doc), &other);
 
-        let found = index::referencing(&room_doc, &set, &file, "marks-up");
+        let found = index::referencing(&workspace_doc, &set, &file, "marks-up");
         assert_eq!(found.len(), 1, "exactly the markup for this file");
         assert_eq!(found[0].id, markup.id);
     }
 }
 
 #[test]
-fn records_persist_per_file_and_never_alias_across_rooms() {
-    // Case `same_record_id_in_two_rooms_has_independent_in_memory_state`.
+fn records_persist_per_file_and_never_alias_across_workspaces() {
+    // Case `same_record_id_in_two_workspaces_has_independent_in_memory_state`.
     {
-        // An id is an app-level name, not a capability.  Two room-scoped
+        // An id is an app-level name, not a capability.  Two workspace-scoped
         // sets must not accidentally turn a matching id into shared state.
-        let mut room_a = AutoCommit::new();
-        let mut room_b = AutoCommit::new();
+        let mut workspace_a = AutoCommit::new();
+        let mut workspace_b = AutoCommit::new();
         let id = RecordId::minted();
         let kind = RecordKind::new("book");
-        index::reference(&mut room_a, &id, &kind);
-        index::reference(&mut room_b, &id, &kind);
+        index::reference(&mut workspace_a, &id, &kind);
+        index::reference(&mut workspace_b, &id, &kind);
 
-        let mut set_a = RecordSet::in_memory().with_home("room-a");
+        let mut set_a = RecordSet::in_memory().with_home("workspace-a");
         let mut state_a = State::new();
         let want = RecordCheckout::new(id.clone(), kind.clone());
-        assert!(set_a.checkout(&mut state_a, Some(&mut room_a), &want));
+        assert!(set_a.checkout(&mut state_a, Some(&mut workspace_a), &want));
         put_text(&mut state_a.doc, "title", "A only");
 
-        let mut set_b = RecordSet::in_memory().with_home("room-b");
+        let mut set_b = RecordSet::in_memory().with_home("workspace-b");
         let mut state_b = State::new();
-        assert!(set_b.checkout(&mut state_b, Some(&mut room_b), &want));
+        assert!(set_b.checkout(&mut state_b, Some(&mut workspace_b), &want));
         assert_eq!(text(&state_b.doc, "title"), None);
         put_text(&mut state_b.doc, "title", "B only");
 
         assert_eq!(
             text(&state_a.doc, "title").as_deref(),
             Some("A only"),
-            "room B must not alias room A's record by id"
+            "workspace B must not alias workspace A's record by id"
         );
     }
 
-    // Case `same_record_id_in_two_rooms_never_aliases_and_each_hydrates_after_restart`.
+    // Case `same_record_id_in_two_workspaces_never_aliases_and_each_hydrates_after_restart`.
     {
         let tmp = tempfile::tempdir().expect("temp dir");
         let documents = native(tmp.path());
@@ -927,24 +935,26 @@ fn records_persist_per_file_and_never_alias_across_rooms() {
         let b = "33333333-3333-4333-8333-333333333333";
         let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
-        for (room, body) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", room);
+        for (workspace, body) in [(a, "private to a"), (b, "private to b")] {
+            let mut set =
+                RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", workspace);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             put_text(&mut state.doc, "body", body);
             set.flush(&mut state.doc).unwrap();
         }
 
-        for (room, expected) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", room);
+        for (workspace, expected) in [(a, "private to a"), (b, "private to b")] {
+            let mut set =
+                RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", workspace);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));
-            assert_eq!(workspace_scope(&state.doc).as_deref(), Some(room));
+            assert_eq!(workspace_scope(&state.doc).as_deref(), Some(workspace));
         }
     }
 
-    // Case `rejects_a_remote_document_stamped_for_another_room`.
+    // Case `rejects_a_remote_document_stamped_for_another_workspace`.
     {
         let id = RecordId::minted();
         let kind = RecordKind::new("note");
@@ -953,23 +963,23 @@ fn records_persist_per_file_and_never_alias_across_rooms() {
             &mut remote,
             &id,
             &kind,
-            "room-a",
-            Some("room-a")
+            "workspace-a",
+            Some("workspace-a")
         ));
         put_text(&mut remote, "body", "remote merge");
 
         assert!(
-            !init_scoped(&mut remote, &id, &kind, "room-b", Some("room-b")),
-            "a received document's recorded room is authority, not a hint"
+            !init_scoped(&mut remote, &id, &kind, "workspace-b", Some("workspace-b")),
+            "a received document's recorded workspace is authority, not a hint"
         );
-        assert_eq!(workspace_scope(&remote).as_deref(), Some("room-a"));
+        assert_eq!(workspace_scope(&remote).as_deref(), Some("workspace-a"));
     }
 
     // Case `each_record_persists_to_its_own_file_and_comes_back`.
     {
         let tmp = tempfile::tempdir().expect("temp dir");
         let documents = native(tmp.path());
-        let room_id = "11111111-1111-4111-8111-111111111111";
+        let workspace_id = "11111111-1111-4111-8111-111111111111";
 
         let a = RecordCheckout::new(
             RecordId::for_file("/work/a.odt"),
@@ -982,29 +992,30 @@ fn records_persist_per_file_and_never_alias_across_rooms() {
 
         {
             let mut set =
-                RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", room_id);
+                RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", workspace_id);
             let mut state = State::new();
-            let mut room = AutoCommit::new();
+            let mut workspace = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
             // as when an app loads a file first.
             put_text(&mut state.doc, "body", "a's body");
-            set.checkout(&mut state, Some(&mut room), &a);
-            set.checkout(&mut state, Some(&mut room), &b);
+            set.checkout(&mut state, Some(&mut workspace), &a);
+            set.checkout(&mut state, Some(&mut workspace), &b);
             put_text(&mut state.doc, "body", "b's body");
             set.flush(&mut state.doc).unwrap();
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", room_id);
+        let mut set =
+            RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", workspace_id);
         let mut state = State::new();
-        let mut room = AutoCommit::new();
-        set.checkout(&mut state, Some(&mut room), &a);
+        let mut workspace = AutoCommit::new();
+        set.checkout(&mut state, Some(&mut workspace), &a);
         assert_eq!(
             text(&state.doc, "body").as_deref(),
             Some("a's body"),
             "the adopted record was written to its own file and came back"
         );
-        set.checkout(&mut state, Some(&mut room), &b);
+        set.checkout(&mut state, Some(&mut workspace), &b);
         assert_eq!(
             text(&state.doc, "body").as_deref(),
             Some("b's body"),
@@ -1015,7 +1026,7 @@ fn records_persist_per_file_and_never_alias_across_rooms() {
             .path()
             .join("so.tilo.test-records")
             .join(app_state::ROOMS_DIR)
-            .join(room_id)
+            .join(workspace_id)
             .join(app_state::RECORDS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("records directory exists")
@@ -1036,17 +1047,17 @@ fn checkout_parks_the_previous_record_or_keeps_the_live_one() {
     {
         // A second record must not clear the first — it's a different
         // document.
-        let mut room_doc = AutoCommit::new();
+        let mut workspace_doc = AutoCommit::new();
         let mut set = RecordSet::in_memory();
         let mut state = State::new();
         let kind = RecordKind::new("annotation-set");
         let a = RecordCheckout::new(RecordId::for_file("/work/a.pdf"), kind.clone());
         let b = RecordCheckout::new(RecordId::for_file("/work/b.pdf"), kind);
 
-        set.checkout(&mut state, Some(&mut room_doc), &a);
+        set.checkout(&mut state, Some(&mut workspace_doc), &a);
         put_text(&mut state.doc, "note", "a's note");
 
-        set.checkout(&mut state, Some(&mut room_doc), &b);
+        set.checkout(&mut state, Some(&mut workspace_doc), &b);
         assert_eq!(text(&state.doc, "note"), None, "b starts empty");
         put_text(&mut state.doc, "note", "b's note");
 
@@ -1056,7 +1067,7 @@ fn checkout_parks_the_previous_record_or_keeps_the_live_one() {
             "a's document is intact while b is live"
         );
 
-        set.checkout(&mut state, Some(&mut room_doc), &a);
+        set.checkout(&mut state, Some(&mut workspace_doc), &a);
         assert_eq!(text(&state.doc, "note").as_deref(), Some("a's note"));
     }
 
@@ -1082,9 +1093,13 @@ fn history_existing_records_reopen_and_refuse_corruption() {
         let documents = native(tmp.path());
         let checkout = RecordCheckout::new(RecordId::for_tab(401), RecordKind::new("tab"));
         let package = "dev.tilo.history-existing-legacy";
-        let room = "11111111-1111-4111-8111-111111111111";
+        let workspace = "11111111-1111-4111-8111-111111111111";
         let original_heads = {
-            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+            let store = RecordStore::new(RecordSet::open_in(
+                Rc::clone(&documents),
+                package,
+                workspace,
+            ));
             store.open_record(&checkout);
             let heads = store
                 .with(&checkout.id, |doc| {
@@ -1095,7 +1110,11 @@ fn history_existing_records_reopen_and_refuse_corruption() {
             store.flush().unwrap();
             heads
         };
-        let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+        let store = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents),
+            package,
+            workspace,
+        ));
         assert!(
             store.open_existing_record_checked(&checkout).is_ok(),
             "existing-only presentation must load a saved legacy record"
@@ -1119,7 +1138,7 @@ fn history_existing_records_reopen_and_refuse_corruption() {
         let tmp = tempfile::tempdir().unwrap();
         let documents = native(tmp.path());
         let package = "dev.tilo.history-record-refusals";
-        let room = "11111111-1111-4111-8111-111111111111";
+        let workspace = "11111111-1111-4111-8111-111111111111";
         for (index, payload) in [
             b"not automerge".to_vec(),
             Vec::new(),
@@ -1129,8 +1148,8 @@ fn history_existing_records_reopen_and_refuse_corruption() {
                     &mut doc,
                     &RecordId::for_tab(999),
                     &RecordKind::new("tab"),
-                    room,
-                    Some(room),
+                    workspace,
+                    Some(workspace),
                 );
                 doc.save()
             },
@@ -1140,8 +1159,8 @@ fn history_existing_records_reopen_and_refuse_corruption() {
                     &mut doc,
                     &RecordId::for_tab(413),
                     &RecordKind::new("tab"),
-                    room,
-                    Some(room),
+                    workspace,
+                    Some(workspace),
                 );
                 let mut bytes = doc.save();
                 put_text(&mut doc, "body", "truncated later content");
@@ -1162,13 +1181,17 @@ fn history_existing_records_reopen_and_refuse_corruption() {
             let path = {
                 let owner = app_state::DocStore::shared(
                     Rc::clone(&documents),
-                    StorageKey::record(package, room, &key),
+                    StorageKey::record(package, workspace, &key),
                 )
                 .unwrap();
                 owner.document_path().to_path_buf()
             };
             std::fs::write(&path, &payload).unwrap();
-            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
+            let store = RecordStore::new(RecordSet::open_in(
+                Rc::clone(&documents),
+                package,
+                workspace,
+            ));
             assert!(store.open_existing_record_checked(&checkout).is_err());
             assert!(store.create_record(&checkout).is_err());
             assert!(store.read(&checkout.id, |_| ()).is_none());
@@ -1232,7 +1255,7 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
         let checkout = RecordCheckout::new(RecordId::for_tab(420), RecordKind::new("tab"));
         let heads = {
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("dev.tilo.test", "history-room").unwrap();
+            let store = owners.open("dev.tilo.test", "history-workspace").unwrap();
             store.create_record(&checkout).unwrap();
             let heads = store
                 .with(&checkout.id, |doc| {
@@ -1244,7 +1267,7 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
             heads
         };
         let mut owners = RecordOwners::new(root);
-        let store = owners.open("dev.tilo.test", "history-room").unwrap();
+        let store = owners.open("dev.tilo.test", "history-workspace").unwrap();
         assert!(store.create_record(&checkout).is_err());
         store.open_existing_record_checked(&checkout).unwrap();
         assert_eq!(
@@ -1293,7 +1316,9 @@ fn history_new_record_creation_refuses_reuse_and_reports_busy_loans() {
 fn package_primary_admission_uses_the_primary_identity_rule() {
     let temp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(temp.path().join("state"));
-    let store = owners.open("so.tilo.primary-test", "primary-room").unwrap();
+    let store = owners
+        .open("so.tilo.primary-test", "primary-workspace")
+        .unwrap();
     let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
     store
         .reserve_record(&primary)
@@ -1315,25 +1340,25 @@ fn package_primary_admission_uses_the_primary_identity_rule() {
         &mut foreign,
         &minted.id,
         &minted.kind,
-        "primary-room",
-        Some("primary-room")
+        "primary-workspace",
+        Some("primary-workspace")
     ));
     assert!(!admission.matches(&foreign, &primary));
 }
 
-/// Every window of a room-record app is its own process on the room's
+/// Every window of a workspace-record app is its own process on the workspace's
 /// one notebook, and a relaunch overlaps the instance still exiting: the
-/// room's own document opens for all of them at once, and again after
+/// workspace's own document opens for all of them at once, and again after
 /// the first closes, instead of failing on the writer's gate.
 #[test]
-fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
+fn the_workspace_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("state");
     let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
 
     let mut first_owners = RecordOwners::new(root.clone());
     let first = first_owners
-        .open("so.tilo.shared-test", "shared-room")
+        .open("so.tilo.shared-test", "shared-workspace")
         .unwrap();
     first
         .reserve_record(&primary)
@@ -1345,7 +1370,7 @@ fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
     // A second window: its own process, so its own owners and store.
     let mut second_owners = RecordOwners::new(root.clone());
     let second = second_owners
-        .open("so.tilo.shared-test", "shared-room")
+        .open("so.tilo.shared-test", "shared-workspace")
         .unwrap();
     // The first window's creation is on disk after its debounce window;
     // until then there is nothing to open, which is not a lock failure.
@@ -1362,7 +1387,7 @@ fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
     // being torn down.
     let mut relaunch_owners = RecordOwners::new(root.clone());
     let relaunched = relaunch_owners
-        .open("so.tilo.shared-test", "shared-room")
+        .open("so.tilo.shared-test", "shared-workspace")
         .unwrap();
     drop(first);
     relaunched
@@ -1372,7 +1397,7 @@ fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
     drop(relaunched);
     let mut again = RecordOwners::new(root);
     again
-        .open("so.tilo.shared-test", "shared-room")
+        .open("so.tilo.shared-test", "shared-workspace")
         .unwrap()
         .try_open_record(&primary)
         .expect("a reopen after everything closed opens");
@@ -1384,7 +1409,7 @@ fn strict_generic_shape_guard_preserves_valid_package_primary() {
     let state = temp.path().join("state");
     let mut owners = RecordOwners::new(state.clone());
     let store = owners
-        .open("dev.tilo.primary-test", "primary-room")
+        .open("dev.tilo.primary-test", "primary-workspace")
         .unwrap();
     let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
     store
@@ -1420,14 +1445,14 @@ fn committed_initial_checkout_preserves_original_history_before_local_initializa
         &mut actual,
         &want.id,
         &want.kind,
-        "native-room",
-        Some("native-room")
+        "native-workspace",
+        Some("native-workspace")
     ));
     put_text(&mut actual, "body", "actual committed content");
     actual.commit();
     let heads = actual.get_heads();
     let bytes = actual.save();
-    let mut set = RecordSet::in_memory().with_home("native-room");
+    let mut set = RecordSet::in_memory().with_home("native-workspace");
     let mut state = State::new();
     assert!(set.checkout_with_initial(
         &mut state,
@@ -1454,11 +1479,11 @@ fn committed_initial_checkout_does_not_finish_or_discard_local_work() {
         &mut actual,
         &want.id,
         &want.kind,
-        "native-room",
-        Some("native-room")
+        "native-workspace",
+        Some("native-workspace")
     ));
     actual.commit();
-    let mut set = RecordSet::in_memory().with_home("native-room");
+    let mut set = RecordSet::in_memory().with_home("native-workspace");
     let mut state = State::new();
     state.doc.put(ROOT, "unfinished", "keep").unwrap();
     let pending = state.doc.pending_ops();

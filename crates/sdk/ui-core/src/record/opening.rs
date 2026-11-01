@@ -32,8 +32,8 @@ pub(super) struct Opening {
 
 impl RecordSet {
     fn begin_opening(&mut self, want: &RecordCheckout) -> Result<bool, RecordOpenError> {
-        // Only the room's own document of a store this set owns: a portable cache is already
-        // in memory, and a native room's record comes from its broker read.
+        // Only the workspace's own document of a store this set owns: a portable cache is already
+        // in memory, and a native workspace's record comes from its broker read.
         if !want.id.is_package_primary()
             || self.portable.is_some()
             || self.native_initial.is_some()
@@ -77,8 +77,8 @@ impl RecordSet {
         Ok(true)
     }
 
-    /// The route of the record `want` names while it opens off the frame: the room's own
-    /// document, whose route is this set's package and room alone. Its identity is checked when
+    /// The route of the record `want` names while it opens off the frame: the workspace's own
+    /// document, whose route is this set's package and workspace alone. Its identity is checked when
     /// it is taken in, and nothing reads or writes it before, so naming its route admits no
     /// document. `None` when it is not opening.
     pub(super) fn opening_route(
@@ -138,7 +138,7 @@ impl RecordSet {
 }
 
 impl RecordStore {
-    /// Begin opening the record `want` off the frame, when it is the room's own document and
+    /// Begin opening the record `want` off the frame, when it is the workspace's own document and
     /// this device holds it: its bytes are read now and decoded on a thread of their own. Until
     /// it is [taken in](RecordOpening::take_in) it is not open, and the window that opened it
     /// shows what it can without it. Whether it began; a record that is not here, or is opened
@@ -153,8 +153,8 @@ impl RecordStore {
             .begin_opening(want)
     }
 
-    /// The room these records are kept in: what a window keys what it keeps on this device for
-    /// the room by, before any record of it is read.
+    /// The workspace these records are kept in: what a window keys what it keeps on this device
+    /// by the workspace, before any record of it is read.
     #[must_use]
     pub fn home(&self) -> String {
         self.0.borrow().home.clone()
@@ -215,7 +215,7 @@ impl RecordOpening {
     /// Take the record in when it is decoded, waiting for it with `wait`. Whether it is open.
     ///
     /// # Errors
-    /// The record does not decode, or is not this room's.
+    /// The record does not decode, or is not this workspace's.
     pub fn take_in(&self, wait: bool) -> Result<bool, RecordOpenError> {
         self.records
             .0
@@ -260,8 +260,8 @@ mod tests {
         RecordCheckout::package_primary(RecordKind::new("opening.test"))
     }
 
-    /// The room's own document of a profile at `root`, holding `body` as an earlier session left
-    /// it; the store of the room's records over it.
+    /// The workspace's own document of a profile at `root`, holding `body` as an earlier session
+    /// left it; the store of the workspace's records over it.
     fn kept(root: &std::path::Path, body: &str) -> RecordStore {
         kept_document(root, body).0
     }
@@ -339,7 +339,9 @@ mod tests {
         let want = primary();
         assert!(records.begin_opening(&want).unwrap());
         let mut committed = kept.with_actor(automerge::ActorId::random());
-        committed.put(ROOT, "from_room", "another device").unwrap();
+        committed
+            .put(ROOT, "from_workspace", "another device")
+            .unwrap();
         records
             .merge_remote_document(
                 &want,
@@ -347,14 +349,14 @@ mod tests {
             )
             .unwrap();
         assert!(!records.is_opening(&want.id));
-        let from_room = records
+        let from_workspace = records
             .read_checked(&want.id, |doc| {
-                doc.get(ROOT, "from_room")
+                doc.get(ROOT, "from_workspace")
                     .unwrap()
                     .and_then(|(value, _)| value.into_string().ok())
             })
             .unwrap();
-        assert_eq!(from_room.as_deref(), Some("another device"));
+        assert_eq!(from_workspace.as_deref(), Some("another device"));
         assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
     }
 
