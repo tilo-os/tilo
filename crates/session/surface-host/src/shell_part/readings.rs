@@ -95,6 +95,9 @@ impl SessionOrigin {
 /// binds. The change comes back as the resource's next reading.
 pub(super) struct PlaceInvoker {
     pub(super) link: Rc<SessionLink>,
+    /// The resource each of the session's loose actions is published on, by the action's id
+    /// (`session.show_surface(...)` goes to the desk).
+    pub(super) session: BTreeMap<String, String>,
 }
 
 impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
@@ -113,7 +116,9 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 let subject_id = subject.id_string();
                 let mut arguments = BTreeMap::new();
                 for (name, value) in args {
-                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id) {
+                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
+                        || matches!(value, Value::Opt(None))
+                    {
                         continue;
                     }
                     arguments.insert(name.clone(), argument_text(value));
@@ -124,6 +129,17 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     arguments,
                 }
             }
+            Invocation::Action {
+                app, action, args, ..
+            } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
+                resource: self.session[action].clone(),
+                action: action.clone(),
+                arguments: args
+                    .iter()
+                    .filter(|(_, value)| !matches!(value, Value::Opt(None)))
+                    .map(|(name, value)| (name.clone(), argument_text(value)))
+                    .collect(),
+            },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
                     "`{name}` names no resource of its app to be sent to"
@@ -149,8 +165,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 }
             }
         };
-        self.link.asked.borrow_mut().push_back(ask);
-        self.link.handed.set(self.link.handed.get().wrapping_add(1));
+        self.link.ask(ask);
         Invoked::Done(Value::Unit)
     }
 }
@@ -161,6 +176,7 @@ fn argument_text(value: &Value) -> String {
     match value {
         Value::Text(text) => text.clone(),
         Value::Ref(r) => r.target.id_string(),
+        Value::Opt(Some(value)) => argument_text(value),
         other => tilolang_tilo::runtime::value::to_json(other)
             .map_or_else(|_| String::new(), |json| json.to_string()),
     }

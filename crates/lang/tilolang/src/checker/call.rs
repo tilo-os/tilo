@@ -866,11 +866,7 @@ impl Checker<'_> {
                 ),
             );
         }
-        // A capability whose reader reads one shape holds the payload to it.
-        let p = match crate::origin::payload_type(name) {
-            Some(want) => self.expr_as(&payload.value, &want),
-            None => self.expr(&payload.value, None),
-        };
+        let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
         match held {
             Some(third) => {
@@ -1558,6 +1554,11 @@ impl Checker<'_> {
                 Ex::error()
             }
             (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
+            // The number the text writes, `.none` for text that writes none: an id another
+            // app gave as text, passed where its action takes the number.
+            (Ty::Text, "to_int") if args.is_empty() => {
+                Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int)))
+            }
             (Ty::Text, "find") => {
                 if !self.arity(name, args, 1, span) {
                     return Ex::error();
@@ -1674,7 +1675,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Text => "len, find, slice, replace",
+                    Ty::Text => "len, find, slice, replace, to_int",
                     Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",

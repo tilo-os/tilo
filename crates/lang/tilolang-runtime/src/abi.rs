@@ -29,6 +29,7 @@ imports! {
     (StrEq, "str_eq", "ii", "i"),
     (StrLen, "str_len", "i", "l"),
     (IntToStr, "int_to_str", "l", "i"),
+    (StrToInt, "str_to_int", "i", "i"),
     (FloatToStr, "float_to_str", "f", "i"),
     (StrCmp, "str_cmp", "ii", "i"),
     (StrFind, "str_find", "ii", "l"),

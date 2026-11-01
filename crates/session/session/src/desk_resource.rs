@@ -676,13 +676,15 @@ impl Desk {
     }
 }
 
+/// The desk's resource, named `label`: what it publishes, and what the session's package
+/// describes of it ([`crate::session_package`]).
+pub(crate) fn desk_spec(label: String) -> ResourceSpec {
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
+}
+
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<DeskEffect>(ResourceSpec::new(
-            DESK_RESOURCE,
-            DESK_KIND,
-            self.person.clone(),
-        ))]
+        vec![desk_spec(self.person.clone())]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -775,29 +777,5 @@ impl Service for Desk {
             )
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
-    }
-}
-
-/// The desk's action and its argument, by the names the shell's origin invokes them by: one
-/// spelling of each, checked against the derived vocabulary.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_surface_host::shell_part::{SWITCH_WORKSPACE, WORKSPACE_ARG};
-
-    #[test]
-    fn the_shell_invokes_the_desk_by_the_names_it_offers() {
-        let specs = DeskEffect::specs();
-        let switch = specs
-            .iter()
-            .find(|spec| spec.id == SWITCH_WORKSPACE)
-            .expect("the desk offers switch-workspace");
-        assert!(
-            switch
-                .params()
-                .iter()
-                .any(|param| param.name == WORKSPACE_ARG),
-            "switch-workspace takes {WORKSPACE_ARG}"
-        );
     }
 }

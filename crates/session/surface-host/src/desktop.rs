@@ -186,13 +186,9 @@ pub struct StripPolicy {
     /// Those of them that have not shown a buffer yet: they wait in their
     /// place, which the compositor does not list among its windows.
     pending: Vec<u64>,
-    /// Told the process of each window the compositor maps, the moment the
-    /// desktop gives it a place.
-    map_observer: Option<Rc<dyn Fn(u32)>>,
-    /// Who follows the windows, when the session has someone that does.
-    observer: Option<std::sync::Arc<dyn WindowObserver>>,
-    /// The windows it was told about, so none is told of twice.
-    announced: std::collections::HashSet<u64>,
+    /// Who is told of the windows the desktop gives a place and of the
+    /// ones gone.
+    followers: WindowFollowers,
     /// Where the pointer and fingers go as well as to the windows: the
     /// chrome that follows them beyond where it draws.
     samples: Option<Rc<RefCell<dyn PointerSamples>>>,
@@ -256,9 +252,7 @@ pub fn desktop_with(
             tracker: GestureTracker::default(),
             travel: 0.0,
             pending: Vec::new(),
-            map_observer: None,
-            observer: None,
-            announced: std::collections::HashSet::new(),
+            followers: WindowFollowers::default(),
             samples: None,
         },
     )
@@ -284,6 +278,15 @@ impl DesktopHost {
         self.desk.borrow_mut().gesture_config = config;
     }
 
+    /// The policy that places this desktop's windows where a tilolang shell's wells stand
+    /// (`docs/designs/app-language/shell.md` §8.3), in place of the strips': what a session
+    /// runs with when the shell draws the whole screen. The windows keep their tabs in this
+    /// desktop, so a place in the person's arrangement names the window's well.
+    #[must_use]
+    pub fn well_policy(&self) -> crate::WellPolicy {
+        crate::WellPolicy::over(Rc::new(self.clone()))
+    }
+
     /// Draw the desk with `theme`: the person's palette, tokens and fonts.
     pub fn set_theme(&self, theme: ui::Theme) {
         self.desk.borrow_mut().host.set_theme(theme);
@@ -305,6 +308,20 @@ impl DesktopHost {
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
         read(&mut self.desk.borrow_mut().host)
+    }
+}
+
+impl crate::well_policy::WellDesk for DesktopHost {
+    fn policy(&self) -> std::cell::RefMut<'_, DesktopPolicy> {
+        std::cell::RefMut::map(self.desk.borrow_mut(), |desk| &mut desk.policy)
+    }
+
+    fn relayout(&self) {
+        self.desk.borrow_mut().host.relayout();
+    }
+
+    fn cover(&self, outputs: &[LayoutRect]) {
+        self.desk.borrow_mut().cover(outputs);
     }
 }
 
@@ -387,27 +404,37 @@ impl SurfaceHost for DesktopHost {
     }
 }
 
-impl StripPolicy {
-    /// Tell `observer` the process of each window the compositor maps, as the
-    /// desktop gives it a place: the app's door opens to it from then on.
-    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+/// Who a window policy tells of the windows the desktop gives a place, and
+/// of the ones gone: the same for every policy placing the desktop's
+/// windows ([`StripPolicy`], [`crate::WellPolicy`]).
+#[derive(Default)]
+pub(crate) struct WindowFollowers {
+    /// Told the process of each window the compositor maps, the moment the
+    /// desktop gives it a place.
+    map_observer: Option<Rc<dyn Fn(u32)>>,
+    /// Who follows the windows, when the session has someone that does.
+    observer: Option<std::sync::Arc<dyn WindowObserver>>,
+    /// The windows it was told about, so none is told of twice.
+    announced: std::collections::HashSet<u64>,
+}
+
+impl WindowFollowers {
+    /// Tell `observer` the process of each window the desktop gives a place.
+    pub(crate) fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
         self.map_observer = Some(observer);
     }
 
-    /// Follow the windows the compositor opens and closes with `observer`:
-    /// how a session learns which programs the person runs.
-    pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
+    /// Follow the windows the compositor opens and closes with `observer`.
+    pub(crate) fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
         self.observer = Some(observer);
     }
 
-    /// Send every pointer sample and touch to `samples` too, wherever they
-    /// go: the chrome that keeps out of the way until reached for.
-    pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
-        self.samples = Some(samples);
-    }
-
-    /// Tell the observer about `window`, once.
-    fn announce(&mut self, window: &WindowInfo) {
+    /// `window` was given its place: tell its process's observer, and the
+    /// window's observer once.
+    pub(crate) fn mapped(&mut self, window: &WindowInfo) {
+        if let (Some(observer), Some(pid)) = (self.map_observer.as_ref(), window.pid) {
+            observer(pid);
+        }
         let Some(observer) = self.observer.clone() else {
             return;
         };
@@ -418,13 +445,33 @@ impl StripPolicy {
     }
 
     /// Tell the observer that `id` is gone, once.
-    fn forgot(&mut self, id: u64) {
+    pub(crate) fn gone(&mut self, id: u64) {
         if !self.announced.remove(&id) {
             return;
         }
         if let Some(observer) = &self.observer {
             observer.closed(id);
         }
+    }
+}
+
+impl StripPolicy {
+    /// Tell `observer` the process of each window the compositor maps, as the
+    /// desktop gives it a place: the app's door opens to it from then on.
+    pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+        self.followers.set_window_mapped(observer);
+    }
+
+    /// Follow the windows the compositor opens and closes with `observer`:
+    /// how a session learns which programs the person runs.
+    pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
+        self.followers.observe_windows(observer);
+    }
+
+    /// Send every pointer sample and touch to `samples` too, wherever they
+    /// go: the chrome that keeps out of the way until reached for.
+    pub fn with_samples(&mut self, samples: Rc<RefCell<dyn PointerSamples>>) {
+        self.samples = Some(samples);
     }
 
     /// Give `window` its tab, once, and lay the desktop out so its place
@@ -451,10 +498,7 @@ impl StripPolicy {
             self.mapped.push(window.id);
             desk.host.relayout();
         }
-        if let (Some(observer), Some(pid)) = (self.map_observer.as_ref(), window.pid) {
-            observer(pid);
-        }
-        self.announce(window);
+        self.followers.mapped(window);
     }
 }
 
@@ -566,7 +610,7 @@ impl WindowPolicy for StripPolicy {
         }
         self.mapped.retain(|id| !gone.contains(id));
         for id in &gone {
-            self.forgot(*id);
+            self.followers.gone(*id);
         }
         for (window, _) in windows {
             self.map(window, outputs);
@@ -599,7 +643,7 @@ impl WindowPolicy for StripPolicy {
     fn withdrawn(&mut self, window: &WindowInfo) {
         self.pending.retain(|id| *id != window.id);
         self.mapped.retain(|id| *id != window.id);
-        self.forgot(window.id);
+        self.followers.gone(window.id);
         let mut desk = self.desk.borrow_mut();
         desk.policy.unmap(window.id);
         desk.host.relayout();

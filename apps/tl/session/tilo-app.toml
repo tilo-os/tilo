@@ -1,0 +1,4 @@
+# The session, read as a package: what its door publishes, described in surface.toml.
+[package]
+id = "so.tilo.session"
+name = "Session"
