@@ -1457,17 +1457,9 @@ inputs = [
   "crates/session/fixtures/",
 ]
 readers = [
-  "crates/session/session/src/shell.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/src/channels/vault.rs",
 ]
-
-[[cargo]]
-package = "tilo-surface-host"
-# The shell surface tests drive the shell package compiled from its source.
-inputs = ["apps/tl/shell/"]
-readers = ["crates/session/surface-host/src/shell_part.rs"]
-
 
 [[cargo]]
 package = "tilo-browser-peer"
