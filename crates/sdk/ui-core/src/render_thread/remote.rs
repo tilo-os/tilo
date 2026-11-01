@@ -927,6 +927,7 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
                 let lens = region.refraction;
                 [lens.strength, lens.band, lens.radius, lens.dispersion].map(|value| value as f32)
             },
+            legible: [region.legible.dark, region.legible.light].map(|value| value as f32),
             ground: region.ground.components,
             below: region.below.encoding().clone(),
         };

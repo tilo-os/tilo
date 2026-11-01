@@ -682,3 +682,35 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         crate::Published::accessible_labels(&mut part)
     );
 }
+
+/// With a surface up the part covers its output, and the desk fills it: the dock rides the
+/// output's bottom edge however short the surface is (the notifications with none), on a
+/// phone and on a desktop, never right under what the surface holds.
+#[test]
+fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
+    for (width, height) in [(390, 844), (1280, 800)] {
+        let (mut part, _link) = crate::shell_part::tests_support::part_on(
+            DeskReading {
+                here: "centre".to_owned(),
+                ..reading()
+            },
+            (width, height),
+        );
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        assert_eq!(
+            part.widgets.placement().size,
+            (width, height),
+            "the surface covers the output"
+        );
+        let (_, y, _, h) = part
+            .control_bounds("Dock")
+            .unwrap_or_else(|| panic!("the dock shows at {width}x{height}"));
+        let bottom = y + h;
+        assert!(
+            bottom <= f64::from(height) + 0.5 && bottom >= f64::from(height) - 24.0,
+            "at {width}x{height} the dock ends at {bottom}, not at the bottom edge"
+        );
+    }
+}
