@@ -1,8 +1,9 @@
 //! Local registry of identities available to this login session.
 //!
 //! Private identity selection is deliberately not replicated. The registry
-//! maps a durable room id to the local identity record this device presents
-//! there; workspace ownership remains a shared cryptographic principal.
+//! maps a durable workspace id to the local identity record this device
+//! presents there; workspace ownership remains a shared cryptographic
+//! principal.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -55,7 +56,7 @@ pub struct IdentityRegistry {
     /// Identity used for new and unbound workspaces.
     pub default_identity: Option<String>,
     pub identities: BTreeMap<String, IdentityProfile>,
-    /// Durable room-id string to [`IdentityProfile::id`].
+    /// Durable workspace-id string to [`IdentityProfile::id`].
     pub workspace_identities: BTreeMap<String, String>,
 }
 
@@ -141,8 +142,12 @@ impl IdentityRegistry {
         self.register_record(&destination)
     }
 
-    /// Select an identity for a durable workspace room.
-    pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
+    /// Select an identity for a durable workspace.
+    pub fn bind_workspace(
+        &mut self,
+        workspace: impl Into<String>,
+        identity_id: &str,
+    ) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -150,22 +155,22 @@ impl IdentityRegistry {
             ));
         }
         self.workspace_identities
-            .insert(room.into(), identity_id.to_string());
+            .insert(workspace.into(), identity_id.to_string());
         Ok(())
     }
 
-    /// Identity selected for `room`, falling back to the default.
+    /// Identity selected for `workspace`, falling back to the default.
     ///
     /// A personal cluster ([`collab_types::personal_cluster`]) is derived from its
     /// person's root key, so it needs no selection of its own: it is the
-    /// room of the identity that key is, whatever this login selected for
+    /// cluster of the identity that key is, whatever this login selected for
     /// its workspaces.
-    pub fn selected_for_workspace(&self, room: &str) -> Option<&IdentityProfile> {
-        if let Some(profile) = self.personal_cluster_identity(room) {
+    pub fn selected_for_workspace(&self, workspace: &str) -> Option<&IdentityProfile> {
+        if let Some(profile) = self.personal_cluster_identity(workspace) {
             return Some(profile);
         }
         self.workspace_identities
-            .get(room)
+            .get(workspace)
             .and_then(|id| self.identities.get(id))
             .or_else(|| {
                 self.default_identity
@@ -174,11 +179,11 @@ impl IdentityRegistry {
             })
     }
 
-    /// The identity `room` is the personal cluster of, when it is one of this
-    /// registry's identities.
-    fn personal_cluster_identity(&self, room: &str) -> Option<&IdentityProfile> {
+    /// The identity `workspace` is the personal cluster of, when it is one of
+    /// this registry's identities.
+    fn personal_cluster_identity(&self, workspace: &str) -> Option<&IdentityProfile> {
         self.identities.values().find(|profile| {
-            collab_types::personal_cluster(&profile.user_public_key).to_string() == room
+            collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace
         })
     }
 
@@ -431,7 +436,7 @@ impl IdentityRegistryStore {
     }
 
     /// [`Self::load_reconciled`] for read-only queries that run on every
-    /// painted frame and app launch (which identity a room presents). It
+    /// painted frame and app launch (which identity a workspace presents). It
     /// never writes the identity directory: the reconciled registry is
     /// returned, not saved.
     ///
@@ -476,7 +481,7 @@ impl IdentityRegistryStore {
 
     /// [`Self::load_reconciled_cached`] for a thread that must not wait on the
     /// disk: the compositor's input and frame loop, which asks which identity
-    /// a room presents on every keystroke and frame.
+    /// a workspace presents on every keystroke and frame.
     ///
     /// The registry the last reconcile produced is returned at once, without
     /// a path lookup of any kind: a worker watches the identity directory and
@@ -613,29 +618,29 @@ impl IdentityRegistryStore {
         runtime_identity::recovery_expected_identity(&self.identity_dir)
     }
 
-    pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
+    pub fn bind_workspace(&self, workspace: &str, identity_id: &str) -> io::Result<()> {
         let mut registry = self.load_reconciled()?;
-        registry.bind_workspace(room, identity_id)?;
+        registry.bind_workspace(workspace, identity_id)?;
         self.save(&registry)
     }
 }
 
-/// Resolve the selected private record for a room. Registry failure is an
-/// error rather than a silent fallback to another person's identity.
-pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
+/// Resolve the selected private record for a workspace. Registry failure is
+/// an error rather than a silent fallback to another person's identity.
+pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
     Ok(registry
-        .selected_for_workspace(room)
+        .selected_for_workspace(workspace)
         .map(|profile| profile.record_path.clone()))
 }
 
-/// Resolve the selected person principal for a room.
-pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
+/// Resolve the selected person principal for a workspace.
+pub fn selected_principal_id(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
     Ok(registry
-        .selected_for_workspace(room)
+        .selected_for_workspace(workspace)
         .map(IdentityProfile::principal_id))
 }
 
@@ -647,19 +652,19 @@ pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
 ///
 /// Returns an error if the identity directory cannot be resolved or the first
 /// read fails.
-pub fn selected_principal_id_prompt(room: &str) -> io::Result<Option<String>> {
+pub fn selected_principal_id_prompt(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_prompt()?;
     Ok(registry
-        .selected_for_workspace(room)
+        .selected_for_workspace(workspace)
         .map(IdentityProfile::principal_id))
 }
 
-/// Public profile selected for a room, for shell chrome/settings.
-pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
+/// Public profile selected for a workspace, for shell chrome/settings.
+pub fn selected_identity_profile(workspace: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
-    Ok(registry.selected_for_workspace(room).cloned())
+    Ok(registry.selected_for_workspace(workspace).cloned())
 }
 
 /// Resolve the identity directory from environment variables.
@@ -748,7 +753,9 @@ mod tests {
         let before = entries();
         let store = IdentityRegistryStore::at(&dir);
         let registry = store.load_reconciled_cached().expect("read");
-        let selected = registry.selected_for_workspace("room-a").expect("default");
+        let selected = registry
+            .selected_for_workspace("workspace-a")
+            .expect("default");
         assert_eq!(selected.display_name, "Alice");
         assert_eq!(entries(), before);
         assert!(!store.registry_path().exists());
@@ -814,12 +821,12 @@ mod tests {
             .expect("bob")
             .id
             .clone();
-        registry.bind_workspace("room-p", &bob).expect("bind");
+        registry.bind_workspace("workspace-p", &bob).expect("bind");
         store.save(&registry).expect("save");
         let bound = store.load_reconciled_prompt().expect("after save");
         assert_eq!(
             bound
-                .selected_for_workspace("room-p")
+                .selected_for_workspace("workspace-p")
                 .map(|profile| profile.id.as_str()),
             Some(bob.as_str())
         );
@@ -827,9 +834,9 @@ mod tests {
     }
 
     /// A personal cluster needs no selection and never falls back to the default:
-    /// it is the room of the identity its id derives from.
+    /// it is the cluster of the identity its id derives from.
     #[test]
-    fn a_personal_cluster_is_the_room_of_the_identity_it_derives_from() {
+    fn a_personal_cluster_is_the_cluster_of_the_identity_it_derives_from() {
         let dir = temp_dir("personal-cluster");
         write_record(&dir.join("alice.json"), &record("Alice", 51));
         write_record(&dir.join("bob.json"), &record("Bob", 52));
@@ -843,28 +850,28 @@ mod tests {
                 .expect(name)
         };
         let alice = person("Alice");
-        let room = collab_types::personal_cluster(&alice.user_public_key).to_string();
+        let workspace = collab_types::personal_cluster(&alice.user_public_key).to_string();
         assert_eq!(
             registry
-                .selected_for_workspace(&room)
+                .selected_for_workspace(&workspace)
                 .map(|profile| profile.display_name.as_str()),
             Some("Alice"),
             "the personal cluster maps to the identity it derives from"
         );
-        // The default identity alone would answer Bob for a room bound to
-        // nothing; the personal cluster is still Alice's, not the default's.
+        // The default identity alone would answer Bob for a workspace bound
+        // to nothing; the personal cluster is still Alice's, not the default's.
         let mut rebound = registry.clone();
         rebound
-            .bind_workspace(room.clone(), &person("Bob").id)
+            .bind_workspace(workspace.clone(), &person("Bob").id)
             .expect("bind");
         assert_eq!(
             rebound
-                .selected_for_workspace(&room)
+                .selected_for_workspace(&workspace)
                 .map(|profile| profile.display_name.as_str()),
             Some("Alice"),
             "a binding on a personal cluster is never taken"
         );
-        // A room no identity derives is decided as it always was.
+        // A workspace no identity derives is decided as it always was.
         let other = collab_types::personal_cluster(&[0x5a; 32]).to_string();
         assert_eq!(
             registry
@@ -886,7 +893,9 @@ mod tests {
             write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
             let store = IdentityRegistryStore::at(&dir);
             let registry = store.load_reconciled().expect("migrate");
-            let selected = registry.selected_for_workspace("room-a").expect("default");
+            let selected = registry
+                .selected_for_workspace("workspace-a")
+                .expect("default");
             assert_eq!(selected.display_name, "Alice");
             assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
             assert!(store.registry_path().exists());
@@ -902,19 +911,21 @@ mod tests {
             let alice = store.import(&alice_path).expect("import alice");
             let bob = store.import(&bob_path).expect("import bob");
             store
-                .bind_workspace("room-a", &alice.id)
+                .bind_workspace("workspace-a", &alice.id)
                 .expect("bind alice");
-            store.bind_workspace("room-b", &bob.id).expect("bind bob");
+            store
+                .bind_workspace("workspace-b", &bob.id)
+                .expect("bind bob");
             let registry = store.load().expect("load");
             assert_eq!(
                 registry
-                    .selected_for_workspace("room-a")
+                    .selected_for_workspace("workspace-a")
                     .map(|profile| profile.id.as_str()),
                 Some(alice.id.as_str())
             );
             assert_eq!(
                 registry
-                    .selected_for_workspace("room-b")
+                    .selected_for_workspace("workspace-b")
                     .map(|profile| profile.id.as_str()),
                 Some(bob.id.as_str())
             );
@@ -923,7 +934,7 @@ mod tests {
         {
             let mut registry = IdentityRegistry::default();
             let error = registry
-                .bind_workspace("room-a", "missing")
+                .bind_workspace("workspace-a", "missing")
                 .expect_err("must reject unknown identity");
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         }
@@ -937,13 +948,13 @@ mod tests {
             let alice = store.import(&alice_path).expect("alice");
             let bob = store.import(&bob_path).expect("bob");
             store
-                .bind_workspace("room-cycle", &alice.id)
+                .bind_workspace("workspace-cycle", &alice.id)
                 .expect("bind alice");
 
             let mut registry = (*store.load_reconciled_prompt().expect("read")).clone();
             let ids: Vec<_> = registry.identities.keys().cloned().collect();
             let current = registry
-                .selected_for_workspace("room-cycle")
+                .selected_for_workspace("workspace-cycle")
                 .expect("current")
                 .id
                 .clone();
@@ -955,11 +966,11 @@ mod tests {
                 .expect("next")
                 .clone();
             registry
-                .bind_workspace("room-cycle", &next)
+                .bind_workspace("workspace-cycle", &next)
                 .expect("cycle bind");
             assert_eq!(
                 registry
-                    .selected_for_workspace("room-cycle")
+                    .selected_for_workspace("workspace-cycle")
                     .map(|profile| profile.id.as_str()),
                 Some(next.as_str())
             );
