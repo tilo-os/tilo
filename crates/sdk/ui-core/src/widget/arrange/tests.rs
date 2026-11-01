@@ -684,3 +684,38 @@ fn a_spacer_takes_the_leftover_room_and_no_gap_of_its_own() {
         );
     }
 }
+
+/// A text field has no width of its own content; where a row that wraps lays it out at its own
+/// width it stands at the theme's least width for a field, never 0 — hugging or filling, with
+/// the show/hide control or without, beside a button — at a phone's widths and a desktop's.
+#[test]
+fn every_text_field_in_a_wrapping_row_stands_at_least_its_own_width() {
+    use crate::widget::{Button, TextInput};
+    let theme = Theme::dark();
+    let least = f64::from(TextInput::own_width_in(&theme));
+    assert!(least > 0.0, "a field's own width is never 0");
+    let field = || TextInput::new(vec![crate::PathSegment::Field("name".into())]);
+    for width in [320.0, 390.0, 1280.0] {
+        let mut row = Row::row()
+            .fill_width()
+            .wrap()
+            .push(Box::new(field().with_placeholder("Name a new workspace")))
+            .push(Box::new(field().with_secret(true)))
+            .push_fit(Box::new(field()), Fit::hug().width(Sizing::fill(1.0)))
+            .push(Box::new(Button::new("create", "Create")));
+        solve(&mut row, &theme, width);
+        let r = rects(&row);
+        for (index, field) in r.iter().take(3).enumerate() {
+            assert!(
+                field.width() + 0.5 >= least,
+                "field {index} at {width} px is {}, less than its {least}",
+                field.width()
+            );
+            assert!(
+                field.width() <= f64::from(width) + 0.5,
+                "field {index} at {width} px stays inside the row: {}",
+                field.width()
+            );
+        }
+    }
+}
