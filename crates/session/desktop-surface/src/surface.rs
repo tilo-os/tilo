@@ -746,8 +746,6 @@ pub struct DesktopSurface {
     /// An action chosen over a window that hosts no app to run it, left for
     /// the host's own door, which says why it did not run.
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
-    /// The pointer in logical coordinates, while search is open.
-    search_pointer: Point,
     /// The pointer in logical coordinates, as it last moved over the
     /// surface.
     pointer: Point,
@@ -904,7 +902,6 @@ impl DesktopSurface {
             search_window: None,
             search_owners: HashMap::new(),
             unrouted_control: None,
-            search_pointer: Point::ZERO,
             pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
@@ -2615,6 +2612,11 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // Where the pointer is, read before anything answers the event: search
+        // asks it whether the press it is handed landed on its card.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
         if let Some(layer) = self.notices.as_mut()
             && layer.route(event, ctx.scale_factor)
         {
@@ -2642,9 +2644,6 @@ impl Widget for DesktopSurface {
             }
         }
         let child = children.first().copied();
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,

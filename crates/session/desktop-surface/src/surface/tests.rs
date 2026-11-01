@@ -246,6 +246,77 @@ fn hovering_a_window_leaves_every_window_where_it_was() {
     }
 }
 
+/// A press on the open palette's card is the palette's own: it stays open
+/// and the person goes on typing, whether or not their pointer moved after
+/// search opened. Only a press off the card leaves search.
+#[test]
+fn a_press_on_the_open_palette_leaves_it_open() {
+    let (surface, handle) = desktop(1);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1000, 700),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    // The pointer rests where the person left it, inside where the card
+    // will stand: they open search with a chord and press the card without
+    // moving the mouse first.
+    handle.open_search(None);
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    assert!(handle.search_open(), "search opened");
+    let card = frame.root::<DesktopSurface>().search_palette_rect();
+    let on_card = card.center();
+    frame.send(&ui::synthetic_input::cursor_moved(on_card.x, on_card.y));
+    for _ in 0..2 {
+        frame.relayout();
+    }
+    frame.send(&ui::synthetic_input::mouse_press());
+    frame.send(&ui::synthetic_input::mouse_release());
+    for _ in 0..2 {
+        frame.relayout();
+    }
+    assert!(
+        handle.search_open(),
+        "a press on the card at {on_card:?} is the palette's"
+    );
+}
+
+/// A press off the card is the person leaving search.
+#[test]
+fn a_press_off_the_open_palette_leaves_search() {
+    let (surface, handle) = desktop(1);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1000, 700),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    handle.open_search(None);
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let card = frame.root::<DesktopSurface>().search_palette_rect();
+    let off_card = Point::new(4.0, card.center().y);
+    frame.send(&ui::synthetic_input::cursor_moved(off_card.x, off_card.y));
+    for _ in 0..2 {
+        frame.relayout();
+    }
+    frame.send(&ui::synthetic_input::mouse_press());
+    frame.send(&ui::synthetic_input::mouse_release());
+    for _ in 0..2 {
+        frame.relayout();
+    }
+    assert!(!handle.search_open(), "a press off the card leaves search");
+}
+
 /// A window's search control opens search, over what that window shows:
 /// the control is never a dead one in this desktop.
 #[test]

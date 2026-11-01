@@ -18,7 +18,7 @@ use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{Reach, SearchData, Target};
 use ui::automerge::AutoCommit;
-use ui::kurbo::{Point, Rect};
+use ui::kurbo::Rect;
 use ui::search::system::SearchScope;
 use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
@@ -1110,10 +1110,9 @@ impl DesktopSurface {
             }
             return false;
         }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let scale = ctx.scale_factor.max(f64::MIN_POSITIVE);
-            self.search_pointer = Point::new(position.x / scale, position.y / scale);
-        }
+        // The pointer is where it last moved over the surface, read as the
+        // surface answers the event: a press on the card is the palette's,
+        // and only one off it is the person leaving search.
         let outside_press = matches!(
             event,
             WindowEvent::MouseInput {
@@ -1124,7 +1123,7 @@ impl DesktopSurface {
         ) && !self
             .search
             .palette()
-            .is_some_and(|palette| palette.get_rect().contains(self.search_pointer));
+            .is_some_and(|palette| palette.get_rect().contains(self.pointer));
         if outside_press || is_search_chord(event, modifiers, self.platform) {
             self.close_search();
         } else if is_escape(event) && self.search.escape() {
