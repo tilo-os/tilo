@@ -187,7 +187,10 @@ impl crate::widget::Widget for KeyHints {
         let style = taffy::Style {
             // A strip wider than its line gives way and its tail elides rather than running
             // past the edge: a window too narrow for every hint shows the ones that fit. Its
-            // own size is its content's; `min_size` zero lets a flex parent take it below that.
+            // own size is its content's; `min_size` zero lets a flex parent take it below that,
+            // and `max_size` the line's width keeps it inside a parent that wraps it onto a
+            // line of its own (a footer row at a narrow window), where the strip is not shrunk
+            // by a sibling but given the line's full width.
             flex_shrink: 1.0,
             size: taffy::Size {
                 width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),
@@ -197,6 +200,10 @@ impl crate::widget::Widget for KeyHints {
             },
             min_size: taffy::Size {
                 width: taffy::Dimension::length(0.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            max_size: taffy::Size {
+                width: taffy::style_helpers::percent(1.0_f32),
                 height: taffy::Dimension::auto(),
             },
             ..Default::default()

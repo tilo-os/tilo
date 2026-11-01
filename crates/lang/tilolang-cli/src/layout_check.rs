@@ -322,6 +322,33 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
+/// The roots of `meta` to lay out: `root` alone when the caller names one, else every root
+/// the package declares — the launcher opens an app's first root, yet a person meets the
+/// others through the desktop's surfaces, and a view only one of them reaches (a dock, a
+/// settings page) must still be held to the bar. `None` names the package's first root.
+fn layers_of(meta: &tilolang::PackageMeta, root: Option<&str>) -> Vec<Option<String>> {
+    let Some(root) = root else {
+        let mut layers: Vec<Option<String>> = vec![None];
+        // Every other root, by the name `--root` takes: the type's own, and a named root's.
+        let named: BTreeSet<&str> = meta.named_roots.iter().map(|r| r.name.as_str()).collect();
+        for ty in &meta.roots {
+            let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
+                continue;
+            };
+            // The first root is the window's own, and a named root is laid out by its name.
+            if named.contains(declared.name.as_str()) || meta.roots.first() == Some(ty) {
+                continue;
+            }
+            layers.push(Some(declared.name.clone()));
+        }
+        for name in &named {
+            layers.push(Some((*name).to_owned()));
+        }
+        return layers;
+    };
+    vec![Some(root.to_owned())]
+}
+
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on
 /// a resource of its type the window names. Its findings, the layouts run and the views
 /// shown nowhere.
@@ -359,35 +386,9 @@ fn check_app(
     let first = layouts().first().copied().ok_or("no layouts")?;
     // The layers laid out. A package with more than one root declares layers the person sees
     // apart from one another — the shell's `Desk`, its `Arrangement` of places and its
-    // `Viewing` of settings — and each has its own default view, so every one is laid out:
-    // the launcher opens an app's first root, yet a person meets the others through the
-    // desktop's surfaces, and a view only one of them reaches (a dock, a settings page) must
-    // still be held to the bar. `--root NAME` narrows the check to that layer alone, as a shot
-    // of the desk is.
-    let roots: Vec<Option<String>> = match root {
-        Some(name) => vec![Some(name.to_owned())],
-        None => {
-            let mut layers: Vec<Option<String>> = vec![None];
-            // Every other root the package declares, by the name `--root` takes: the type's
-            // name, and a named root's own.
-            let named: BTreeSet<&str> = meta.named_roots.iter().map(|r| r.name.as_str()).collect();
-            for ty in &meta.roots {
-                let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
-                    continue;
-                };
-                if named.contains(declared.name.as_str()) || meta.roots.first() == Some(ty) {
-                    // Already laid out: the first root is the window's own, and a named root
-                    // has its name below.
-                    continue;
-                }
-                layers.push(Some(declared.name.clone()));
-            }
-            for name in &named {
-                layers.push(Some((*name).to_owned()));
-            }
-            layers
-        }
-    };
+    // `Viewing` of settings — and each has its own default view, so every one is laid out.
+    // `--root NAME` narrows the check to that layer alone, as a shot of the desk is.
+    let roots = layers_of(&meta, root);
     for root in &roots {
         for scenario in &meta.scenarios {
             let mut staged = stage::Staged::over(
