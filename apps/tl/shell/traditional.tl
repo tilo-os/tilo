@@ -23,15 +23,17 @@
 /// The desktop's surface: each placed strip's places as frames on the floating desk, over the
 /// desktop's ground, the frame in front drawn last so it stands on top, exactly where the
 /// window policy put it. Each place keeps its canvas point in the arrangement, so a drag that
-/// ends in one arranging action moves the frame and its window together.
-view traditional_desktop(a: Arrangement) {
+/// ends in one arranging action moves the frame and its window together. `lists` says whether
+/// the desk's bar lists the window in front's actions (`bar_lists_actions`), as each frame is
+/// told.
+view traditional_desktop(a: Arrangement, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: .some("Desktop"), ground: true, fill) {
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
                     if p.key != front {
-                        desktop_frame(a, s, p, false)
+                        desktop_frame(a, s, p, false, lists)
                     }
                 }
             }
@@ -40,7 +42,7 @@ view traditional_desktop(a: Arrangement) {
             if s.placed {
                 for p in places_of(a, s.key) {
                     if p.key == front {
-                        desktop_frame(a, s, p, true)
+                        desktop_frame(a, s, p, true, lists)
                     }
                 }
             }
@@ -51,18 +53,18 @@ view traditional_desktop(a: Arrangement) {
 /// The window in front alone, filling the room it is given: what a compact output shows of the
 /// desktop (`desk`), where windows standing where they were left would show their corners cut
 /// off and the window the person is in could stand behind another.
-view front_window(a: Arrangement) {
+view front_window(a: Arrangement, lists: Bool) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
-            frame_classic(a, p, true, fill)
+            frame_classic(a, p, true, lists, fill)
         }
     }
 }
 
 /// One frame on the desktop, at its strip's canvas point and size.
-view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, focused: Bool) {
+view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.MapPin(name: .some(p.key), x: s.canvas_x, y: s.canvas_y, width: if s.canvas_width > 0 { s.canvas_width } else { 720 }, height: if s.canvas_height > 0 { s.canvas_height } else { 480 }) {
-        frame_classic(a, p, focused)
+        frame_classic(a, p, focused, lists)
     }
 }
 
@@ -72,9 +74,10 @@ view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, foc
 /// holds its own actions, and the frame puts its controls at that header's end, so a window has
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
-/// reaches the app.
-view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool) {
-    ui.WindowFrame(name: .some(place_title(p)), focused: focused, fill) {
+/// reaches the app. `lists`: the desk's bar lists the window's actions (`bar_lists_actions`), so
+/// the frame tells its header to let what does not fit give way to that menu instead of a door.
+view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
+    ui.WindowFrame(name: .some(place_title(p)), focused: focused, lists_actions: lists, fill) {
         controls: {
             frame_buttons(a, p)
         }
