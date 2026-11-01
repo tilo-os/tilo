@@ -31,12 +31,14 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
           const match = /^tilo-identity:([a-f0-9]{64})@(.+)$/u.exec(profile);
           if (match?.[2] === host && typeof device === 'string' && device.length <= 256
             && (!currentDevice || currentDevice(profile) === device)
-            && key === runtime.browser_accounts_key(match[1])) {
+            && (key === runtime.browser_accounts_key(match[1])
+              || key === runtime.browser_accounts_former_key(match[1]))) {
             if (++requested > 64) throw Error('Account lookup exceeds its profile budget');
+            const current = key === runtime.browser_accounts_key(match[1]);
             const read = store.get(item.key);
             read.onsuccess = () => {
               const row = read.result;
-              if (row?.namespace === namespace && row.key === key) rows.push({profile, device, root: match[1], bytes: row.bytes});
+              if (row?.namespace === namespace && row.key === key) rows.push({profile, device, root: match[1], bytes: row.bytes, current});
             };
           }
         }
@@ -56,15 +58,19 @@ export async function readBrowserAccounts({origin, runtime, indexedDB = globalTh
 export function projectBrowserAccounts(rows, runtime, origin) {
   if (rows.length > 64) throw Error('Account lookup exceeds its profile budget');
   const accounts = [];
-  for (const row of rows) {
+  // A record kept before the person's own scope existed is offered only until
+  // the scope has one: the row the app writes there from now on wins.
+  const ordered = [...rows].sort((a, b) => Number(b.current === true) - Number(a.current === true));
+  for (const row of ordered) {
     if (row.profile !== `tilo-identity:${row.root}@${new URL(origin).host}`) continue;
     const bytes = new Uint8Array(row.bytes);
     if (bytes.length > 1024 * 1024) throw Error('Account projection exceeds its read budget');
     for (const account of JSON.parse(runtime.project_browser_accounts(row.root, origin, bytes))) {
       if (account.userPublicKey !== row.root) throw Error('Account belongs to another browser profile');
       if (accounts.length >= 64) throw Error('Account projection exceeds its account budget');
-      accounts.push(Object.freeze({...account, profile: row.profile, device: row.device,
-        selection: JSON.stringify([row.profile, row.device, account.id])}));
+      const selection = JSON.stringify([row.profile, row.device, account.id]);
+      if (accounts.some(existing => existing.selection === selection)) continue;
+      accounts.push(Object.freeze({...account, profile: row.profile, device: row.device, selection}));
     }
   }
   return accounts;

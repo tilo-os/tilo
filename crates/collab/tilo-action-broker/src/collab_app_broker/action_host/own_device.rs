@@ -652,21 +652,22 @@ mod tests {
         let (state, owner, workspace) = broker(Arc::clone(&network));
         let asked = request(&invocation(SETTINGS));
         let refused = [
-            Caller::authenticated([41; 32], [43; 32]).in_room(workspace.clone()),
-            Caller::authenticated([77; 32], [78; 32]).in_room(workspace.clone()),
-            Caller::local_agent("assistant").in_room(workspace.clone()),
-            Caller::delegated_agent("assistant", [41; 32], [44; 32]).in_room(workspace.clone()),
-            Caller::bot("helper", [41; 32], [45; 32]).in_room(workspace.clone()),
-            Caller::local_app(SETTINGS).in_room(workspace.clone()),
+            Caller::authenticated([41; 32], [43; 32]).in_workspace(workspace.clone()),
+            Caller::authenticated([77; 32], [78; 32]).in_workspace(workspace.clone()),
+            Caller::local_agent("assistant").in_workspace(workspace.clone()),
+            Caller::delegated_agent("assistant", [41; 32], [44; 32])
+                .in_workspace(workspace.clone()),
+            Caller::bot("helper", [41; 32], [45; 32]).in_workspace(workspace.clone()),
+            Caller::local_app(SETTINGS).in_workspace(workspace.clone()),
             Caller::local_person(owner.clone())
                 .delegated_to("assistant")
-                .in_room(workspace.clone()),
+                .in_workspace(workspace.clone()),
             Caller::local_person(owner.clone())
                 .running_shortcut("nightly")
-                .in_room(workspace.clone()),
+                .in_workspace(workspace.clone()),
             Caller::local_person(owner.clone())
                 .from_foreign_device(true)
-                .in_room(workspace),
+                .in_workspace(workspace),
             Caller::local_person(owner),
         ];
         for caller in refused {
@@ -688,7 +689,7 @@ mod tests {
     fn own_device_sends_once_per_invocation_and_follows_the_other_device() {
         let network = Arc::new(Network::default());
         let (state, owner, workspace) = broker(Arc::clone(&network));
-        let person = Caller::local_person(owner).in_room(workspace);
+        let person = Caller::local_person(owner).in_workspace(workspace);
         let asked = request(&invocation(SETTINGS));
 
         let receipt = invoked(&state, &person, &asked).expect("admitted");
@@ -740,7 +741,7 @@ mod tests {
             ..Network::default()
         });
         let (state, owner, workspace) = broker(network);
-        let person = Caller::local_person(owner).in_room(workspace);
+        let person = Caller::local_person(owner).in_workspace(workspace);
         let asked = request(&invocation(SETTINGS));
         assert!(matches!(
             invoked(&state, &person, &asked),
@@ -770,7 +771,7 @@ mod tests {
     #[test]
     fn an_app_reaches_only_its_own_actions_on_another_device() {
         let (state, owner, workspace) = broker(Arc::new(Network::default()));
-        let person = Caller::local_person(owner).in_room(workspace);
+        let person = Caller::local_person(owner).in_workspace(workspace);
         let own = RemoteActionMessage::Invoke(request(&invocation(SETTINGS)));
         assert_eq!(
             state

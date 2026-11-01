@@ -277,8 +277,8 @@ impl super::ShellOverlayHost {
         };
         let workspace = room.to_string();
         let target = join_call_target(&workspace, call);
-        let caller =
-            Caller::local_person(chrome.borrow().local_user_for_room(&room)).in_room(workspace);
+        let caller = Caller::local_person(chrome.borrow().local_user_for_room(&room))
+            .in_workspace(workspace);
         let refusal = target.zip(self.action_broker()).map_or_else(
             || Some(crate::shell::i18n::t("people-join-call-not-taken")),
             |(target, broker)| Self::ask_to_join(broker, &caller, target),
@@ -385,7 +385,7 @@ mod tests {
         let (host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
 
         let mut presence = ui::presence::PresenceCtx::default();
-        presence.set_room_in_front(Some(front_room));
+        presence.set_workspace_in_front(Some(front_room));
         presence.apply_remote_presence(
             "bo".into(),
             PresenceKey::Workspace {

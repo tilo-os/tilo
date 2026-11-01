@@ -903,7 +903,7 @@ fn workspace_media_reader_uses_current_workspace_read_without_workspace_write() 
     let member = peer
         .permissions(members[1].1.device_public_key, now)
         .unwrap();
-    let workspace_node = TreePath::room(WORKSPACE);
+    let workspace_node = TreePath::workspace(WORKSPACE);
     assert!(member.allows(&workspace_node, ActionKind::Read, now));
     assert!(!member.allows(&workspace_node, ActionKind::Undoable, now));
     peer.governance_mut()

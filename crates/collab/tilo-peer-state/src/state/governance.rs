@@ -776,7 +776,7 @@ impl PeerGovernanceMut<'_> {
         doc.set_actor(self.peer.workspace_actor_of(key));
         for grant in grants {
             if grant.id.as_str().trim().is_empty()
-                || grant.node.room_id() != Some(self.peer.core.workspace.as_str())
+                || grant.node.workspace_id() != Some(self.peer.core.workspace.as_str())
             {
                 return Err(format!(
                     "grant {:?} cannot be written as workspace policy",

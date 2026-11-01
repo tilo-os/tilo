@@ -57,7 +57,7 @@ impl CheckpointDriver {
             certificate.user_public_key,
             certificate.device_public_key,
         )
-        .in_room(&room)
+        .in_workspace(&room)
         .in_new_execution();
         let host = actions
             .certified_local_action_host(&caller, &evidence)
@@ -697,7 +697,7 @@ fn checkpoint_revocation_grant(
     member: &tilo_user_identity::DeviceCert,
     revoke_write: bool,
 ) -> tilo_action_policy::Grant {
-    let path = tilo_action_policy::TreePath::room(room.to_string());
+    let path = tilo_action_policy::TreePath::workspace(room.to_string());
     tilo_action_policy::Grant::new(
         "checkpoint-broker-revoked",
         tilo_action_policy::Subject::person(hex::encode(member.user_public_key)),
@@ -853,7 +853,7 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
     let deny = tilo_action_policy::Grant::new(
         "checkpoint-source-revoked",
         person,
-        tilo_action_policy::TreePath::room(fixture.room.to_string()).app("so.tilo.chat"),
+        tilo_action_policy::TreePath::workspace(fixture.room.to_string()).app("so.tilo.chat"),
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Deny,
         tilo_action_policy::Subject::person(hex::encode(fixture.certificate.user_public_key)),

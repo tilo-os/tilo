@@ -172,7 +172,7 @@ pub(crate) struct Room {
     members: Option<std::collections::BTreeSet<String>>,
     /// How many commits of each record route this page published the room
     /// has not answered yet: once none is left, what the record's windows
-    /// said they did is said (`RecordStore::room_settled`).
+    /// said they did is said (`RecordStore::workspace_settled`).
     in_flight: HashMap<DocumentRoute, usize>,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
@@ -194,7 +194,7 @@ fn wire_record(id: &RecordId) -> &str {
 /// The page's storage key of wire record `record` of `app` in `room`.
 fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'static str> {
     if record.is_empty() {
-        return Ok(StorageKey::room_index(app, room));
+        return Ok(StorageKey::workspace_index(app, room));
     }
     let id = RecordId::parse(record).ok_or("not a record id")?;
     Ok(StorageKey::record(app, room, id.storage_key()))
@@ -658,7 +658,7 @@ impl Room {
         };
         let held = self
             .permitted
-            .insert(path.within_room(), (node.to_owned(), may));
+            .insert(path.within_workspace(), (node.to_owned(), may));
         match held {
             Some((_, before)) => before != may,
             None => may,
@@ -1094,15 +1094,15 @@ impl Room {
         self.compact(compactions);
         for route in opened {
             if route.cluster_id == self.uuid {
-                self.room_answered(&route, woken);
+                self.workspace_answered(&route, woken);
             }
         }
     }
 
     /// The host retains nothing of `route`, an on-demand record this page
     /// opened: each store holding it tells what reads it
-    /// ([`ui::record::RecordStore::note_room_answered`]).
-    fn room_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+    /// ([`ui::record::RecordStore::note_workspace_answered`]).
+    fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
@@ -1113,7 +1113,7 @@ impl Room {
                     .into_iter()
                     .find(|checkout| wire_record(&checkout.id) == route.record)
                 {
-                    store.note_room_answered(checkout.id);
+                    store.note_workspace_answered(checkout.id);
                     woken.insert(id);
                 }
             }
@@ -1160,7 +1160,7 @@ impl Room {
                     .into_iter()
                     .find(|checkout| wire_record(&checkout.id) == route.record)
                 {
-                    store.room_settled(&checkout.id);
+                    store.workspace_settled(&checkout.id);
                     woken.insert(id);
                 }
             }

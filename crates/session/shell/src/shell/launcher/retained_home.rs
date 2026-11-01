@@ -807,7 +807,7 @@ mod tests {
             Grant::new(
                 "retained-author",
                 Subject::app("so.tilo.chat"),
-                tilo_action_policy::TreePath::room(room.to_string()),
+                tilo_action_policy::TreePath::workspace(room.to_string()),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 Subject::person(person.clone()),
@@ -832,7 +832,7 @@ mod tests {
             Grant::new(
                 "retained-revoked-author",
                 Subject::person(person.clone()),
-                tilo_action_policy::TreePath::room(room.to_string()),
+                tilo_action_policy::TreePath::workspace(room.to_string()),
                 KindSet::UNDOABLE,
                 Answer::Deny,
                 Subject::person(person),
@@ -895,7 +895,7 @@ mod tests {
             Grant::new(
                 "history-author",
                 Subject::app("so.tilo.chat"),
-                tilo_action_policy::TreePath::room(room.to_string()),
+                tilo_action_policy::TreePath::workspace(room.to_string()),
                 KindSet::UNDOABLE,
                 Answer::Allow,
                 Subject::person(person.clone()),
@@ -907,7 +907,7 @@ mod tests {
             Grant::new(
                 "history-reader",
                 Subject::app("so.tilo.chat"),
-                tilo_action_policy::TreePath::room(room.to_string()),
+                tilo_action_policy::TreePath::workspace(room.to_string()),
                 KindSet::READ,
                 Answer::Allow,
                 Subject::person(person.clone()),
@@ -924,7 +924,7 @@ mod tests {
             Grant::new(
                 "history-read-ceiling",
                 Subject::person(person.clone()),
-                tilo_action_policy::TreePath::room(room.to_string()),
+                tilo_action_policy::TreePath::workspace(room.to_string()),
                 KindSet::UNDOABLE,
                 Answer::Deny,
                 Subject::person(person),
@@ -965,7 +965,7 @@ mod tests {
             NativePersonalSource::admit_for_socket(&socket, fixture.context.principal()).unwrap();
         let mut key = [0; 32];
         hex::decode_to_slice(fixture.context.principal(), &mut key).unwrap();
-        let room = RoomId::parse(&collab_types::person_room(&key).to_string()).unwrap();
+        let room = RoomId::parse(&collab_types::personal_cluster(&key).to_string()).unwrap();
         session.retained_launch_certificate(room).unwrap();
         assert!(
             session
@@ -1010,7 +1010,7 @@ mod tests {
             NativePersonalSource::admit_for_socket(&socket, fixture.context.principal()).unwrap();
         let mut key = [0; 32];
         hex::decode_to_slice(fixture.context.principal(), &mut key).unwrap();
-        let room = RoomId::parse(&collab_types::person_room(&key).to_string()).unwrap();
+        let room = RoomId::parse(&collab_types::personal_cluster(&key).to_string()).unwrap();
         let (_owner_directory, owner, other_room, _, _) = test_enrolled_owner();
         let operation = uuid::Uuid::new_v4().to_string();
         let app = InstalledApp {

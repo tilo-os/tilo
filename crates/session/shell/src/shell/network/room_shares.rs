@@ -101,7 +101,7 @@ impl ShellNetwork {
         room: RoomId,
         node: &TreePath,
     ) -> Result<(bool, bool), String> {
-        if node.room_id() != Some(room.to_string().as_str()) {
+        if node.workspace_id() != Some(room.to_string().as_str()) {
             return Err("the node is not in this room".into());
         }
         let owner = self.native_owner()?;

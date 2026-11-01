@@ -22,7 +22,7 @@ fn app_id_for(
     let definition = catalogue
         .get(app)
         .ok_or_else(|| CollaborationError::new("application is not registered on this host"))?;
-    if record.is_empty() && !definition.keeps_room_record() {
+    if record.is_empty() && !definition.keeps_workspace_record() {
         return Err(CollaborationError::new(
             "application has no primary room record",
         ));

@@ -268,17 +268,18 @@ the model but instead of it:
   a channel's group; any participant admits and removes devices
   (`channel_crypto::ChannelPeer`). The browser follows and checks commits
   but writes none, since it does not hold record-level Read grants.
-- **Per-person spaces.** The own room, the person room and the person's
-  relay workspace (`personal_continuity_workspace_id`), each derived from the
-  root key under its own domain string. The relay workspace is left only to
-  the person's hosts: they keep person-room records on it for devices that
-  are away, and ush environment sessions run on it. The person's devices
-  already meet without it, on the session between two of them
-  (`tilo-relay-sibling/1`), and learn the person's workspaces from the hosts
-  holding them (`room.list`). While the person room stays, the readers of
-  each of its channels are the identity's certified devices that are not
-  revoked: the identity decides, and no governor or workspace takes part.
-  Any of those devices creates a channel's group and admits the others
+- **Per-person spaces.** The person's relay workspace
+  (`personal_continuity_workspace_id`), derived from the root key under its
+  own domain string. It is left only to the person's hosts: they keep the
+  person's records on it for devices that are away, and ush environment
+  sessions run on it. The person's devices already meet without it, on the
+  session between two of them (`tilo-relay-sibling/1`), and learn the
+  person's workspaces from the hosts holding them (`room.list`). The person's
+  own records in particular are in no room and no workspace: their store is
+  one cluster per person, derived from the root key, and the readers of its
+  channels are the identity's certified devices that are not revoked — the
+  identity decides, and no governor or workspace takes part. Any of those
+  devices creates a channel's group and admits the others
   (`channel_crypto::ChannelPeer`), as a workspace's participants do.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are

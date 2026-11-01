@@ -102,7 +102,7 @@ fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
         .validate(&tilo_actions::ActionOutput {
             value: Some(serde_json::json!({
                 "version":1,
-                "record":{"roomId":null,"appId":"so.tilo.chat","recordId":""},
+                "record":{"workspaceId":null,"appId":"so.tilo.chat","recordId":""},
                 "basis":{"heads":heads.iter().map(ToString::to_string).collect::<Vec<_>>()},
                 "content":page.content,
                 "nextCursor":null
@@ -242,7 +242,7 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
         .completed()
         .expect("the registered read must complete immediately");
     let value = output.value.unwrap();
-    assert_eq!(value["record"]["roomId"], submission.destination.room);
+    assert_eq!(value["record"]["workspaceId"], submission.destination.room);
     assert_eq!(value["record"]["appId"], crate::definition().app_id());
     assert_eq!(value["record"]["recordId"], "");
     let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();

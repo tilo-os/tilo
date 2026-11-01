@@ -255,6 +255,17 @@ class PushWindowTests(unittest.TestCase):
         self.assertEqual(executing, [])
         self.assertEqual(cancelling, [])
 
+    def test_a_run_blocked_behind_a_failed_decision_is_not_waited_for(self):
+        # Its planning job failed, so every other job waits behind it and the
+        # run never finishes: waiting for it would stall main's windows.
+        runs = [self.record(20, "waiting"), self.record(19, "blocked"),
+                self.record(18, "success")]
+        _, base, executing, cancelling = self.decide(
+            runs, {19: (None, True), 18: ("success", True)})
+        self.assertEqual(executing, [])
+        self.assertEqual(cancelling, [])
+        self.assertEqual(base, self.record(18, "success")["commit_sha"])
+
     def test_a_run_cancelled_part_way_through_is_not_a_base(self):
         # Its window was measured only in part, so the next run plans it again.
         runs = [self.record(20, "waiting"), self.record(19, "cancelled"),

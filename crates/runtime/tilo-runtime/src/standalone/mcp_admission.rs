@@ -146,7 +146,7 @@ impl Joined {
         let (certificate, enrollment) = self.mcp_material(selected)?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(workspace)
+                .in_workspace(workspace)
                 // Preserve the standalone host's existing foreign-device restriction,
                 // including when a signed certificate permits a stronger device.
                 .from_foreign_device(true)

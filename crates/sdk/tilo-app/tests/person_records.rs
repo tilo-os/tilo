@@ -327,12 +327,30 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
             owned.record().checkout().id,
             "every app's copy is the owner's record"
         );
+        assert!(
+            copy.record().syncs(),
+            "the person's own store carries it, so it reaches their other devices"
+        );
         assert_eq!(
             copy.record().route(),
-            None,
-            "the person's own record has no route: it stays on this device until their own store carries it"
+            owned.record().route(),
+            "every app of theirs opens the same record of the person's store"
         );
     }
+    let route = owned
+        .record()
+        .route()
+        .expect("the person's own store carries it");
+    assert_eq!(
+        route.app_id,
+        QueueApp::ID,
+        "the route names the app keeping the record"
+    );
+    assert_ne!(
+        route.record.as_deref(),
+        None,
+        "and the record, not the app's primary"
+    );
 
     owned
         .invoke(&Saved::SAVE.with("kept-by-the-owner"))

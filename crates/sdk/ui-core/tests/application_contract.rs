@@ -94,12 +94,12 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     // Case `wrong_store_namespace_fails_before_factory`.
     {
         let host = ProbeHost::new();
-        for (root, device, room) in [
-            (host.root().join("other-profile"), DEVICE, ROOM),
-            (host.root(), "other-device", ROOM),
-            (host.root(), DEVICE, "other-room"),
+        for (root, device, workspace) in [
+            (host.root().join("other-profile"), DEVICE, WORKSPACE),
+            (host.root(), "other-device", WORKSPACE),
+            (host.root(), DEVICE, "other-workspace"),
         ] {
-            let views = Rc::new(InstanceViewStore::new(root, device, room).unwrap());
+            let views = Rc::new(InstanceViewStore::new(root, device, workspace).unwrap());
             assert!(matches!(
                 HostContext::prepare(
                     probe_definition(),
@@ -170,7 +170,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
             match field {
                 "app" => bad.app_id = "foreign.app".into(),
                 "device" => bad.device_id = "other-device".into(),
-                "workspace" => bad.workspace_id = "other-room".into(),
+                "workspace" => bad.workspace_id = "other-workspace".into(),
                 "record" => bad.record_id = RecordId::minted().as_str().into(),
                 "kind" => bad.record_kind = "other-kind".into(),
                 "instance" => bad.instance_id = 99,
@@ -251,12 +251,12 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
-        for (device, room, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
-            let store = InstanceViewStore::new(root.clone(), device, room).unwrap();
-            store.save(&envelope(device, room, scroll)).unwrap();
+        for (device, workspace, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
+            let store = InstanceViewStore::new(root.clone(), device, workspace).unwrap();
+            store.save(&envelope(device, workspace, scroll)).unwrap();
         }
-        for (device, room, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
-            let store = InstanceViewStore::new(root.clone(), device, room).unwrap();
+        for (device, workspace, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
+            let store = InstanceViewStore::new(root.clone(), device, workspace).unwrap();
             assert_eq!(store.load(11).unwrap().unwrap().view.scroll, vec![scroll]);
         }
         let store = InstanceViewStore::new(root.clone(), "D", "A").unwrap();
@@ -353,7 +353,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     // Case `invalid_save_never_replaces_a_valid_local_envelope`.
     {
         let host = ProbeHost::new();
-        let original = envelope(DEVICE, ROOM, 23.0);
+        let original = envelope(DEVICE, WORKSPACE, 23.0);
         host.views.save(&original).unwrap();
         let bytes = std::fs::read(host.view_path(11)).unwrap();
         let mut foreign = original.clone();
@@ -499,10 +499,10 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         let record = original.record().clone();
         let saved = original.close().recovery.unwrap();
         let view_bytes = std::fs::read(host.view_path(11)).unwrap();
-        let path = app_state::DocStore::room_record_dir_at(
+        let path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &record.id.storage_key(),
         )
         .unwrap()
@@ -569,10 +569,10 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(!host.records.is_ready(&record.id));
         assert!(host.records.reserve_record(&record).is_ok());
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
-        let path = app_state::DocStore::room_record_dir_at(
+        let path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &record.id.storage_key(),
         )
         .unwrap()
@@ -667,10 +667,10 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
         assert_eq!(before, after);
         assert_eq!(initializations(), 1);
         assert_eq!(host.records.open_records().len(), 1);
-        let directory = app_state::DocStore::room_record_dir_at(
+        let directory = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap();
@@ -709,7 +709,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         let saved: SavedInstanceView = postcard::from_bytes(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(saved.view.scroll, vec![42.0]);
         assert_eq!(saved.device_id, DEVICE);
-        assert_eq!(saved.workspace_id, ROOM);
+        assert_eq!(saved.workspace_id, WORKSPACE);
     }
 
     // Case `failed_close_retains_dirty_record_owner_and_recovery_independently`.
@@ -719,10 +719,10 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::room_record_dir_at(
+        let path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -762,10 +762,10 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let document_path = app_state::DocStore::room_record_dir_at(
+        let document_path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -852,14 +852,14 @@ fn local_view(scroll: f64, caret: &str) -> View {
         ..View::default()
     }
 }
-fn envelope(device: &str, room: &str, scroll: f64) -> SavedInstanceView {
+fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
     SavedInstanceView {
         version: 2,
-        app_id: format!("test.{room}.{device}"),
+        app_id: format!("test.{workspace}.{device}"),
         device_id: device.into(),
-        workspace_id: room.into(),
+        workspace_id: workspace.into(),
         instance_id: 11,
-        record_id: format!("record:{room}:{device}"),
+        record_id: format!("record:{workspace}:{device}"),
         record_kind: "test".into(),
         view: local_view(scroll, "caret=1"),
         application: None,
@@ -891,10 +891,10 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::room_record_dir_at(
+        let path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -1214,10 +1214,10 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::room_record_dir_at(
+        let path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             APP,
-            ROOM,
+            WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -1407,10 +1407,10 @@ mod save_status_fixture {
             self.tile.sync(&self.outer, &ROOT);
         }
         fn path(&self) -> std::path::PathBuf {
-            app_state::DocStore::room_record_dir_at(
+            app_state::DocStore::workspace_record_dir_at(
                 &self.host.root(),
                 APP,
-                ROOM,
+                WORKSPACE,
                 &self.checkout.id.storage_key(),
             )
             .unwrap()
@@ -1740,7 +1740,7 @@ mod paired_local {
             let mut component = definition
                 .instantiate(context, LaunchTarget::New, RestoreInput::None)
                 .unwrap();
-            let mut saved = envelope(DEVICE, ROOM, 12.0);
+            let mut saved = envelope(DEVICE, WORKSPACE, 12.0);
             saved.app_id = APP.into();
             saved.record_id = component.record().id.as_str().into();
             saved.record_kind = component.record().kind.as_str().into();

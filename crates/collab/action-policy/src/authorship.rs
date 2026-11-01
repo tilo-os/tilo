@@ -6,7 +6,7 @@
 //! chain of code that led to an action is a delegation bounding the person
 //! ([`crate::Authority::bounded_by`]), and the minimum wins. Code an
 //! application's package wrote is that application ([`Subject::App`]): the
-//! room's grants naming the application bound it as they bound the
+//! workspace's grants naming the application bound it as they bound the
 //! application anywhere, a denial of it holding over everything more
 //! specific. Code a person or an agent wrote (a block in a conversation) is
 //! that person or agent.
@@ -20,16 +20,16 @@
 
 use crate::{Answer, Grant, KindSet, Party, Subject, TreePath};
 
-/// The grants code written by `author` holds in `room` as a party of its
+/// The grants code written by `author` holds in `workspace` as a party of its
 /// own: [`trusted`](self) code reads and makes undoable changes and asks
 /// before reaching outside, other code asks before everything.
 #[must_use]
-pub fn code_grants(room: &str, author: &Subject, trusted: bool) -> Vec<Grant> {
+pub fn code_grants(workspace: &str, author: &Subject, trusted: bool) -> Vec<Grant> {
     let grant = |suffix: &str, kinds: KindSet, answer: Answer| {
         Grant::new(
             format!("code-author:{}:{suffix}", subject_key(author)),
             author.clone(),
-            TreePath::room(room),
+            TreePath::workspace(workspace),
             kinds,
             answer,
             author.clone(),
@@ -47,24 +47,24 @@ pub fn code_grants(room: &str, author: &Subject, trusted: bool) -> Vec<Grant> {
 
 /// The party code written by `author` is, holding `own` (its
 /// [`code_grants`], and an application's [`crate::roles::app_authorship`]
-/// of its own records) and the grants of `room` naming it. The room's
+/// of its own records) and the grants of `workspace` naming it. The workspace's
 /// denial of the author holds over every more specific grant.
 #[must_use]
-pub fn code_party<'g>(author: &Subject, own: &'g [Grant], room: &'g [Grant]) -> Party<'g> {
-    code_party_in(author, own, room, None)
+pub fn code_party<'g>(author: &Subject, own: &'g [Grant], workspace: &'g [Grant]) -> Party<'g> {
+    code_party_in(author, own, workspace, None)
 }
 
-/// [`code_party`], where the apps `earlier` names were renamed: the room's grants to an app under
+/// [`code_party`], where the apps `earlier` names were renamed: the workspace's grants to an app under
 /// an id it had before name it too.
 #[must_use]
 pub fn code_party_in<'g>(
     author: &Subject,
     own: &'g [Grant],
-    room: &'g [Grant],
+    workspace: &'g [Grant],
     earlier: Option<&crate::EarlierIds>,
 ) -> Party<'g> {
     let author_alone = std::slice::from_ref(author);
-    let named: Vec<&'g Grant> = room
+    let named: Vec<&'g Grant> = workspace
         .iter()
         .filter(|grant| match earlier {
             Some(earlier) => earlier.subject_matches(&grant.subject, author_alone),
@@ -96,10 +96,13 @@ mod tests {
     use super::*;
     use crate::{ActionKind, Authority, Context, roles};
 
-    const ROOM: &str = "room";
+    const WORKSPACE: &str = "workspace";
 
     fn node(app: &str) -> TreePath {
-        TreePath::room(ROOM).app(app).kind("k").action("a")
+        TreePath::workspace(WORKSPACE)
+            .app(app)
+            .kind("k")
+            .action("a")
     }
 
     fn answer(party: &Party<'_>, at: &TreePath, kind: ActionKind) -> Answer {
@@ -113,7 +116,7 @@ mod tests {
     #[test]
     fn trusted_code_asks_only_before_reaching_outside() {
         let author = Subject::app("so.tilo.notes");
-        let own = code_grants(ROOM, &author, true);
+        let own = code_grants(WORKSPACE, &author, true);
         let party = code_party(&author, &own, &[]);
         assert_eq!(
             answer(&party, &node("x"), ActionKind::Undoable),
@@ -125,8 +128,12 @@ mod tests {
     #[test]
     fn untrusted_code_asks_except_for_its_own_records() {
         let author = Subject::app("so.tilo.notes");
-        let mut own = code_grants(ROOM, &author, false);
-        own.push(roles::app_authorship(ROOM, "so.tilo.notes", author.clone()));
+        let mut own = code_grants(WORKSPACE, &author, false);
+        own.push(roles::app_authorship(
+            WORKSPACE,
+            "so.tilo.notes",
+            author.clone(),
+        ));
         let party = code_party(&author, &own, &[]);
         assert_eq!(
             answer(&party, &node("so.tilo.other"), ActionKind::Undoable),
@@ -143,19 +150,23 @@ mod tests {
     }
 
     #[test]
-    fn the_rooms_denial_of_an_author_holds() {
+    fn the_workspaces_denial_of_an_author_holds() {
         let author = Subject::app("so.tilo.notes");
-        let mut own = code_grants(ROOM, &author, true);
-        own.push(roles::app_authorship(ROOM, "so.tilo.notes", author.clone()));
-        let room = [Grant::new(
+        let mut own = code_grants(WORKSPACE, &author, true);
+        own.push(roles::app_authorship(
+            WORKSPACE,
+            "so.tilo.notes",
+            author.clone(),
+        ));
+        let workspace = [Grant::new(
             "deny-notes",
             author.clone(),
-            TreePath::room(ROOM),
+            TreePath::workspace(WORKSPACE),
             KindSet::ALL,
             Answer::Deny,
             Subject::person("owner"),
         )];
-        let party = code_party(&author, &own, &room);
+        let party = code_party(&author, &own, &workspace);
         assert_eq!(
             answer(&party, &node("so.tilo.notes"), ActionKind::Read),
             Answer::Deny

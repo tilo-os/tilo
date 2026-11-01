@@ -1,6 +1,6 @@
-//! Postcard names an enum variant by its position, and rooms keep their
+//! Postcard names an enum variant by its position, and workspaces keep their
 //! grants, and the digests of their administration requests, in those
-//! bytes. A variant removed or moved changes bytes a room already holds and
+//! bytes. A variant removed or moved changes bytes a workspace already holds and
 //! fails here. A new variant goes at the end of its enum; the `match`es
 //! without a wildcard ask for its bytes.
 
@@ -18,7 +18,7 @@ macro_rules! stored_as {
         assert_eq!(
             postcard::to_stdvec(value).unwrap(),
             golden,
-            "{value:?} is written as rooms hold it"
+            "{value:?} is written as workspaces hold it"
         );
         assert_eq!(&read_as(value, golden).unwrap(), value);
     }};
@@ -129,18 +129,38 @@ fn a_grant_keeps_its_bytes() {
     let grant = Grant::new(
         "g",
         Subject::Person("p".into()),
-        TreePath::room("r"),
+        TreePath::workspace("r"),
         KindSet::ALL,
         Answer::Allow,
         Subject::Person("c".into()),
     );
     let mut golden = vec![0x01, b'g'];
     golden.extend([0x00, 0x01, b'p']);
-    golden.push(0x06);
-    golden.extend(b"room:r");
+    golden.push(0x0b);
+    golden.extend(b"workspace:r");
     golden.extend([0x03, 0x00, 0x01, 0x02]);
     golden.push(0x02);
     golden.push(0x04);
     golden.extend([0x00, 0x01, b'c']);
     stored_as!(&grant, &golden);
+}
+
+#[test]
+fn a_grant_written_under_the_old_path_name_reads_as_the_same_grant() {
+    // The same grant as above, with the node as it was written while the level
+    // was named `room`: its bytes still name a node, and the same one.
+    let stored = b"\x01g\x00\x01p\x06room:r\x03\x00\x01\x02\x02\x04\x00\x01c";
+    let read: Grant = postcard::from_bytes(stored).expect("an old grant still loads");
+    assert_eq!(read.node, TreePath::workspace("r"));
+    assert_eq!(
+        read,
+        Grant::new(
+            "g",
+            Subject::Person("p".into()),
+            TreePath::workspace("r"),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::Person("c".into()),
+        )
+    );
 }

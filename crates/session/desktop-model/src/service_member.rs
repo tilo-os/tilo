@@ -77,7 +77,7 @@ pub fn service_membership(
             purpose.trim()
         ),
         Subject::agent(service_principal(device)),
-        TreePath::room(room),
+        TreePath::workspace(room),
         kinds,
         Answer::Allow,
         granted_by,

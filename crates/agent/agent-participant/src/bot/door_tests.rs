@@ -175,7 +175,7 @@ fn send() -> InvokeRequest {
 }
 
 fn bot() -> Caller {
-    Caller::bot("b1", [1; 32], [2; 32]).in_room(WORKSPACE)
+    Caller::bot("b1", [1; 32], [2; 32]).in_workspace(WORKSPACE)
 }
 
 fn block<T>(pending: Pending<T>) -> T {
@@ -192,12 +192,12 @@ fn block<T>(pending: Pending<T>) -> T {
 #[test]
 fn a_caller_that_is_not_this_bot_is_refused() {
     let door = door(FakeParticipant::default(), vec![]);
-    let person = Caller::local_person("ada").in_room(WORKSPACE);
+    let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
         block(door.invoke(&person, post())),
         Err(ActionHostError::NotPermitted)
     ));
-    let other = Caller::bot("b2", [1; 32], [3; 32]).in_room(WORKSPACE);
+    let other = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert!(matches!(
         block(door.invoke(&other, post())),
         Err(ActionHostError::NotPermitted)

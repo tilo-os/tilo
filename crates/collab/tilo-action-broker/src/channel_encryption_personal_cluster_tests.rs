@@ -1,4 +1,4 @@
-/// A workspace no one governs (the person room) whose directory names its
+/// A workspace no one governs (the personal cluster) whose directory names its
 /// channels' readers: this device founds the channel's group and is
 /// answered its keys, a second device of the same identity is admitted,
 /// and a device outside the identity is not.

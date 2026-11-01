@@ -141,7 +141,7 @@ pub(crate) fn owner_action<S: RuntimeServices>(
     let request: InvokeRequest = serde_json::from_str(json).map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
     let host = session.action_host()?;
-    let caller = Caller::local_person(session.actor()).in_room(session.workspace());
+    let caller = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let _entered = runtime.handle().enter();
     let timeout = std::time::Duration::from_secs(125);

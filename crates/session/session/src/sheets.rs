@@ -281,6 +281,11 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         (self.drawn() || self.always_serving) && self.host.prepare_frame()
     }
 
+    /// A sheet nobody can see asks for no frames.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.drawn().then(|| self.host.next_deadline()).flatten()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }

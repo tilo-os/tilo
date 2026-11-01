@@ -102,7 +102,10 @@ impl crate::Session {
             date: ui::format::day_heading(ui::clock::today(), false),
             person: self.unlocking.user.clone(),
             status: self.lock_status(),
-            media: lock_service::media(&self.shared.readings),
+            media: lock_service::media(
+                &self.shared.readings,
+                self.shared.handoff.borrow().as_ref(),
+            ),
             ..lock.shown()
         });
         for password in lock.take_attempts() {
@@ -180,33 +183,14 @@ impl crate::Session {
 
     /// What the device says about itself, as the lock screen shows it.
     pub(crate) fn lock_status(&self) -> tilo_sheets::lock::Status {
-        let readings = self
-            .shared
-            .readings
-            .borrow()
-            .as_ref()
-            .map(tilo_quick_settings::host::Feed::current);
-        let Some(readings) = readings else {
-            return tilo_sheets::lock::Status {
-                layout: self.lock_layout(self.shared.lock_layout.get()),
-                next_layout: self.next_lock_layout(),
-                layouts: self.shared.lock_layouts.len(),
-                keyboard: true,
-                // Suspend, restart and shut down reach only a machine
-                // the session owns, not the desktop whose window it is in.
-                power: !self.shared.hosted,
-                ..tilo_sheets::lock::Status::default()
-            };
-        };
-        let status = &readings.status;
+        let readings = self.shared.readings.borrow();
         tilo_sheets::lock::Status {
-            network: status.link.as_ref().and_then(|link| link.name.clone()),
-            battery: status
-                .battery
-                .filter(|battery| battery.present)
-                .map(|battery| tilo_sheets::lock::Battery {
-                    percent: Some(battery.percent),
-                    charging: status.battery_is_charging(),
+            network: readings.network_name(),
+            battery: readings
+                .charge()
+                .map(|(percent, charging)| tilo_sheets::lock::Battery {
+                    percent: Some(percent),
+                    charging,
                 }),
             layout: self.lock_layout(self.shared.lock_layout.get()),
             next_layout: self.next_lock_layout(),

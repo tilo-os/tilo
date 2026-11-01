@@ -24,7 +24,6 @@ use tilo_sheets::lock::{LockEffect, Media, Shown, no_password};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::MEDIA;
-use crate::panels;
 
 /// The resource the lock screen reads and asks.
 pub const LOCK: &str = "lock";
@@ -235,21 +234,26 @@ impl Service for LockService {
     }
 }
 
-/// What plays, as the lock screen shows it: the player the now-playing card
-/// follows, and only what a locked screen may do to it — no queue, no
+/// What plays, as the lock screen shows it: what the services read of the
+/// players here, else what another of the person's devices offers to
+/// continue here. Only what a locked screen may do to it — no queue, no
 /// scrubber, no choice of player.
 #[must_use]
-pub fn media(readings: &panels::Readings) -> Option<Media> {
-    let readings = readings.borrow();
-    let readings = readings.as_ref()?.current();
-    let now = readings.now_playing.as_ref()?;
+pub fn media(
+    readings: &crate::status::Shared,
+    offered: Option<&tilo_quick_settings::MediaOffer>,
+) -> Option<Media> {
+    let playing = readings
+        .borrow()
+        .playing()
+        .or_else(|| offered.map(crate::status::Playing::offered))?;
     Some(Media {
-        title: now.title.clone(),
-        subtitle: now.subtitle.clone(),
-        playing: now.playing,
-        can_toggle: now.can_toggle,
-        can_previous: now.can_previous,
-        can_next: now.can_next,
+        title: playing.title,
+        subtitle: playing.subtitle,
+        playing: playing.playing,
+        can_toggle: playing.can_toggle,
+        can_previous: playing.can_previous,
+        can_next: playing.can_next,
     })
 }
 
@@ -263,7 +267,7 @@ pub fn media(readings: &panels::Readings) -> Option<Media> {
 /// transport, and nothing is asked of a player.
 pub fn transport(
     asked: &LockEffect,
-    readings: &panels::Readings,
+    readings: &crate::status::Shared,
     services: &Rc<RefCell<tilo_service::Services>>,
 ) -> bool {
     let action = match asked {
@@ -272,7 +276,7 @@ pub fn transport(
         LockEffect::PreviousTrack => "previous",
         _ => return false,
     };
-    if media(readings).is_none() {
+    if readings.borrow().playing().is_none() {
         return true;
     }
     let asked = services
@@ -284,4 +288,38 @@ pub fn transport(
         None => tracing::debug!("nothing publishes the player"),
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A locked screen shows what plays here; with nothing playing it shows
+    /// only what another of the person's devices offers to continue, and
+    /// that card leaves the transport alone.
+    #[test]
+    fn a_locked_screen_shows_what_plays_else_what_is_offered() {
+        let readings: crate::status::Shared = Rc::default();
+        assert!(media(&readings, None).is_none(), "nothing plays here");
+
+        let offer = tilo_quick_settings::MediaOffer {
+            request_id: "0123456789abcdef0123456789abcdef".to_owned(),
+            package_id: "so.tilo.music".to_owned(),
+            title: "Tea".to_owned(),
+            source_label: "Laptop".to_owned(),
+            source: media::handoff::HandoffSource::RemoteStream {
+                url: "https://music.example/tea".to_owned(),
+            },
+            position_ms: 0.0,
+            playing: true,
+        };
+        let shown = media(&readings, Some(&offer)).expect("the offer");
+        assert_eq!(shown.title, "Tea");
+        assert_eq!(shown.subtitle, "Laptop");
+        assert!(shown.playing);
+        assert!(
+            !shown.can_toggle,
+            "continuing it here is the card's, not the transport's"
+        );
+    }
 }

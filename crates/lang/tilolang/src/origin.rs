@@ -94,10 +94,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "session.run",
-        "Asks the session to run one of its own actions, by address: the resource and the \
-         action as the door publishes them (a window's `focus` on `desktop:tab:7`, the \
-         chrome's `move-tab-to-strip`, the desk's `show-surface`), then each argument as \
-         `(name, value)` with the name the action's own field has.",
+        "Asks the session to run one of its own actions, addressed as every action is: \
+         `(resource, action, [(argument, value)…])`, the resource and the action as the door \
+         publishes them (a window's `focus` on `desktop:tab:7`, the chrome's \
+         `move-tab-to-strip`, the desk's `show-surface`) and each argument by the name the \
+         action's own field has.",
     ),
     (
         "session.notify",
@@ -873,6 +874,32 @@ pub fn kind_names() -> String {
 #[must_use]
 pub fn is_capability(capability: &str) -> bool {
     CAPABILITIES.iter().any(|(name, _)| *name == capability)
+}
+
+/// The payload `capability` reads, when the platform's reader of it reads one shape: the
+/// checker holds every `outside(capability, payload)` to it, so a payload its reader cannot
+/// read never compiles. `None` for a capability whose payload is the receiver's own business
+/// (`post`, the development log).
+///
+/// `session.run` and `session.notify` take an action invocation as every caller of the action
+/// protocol addresses one: `(resource, action, [(argument, value)…])`. The session's other
+/// capabilities take one text.
+#[must_use]
+pub fn payload_type(capability: &str) -> Option<crate::types::Ty> {
+    use crate::types::Ty;
+    match capability {
+        "session.run" | "session.notify" => Some(Ty::Tuple(vec![
+            Ty::Text,
+            Ty::Text,
+            Ty::List(Box::new(Ty::Tuple(vec![Ty::Text, Ty::Text]))),
+        ])),
+        "session.switch_workspace"
+        | "session.act"
+        | "session.arrange"
+        | "session.launch"
+        | "session.tray" => Some(Ty::Text),
+        _ => None,
+    }
 }
 
 impl OriginKind {

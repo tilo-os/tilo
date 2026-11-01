@@ -1,4 +1,4 @@
-//! Windows drawn by the room's render service, where there is none: only a
+//! Windows drawn by the workspace's render service, where there is none: only a
 //! Linux session runs one, so elsewhere no window asks for it and every
 //! window draws on its own process's device. The runner and the text
 //! renderer ask the same questions on every target.

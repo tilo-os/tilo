@@ -75,7 +75,8 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();
             {
@@ -289,7 +290,8 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
             let peer = enroll_contact(&owner, &mut governor, workspace_id);
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();

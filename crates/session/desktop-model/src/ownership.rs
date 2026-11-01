@@ -103,7 +103,7 @@ pub struct Touched {
 /// `workspace › desktop app › desktop › desktop › item › moderation › act`.
 #[must_use]
 pub fn act_node(room: &str, touched: &Touched) -> TreePath {
-    TreePath::room(room)
+    TreePath::workspace(room)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
         .resource(DESKTOP_RECORD)
@@ -118,7 +118,7 @@ pub fn act_node(room: &str, touched: &Touched) -> TreePath {
 /// cover it; the workspace's moderators' does.
 #[must_use]
 pub fn moderation_node(room: &str) -> TreePath {
-    TreePath::room(room)
+    TreePath::workspace(room)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
         .resource(DESKTOP_RECORD)
@@ -557,7 +557,7 @@ mod tests {
         let node = act_node("room-1", &touched);
         assert_eq!(
             node,
-            TreePath::room("room-1")
+            TreePath::workspace("room-1")
                 .app(DESKTOP_APP)
                 .kind(DESKTOP_KIND)
                 .resource(DESKTOP_RECORD)

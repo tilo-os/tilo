@@ -89,7 +89,7 @@ pub(super) struct AppAssemblyValues {
     pub input: Option<InputRuntime>,
     pub focus_history: Option<HistoryRuntime>,
     pub collaboration: Option<CollaborationRuntime>,
-    pub native_room_route: Option<Option<crate::collaboration::RouteSpec>>,
+    pub native_workspace_route: Option<Option<crate::collaboration::RouteSpec>>,
     pub action_publication_failure: Option<Option<String>>,
     pub presence_ctx: Option<PresenceCtx>,
     pub permission_ctx: Option<PermissionContext>,
@@ -194,7 +194,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
         local_author,
     ));
-    assembly.values.native_room_route = Some(None);
+    assembly.values.native_workspace_route = Some(None);
     assembly.values.action_publication_failure = Some(None);
     assembly.values.presence_ctx = Some(inputs.presence_ctx.resolve_in_place());
     assembly.values.permission_ctx = Some(PermissionContext::permissive());
@@ -231,7 +231,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     assembly.values.native_input_probe = Some(None);
     let floating = (inputs.floating_surface_client)();
     if floating.is_some() {
-        // The shell says where this window's room stands.
+        // The shell says where this window's workspace stands.
         crate::workspace_sync::hosted_by_shell();
     }
     assembly.values.floating = Some(Box::new(FloatingRuntime::new(floating)));
@@ -266,7 +266,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         input: Some(input),
         focus_history: Some(focus_history),
         collaboration: Some(collaboration),
-        native_room_route: Some(native_room_route),
+        native_workspace_route: Some(native_workspace_route),
         action_publication_failure: Some(action_publication_failure),
         presence_ctx: Some(presence_ctx),
         permission_ctx: Some(permission_ctx),
@@ -326,6 +326,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         debug_mode,
         focused_node,
         focusable_order,
+        focus_anchor: None,
         autofocus_first,
         autofocus_on_structure_change,
         appearance_reconcile,
@@ -336,7 +337,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         focus_history,
         collaboration,
         local_input_capture: super::local_input_capture::LocalInputCapture::default(),
-        native_room_route,
+        native_workspace_route,
         presence_ctx,
         permission_ctx,
         presence,
@@ -375,7 +376,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
 
     // The scope is also what sends `Arrived`, so an app that never set
     // one would never catch up on anything written before it opened.
-    // No room means no scope.
+    // No workspace means no scope.
     if let Some(scope) = (inputs.startup_presence_scope)() {
         app.set_presence_broadcast_scope(Some(scope));
     }

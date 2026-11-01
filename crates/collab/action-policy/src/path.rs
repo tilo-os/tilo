@@ -1,5 +1,5 @@
-//! Nodes of the published tree: room › app › resource kind › resource › item ›
-//! field › action.
+//! Nodes of the published tree: workspace › app › resource kind › resource ›
+//! item › field › action.
 //!
 //! An action's node is a concrete path. A grant's node is a pattern over the
 //! same levels that may leave a level open (`resource:*`, "every resource of
@@ -13,8 +13,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The level of a segment in the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Level {
-    /// A room (a workspace, a shared space).
-    Room,
+    /// The workspace a grant is written against.
+    Workspace,
     App,
     /// A resource kind the app publishes (`snippets.library`).
     Kind,
@@ -29,7 +29,7 @@ pub enum Level {
 
 impl Level {
     pub const ALL: [Self; 7] = [
-        Self::Room,
+        Self::Workspace,
         Self::App,
         Self::Kind,
         Self::Resource,
@@ -42,7 +42,7 @@ impl Level {
     #[must_use]
     pub const fn tag(self) -> &'static str {
         match self {
-            Self::Room => "room",
+            Self::Workspace => "workspace",
             Self::App => "app",
             Self::Kind => "kind",
             Self::Resource => "resource",
@@ -56,7 +56,7 @@ impl Level {
     #[must_use]
     pub const fn noun(self) -> &'static str {
         match self {
-            Self::Room => "room",
+            Self::Workspace => "workspace",
             Self::App => "app",
             Self::Kind => "kind",
             Self::Resource => "resource",
@@ -66,8 +66,14 @@ impl Level {
         }
     }
 
+    /// The level a text form's tag names. `room` is how a stored grant or
+    /// policy written before the level was named after a workspace spells
+    /// this one; it reads as the same level.
     fn from_tag(tag: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|level| level.tag() == tag)
+        match tag {
+            "room" => Some(Self::Workspace),
+            _ => Self::ALL.into_iter().find(|level| level.tag() == tag),
+        }
     }
 }
 
@@ -130,15 +136,15 @@ pub struct TreePath(Vec<Segment>);
 pub struct Specificity(Vec<u8>);
 
 impl TreePath {
-    /// The root of the tree: covers every room.
+    /// The root of the tree: covers every workspace.
     #[must_use]
     pub const fn root() -> Self {
         Self(Vec::new())
     }
 
     #[must_use]
-    pub fn room(id: impl Into<String>) -> Self {
-        Self::root().push(Level::Room, id)
+    pub fn workspace(id: impl Into<String>) -> Self {
+        Self::root().push(Level::Workspace, id)
     }
 
     /// Appends a named segment.
@@ -209,15 +215,21 @@ impl TreePath {
         self.0.is_empty()
     }
 
-    /// This path without the room it starts at, if it starts at one: where
-    /// it applies within its room.
+    /// This path without the workspace it starts at, if it starts at one:
+    /// where it applies within its workspace.
     #[must_use]
-    pub fn within_room(&self) -> Self {
-        let room = matches!(
+    pub fn within_workspace(&self) -> Self {
+        let workspace = matches!(
             self.0.first(),
-            Some(Segment::Name(Level::Room, _) | Segment::Any(Level::Room))
+            Some(Segment::Name(Level::Workspace, _) | Segment::Any(Level::Workspace))
         );
-        Self(self.0.iter().skip(usize::from(room)).cloned().collect())
+        Self(
+            self.0
+                .iter()
+                .skip(usize::from(workspace))
+                .cloned()
+                .collect(),
+        )
     }
 
     /// The parent node, or `None` at the root.
@@ -259,11 +271,12 @@ impl TreePath {
         path
     }
 
-    /// The same path with a leading `room:<from>` renamed to `room:<to>`.
+    /// The same path with a leading `workspace:<from>` renamed to
+    /// `workspace:<to>`.
     #[must_use]
-    pub fn with_room(&self, from: &str, to: &str) -> Self {
+    pub fn with_workspace(&self, from: &str, to: &str) -> Self {
         let mut path = self.clone();
-        if let Some(Segment::Name(Level::Room, id)) = path.0.first_mut()
+        if let Some(Segment::Name(Level::Workspace, id)) = path.0.first_mut()
             && id == from
         {
             to.clone_into(id);
@@ -272,8 +285,8 @@ impl TreePath {
     }
 
     #[must_use]
-    pub fn room_id(&self) -> Option<&str> {
-        self.id_at(Level::Room)
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.id_at(Level::Workspace)
     }
 
     /// Whether `self`, read as a grant's node, covers `path`: `path` is the
@@ -389,9 +402,9 @@ fn compatible(left: &Segment, right: &Segment) -> bool {
 }
 
 impl fmt::Display for TreePath {
-    /// `room:r/app:mail/kind:mail.message/resource:*/action:send`, `**` for any
-    /// depth, `/` for the root. Ids escape `%` and `/` as `%25` and `%2F`, and an
-    /// id that is exactly `*` as `%2A`.
+    /// `workspace:r/app:mail/kind:mail.message/resource:*/action:send`, `**`
+    /// for any depth, `/` for the root. Ids escape `%` and `/` as `%25` and
+    /// `%2F`, and an id that is exactly `*` as `%2A`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.is_empty() {
             return f.write_str("/");

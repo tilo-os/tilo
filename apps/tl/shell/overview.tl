@@ -26,7 +26,7 @@ view overview(d: Desk) {
             }
         }
         ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-            on submit: submit_search(query)
+            on submit: submit_search(d, query)
         }
         rooms_here(d)
         if query == "" {
@@ -45,7 +45,7 @@ view rooms_here(d: Desk) {
         row(gap: .related, align: .center, wrap: true) {
             for r in d.rooms.sort_by(r -> r.name) {
                 ui.Chip(r.name, icon: if r.current { .layers } else { .folder }, selected: .some(r.current)) {
-                    on press: switch_to_key(r.key, r.current)
+                    on press: switch_to_key(r)
                 }
             }
             if not d.people.is_empty() {

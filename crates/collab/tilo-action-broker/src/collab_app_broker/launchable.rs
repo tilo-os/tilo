@@ -765,7 +765,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         state.launchable.retain(&surface(7, &workspace));
         let (streams, launches) = app_comes_up_as(&state, 8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
 
         let provider = offered_provider(&state, &owner, "new-window")
             .expect("the closed app's launchable action is offered");
@@ -806,7 +806,7 @@ mod tests {
         let mut notes_stream = state.capture_invocations_for_test(5);
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
 
-        let agent = Caller::local_agent("scribe").in_room(&workspace);
+        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
         invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
         assert_eq!(
             notes_stream.try_recv().expect("delivered").actor,
@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
 
         state.surfaces.lock().expect("surfaces").remove(&8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window")
             .expect("offered again once the app closed");
         invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
@@ -851,7 +851,7 @@ mod tests {
         state.launchable.retain(&surface(7, &workspace));
         let (streams, launches, places) = app_comes_up_placed(&state, 8);
 
-        let agent = Caller::local_agent("scribe").in_room(&workspace);
+        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
         let provider = offered_provider(&state, &agent, "new-window")
             .expect("the closed app's action is offered to the agent");
         invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
@@ -912,7 +912,7 @@ mod tests {
                 ..tree.services()
             },
         );
-        let chat = Caller::local_app("so.tilo.chat").in_room(&workspace_id);
+        let chat = Caller::local_app("so.tilo.chat").in_workspace(&workspace_id);
         let beside_chat = LaunchPlace::Beside {
             app_id: "so.tilo.chat".into(),
         };
@@ -926,7 +926,7 @@ mod tests {
             beside_chat,
             "the press proved one open; Chat's next one, on its own, opens beside it"
         );
-        let agent = Caller::local_agent("scribe").in_room(&workspace_id);
+        let agent = Caller::local_agent("scribe").in_workspace(&workspace_id);
         assert_eq!(
             state.launch_place(&agent, &workspace_id, None),
             LaunchPlace::Aside,
@@ -943,7 +943,7 @@ mod tests {
         draft.route.record_id = "draft-record".into();
         state.launchable.retain(&draft);
         let (streams, _, places) = app_comes_up_placed(&state, 8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window")
             .expect("the closed record's action is offered");
         invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
@@ -975,7 +975,7 @@ mod tests {
         edits.actions = vec![field_edit];
         state.surfaces.lock().expect("surfaces").insert(5, edits);
         let mut app = state.capture_invocations_for_test(5);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let edit = |edit: serde_json::Value| {
             state
                 .action_invoke(
@@ -1051,7 +1051,7 @@ mod tests {
             .expect("surfaces")
             .insert(5, surface(5, &workspace));
         let mut app = state.capture_invocations_for_test(5);
-        let agent = Caller::local_agent("scribe").in_room(&workspace);
+        let agent = Caller::local_agent("scribe").in_workspace(&workspace);
 
         let page = state
             .action_query(&agent, &CatalogueQuery::default())
@@ -1166,7 +1166,7 @@ mod tests {
             }),
         );
 
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         invoke(&state, &owner, "5", "new-window", None).expect("the person acts");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
         assert!(
@@ -1175,7 +1175,7 @@ mod tests {
         );
 
         let agent = Caller::local_person("owner")
-            .in_room(&workspace)
+            .in_workspace(&workspace)
             .delegated_to("scribe");
         invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
         assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
@@ -1203,7 +1203,7 @@ mod tests {
         // A Shortcut's step keeps the person's authority, yet the view shows
         // the Shortcut acting for them.
         let shortcut = Caller::local_person("owner")
-            .in_room(&workspace)
+            .in_workspace(&workspace)
             .running_shortcut("morning");
         invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
@@ -1249,7 +1249,7 @@ mod tests {
             }),
         );
         let client = Caller::local_person("owner")
-            .in_room(&workspace)
+            .in_workspace(&workspace)
             .in_new_execution()
             .delegated_to("mcp-1");
 
@@ -1280,7 +1280,7 @@ mod tests {
             "an outside action is the person's to allow"
         );
         assert!(app.try_recv().is_err(), "nothing outside ran");
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         invoke(&state, &owner, "5", "send", None).expect("the person may");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
     }
@@ -1306,7 +1306,7 @@ mod tests {
         );
         let mut events = state.subscribe_execution_activity();
         let owner = Caller::local_person("owner")
-            .in_room(&workspace)
+            .in_workspace(&workspace)
             .in_new_execution();
         let client = owner.clone().delegated_to("mcp-1");
         invoke(&state, &client, "5", "new-window", None).unwrap();
@@ -1364,7 +1364,7 @@ mod tests {
     fn an_application_target_launches_an_app_that_never_ran_and_delivers() {
         let (state, workspace) = broker(&workspace());
         let (streams, launches) = app_comes_up_as(&state, 8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1429,7 +1429,7 @@ mod tests {
         assert_eq!(
             invoke(
                 &state,
-                &Caller::local_person("stranger").in_room(&workspace),
+                &Caller::local_person("stranger").in_workspace(&workspace),
                 &target.provider,
                 "new-window",
                 None,
@@ -1438,7 +1438,7 @@ mod tests {
         );
         assert!(launches.lock().expect("launches").is_empty());
 
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
         assert_eq!(
             places
@@ -1525,7 +1525,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         let launches = app_comes_up_later(&state);
         let (mut windowless, asked) = app_runs_windowless(&state, 9);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1605,7 +1605,7 @@ mod tests {
             tilo_actions::BOUND_RESOURCE_PREFIX,
             hex::encode("files.app")
         );
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1653,7 +1653,7 @@ mod tests {
     fn an_open_launches_a_window_past_an_instance_without_one() {
         let (state, workspace) = broker(&workspace());
         let (mut windowless, _) = app_runs_windowless(&state, 9);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let shows_nothing = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1723,7 +1723,7 @@ mod tests {
         state
             .launchable
             .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1746,7 +1746,7 @@ mod tests {
         state
             .launchable
             .replace_windowless_for_test(Arc::new(|_, _| Err("no broker".into())));
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1787,7 +1787,7 @@ mod tests {
             .replace_windowless_for_test(Arc::new(|_, _| {
                 Ok(Some(started(Err("the record did not open".into()))))
             }));
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let target = tilo_actions::remote::application_action_target(
             &workspace,
             APP,
@@ -1914,7 +1914,7 @@ mod tests {
     fn a_closed_apps_manifest_offers_are_listed_and_invoking_one_launches_it() {
         let (state, workspace) = broker_with_installed_files(&workspace());
         let (streams, launches) = app_comes_up_as(&state, 8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         assert!(state.launchable.surfaces().is_empty(), "it never ran here");
 
         let rows = offered_rows(&state, &owner, "new-window");
@@ -1958,7 +1958,7 @@ mod tests {
     fn a_retained_action_supersedes_the_manifest_offer() {
         let (state, workspace) = broker_with_installed_files(&workspace());
         state.launchable.retain(&surface(7, &workspace));
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
 
         let rows = offered_rows(&state, &owner, "new-window");
         let [(provider, _)] = rows.as_slice() else {
@@ -1982,14 +1982,14 @@ mod tests {
         let provider =
             tilo_actions::remote::application_action_target(&workspace, APP, "", "").provider;
 
-        let stranger = Caller::local_person("stranger").in_room(&workspace);
+        let stranger = Caller::local_person("stranger").in_workspace(&workspace);
         assert!(offered_rows(&state, &stranger, "new-window").is_empty());
         assert_eq!(
             invoke(&state, &stranger, &provider, "new-window", None),
             Err(ActionHostError::NotPermitted),
         );
 
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let rows = offered_rows(&state, &owner, "empty-trash");
         let [(_, descriptor)] = rows.as_slice() else {
             panic!("offered once: {rows:?}");
@@ -2022,7 +2022,7 @@ mod tests {
                 .launchable
                 .replace_launcher_for_test(launcher, Duration::from_millis(300));
         }
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let rows = offered_rows(&state, &owner, "never-published");
         let [(provider, _)] = rows.as_slice() else {
             panic!("offered once: {rows:?}");
@@ -2052,7 +2052,7 @@ mod tests {
         assert_eq!(
             invoke(
                 &state,
-                &Caller::local_person("stranger").in_room(&workspace),
+                &Caller::local_person("stranger").in_workspace(&workspace),
                 &target.provider,
                 "new-window",
                 None,
@@ -2080,7 +2080,7 @@ mod tests {
         assert_eq!(
             invoke(
                 &state,
-                &Caller::local_person("owner").in_room(&workspace),
+                &Caller::local_person("owner").in_workspace(&workspace),
                 &elsewhere.provider,
                 "new-window",
                 None,
@@ -2096,7 +2096,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         state.launchable.retain(&surface(7, &workspace));
         let (_streams, launches) = app_comes_up_as(&state, 8);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "empty-trash").expect("offered");
 
         assert_eq!(
@@ -2106,7 +2106,7 @@ mod tests {
         assert_eq!(
             invoke(
                 &state,
-                &Caller::local_person("stranger").in_room(&workspace),
+                &Caller::local_person("stranger").in_workspace(&workspace),
                 &provider,
                 "new-window",
                 None,
@@ -2144,7 +2144,7 @@ mod tests {
         state
             .launchable
             .replace_launcher_for_test(Arc::new(|_, _, _, _| Ok(())), Duration::from_millis(200));
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
         match invoke(&state, &owner, &provider, "new-window", None) {
@@ -2209,7 +2209,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         state.launchable.retain(&surface(7, &workspace));
         let launches = app_comes_up_later(&state);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
         let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
@@ -2239,7 +2239,7 @@ mod tests {
             let (state, workspace) = broker(&workspace());
             state.launchable.retain(&surface(7, &workspace));
             let launches = app_comes_up_later(&state);
-            let owner = Caller::local_person("owner").in_room(&workspace);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
             let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
             let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
@@ -2284,7 +2284,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         state.launchable.retain(&surface(7, &workspace));
         let launches = app_comes_up_later(&state);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
         let invoking = (0..WAITERS)
@@ -2316,7 +2316,7 @@ mod tests {
         let (state, workspace) = broker(&workspace());
         state.launchable.retain(&surface(7, &workspace));
         let launches = app_comes_up_later(&state);
-        let owner = Caller::local_person("owner").in_room(&workspace);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
         let answer = state.action_invoke(
@@ -2357,7 +2357,7 @@ mod tests {
     >;
 
     fn launch_answer(state: &Arc<AppBrokerState>, workspace: &str) -> AdmissionAnswer {
-        let caller = Caller::local_person("owner").in_room(workspace);
+        let caller = Caller::local_person("owner").in_workspace(workspace);
         let provider = offered_provider(state, &caller, "new-window").expect("offered");
         state.action_invoke(
             &caller,
@@ -2507,7 +2507,7 @@ mod tests {
         assert!(!retained[0].live);
 
         let (streams, _) = app_comes_up_as(&restarted, 3);
-        let owner = Caller::local_person("owner").in_room(&workspace_id);
+        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
         let provider = offered_provider(&restarted, &owner, "new-window")
             .expect("the action is still offered after a restart");
         invoke(&restarted, &owner, &provider, "new-window", None)

@@ -81,7 +81,7 @@ fn request(action: &str, argument: InvokeArgument) -> InvokeRequest {
 
 impl Fixture {
     fn person(&self) -> Caller {
-        Caller::local_person(OWNER).in_room(self.room.clone())
+        Caller::local_person(OWNER).in_workspace(self.room.clone())
     }
 
     /// A change by someone else in the room, as the history reads it.
@@ -202,7 +202,7 @@ fn a_participant_without_read_permission_gets_the_refusal_not_the_history() {
     let mut fixture = fixture();
     fixture.rename("Design review · private");
     fixture.refresh();
-    let stranger = Caller::local_agent("intruder").in_room(fixture.room.clone());
+    let stranger = Caller::local_agent("intruder").in_workspace(fixture.room.clone());
     let feed = request(wire::FEED, InvokeArgument::None);
     assert!(
         !fixture.invoke(&stranger, &feed),
@@ -218,7 +218,7 @@ fn a_participant_without_read_permission_gets_the_refusal_not_the_history() {
         "no history reached the refused caller"
     );
 
-    let agent = Caller::local_agent("scribe").in_room(fixture.room.clone());
+    let agent = Caller::local_agent("scribe").in_workspace(fixture.room.clone());
     let all = request(
         wire::FEED,
         wire::argument(&wire::FeedQuery {

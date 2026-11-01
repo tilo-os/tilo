@@ -47,7 +47,7 @@ fn fixture() -> Fixture {
         "planner-desktop",
         tilo_action_policy::Subject::agent(AGENT),
         tilo_action_policy::TreePath::root()
-            .any(tilo_action_policy::Level::Room)
+            .any(tilo_action_policy::Level::Workspace)
             .app(tilo_desktop_model::commands::APP_ID),
         tilo_action_policy::KindSet::READ_UNDOABLE,
         tilo_action_policy::Answer::Allow,
@@ -113,7 +113,7 @@ fn fixture() -> Fixture {
 
 impl Fixture {
     fn agent(&self) -> Caller {
-        Caller::local_agent(AGENT).in_room(self.room.clone())
+        Caller::local_agent(AGENT).in_workspace(self.room.clone())
     }
 
     /// Invoke `action` with `arguments` as `caller` and run it on the
@@ -353,7 +353,7 @@ fn an_agent_lays_out_eight_strips_by_id_and_one_undo_takes_it_all_back() {
 fn an_agent_the_room_never_admitted_changes_nothing() {
     let mut fixture = fixture();
     let before = fixture.strips();
-    let stranger = Caller::local_agent("intruder").in_room(fixture.room.clone());
+    let stranger = Caller::local_agent("intruder").in_workspace(fixture.room.clone());
     let refused = fixture.run(&stranger, layout::CREATE_STRIP, json!({ "name": "Mine" }));
     assert!(
         matches!(refused, InvocationUpdate::Failed { .. }),

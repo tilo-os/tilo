@@ -385,7 +385,7 @@ impl NativeLaunch {
     ) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
-            let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
+            let caller = Caller::local_agent(&self.run.agent_id).in_workspace(&self.run.cluster_id);
             let destination = self.destination(state)?;
             let place = state.launch_place(&caller, &self.run.cluster_id, None);
             let (launch, launching) = (self.clone(), Arc::clone(state));
@@ -655,7 +655,7 @@ impl AppBrokerState {
         let destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.
-        let caller = Caller::local_agent(&native.run.agent_id).in_room(&native.run.cluster_id);
+        let caller = Caller::local_agent(&native.run.agent_id).in_workspace(&native.run.cluster_id);
         let request = InvokeRequest {
             invocation: reask.invocation,
             target: RemoteActionTarget {

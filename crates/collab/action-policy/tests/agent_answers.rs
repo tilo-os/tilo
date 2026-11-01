@@ -6,7 +6,7 @@ use tilo_action_policy::{
     roles::AgentPreset,
 };
 
-const ROOM: &str = "r";
+const WORKSPACE: &str = "r";
 const AGENT: &str = "helper";
 const PERSON: &str = "a11ce";
 
@@ -14,16 +14,16 @@ fn cx() -> Context<'static> {
     Context::at(1_000)
 }
 
-/// A room whose owner admitted the agent as an Operator, plus `extra`.
+/// A workspace whose owner admitted the agent as an Operator, plus `extra`.
 fn grants(extra: Vec<Grant>) -> Vec<Grant> {
-    let mut grants = AgentPreset::Operator.grants(ROOM, AGENT, &Subject::person(PERSON));
+    let mut grants = AgentPreset::Operator.grants(WORKSPACE, AGENT, &Subject::person(PERSON));
     grants.extend(extra);
     grants
 }
 
 fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential: bool) -> Answer {
     let policy = WorkspacePolicy {
-        workspace: ROOM.into(),
+        workspace: WORKSPACE.into(),
         owner: Some(PERSON.into()),
         members: std::collections::BTreeMap::default(),
         joined: std::collections::BTreeMap::default(),
@@ -37,7 +37,7 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
 }
 
 fn mail_action(action: &str) -> TreePath {
-    TreePath::room(ROOM)
+    TreePath::workspace(WORKSPACE)
         .app("so.tilo.mail")
         .kind("mail.mailbox")
         .resource("inbox")
@@ -45,7 +45,13 @@ fn mail_action(action: &str) -> TreePath {
 }
 
 fn answer(scope: &AnswerScope, kind: ActionKind, answer: Answer) -> Grant {
-    agent_answers::grant(ROOM, AGENT, (scope, kind), answer, Subject::person(PERSON))
+    agent_answers::grant(
+        WORKSPACE,
+        AGENT,
+        (scope, kind),
+        answer,
+        Subject::person(PERSON),
+    )
 }
 
 #[test]
@@ -98,7 +104,7 @@ fn an_app_answer_overrides_the_admission_for_that_app_only() {
         ),
         Answer::Deny
     );
-    let other = TreePath::room(ROOM)
+    let other = TreePath::workspace(WORKSPACE)
         .app("so.tilo.notes")
         .kind("note")
         .resource("n1")
@@ -171,7 +177,7 @@ fn always_allowing_one_action_allows_it_and_nothing_beside_it() {
         Answer::Allow
     );
     // The action's node may pass through a field of its resource.
-    let through_field = TreePath::room(ROOM)
+    let through_field = TreePath::workspace(WORKSPACE)
         .app("so.tilo.mail")
         .kind("mail.mailbox")
         .resource("inbox")
@@ -218,7 +224,7 @@ fn setting_an_answer_again_replaces_it_and_clearing_removes_it() {
     let first = answer(&scope, ActionKind::Outside, Answer::Ask);
     let held = vec![first.clone()];
     let changes = agent_answers::set(
-        ROOM,
+        WORKSPACE,
         AGENT,
         (&scope, ActionKind::Outside),
         Some(Answer::Allow),
@@ -236,7 +242,7 @@ fn setting_an_answer_again_replaces_it_and_clearing_removes_it() {
     assert!(agent_answers::is_answer(grant));
 
     let cleared = agent_answers::set(
-        ROOM,
+        WORKSPACE,
         AGENT,
         (&scope, ActionKind::Outside),
         None,
@@ -252,9 +258,9 @@ fn scopes_read_back_from_their_nodes() {
         AnswerScope::kind("a", "k"),
         AnswerScope::action("a", "k", "x"),
     ] {
-        assert_eq!(AnswerScope::of_node(&scope.node(ROOM)), Some(scope));
+        assert_eq!(AnswerScope::of_node(&scope.node(WORKSPACE)), Some(scope));
     }
-    assert_eq!(AnswerScope::of_node(&TreePath::room(ROOM)), None);
+    assert_eq!(AnswerScope::of_node(&TreePath::workspace(WORKSPACE)), None);
 }
 
 #[test]

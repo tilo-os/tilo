@@ -490,7 +490,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                 .await;
                 let person = principal_id_for_root(env.cert.user_public_key);
                 let caller = tilo_actions::remote::Caller::local_person(&person)
-                    .in_room(env.route.cluster_id.clone());
+                    .in_workspace(env.route.cluster_id.clone());
                 let original = tilo_actions::InvocationId::new();
                 let pending_admission = rig.state.action_invoke_local_person(
                     &caller,

@@ -281,7 +281,7 @@ fn only_the_creator_seeds_a_record() {
     // The workspace's own record (Chat's) is not handed over as a copy.
     for definition in tilo_agent_participant::component_apps()
         .into_iter()
-        .filter(|definition| !definition.keeps_room_record())
+        .filter(|definition| !definition.keeps_workspace_record())
     {
         let app = definition.app_id();
         let mut page = Replica::open(
@@ -433,7 +433,7 @@ fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::pol
     let grant = Grant::new(
         "bot:b1",
         bot.clone(),
-        TreePath::room(WORKSPACE),
+        TreePath::workspace(WORKSPACE),
         kinds,
         Answer::Allow,
         Subject::person("ada"),
@@ -585,7 +585,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
                     "bot:b1:0",
                     bot.clone(),
                     TreePath::root()
-                        .any(Level::Room)
+                        .any(Level::Workspace)
                         .any(Level::App)
                         .kind("chat.workspace".to_owned()),
                     KindSet::READ,
@@ -686,7 +686,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             "bot:b1:0",
             bot.clone(),
             TreePath::root()
-                .any(Level::Room)
+                .any(Level::Workspace)
                 .app("so.tilo.chat".to_owned())
                 .kind("chat.messages".to_owned())
                 .any(Level::Resource)

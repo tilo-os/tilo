@@ -286,6 +286,34 @@ impl FloatingPanel {
         self
     }
 
+    /// The header slot, to change what it holds in place. A field put there is embedded.
+    pub(crate) fn header_mut(&mut self) -> &mut Option<Box<dyn Widget>> {
+        &mut self.header
+    }
+
+    /// The body, to change it in place.
+    pub(crate) fn body_mut(&mut self) -> &mut Box<dyn Widget> {
+        &mut self.body
+    }
+
+    /// The footer slot, to change what it holds in place.
+    pub(crate) fn footer_mut(&mut self) -> &mut Option<Box<dyn Widget>> {
+        &mut self.footer
+    }
+
+    pub(crate) const fn has_header(&self) -> bool {
+        self.header.is_some()
+    }
+
+    pub(crate) const fn has_footer(&self) -> bool {
+        self.footer.is_some()
+    }
+
+    /// Make a field about to go in the header slot embedded.
+    pub(crate) fn embed_header(header: &mut dyn Widget) {
+        embed(header);
+    }
+
     fn body_is_empty(&self) -> bool {
         self.body_rect.height() <= 0.5
     }

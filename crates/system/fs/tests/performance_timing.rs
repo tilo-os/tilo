@@ -535,7 +535,7 @@ async fn document_media_cold_range_performance_gate() {
         return;
     }
     let dir = tempfile::tempdir().expect("media store tempdir");
-    let photos = BlobScope::new("room-1", "so.tilo.photos").expect("media scope");
+    let photos = BlobScope::new("workspace-1", "so.tilo.photos").expect("media scope");
     let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
     let chunk = MAX_READ_CHUNK as usize;
     let data = deterministic_bytes(len);

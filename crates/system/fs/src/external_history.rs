@@ -205,7 +205,7 @@ impl ExternalHistoryFactory {
         identity_paths: &tilo_user_identity::IdentityPaths,
         runtime: Option<ExternalHistoryRuntime>,
     ) -> io::Result<Option<Arc<Self>>> {
-        let personal_workspace = collab_types::person_room(&credentials.user_public_key());
+        let personal_workspace = collab_types::personal_cluster(&credentials.user_public_key());
         if authority.workspace() != personal_workspace
             || publisher.workspace_id() != personal_workspace
         {
@@ -245,7 +245,7 @@ impl ExternalHistoryFactory {
                 .map_err(|_| refused())?
                 .is_revoked_at(&cert.device_public_key, now_ns()?)
             || self.authority.governor() != cert.user_public_key
-            || self.authority.workspace() != collab_types::person_room(&cert.user_public_key)
+            || self.authority.workspace() != collab_types::personal_cluster(&cert.user_public_key)
             || self.publisher.workspace_id() != self.authority.workspace()
             || self.publisher.actor().person.as_bytes() != &cert.user_public_key
             || self.publisher.actor().device.as_bytes() != &cert.device_public_key

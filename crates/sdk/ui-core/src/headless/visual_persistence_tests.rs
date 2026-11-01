@@ -25,12 +25,12 @@ impl Fixture {
         let backend = Rc::new(backend);
         let mut host = ProbeHost::new();
         let mut owners = crate::record::RecordOwners::with_store(backend.clone());
-        host.records = owners.open(probe::APP, probe::ROOM).unwrap();
+        host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
         host.views = Rc::new(
             crate::application_view::InstanceViewStore::with_store(
                 backend.clone(),
                 probe::DEVICE,
-                probe::ROOM,
+                probe::WORKSPACE,
             )
             .unwrap(),
         );
@@ -126,7 +126,7 @@ fn visual_wait_does_not_confuse_writer_submission_with_acknowledgement() {
     // Reopen only the bytes the wait actually submitted, not the live
     // writer's cache or a close/flush that could conceal a missing tick.
     let mut owners = crate::record::RecordOwners::with_store(committed);
-    let reopened = owners.open(probe::APP, probe::ROOM).unwrap();
+    let reopened = owners.open(probe::APP, probe::WORKSPACE).unwrap();
     reopened
         .open_existing_record_checked(&fixture.checkout)
         .unwrap();

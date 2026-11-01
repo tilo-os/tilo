@@ -1787,7 +1787,7 @@ impl AgentParticipant {
             self.identity.cert.user_public_key,
             self.identity.cert.device_public_key,
         )
-        .in_room(self.workspace.clone());
+        .in_workspace(self.workspace.clone());
         // The action as the record offers it: what the person is asked.
         let offered = self.apps.get(&route).and_then(|app| {
             app.survey()
@@ -1910,7 +1910,7 @@ impl AgentParticipant {
         let workspace_record = self
             .catalogue
             .get(app_id)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_room_record);
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record);
         // A part of a chain is held beside its record, never opened: asked
         // for one, the agent opens the record that keeps it.
         let record = record

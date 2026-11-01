@@ -103,8 +103,8 @@ impl AppFiles {
 }
 
 /// Where an app's typed settings live and how far they travel. Settings
-/// follow a person or a device, never a room's members; they are never
-/// visible to collaborators. Content shared with a room is a record instead.
+/// follow a person or a device, never a workspace's members; they are never
+/// visible to collaborators. Content shared with a workspace is a record instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// Follows the person to every device they sign in on: the device fabric

@@ -795,6 +795,15 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        if !self.st.takes_resource {
+            self.err(
+                "E047",
+                span,
+                "`outside` queues its effect on the action's resource, and this action takes none: \
+                 give it the resource the effect is about (`action go(d: Desk, …)`)",
+            );
+            return Ex::error();
+        }
         // `outside(capability, payload)` or, held back until a moment, `outside(capability,
         // payload, at: <a Time>)`: the device carries it out only once the clock reaches it.
         let (Some(cap), Some(payload)) = (args.first(), args.get(1)) else {
@@ -857,7 +866,11 @@ impl Checker<'_> {
                 ),
             );
         }
-        let p = self.expr(&payload.value, None);
+        // A capability whose reader reads one shape holds the payload to it.
+        let p = match crate::origin::payload_type(name) {
+            Some(want) => self.expr_as(&payload.value, &want),
+            None => self.expr(&payload.value, None),
+        };
         self.st.facts.outside = true;
         match held {
             Some(third) => {

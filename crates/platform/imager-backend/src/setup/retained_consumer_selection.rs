@@ -62,7 +62,9 @@ impl ReviewedConsumerSelection {
             || self.binding.signed_shell_context_bytes()? != self.signed_context
             || hex::encode(Sha256::digest(&self.signed_context)) != selected.context_sha256
             || self.binding.room
-                != runtime_collab::retained_person::personal_room(&self.input.person_public_key())
+                != runtime_collab::retained_person::personal_cluster(
+                    &self.input.person_public_key(),
+                )
         {
             return Err(refused());
         }

@@ -682,7 +682,7 @@ fn a_grant_naming_a_resource_is_listed_by_that_resources_name() {
     let grant = tilo_action_policy::Grant::new(
         "issue-grant",
         tilo_action_policy::Subject::task("tasks.tracker/issues/1"),
-        tilo_action_policy::TreePath::room(ws.policy.workspace.clone())
+        tilo_action_policy::TreePath::workspace(ws.policy.workspace.clone())
             .app("so.tilo.notes")
             .any(tilo_action_policy::Level::Kind)
             .resource("tasks.tracker/issues/1"),
@@ -908,7 +908,7 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
 
     let ws = ws_with_grants();
-    let room = TreePath::room(ws.policy.workspace.clone());
+    let room = TreePath::workspace(ws.policy.workspace.clone());
     let grant = |id: &str, node: TreePath, kinds: KindSet, answer: Answer| {
         Grant::new(
             id,
@@ -938,8 +938,8 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     assert_eq!(
         sentence,
         format!(
-            "room {} › mail › anywhere › send: outside effects ask first. \
-             room {} › mail: everything allowed. room {}: reading and undoable \
+            "workspace {} › mail › anywhere › send: outside effects ask first. \
+             workspace {} › mail: everything allowed. workspace {}: reading and undoable \
              changes allowed.",
             ws.policy.workspace, ws.policy.workspace, ws.policy.workspace
         ),
@@ -954,6 +954,9 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     let single = grant("mail", room.app("mail"), KindSet::READ, Answer::Deny);
     assert_eq!(
         grant_allows(&single, &NoAppDirectory),
-        format!("room {} › mail: reading not allowed.", ws.policy.workspace)
+        format!(
+            "workspace {} › mail: reading not allowed.",
+            ws.policy.workspace
+        )
     );
 }

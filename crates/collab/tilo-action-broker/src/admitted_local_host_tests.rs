@@ -25,7 +25,7 @@ fn member_device_evidence(
         .push(cert.clone());
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
     (caller, presentation(&env.route.cluster_id, &cert, &key))
 }
@@ -182,7 +182,9 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .certified_local_action_host(&caller, &vec![0; 16 * 1024 + 1])
                     .is_err()
             );
-            let other_workspace = caller.clone().in_room(uuid::Uuid::new_v4().to_string());
+            let other_workspace = caller
+                .clone()
+                .in_workspace(uuid::Uuid::new_v4().to_string());
             assert!(
                 facade
                     .certified_local_action_host(&other_workspace, &evidence)
@@ -192,7 +194,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                 env.cert.user_public_key,
                 env.cert.device_public_key,
             )
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             assert!(
                 facade
@@ -202,7 +204,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
             let keyless = tilo_actions::remote::Caller::local_person(principal_id_for_root(
                 env.cert.user_public_key,
             ))
-            .in_room(&env.route.cluster_id)
+            .in_workspace(&env.route.cluster_id)
             .in_new_execution();
             assert!(
                 facade
@@ -216,7 +218,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .is_err()
             );
             let other_person = tilo_actions::remote::Caller::authenticated([3; 32], [4; 32])
-                .in_room(&env.route.cluster_id)
+                .in_workspace(&env.route.cluster_id)
                 .in_new_execution();
             assert!(
                 facade
@@ -318,7 +320,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                 env.cert.user_public_key,
                 *caller.device_public_key().unwrap(),
             )
-            .in_room(&env.route.cluster_id);
+            .in_workspace(&env.route.cluster_id);
             let legacy_request = local_host_request(false);
             let legacy_receipt =
                 local_host_answer(
@@ -600,7 +602,8 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
@@ -638,7 +641,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
             );
             context.revalidate().unwrap();
             let forged = tilo_actions::remote::Caller::local_person(context.principal())
-                .in_room(&env.route.cluster_id)
+                .in_workspace(&env.route.cluster_id)
                 .in_new_execution();
             assert!(state.certified_person_context(&forged, &evidence).is_err());
             assert!(
@@ -705,7 +708,8 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                     .certified_person_context(&caller, &evidence)
                     .is_err()
             );
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
@@ -978,7 +982,7 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
                     .certified_local_action_host(
                         &caller
                             .clone()
-                            .in_room(&other_workspace.workspace_id)
+                            .in_workspace(&other_workspace.workspace_id)
                             .in_new_execution(),
                         &other_workspace.encode().unwrap(),
                     )

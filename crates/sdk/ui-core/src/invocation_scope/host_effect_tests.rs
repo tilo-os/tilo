@@ -14,7 +14,7 @@ use std::sync::{
 #[test]
 fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
     for expired in [false, true] {
-        let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
+        let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
             1960 + u64::from(expired),
             "77777777-7777-4777-8777-777777777777",
         );
@@ -65,7 +65,7 @@ fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
 }
 
 fn worker_case(expired: bool) {
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
         1970 + u64::from(expired),
         "77777777-7777-4777-8777-777777777777",
     );

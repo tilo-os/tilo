@@ -123,7 +123,7 @@ mod tests {
                 host: uuid::Uuid::new_v4(),
                 resource: HistoryResource::new(
                     "profile",
-                    "room",
+                    "workspace",
                     "app",
                     crate::RecordId::for_tab(3),
                 ),

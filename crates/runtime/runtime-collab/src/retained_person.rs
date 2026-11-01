@@ -7,8 +7,8 @@ use std::io;
 pub const MAX_PROOF_BYTES: usize = 256 * 1024;
 /// Canonical personal workspace spelling; this is vocabulary, not admission.
 #[cfg(feature = "client")]
-pub fn personal_room(person: &[u8; 32]) -> String {
-    collab_types::person_room(person).to_string()
+pub fn personal_cluster(person: &[u8; 32]) -> String {
+    collab_types::personal_cluster(person).to_string()
 }
 const DOMAIN: &[u8] = b"tilo-native-retained-person-proof-v1\0";
 
@@ -80,7 +80,6 @@ pub struct RetainedPersonClaims {
     pub certificate: Vec<u8>,
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
     pub execution_id: String,
-    pub person_room: String,
 }
 impl RetainedPersonClaims {
     /// # Errors
@@ -88,7 +87,6 @@ impl RetainedPersonClaims {
     pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
         self.binding.validate()?;
         if !uuid(&self.execution_id)
-            || !uuid(&self.person_room)
             || self.challenge == [0; 32]
             || self.certificate.len() > 16 * 1024
             || self.certificate.is_empty()
@@ -376,8 +374,7 @@ impl SignedRetainedPersonProof {
         if self.claims.certificate != serde_json::to_vec(installed).map_err(io::Error::other)?
             || cert.capabilities.foreign
             || revocations.is_revoked(&cert.device_public_key)
-            || self.claims.binding.room != self.claims.person_room
-            || self.claims.person_room != personal_room(&cert.user_public_key)
+            || self.claims.binding.room != personal_cluster(&cert.user_public_key)
         {
             return Err(refused());
         }

@@ -25,9 +25,10 @@ use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_desktop_model::RoomId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
-use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, RemoteDevice, Workspaces};
+use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, Offering, RemoteDevice, Workspaces};
 
 use crate::engine::Engine;
+use neighbour_wire::offer::{Answer, Power, Route, State, Work};
 
 /// This device's action plane, as the session serves it and reaches the
 /// person's other devices through it.
@@ -60,6 +61,9 @@ impl DeviceActions {
             Arc::new(dispatch.clone()),
             Arc::new(Rooms(engine)),
         );
+        // Another of the person's devices may ask which of them would run a
+        // piece of work: this one answers with what it knows of itself.
+        plane.offering(SessionOffering);
         Self(Arc::new(Inner {
             plane,
             endpoint,
@@ -99,8 +103,8 @@ impl DeviceActions {
             .cloned()
             .unwrap_or_else(|| EndpointAddr::new(id));
         Ok(Arc::new(self.0.plane.remote(
-            self.0.endpoint.clone(),
-            addr,
+            &self.0.endpoint,
+            &addr,
             workspace,
         )))
     }
@@ -267,6 +271,100 @@ impl Workspaces for Rooms {
     }
 }
 
+/// What this session says of itself when another of the person's devices
+/// offers it work: whether it has the app, how it is powered, and how much
+/// work it already has in hand.
+///
+/// It holds nothing of the job's inputs: a device that cannot prove an input
+/// is here is weighed as receiving it, which is what this one is until the
+/// door that asks proves otherwise.
+struct SessionOffering;
+
+impl Offering for SessionOffering {
+    fn report(&self, _workspace: &str, route: &Route, _work: &Work) -> Answer {
+        let (critical_battery, power) = power();
+        Answer {
+            state: State {
+                requester: false,
+                online: true,
+                holds_workspace: true,
+                app_installed: installed(&route.app),
+                store_role: false,
+                // Nothing here asks a device to keep off its discretionary
+                // work; a person's own settings do not reach this far yet.
+                data_saving: false,
+                critical_battery,
+                priority: 0,
+                power,
+                load_permille: load_permille(),
+                latency_ms: 0,
+            },
+            holds: Vec::new(),
+        }
+    }
+}
+
+/// Whether this device runs `app`: its stores hold the signed package.
+fn installed(app: &str) -> bool {
+    tilo_installed_apps::read_one_from_env(app).is_ok_and(|row| row.is_some())
+}
+
+/// Battery share at or below which a device takes on nobody else's work
+/// while it drains.
+const CRITICAL_BATTERY_PERCENT: u8 = 10;
+
+/// How this device is powered, and whether its battery is too low to take
+/// on anyone else's work.
+fn power() -> (bool, Power) {
+    let snapshot = tilo_power_mgmt::sysfs::battery_snapshot();
+    if !snapshot.present {
+        return (false, Power::External);
+    }
+    let draining = matches!(
+        snapshot.state,
+        tilo_power_mgmt::BatteryState::Discharging
+            | tilo_power_mgmt::BatteryState::PendingDischarge
+    );
+    let critical = draining && snapshot.percent <= CRITICAL_BATTERY_PERCENT;
+    let power = match snapshot.state {
+        tilo_power_mgmt::BatteryState::Charging | tilo_power_mgmt::BatteryState::PendingCharge => {
+            Power::Charging
+        }
+        tilo_power_mgmt::BatteryState::Full => Power::External,
+        tilo_power_mgmt::BatteryState::Discharging
+        | tilo_power_mgmt::BatteryState::PendingDischarge => Power::Battery,
+        tilo_power_mgmt::BatteryState::Empty | tilo_power_mgmt::BatteryState::Unknown => {
+            Power::Unknown
+        }
+    };
+    (critical, power)
+}
+
+/// What share of this device is already busy, per thousand, from the load
+/// the machine reports against the processors it has.
+fn load_permille() -> u32 {
+    let cores =
+        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
+            .unwrap_or(u32::MAX);
+    let Some(load) = std::fs::read_to_string("/proc/loadavg").ok() else {
+        return 0;
+    };
+    let Some(one) = load.split_whitespace().next() else {
+        return 0;
+    };
+    // The kernel reports the one-minute load in hundredths; read it as
+    // thousandths so that dividing by the processors stays whole numbers.
+    let (whole, fraction) = one.split_once('.').unwrap_or((one, ""));
+    let whole: u32 = whole.parse().unwrap_or(0);
+    let mut fraction = fraction.chars().take(3).collect::<String>();
+    while fraction.len() < 3 {
+        fraction.push('0');
+    }
+    let fraction: u32 = fraction.parse().unwrap_or(0);
+    let thousandths = whole.saturating_mul(1_000).saturating_add(fraction);
+    thousandths.checked_div(cores.max(1)).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     //! Two of the person's devices on this machine's loopback: an action an
@@ -284,6 +382,7 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
+    use neighbour_wire::offer::Decline;
     use tilo_actions::remote::{TestHost, own_device};
     use tilo_network_actor::HostIdentity;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
@@ -458,7 +557,7 @@ mod tests {
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let caller =
             Caller::authenticated(root.verifying_key().to_bytes(), here.1.device_public_key)
-                .in_room(ROOM);
+                .in_workspace(ROOM);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         // The other device runs the app's action and this one hears its
@@ -498,6 +597,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_session_says_which_of_the_persons_devices_would_take_work() {
+        let root = SigningKey::from_bytes(&[0x51; 32]);
+        let here = device(&root, 0x52, "This device");
+        let there = device(&root, 0x53, "The other device");
+        let host = Arc::new(TestHost::new());
+        let (there_endpoint, router) = answering(&there.0, &there.1, Some(&here), host).await;
+        let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
+        let route = Route::new("so.tilo.nowhere", "notes.root", "insert");
+        let work = Work {
+            local_wall_ms: Some(10_000),
+            ..Work::none()
+        };
+
+        let choice = tokio::time::timeout(
+            PATIENCE,
+            actions.plane().offers(
+                &here_endpoint,
+                [addr(&there_endpoint)],
+                ROOM,
+                &route,
+                &work,
+                PATIENCE,
+            ),
+        )
+        .await
+        .expect("the round finishes")
+        .expect("the round completes");
+
+        assert_eq!(choice.considered.len(), 1, "the one device asked: {choice}");
+        // It answered with what it knows of itself: only a device that never
+        // answered is declined for being away.
+        assert_eq!(
+            choice.considered[0].verdict,
+            Err(Decline::AppNotInstalled),
+            "the other session answered: {choice}"
+        );
+        assert_eq!(choice.worker, None, "no device here can run that app");
+
+        router.shutdown().await.expect("the router stops");
+        here_endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_device_the_room_does_not_hold_is_refused() {
         let root = SigningKey::from_bytes(&[0x41; 32]);
         let there = device(&root, 0x42, "The other device");
@@ -510,7 +652,7 @@ mod tests {
             root.verifying_key().to_bytes(),
             stranger.1.device_public_key,
         )
-        .in_room(ROOM);
+        .in_workspace(ROOM);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         let refused = answered(&actions, &caller, &checked, &request)

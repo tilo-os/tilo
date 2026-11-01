@@ -87,7 +87,9 @@ impl Confirmation {
     fn hear(&mut self, event: DisplayEvent, notices: &DesktopNotifications) {
         match event {
             DisplayEvent::Confirm { id, tool, within } => {
-                let now = Instant::now();
+                // The same clock the compositor asked on, so the countdown
+                // reads back the time it waited there.
+                let now = tilo_clock::now();
                 self.asked = Some(Asked {
                     change: Change::Tool {
                         id,
@@ -215,7 +217,7 @@ impl Confirmation {
         };
         let seconds = match &asked.change {
             Change::Tool { deadline, .. } => {
-                let left = deadline.saturating_duration_since(Instant::now());
+                let left = deadline.saturating_duration_since(tilo_clock::now());
                 Some(seconds_left(left))
             }
             Change::Settings { deadline, .. } => deadline.map(|deadline| {

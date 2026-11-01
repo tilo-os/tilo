@@ -19,7 +19,7 @@ view launcher(d: Desk) {
     ui.FloatingPanel {
         header: {
             ui.TextInput(value: query, placeholder: "Search apps, windows, actions and files") {
-                on submit: submit_search(query)
+                on submit: submit_search(d, query)
             }
         }
         body: {
@@ -32,18 +32,18 @@ view launcher(d: Desk) {
             }
             if typed and windows.is_empty() {
                 ui.EmptyState("Nothing here matches", message: "Search everywhere for it", icon: .search) {
-                    on act: submit_search(query)
+                    on act: submit_search(d, query)
                 }
             }
             if not typed {
-                desk_doors()
+                desk_doors(d)
             }
         }
         footer: {
             row(gap: .related, align: .center, wrap: true) {
                 if typed {
                     ui.Button("Search everywhere for {query}", icon: .search, role: .primary, size: .small) {
-                        on press: submit_search(query)
+                        on press: submit_search(d, query)
                     }
                 }
                 spacer
@@ -62,19 +62,19 @@ view window_row(w: Win) {
 
 /// The desk's own doors, as rows that open them: each surface, and the ways to make and join a
 /// workspace.
-view desk_doors() {
+view desk_doors(d: Desk) {
     ui.Section("The desk") {
         ui.ListRow("Overview", secondary: .some("Every strip and window, to search and move"), icon: .layout_grid) {
-            on activate: show_surface("overview")
+            on activate: show_surface(d, "overview")
         }
         ui.ListRow("Workspaces", secondary: .some("Who is in each, and what it holds"), icon: .layers) {
-            on activate: show_surface("workspaces")
+            on activate: show_surface(d, "workspaces")
         }
         ui.ListRow("Notifications", secondary: .some("What apps and agents told you"), icon: .bell) {
-            on activate: show_surface("centre")
+            on activate: show_surface(d, "centre")
         }
         ui.ListRow("Ask an agent", secondary: .some("Run a task over what you point at"), icon: .bot) {
-            on activate: show_surface("composer")
+            on activate: show_surface(d, "composer")
         }
     }
 }

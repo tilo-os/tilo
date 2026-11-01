@@ -252,6 +252,15 @@ pub trait SurfaceHost {
         true
     }
 
+    /// When this surface next needs a frame with no input to bring one: now
+    /// while what it shows moves or a wake it took has not drawn yet, else
+    /// the earliest deadline its content sets (a banner's exit, a caret's
+    /// blink). The loop waits no longer than this; `None` leaves it to the
+    /// loop's own idle.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
     /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
     /// one is added, removed or moved: a surface covering the desktop
     /// (the top bar, the chrome above the windows) follows them.

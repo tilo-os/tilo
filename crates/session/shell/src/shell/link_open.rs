@@ -560,7 +560,7 @@ mod tests {
             &self,
             room: &str,
         ) -> Result<(Arc<dyn ActionHost + Send + Sync>, Caller), String> {
-            Ok((self.clone(), Caller::local_person("me").in_room(room)))
+            Ok((self.clone(), Caller::local_person("me").in_workspace(room)))
         }
     }
 

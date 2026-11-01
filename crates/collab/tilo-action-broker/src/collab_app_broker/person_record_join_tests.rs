@@ -3,7 +3,7 @@ use super::*;
 fn route(app: &str, record: &str) -> CrdtRoute {
     CrdtRoute {
         app_id: app.into(),
-        cluster_id: collab_types::person_room(&[7; 32]).to_string(),
+        cluster_id: collab_types::personal_cluster(&[7; 32]).to_string(),
         record_id: record.into(),
     }
 }

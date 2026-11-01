@@ -123,6 +123,12 @@ impl Widget for BarSpace {
         self.stale()
     }
 
+    /// It draws nothing: what it takes is room in the column, which a
+    /// settled tree keeps.
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
     /// Docking or hiding the bar moves the windows, so the tree it was laid
     /// out in is rebuilt.
     fn take_structure_dirty(&mut self) -> bool {
@@ -167,5 +173,18 @@ mod tests {
         standing.set(TopBarPresence::Docked);
         let node = space.build_layout(&mut taffy, &theme, &mut nodes);
         assert_eq!(taffy.style(node).unwrap().display, Display::Flex);
+    }
+
+    #[test]
+    fn a_laid_out_room_asks_for_no_frame() {
+        let standing = Rc::new(Cell::new(TopBarPresence::Docked));
+        let mut space = BarSpace::new(Rc::new(move || standing.get()));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        space.build_layout(&mut taffy, &Theme::default(), &mut nodes);
+        assert!(
+            !space.needs_redraw(),
+            "it draws nothing, so a settled desk has nothing to draw here"
+        );
     }
 }

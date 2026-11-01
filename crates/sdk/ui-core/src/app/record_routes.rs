@@ -161,12 +161,12 @@ impl RecordRouteParticipant {
 /// which its windows' host keeps.
 ///
 /// Its changes go out on the route as a window's do, signed, end-to-end
-/// encrypted where the route is, and retained by the room's hosts for
+/// encrypted where the route is, and retained by the workspace's hosts for
 /// devices that join later: the route's first publication in a session is
 /// the whole document, every later one what changed since. What other
 /// holders write comes back in, each write once, with its author, for the
 /// holder to decide before it is merged ([`RouteDocument::pump`]); what a
-/// room's governor already decided (its committed history) is merged as
+/// workspace's governor already decided (its committed history) is merged as
 /// it comes. A write that arrives before the changes it builds on waits
 /// until they are here. Nothing here waits on a timer: a write the route
 /// did not take is offered again when the route takes writes again, and
@@ -447,7 +447,7 @@ impl RouteDocument {
         }
     }
 
-    /// Merge committed history the route delivered: a room's governor
+    /// Merge committed history the route delivered: a workspace's governor
     /// decided it already. Changes whose base the document lacks are
     /// refused, and the route then delivers the document whole.
     fn apply_committed(&mut self, doc: &mut AutoCommit) -> bool {

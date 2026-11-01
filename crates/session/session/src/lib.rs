@@ -74,6 +74,7 @@ mod launches;
 mod lists;
 mod lock_screen;
 mod lock_service;
+mod membership;
 pub mod messages;
 pub mod mount;
 pub mod notices;
@@ -99,6 +100,7 @@ pub mod shell;
 mod shortcut_guide;
 mod slot_binding;
 mod slot_views;
+mod status;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
@@ -238,9 +240,10 @@ struct Shared {
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
     waiting: RefCell<Vec<keys::PendingReadout>>,
-    /// Quick settings' readings of the device, which the lock screen's media
-    /// shows.
-    readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
+    /// What the services last published of the machine: its connection, its
+    /// sound and capture uses, its charge and what plays. The bar's status
+    /// cluster, the lock screen and the desk read it.
+    readings: status::Shared,
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
@@ -653,6 +656,7 @@ impl Shared {
             &self.workspace_emoji,
             self.file_picker.as_ref(),
             self.personal.as_ref(),
+            self.engine.as_deref(),
         )
     }
 
@@ -1326,10 +1330,11 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        // The device's readings, which the bar's status cluster shows as the
-        // battery, network and volume glyphs; the quick settings panel fills
-        // them once it is mounted.
-        let readings = Rc::new(RefCell::new(None));
+        // The machine's status, which the bar's status cluster shows as the
+        // battery, network and volume glyphs, the lock screen shows under its
+        // card and the desk reads: every part of it is read off the services
+        // that publish it.
+        let readings = Rc::new(RefCell::new(status::Readings::default()));
         // Every app shows its live activity on this one board, which the
         // bar's clock reads and the controls pressed on the clock go back
         // through.
@@ -1430,13 +1435,8 @@ impl Session {
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
-        let (device, quick_settings) = mount_device(
-            &mut compositor,
-            &mut doors,
-            &mut options,
-            &readings,
-            &overlays,
-        );
+        let (device, quick_settings) =
+            mount_device(&mut compositor, &mut doors, &mut options, &overlays);
 
         // The sheets, over the desktop and its panels.
         let mount::sheets::Sheets {
@@ -1794,13 +1794,13 @@ impl Session {
         // The person's devices are what their other machines say of
         // themselves, which is nobody's personal content: their reading is
         // published for any app that may read the session's resources.
-        if let (Some(fabric), Some(device)) = (shared.fabric.clone(), shared.device.clone()) {
+        if let Some(fabric) = shared.fabric.clone() {
             shared
                 .services
                 .borrow_mut()
                 .add(Box::new(devices::Served::new(
                     fabric,
-                    device,
+                    Rc::clone(&shared.readings),
                     Rc::clone(&shared.devices.chosen),
                 )));
         }
@@ -2855,6 +2855,9 @@ impl Session {
                 plane.link.serve(&mut services);
             }
         }
+        // What the services published this pass is what every surface of the
+        // machine shows.
+        self.shared.follow_status();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what
         // their devices did, so a panel is sent the reading of this pass.

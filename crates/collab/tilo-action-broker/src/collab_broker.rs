@@ -661,7 +661,7 @@ impl AppActionBroker {
             .certified_local_agent_host(caller, presentation, agent)
     }
 
-    /// Reuse the checked signed person-room admission for native owner checks.
+    /// Reuse the checked signed personal-cluster admission for native owner checks.
     /// # Errors
     /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
     pub fn certified_person_context(

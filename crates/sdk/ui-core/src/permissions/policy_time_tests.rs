@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-/// `member` as an Editor of the local room, with one extra grant of `answer`
+/// `member` as an Editor of the local workspace, with one extra grant of `answer`
 /// on the `fixture` app until Unix second 100.
 fn member_with(answer: Answer) -> PermissionContext {
     let context = PermissionContext::member("member", Role::Viewer);
@@ -16,7 +16,7 @@ fn member_with(answer: Answer) -> PermissionContext {
         policy::Grant::new(
             "fixture",
             policy::Subject::person("member"),
-            TreePath::room(LOCAL_ROOM).app("fixture"),
+            TreePath::workspace(LOCAL_WORKSPACE).app("fixture"),
             policy::KindSet::UNDOABLE,
             answer,
             policy::Subject::person("owner"),

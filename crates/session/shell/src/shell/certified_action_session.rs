@@ -201,7 +201,7 @@ impl ActionSessionSource {
         if let Some(host) = &self.mock {
             return Ok(DesktopActionSession::Mock {
                 host: Arc::clone(host),
-                caller: Caller::local_person("synthetic").in_room(room),
+                caller: Caller::local_person("synthetic").in_workspace(room),
             });
         }
         #[cfg(test)]
@@ -209,7 +209,7 @@ impl ActionSessionSource {
             let person = expected_person.ok_or("fixture action Person is required")?;
             return Ok(DesktopActionSession::Fixture {
                 host: host.clone(),
-                caller: Caller::local_person(person).in_room(room),
+                caller: Caller::local_person(person).in_workspace(room),
             });
         }
         CertifiedActionSession::open(self.broker.clone(), room, expected_person)
@@ -411,7 +411,7 @@ impl CertifiedActionSession {
         .map_err(|error| format!("encoding certified action identity failed: {error}"))?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room)
+                .in_workspace(room)
                 .in_new_execution();
         let caller = match execution {
             Some(lease) => caller.in_execution(lease),
@@ -420,11 +420,13 @@ impl CertifiedActionSession {
         let host = broker
             .state()
             .certified_native_action_host(&caller, &presentation)?;
-        let job_caller = Caller::local_person(&person).in_room(room).in_execution(
-            caller
-                .execution_lease()
-                .ok_or("native execution unavailable")?,
-        );
+        let job_caller = Caller::local_person(&person)
+            .in_workspace(room)
+            .in_execution(
+                caller
+                    .execution_lease()
+                    .ok_or("native execution unavailable")?,
+            );
         Ok(Self {
             broker,
             caller,
@@ -577,7 +579,7 @@ mod forwarding_tests {
     #[test]
     fn session_forwarders_preserve_pinned_caller_and_exact_refusal() {
         let caller = Caller::authenticated([11; 32], [12; 32])
-            .in_room("room")
+            .in_workspace("room")
             .in_new_execution();
         let probe = Arc::new(Probe {
             caller: caller.clone(),

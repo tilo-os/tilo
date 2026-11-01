@@ -4,7 +4,7 @@
 //! elided: `Bot`, or for a person a bridge speaks for the mark of the service
 //! they write from (Discord's), saying where when hovered. A bot
 //! may show another name (an appearance): it is shown, the chip stays, and a
-//! name that looks like a room member's carries its service.
+//! name that looks like a workspace member's carries its service.
 
 use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
@@ -44,7 +44,7 @@ pub enum Author<'a> {
         linked: Option<&'a str>,
         /// The linked person's own colour, which the tile wears when it
         /// shows no picture: one person has one colour on every surface,
-        /// whether they write in the room or through a bridge.
+        /// whether they write in the workspace or through a bridge.
         linked_color: Option<Color>,
         image: Option<&'a ImageData>,
     },
@@ -72,7 +72,7 @@ pub struct AuthorLine {
 /// accents are dropped, the Cyrillic and Greek letters that are drawn like
 /// Latin ones become those, and `l`/`I`/`1`/`|`, `0`/`O` and `rn`/`m` fold
 /// together. The full confusables table would add over 100 KiB to every web
-/// bundle drawing an author, for scripts no look-alike of a room member's
+/// bundle drawing an author, for scripts no look-alike of a workspace member's
 /// Latin-script name is likely to use.
 #[must_use]
 pub fn looks_alike(a: &str, b: &str) -> bool {
@@ -200,7 +200,7 @@ impl<'a> Author<'a> {
         matches!(self, Self::Bot { .. })
     }
 
-    /// The shown name among the room's current `members`: a bot's
+    /// The shown name among the workspace's current `members`: a bot's
     /// appearance that looks like one of them carries its persona's service
     /// (or, without one, the bot's name).
     #[must_use]

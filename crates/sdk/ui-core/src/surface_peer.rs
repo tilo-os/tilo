@@ -169,7 +169,7 @@ impl SurfacePeer {
             }
             RemoteActionMessage::Invoke(request) => {
                 // The app runs what it publishes through its own actions, as
-                // it does an ask from a room's host; the id the app names the
+                // it does an ask from a workspace's host; the id the app names the
                 // run with is what its outcome arrives under.
                 self.asking = self.asking.wrapping_add(1);
                 let id = self.asking;
@@ -249,7 +249,7 @@ impl PeerTransport for SurfacePeer {
                 }
                 Ok(())
             }
-            // There is no room to sync, no document to publish and no
+            // There is no workspace to sync, no document to publish and no
             // device to reach: a surface's desktop is the process it speaks
             // to here, and everything it is told is an action.
             _ => Ok(()),
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_joins_its_own_window_and_carries_no_room() {
+    fn a_surface_joins_its_own_window_and_carries_no_workspace() {
         let (app, _session) = UnixStream::pair().expect("a socket");
         let mut peer = SurfacePeer::of(app);
         // The one document a surface has is the window the session placed
@@ -419,7 +419,7 @@ mod tests {
         .expect("a surface joins");
         let joined = peer.take_primary_route_result().expect("acknowledged");
         assert_eq!(joined.expect("no refusal").app_id, "so.tilo.topbar");
-        // Anything a room would carry is not this app's business, and is
+        // Anything a workspace would carry is not this app's business, and is
         // not a reason to stop answering actions.
         peer.send(CollabRequest::RequestDocumentSnapshot)
             .expect("dropped, not fatal");

@@ -255,7 +255,7 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
             };
             let step = |app: &str, who: &str| {
                 let caller = tilo_actions::remote::Caller::local_person(who)
-                    .in_room(workspace_id().to_string());
+                    .in_workspace(workspace_id().to_string());
                 f.state.run_question(app, &caller, &answer)
             };
 

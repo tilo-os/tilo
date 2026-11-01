@@ -58,7 +58,7 @@ impl Custody {
     ) -> Result<Self, String> {
         let mut person = [0; 32];
         hex::decode_to_slice(principal, &mut person).map_err(|e| e.to_string())?;
-        let room = collab_types::person_room(&person).to_string();
+        let room = collab_types::personal_cluster(&person).to_string();
         let workspace = tilo_relay_protocol::room_workspace_id(&room).map_err(|e| e.to_string())?;
         Ok(Self {
             host,

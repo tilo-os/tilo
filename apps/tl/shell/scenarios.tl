@@ -276,6 +276,39 @@ scenario "a conversation with the agent" {
     d.clock = "10:42 AM"
     d.workspace = "Studio"
     d.here = "conversation"
+    seed_run(d)
+}
+
+/// The conversation as a place on the spaces canvas (shell.md §8.1): the run's place stands as
+/// its conversation, beside a terminal in its well.
+scenario "a conversation on the canvas" -> Arrangement {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:42 AM"
+    d.workspace = "Studio"
+    seed_run(d)
+    let v = viewing
+    v.showing = .spaces
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let s = a_strip(a, row, "Spaces", 667)
+    let strip = a.strips.find(st -> st.key == s)
+    if let held = strip {
+        held.canvas_x = 0
+        held.canvas_y = 0
+        held.canvas_width = 1100
+        held.canvas_height = 1200
+        held.placed = true
+    }
+    a.places.insert(ArrangementPlace(key: "x-run", strip: s, shows: "so.tilo.shell", shown_as: "conversation", record: "agent-run:r1", title: "Tidy the launch notes", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
+    a
+}
+
+/// The run a conversation starts from: what Ada asked, the agent's words between its steps, a
+/// program it ran that printed two notes, one that changed a note, one of Ada's own that did not
+/// compile, and the agent's answer.
+action seed_run(d: Desk) {
     d.runs.insert(Run(key: "r1", title: "Tidy the launch notes", agent: "claude", phase: "done", active: false))
     d.run_entries.insert(RunEntry(key: "r1/1", run: "r1", seq: 1, author: "ada", text: "Tidy the launch notes: pin the checklist and drop the old draft title."))
     d.run_entries.insert(RunEntry(key: "r1/2", run: "r1", seq: 2, author: "agent:claude", by_agent: true, text: "I will look for the launch notes first."))

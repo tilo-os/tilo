@@ -123,7 +123,7 @@ mod tests {
         });
         assert_eq!(
             named.label, "Ada · Reading the notes",
-            "until the room names them, by their own presence"
+            "until the workspace names them, by their own presence"
         );
         assert!(named.is_agent);
         assert_eq!(
@@ -132,7 +132,7 @@ mod tests {
                 let (r, g, b) = super::super::user_color(key);
                 Color::from_rgb8(r, g, b)
             },
-            "without a colour from the room, the identity's own"
+            "without a colour from the workspace, the identity's own"
         );
     }
 }
