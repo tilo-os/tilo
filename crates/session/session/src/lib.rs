@@ -138,6 +138,10 @@ pub struct Options {
     pub person: String,
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
+    /// The tilolang shell package's bar (`apps/tl/shell`) is shown as a layer over the
+    /// desktop: one bar per display, standing on its own display's rectangle and stepping
+    /// aside where a fullscreen window owns one, as the desktop's own bar does. On by default.
+    pub shell_bar: bool,
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
     pub quick_settings: Option<QuickSettings>,
@@ -256,6 +260,7 @@ impl Default for Options {
             device: "this-device".into(),
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
+            shell_bar: true,
             quick_settings: None,
             config: SessionConfig::default(),
             services: Vec::new(),
@@ -1233,9 +1238,14 @@ impl Session {
             surfaces: Rc::clone(&surfaces),
         };
         let desk_service = desk();
-        let shell = shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
-            .map_err(|why| tracing::error!(why, "the shell's bar did not start"))
-            .ok();
+        let shell = options
+            .shell_bar
+            .then(|| {
+                shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
+                    .map_err(|why| tracing::error!(why, "the shell's bar did not start"))
+                    .ok()
+            })
+            .flatten();
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
@@ -1895,7 +1905,7 @@ impl Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
     fn follow_shell(&mut self) -> Result<(), Error> {
-        let Some(shell) = self.shell.as_mut() else {
+        let Some(mut shell) = self.shell.take() else {
             return Ok(());
         };
         shell.publish();
@@ -1906,30 +1916,36 @@ impl Session {
         let edges = shell.edges();
         shell.publish_edges(&self.compositor);
         shell.set_edges(edges);
-        if !shell.has_asks() {
-            return Ok(());
+        // One bar per display: a display plugged in, taken away or taken by a fullscreen window
+        // moves its part.
+        shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
+        if shell.has_asks() {
+            let doors = &self.shared.doors;
+            let resources = doors.resources();
+            shell.serve(
+                |resource, action, name| {
+                    tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
+                        .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                        .map(|param| param.ty)
+                },
+                |resource, action, arguments| {
+                    doors
+                        .invoke(&ActionAddress::new(resource, action), arguments)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                },
+            );
+            self.shell = Some(shell);
+            // What ran may have asked the session in turn (a menu, a sheet).
+            self.settle()?;
+            if let Some(shell) = self.shell.as_mut() {
+                shell.publish();
+            }
+            Ok(())
+        } else {
+            self.shell = Some(shell);
+            Ok(())
         }
-        let doors = &self.shared.doors;
-        let resources = doors.resources();
-        shell.serve(
-            |resource, action, name| {
-                tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
-                    .and_then(|spec| spec.params().iter().find(|param| param.name == name))
-                    .map(|param| param.ty)
-            },
-            |resource, action, arguments| {
-                doors
-                    .invoke(&ActionAddress::new(resource, action), arguments)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            },
-        );
-        // What ran may have asked the session in turn (a menu, a sheet).
-        self.settle()?;
-        if let Some(shell) = self.shell.as_mut() {
-            shell.publish();
-        }
-        Ok(())
     }
 
     /// What the shell's bar reads the desk through: a test stages a reading on it, as a
@@ -1975,6 +1991,16 @@ impl Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+
+    /// The shell's bars, one per display, as each stands now: the output it is on, where it
+    /// stands, and whether it stepped aside for a fullscreen window there.
+    #[must_use]
+    pub fn shell_bars(&self) -> Vec<shell::BarPlace> {
+        self.shell
+            .as_ref()
+            .map(shell::Shell::parts)
+            .unwrap_or_default()
     }
 
     /// Run until `stop` holds or the backend is done.

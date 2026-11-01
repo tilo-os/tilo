@@ -693,6 +693,13 @@ impl Compositor {
         self.data.state.output_infos()
     }
 
+    /// The outputs a fullscreen window covers, by connector name: the bar
+    /// there steps aside and leaves the display to the window, as the
+    /// desktop's own bar does.
+    pub fn fullscreen_outputs(&self) -> Vec<String> {
+        self.data.state.fullscreen_outputs()
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off).
     pub fn output_lit(&self, name: &str) -> bool {

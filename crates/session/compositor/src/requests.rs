@@ -71,6 +71,19 @@ enum Cover {
 /// Where a window was before it was maximized or made fullscreen.
 struct Restore(std::cell::Cell<Option<Rectangle<i32, Logical>>>);
 
+/// Whether the client of `window` keeps it fullscreen: the state it acknowledged after asking
+/// to cover a display.
+pub(crate) fn fullscreen(window: &Window) -> bool {
+    window.toplevel().is_some_and(|toplevel| {
+        toplevel
+            .current_state()
+            .states
+            .contains(xdg_toplevel::State::Fullscreen)
+    }) || window
+        .x11_surface()
+        .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
+}
+
 impl State {
     /// Whether a fullscreen window covers `output`.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
@@ -78,20 +91,22 @@ impl State {
             return false;
         };
         self.space.elements().any(|window| {
-            let fullscreen = window.toplevel().is_some_and(|toplevel| {
-                toplevel
-                    .current_state()
-                    .states
-                    .contains(xdg_toplevel::State::Fullscreen)
-            }) || window
-                .x11_surface()
-                .is_some_and(smithay::xwayland::X11Surface::is_fullscreen);
-            fullscreen
+            fullscreen(window)
                 && self
                     .space
                     .element_geometry(window)
                     .is_some_and(|geometry| geometry.contains_rect(area))
         })
+    }
+
+    /// The outputs a fullscreen window covers, by connector name: the chrome there steps aside
+    /// and leaves the display to the window, as the desktop's own bar does.
+    pub(crate) fn fullscreen_outputs(&self) -> Vec<String> {
+        self.space
+            .outputs()
+            .filter(|output| self.fullscreen_on(output))
+            .map(smithay::output::Output::name)
+            .collect()
     }
 
     /// A window asked for `request` (`serial`: the press it starts from,

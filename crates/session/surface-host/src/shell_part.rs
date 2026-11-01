@@ -96,10 +96,7 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
-    (
-        "desk.tl",
-        include_str!("../../../../apps/tl/shell/desk.tl"),
-    ),
+    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
@@ -1579,7 +1576,6 @@ impl Origin for SessionOrigin {
                 self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
-
             }
             Err(error) => {
                 // Nothing was written: the next reading tries again from what was.
@@ -1717,7 +1713,9 @@ pub struct ShellWork {
 pub struct ShellPart {
     widgets: WidgetHost,
     instance: Instance,
-    record: tilo_resource::Doc,
+    /// The shell's record, shared by every part of one shell: the bar draws it and each other
+    /// display draws the same, so a change any part commits is the whole shell's.
+    record: Rc<RefCell<tilo_resource::Doc>>,
     origin: Rc<RefCell<SessionOrigin>>,
     /// Input reached the part since its last turn.
     input: bool,
@@ -1728,36 +1726,66 @@ pub struct ShellPart {
     refusals: Vec<String>,
     /// How high the part stands at rest (the bar's band), logical pixels.
     band: u32,
-    /// The outputs' bounding box `(x, y, w, h)` the part spans.
-    outputs: Option<(i32, i32, u32, u32)>,
+    /// The output this part stands on: its connector name, and its logical rectangle
+    /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
+    output: Option<(String, (i32, i32, u32, u32))>,
+    /// The outputs a fullscreen window covers, by connector name: the part on one of them
+    /// steps aside, as the desktop's own bar does there, and leaves the display to the window.
+    fullscreen: Vec<String>,
     /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
     /// launcher, the notifications), is up: the part covers the outputs so it has room. At
     /// rest it covers only its bands, so a change draws only that.
     cover: bool,
     /// The edges the shell's chrome stands on: what the part covers of the outputs.
     edges: HostEdges,
+    /// The shell's record's heads the instance was last brought up to date with: a commit any
+    /// part of the shell made reaches this one by them, so every display shows one shell.
+    seen_heads: Vec<String>,
+}
+
+/// A shell part's identity: the package it runs, the person it is for, and the record the
+/// shell's parts share.
+pub struct ShellIdentity<'a> {
+    /// The app id of the compiled shell package.
+    pub app: &'a str,
+    /// The packages the instance runs, the shell last.
+    pub packages: Vec<Compiled>,
+    /// The person the shell is arranged by.
+    pub person: &'a str,
+    /// The link the session publishes its desk on and the shell asks through.
+    pub link: Rc<SessionLink>,
+    /// The shell's record, shared by every part of the shell.
+    pub record: Rc<RefCell<tilo_resource::Doc>>,
+    /// The first part of a shell makes its record and seeds it; every other part finds it
+    /// made, so one shell has one record and one seed, however many displays draw it.
+    pub seed: bool,
 }
 
 impl ShellPart {
-    /// The root view of `app` (the last of `packages`, which come in load order) for `person`,
-    /// across the top `band` logical pixels of the outputs at `scale`, kept in step with the
-    /// session through `link`; `waker` wakes the session's loop when work the instance waits
-    /// for is ready.
+    /// The root view of `identity.app` (the last of its packages, which come in load order) for
+    /// its person, across the top `band` logical pixels of the part's output at `scale`, kept in
+    /// step with the session through its link; `waker` wakes the session's loop when work the
+    /// instance waits for is ready.
     ///
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
     /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
     /// no windows of its own (the bar).
     #[must_use]
     pub fn new(
-        app: &str,
-        packages: Vec<Compiled>,
-        person: &str,
-        link: Rc<SessionLink>,
+        identity: ShellIdentity<'_>,
         band: u32,
         scale: f64,
         waker: Waker,
         wells: Option<ui::widget::Wells>,
     ) -> Self {
+        let ShellIdentity {
+            app,
+            packages,
+            person,
+            link,
+            record,
+            seed,
+        } = identity;
         let placement = Placement {
             origin: (0, 0),
             size: (1, band.max(1)),
@@ -1787,8 +1815,10 @@ impl ShellPart {
         instance.set_standing(Rc::new(shell_standing(app, person)));
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
-        let record = tilo_resource::Doc::new();
-        instance.sync(Some(&record));
+        {
+            let record = record.borrow();
+            instance.sync(Some(&record));
+        }
         let window = AppWindow::part(Box::new(window_end));
         let mut widgets = WidgetHost::new(Box::new(window), placement, false);
         widgets.install_wells(wells);
@@ -1802,7 +1832,8 @@ impl ShellPart {
             work: ShellWork::default(),
             refusals: Vec::new(),
             band: band.max(1),
-            outputs: None,
+            output: None,
+            fullscreen: Vec::new(),
             cover: false,
             edges: HostEdges {
                 bar: true,
@@ -1810,8 +1841,11 @@ impl ShellPart {
                 dock: false,
                 dock_bottom: false,
             },
+            seen_heads: Vec::new(),
         };
-        part.seed();
+        if seed {
+            part.seed();
+        }
         part.turn();
         part
     }
@@ -1843,7 +1877,10 @@ impl ShellPart {
         // record's making first, then the seed that runs once the record is had.
         self.instance.set_origin(true);
         for _ in 0..3 {
-            self.instance.sync(Some(&self.record));
+            {
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+            }
             self.instance.commit_planned();
             if !self.commit() {
                 break;
@@ -1852,20 +1889,42 @@ impl ShellPart {
         // The seed moved the record: the part's next turn settles what it started (a view
         // that read a bound field runs again), as any change of the record does.
         self.instance.moved();
-
+        // What the seed wrote is the shell's for every part: the heads here are the ones a
+        // part made later finds and takes in.
+        self.seen_heads = self
+            .record
+            .borrow()
+            .committed_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
     }
 
-    /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
-    /// over each edge the shell's bar and dock ride — a bar at the top takes the top band, a
-    /// dock at the bottom the bottom one — through `edges`. A shell whose chrome is off at an
-    /// edge, or is a bar at the top alone (the first shell), takes that band only.
+    /// Stand on this part's output: the whole of it while a menu of the part's is up, and else
+    /// the band at each edge the shell's bar and dock ride — a bar at the top takes the top
+    /// band, a dock at the bottom the bottom one — through `edges`. A shell whose chrome is off
+    /// at an edge, or is a bar at the top alone (the first shell), takes that band only.
+    ///
+    /// A part on an output a fullscreen window covers takes no room and draws nothing: the
+    /// window owns the display there, as it owns the desktop's own bar's display.
     fn place(&mut self, edges: HostEdges) {
-        let Some((x, y, width, output_height)) = self.outputs else {
+        let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
         let scale = self.widgets.placement().scale;
+        if self.fullscreen.contains(&name) && !self.cover {
+            // Nothing of the part stands there: a zero-height placement at the cover's origin
+            // draws nothing and takes no pointer.
+            self.widgets.set_placement(Placement {
+                origin: (x, y),
+                size: (width.max(1), 1),
+                scale,
+            });
+            self.widgets.relayout();
+            return;
+        }
         let band = self.band.min(output_height);
-        // A menu of the part's, or a surface of the desk's, takes the whole outputs; else the
+        // A menu of the part's, or a surface of the desk's, takes the whole output; else the
         // part stands in the band at each edge the chrome rides, so a change draws only what
         // shows there.
         let at_top = !self.cover && edges.bar_at_top();
@@ -1955,6 +2014,50 @@ impl ShellPart {
         self.place(edges);
     }
 
+    /// Stand the part on `output`, its connector name and logical rectangle `(x, y, w, h)`:
+    /// the part is one display's, and follows that display as it is added, moved or turned
+    /// off. Every part of one shell is told its own display; none spans them all.
+    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
+        if self.output == output {
+            return;
+        }
+        self.output = output;
+        self.place(self.edges);
+    }
+
+    /// Tell the part which output's or outputs' windows cover the whole display, by connector
+    /// name: the part on one of them steps aside and draws nothing, as the desktop's own bar
+    /// does where a window owns its display. A change steps it back when they go.
+    pub fn set_fullscreen(&mut self, outputs: Vec<String>) {
+        if self.fullscreen == outputs {
+            return;
+        }
+        self.fullscreen = outputs;
+        self.place(self.edges);
+    }
+
+    /// Where the part stands now, in the desktop's logical layout `(x, y, w, h)`, and the
+    /// display it names: `None` until it is told of its output.
+    #[must_use]
+    pub fn placement(&self) -> Option<(String, (i32, i32, u32, u32))> {
+        self.output.clone()
+    }
+
+    /// Whether the part draws nothing now: it stands on a display a fullscreen window owns.
+    #[must_use]
+    pub fn aside(&self) -> bool {
+        self.output.as_ref().is_some_and(|(name, _)| {
+            !self.cover && self.fullscreen.iter().any(|covered| covered == name)
+        })
+    }
+
+    /// The shell's record as shared by every part of this shell: a part that commits a change
+    /// writes it here, and the rest read it on their next turn.
+    #[must_use]
+    pub fn record_handle(&self) -> Rc<RefCell<tilo_resource::Doc>> {
+        Rc::clone(&self.record)
+    }
+
     /// The shell's own record (`root shell: Shell`) as it holds it now, when the package has
     /// one and the record is made: what its edge settings are read from.
     #[must_use]
@@ -2013,12 +2116,11 @@ impl ShellPart {
                 .ok_or_else(|| format!("no committed action {ticket}"))
                 .and_then(|action| {
                     action
-                        .apply(&mut self.record)
+                        .apply(&mut self.record.borrow_mut())
                         .map_err(|error| error.to_string())
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a shell change could not be committed");
-            } else {
             }
             self.instance.answered(&address, applied.err());
             committed = true;
@@ -2026,9 +2128,18 @@ impl ShellPart {
         if committed {
             // The record holds the changes once they are committed: the instance reads them
             // from its heads, and every view runs again, since the change is the record's.
-            self.record.commit();
+            {
+                let mut record = self.record.borrow_mut();
+                record.commit();
+                self.seen_heads = record
+                    .committed_heads()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+            }
             let at = std::time::Instant::now();
-            self.instance.sync(Some(&self.record));
+            let record = self.record.borrow();
+            self.instance.sync(Some(&record));
             self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
         }
         committed
@@ -2069,6 +2180,40 @@ impl ShellPart {
             let at = std::time::Instant::now();
             self.widgets.relayout();
             self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
+        }
+        // A change another display's part of this shell committed reaches this one: the record
+        // it shares moved on from the heads this instance saw, and it draws the shell as it is
+        // now. Nothing else changed, so no other frame is owed.
+        let mut record_moved = false;
+        {
+            let heads: Vec<String> = self
+                .record
+                .borrow()
+                .committed_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if heads != self.seen_heads {
+                self.seen_heads = heads;
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+                self.instance.moved();
+                record_moved = true;
+            }
+        }
+        if record_moved {
+            // The views that read a bound field run again in this turn, so the part draws the
+            // shell's change now rather than a frame late.
+            let mut at = std::time::Instant::now();
+            self.instance.update();
+            self.work.updating = self.work.updating.saturating_add(at.elapsed());
+            at = std::time::Instant::now();
+            shown |= self.window().is_some_and(AppWindow::receive);
+            self.work.receiving = self.work.receiving.saturating_add(at.elapsed());
+            if shown {
+                self.widgets.relayout();
+                self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
+            }
         }
         // The exchanges ran until neither side had more to say, unless they ran out first:
         // then the next frame goes on.
@@ -2188,7 +2333,7 @@ impl SurfaceHost for ShellPart {
         // While a menu of the part's is up, a press anywhere over it is the part's: outside
         // the menu it closes it, as a press outside any menu does.
         if self.cover
-            && let Some((ox, oy, width, height)) = self.outputs
+            && let Some((_, (ox, oy, width, height))) = self.output
         {
             let (x, y) = (x - f64::from(ox), y - f64::from(oy));
             return x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height);
@@ -2217,6 +2362,11 @@ impl SurfaceHost for ShellPart {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        // A part not yet told which output it stands on spans all of them, as a bar stretched
+        // across the tightest bounding box there is.
+        if self.output.is_some() {
+            return;
+        }
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
             .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
@@ -2230,7 +2380,7 @@ impl SurfaceHost for ShellPart {
         ) else {
             return;
         };
-        self.outputs = Some((x0, y0, width, height));
+        self.output = Some((String::new(), (x0, y0, width, height)));
         self.place(self.edges);
     }
 
@@ -2363,16 +2513,21 @@ mod tests_support {
         let link = Rc::new(SessionLink::default());
         link.publish(reading);
         let mut part = ShellPart::new(
-            &app,
-            packages,
-            "Pat",
-            Rc::clone(&link),
+            ShellIdentity {
+                app: &app,
+                packages,
+                person: "Pat",
+                link: Rc::clone(&link),
+                record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+                seed: true,
+            },
             32,
             1.0,
             std::sync::Arc::new(|| {}),
             None,
         );
         part.outputs_changed(&[(0, 0, 1280, 800)]);
+        part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
         for _ in 0..4 {
             part.prepare_frame();
         }
@@ -2602,12 +2757,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_part_on_a_fullscreen_display_steps_aside_and_comes_back() {
+        let (mut part, _link) = part();
+        assert!(!part.aside(), "no window owns the display: the bar stands");
+        assert_eq!(part.widgets.placement().size, (1280, 32), "the band");
+        // A fullscreen window takes the display the part stands on: it draws nothing there.
+        part.set_fullscreen(vec!["HEADLESS-1".to_owned()]);
+        assert!(part.aside(), "the bar stepped aside");
+        assert_eq!(
+            part.widgets.placement().size.1,
+            1,
+            "nothing of the bar covers the window"
+        );
+        assert!(
+            !part.accepts_pointer(100.0, 10.0),
+            "the window under it takes the pointer"
+        );
+        // The window leaves fullscreen: the bar is back, in its band.
+        part.set_fullscreen(Vec::new());
+        assert!(!part.aside());
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 32),
+            "back to the band"
+        );
+    }
 
-
-
-
-
-
+    #[test]
+    fn a_fullscreen_window_on_another_display_leaves_this_bar_standing() {
+        let (mut part, _link) = part();
+        part.set_fullscreen(vec!["HEADLESS-2".to_owned()]);
+        assert!(
+            !part.aside(),
+            "the window owns the other display: this bar stands"
+        );
+        assert_eq!(part.widgets.placement().size, (1280, 32));
+    }
 
     #[test]
     fn the_part_stands_in_the_band_the_shell_records_dock_names() {
