@@ -816,6 +816,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
+  "crates/platform/tilolang-tilo/tests/records_service.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/shell_record.rs",
