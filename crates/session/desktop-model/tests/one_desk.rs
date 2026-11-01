@@ -12,7 +12,7 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
-use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
@@ -137,6 +137,11 @@ fn an_old_shared_record_opens_as_the_desks_own_document() {
     assert_eq!(windows(&reopened.tree), windows(&desk.tree));
     assert_eq!(reopened.records, desk.records);
     assert_eq!(reopened.authors, desk.authors);
+    assert_eq!(
+        reopened.tree.workspaces[0].owner().map(String::as_str),
+        Some("ada"),
+        "who owns the workspace came with it"
+    );
     assert_eq!(windows(&read_back(&doc)), windows(&desk.tree));
 
     // Read as of an earlier change, the desk is the desk as it was then:
@@ -158,10 +163,6 @@ fn an_old_shared_record_opens_as_the_desks_own_document() {
         opened(&doc).tree.workspaces[0].name,
         "Studio · renamed",
         "and now it is the desk as it is"
-    );
-    assert_eq!(
-        reopened.tree.workspaces[0].owner().map(String::as_str),
-        Some("ada")
     );
 }
 

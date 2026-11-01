@@ -1,5 +1,5 @@
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::ownership::{Act, Authors};
+use crate::ownership::{Act, Authors, SharedDesktop};
 use crate::shared_record;
 use crate::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
 
