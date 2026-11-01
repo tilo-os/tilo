@@ -42,11 +42,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
     };
     match shared_record::write(log, &desktop) {
         Ok(true) => {
-            log.commit_with(
-                CommitOptions::default()
-                    .with_message(shared_record::change_message(Some(author)))
-                    .with_time(time),
-            );
+            commit(log, author, time);
             true
         }
         Ok(false) => false,
@@ -55,6 +51,16 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
             false
         }
     }
+}
+
+/// Commit what `doc` holds as one change, by `author` at `time` (seconds
+/// since the epoch), so the desk's history says who did it and when.
+pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(shared_record::change_message(Some(author)))
+            .with_time(time),
+    );
 }
 
 /// The author a change of a desktop log names.
@@ -203,6 +209,22 @@ fn names_in(log: &mut AutoCommit) -> BTreeMap<String, String> {
 /// The name and colour presence shows for an author (the principal a
 /// desktop change names), when the host knows them.
 pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
+
+/// Who each actor of the desk's document `doc` writes for, by actor (hex):
+/// the names the document holds ([`desktop_doc::author_names`]) and those
+/// its changes name, so a pane names every change of the desk by its person.
+pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
+    let mut authors = desktop_doc::author_names(doc);
+    for change in doc.get_changes(&[]) {
+        let Some(author) = change_author(change.message()) else {
+            continue;
+        };
+        authors
+            .entry(change.actor_id().to_hex_string())
+            .or_insert(author);
+    }
+    authors
+}
 
 /// Name `authors`' actors in `directory`, as one participant per author.
 /// An author `person` knows reads as presence shows them, by the same

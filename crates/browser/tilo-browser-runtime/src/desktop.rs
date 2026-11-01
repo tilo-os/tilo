@@ -1638,21 +1638,12 @@ fn peer_salt(device: &str) -> u16 {
 /// desktops.
 pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 
-/// The stored form of a room's desktop.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct StoredDesktop {
-    #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
-    tree: DesktopTree,
-    /// `(tab, record id)` for every tab whose component bound a record.
-    records: Vec<(TabId, String)>,
-    /// Who made each strip and opened each window still on the desktop.
-    #[serde(default)]
-    authors: BTreeMap<u64, String>,
-}
-
 /// Saves a mounted desktop to the profile whenever its tree or its tabs'
-/// records change. Writes are accepted by the durable store and committed
-/// to `IndexedDB` by the page's durable host.
+/// records change: the desk's own document
+/// ([`tilo_desktop_model::desktop_doc`]), whose changes are what the desk did
+/// and who did it, and which a room replicates as it stands. Writes are
+/// accepted by the durable store and committed to `IndexedDB` by the page's
+/// durable host.
 pub(crate) struct Persistence {
     store: Rc<dyn DurableStore>,
     key: StorageKey,
@@ -1661,11 +1652,13 @@ pub(crate) struct Persistence {
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     authors: Authors,
-    /// Every change of this device's desktop, for Activity
-    /// (`tilo_desktop_surface::history_log`).
-    pub history: Rc<RefCell<AutoCommit>>,
-    history_key: StorageKey,
-    history_dirty: Cell<bool>,
+    /// The desk's document: the profile's copy of it, which is the desk's
+    /// history when this page is in no room.
+    pub document: Rc<RefCell<AutoCommit>>,
+    /// The peer whose room this page joined, whose copy of the desk document
+    /// is the one that counts once the room answered
+    /// ([`Self::mirror_room`]).
+    peer: Option<u32>,
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     notifications_key: StorageKey,
     saved_notifications_revision: Cell<u64>,
@@ -1678,125 +1671,172 @@ impl Persistence {
     /// # Errors
     /// The store refused the write; the next change retries.
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
-        let notifications_revision = self.notifications.revision();
-        if notifications_revision != self.saved_notifications_revision.get() {
-            // Asks are the page's to make again: one kept past a reload
-            // could no longer be answered.
-            let history: Vec<_> = self
-                .notifications
-                .log()
-                .history()
-                .iter()
-                .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
-                .cloned()
-                .collect();
-            let bytes = tilo_desktop_surface::notifications::encode_history(
-                &history,
-                ui::time::SystemTime::now(),
-                ui::time::now(),
-            )
-            .map_err(|error| error.to_string())?;
-            self.store
-                .write(&self.notifications_key, WriteOp::Replace(bytes), None)
-                .map_err(|error| error.to_string())?;
-            self.saved_notifications_revision
-                .set(notifications_revision);
-        }
+        self.save_notifications()?;
+        let mirrored = self.mirror_room()?;
         let revision = handle.revision();
-        if revision == self.saved_revision.get()
-            && !self.records_changed.get()
-            && !self.history_dirty.get()
-        {
+        if !mirrored && revision == self.saved_revision.get() && !self.records_changed.get() {
             return Ok(());
         }
-        let stored = stored_desktop(
-            handle,
-            &self.records.borrow(),
-            &self.unbound.borrow(),
-            &self.authors.borrow(),
-        );
-        let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
-        let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
-        self.store
-            .write(&self.key, WriteOp::Replace(bytes), None)
-            .map_err(|error| error.to_string())?;
-        let mut history = self.history.borrow_mut();
-        if tilo_desktop_surface::history_log::record(
-            &mut history,
-            &value,
-            &self.author,
-            ui::time::unix_now_i64(),
-        ) {
-            self.history_dirty.set(true);
+        // The document keeps how this device shows the desk — the widths, the
+        // workspace and the window in front — so a reload returns the desk as
+        // it was left, as native's own document does.
+        let tree = handle.read(Clone::clone);
+        let mut document = self.document.borrow_mut();
+        let wrote = if self
+            .peer
+            .and_then(crate::replication::desktop_history_heads)
+            .is_some()
+        {
+            // The room holds the desk itself; the copy keeps the view alone.
+            tilo_desktop_model::desktop_doc::seed_of_the_view(&mut document, &tree);
+            document.pending_ops() > 0
+        } else {
+            // No room holds this desk: what the person changed is this page's
+            // change of its own document.
+            let records = live_records(&self.records.borrow(), &self.unbound.borrow(), &tree);
+            let authors = live_authors(&self.authors.borrow(), &tree);
+            tilo_desktop_model::desktop_doc::write_shared(&mut document, &tree, &records, &authors)
+        };
+        if wrote {
+            tilo_desktop_surface::history_log::commit(
+                &mut document,
+                &self.author,
+                ui::time::unix_now_i64(),
+            );
         }
-        tilo_desktop_surface::history_log::save_pending(
-            &mut history,
-            &self.history_dirty,
-            |bytes| {
-                self.store
-                    .write(&self.history_key, WriteOp::Replace(bytes), None)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            },
-        )?;
+        if wrote || mirrored {
+            self.store
+                .write(&self.key, WriteOp::Replace(document.save()), None)
+                .map_err(|error| error.to_string())?;
+        }
+        drop(document);
         self.saved_revision.set(revision);
         self.records_changed.set(false);
         Ok(())
     }
-}
 
-fn stored_desktop(
-    handle: &DesktopHandle,
-    bindings: &HashMap<TabId, RecordCheckout>,
-    unbound: &HashMap<TabId, String>,
-    authors: &BTreeMap<u64, String>,
-) -> StoredDesktop {
-    handle.read(|tree| {
-        let mut live = std::collections::HashSet::new();
-        let mut strips = std::collections::HashSet::new();
-        for workspace in &tree.workspaces {
-            for strip in &workspace.strips {
-                strips.insert(strip.id.0);
-                for group in &strip.window_groups {
-                    live.extend(group.tabs.iter().map(|tab| tab.id));
-                }
+    /// Take the room's desk document into the profile's copy, once the page's
+    /// desk is the room's: a reload opens the desk as the room has it, and
+    /// what the room changed reaches the file as the desk's own history.
+    /// Says whether it took a newer one.
+    fn mirror_room(&self) -> Result<bool, String> {
+        let Some(peer) = self.peer else {
+            return Ok(false);
+        };
+        let Some(heads) = crate::replication::desktop_history_heads(peer) else {
+            return Ok(false);
+        };
+        {
+            // The room's changes are here already, whichever changes of its
+            // own the copy made since.
+            let mut document = self.document.borrow_mut();
+            if heads
+                .iter()
+                .all(|head| document.get_change_by_hash(head).is_some())
+            {
+                return Ok(false);
             }
         }
-        let mut records: Vec<(TabId, String)> = bindings
-            .iter()
-            .filter(|(tab, _)| live.contains(tab))
-            .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
-            .chain(
-                unbound
-                    .iter()
-                    .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
-                    .map(|(tab, record)| (*tab, record.clone())),
-            )
-            .collect();
-        records.compact_sort();
-        let authors = authors
-            .iter()
-            .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
-            .map(|(id, author)| (*id, author.clone()))
-            .collect();
-        StoredDesktop {
-            tree: tree.clone(),
-            records,
-            authors,
+        let Some(bytes) = crate::replication::desk_bytes(peer) else {
+            return Ok(false);
+        };
+        *self.document.borrow_mut() =
+            AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    /// Keep what the person's page offered to answer: a notice kept past a
+    /// reload could no longer be answered.
+    fn save_notifications(&self) -> Result<(), String> {
+        let notifications_revision = self.notifications.revision();
+        if notifications_revision == self.saved_notifications_revision.get() {
+            return Ok(());
         }
-    })
+        let history: Vec<_> = self
+            .notifications
+            .log()
+            .history()
+            .iter()
+            .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
+            .cloned()
+            .collect();
+        let bytes = tilo_desktop_surface::notifications::encode_history(
+            &history,
+            ui::time::SystemTime::now(),
+            ui::time::now(),
+        )
+        .map_err(|error| error.to_string())?;
+        self.store
+            .write(&self.notifications_key, WriteOp::Replace(bytes), None)
+            .map_err(|error| error.to_string())?;
+        self.saved_notifications_revision
+            .set(notifications_revision);
+        Ok(())
+    }
+}
+
+/// `(tab, record)` for every tab of `tree` whose component bound a record,
+/// or whose application had not loaded and left the record id it was to
+/// open.
+fn live_records(
+    bindings: &HashMap<TabId, RecordCheckout>,
+    unbound: &HashMap<TabId, String>,
+    tree: &DesktopTree,
+) -> Vec<(TabId, String)> {
+    let mut live = std::collections::HashSet::new();
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                live.extend(group.tabs.iter().map(|tab| tab.id));
+            }
+        }
+    }
+    let mut records: Vec<(TabId, String)> = bindings
+        .iter()
+        .filter(|(tab, _)| live.contains(tab))
+        .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
+        .chain(
+            unbound
+                .iter()
+                .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
+                .map(|(tab, record)| (*tab, record.clone())),
+        )
+        .collect();
+    records.compact_sort();
+    records
+}
+
+/// Who made each strip and opened each window still on `tree`.
+fn live_authors(authors: &BTreeMap<u64, String>, tree: &DesktopTree) -> BTreeMap<u64, String> {
+    let mut live = std::collections::HashSet::new();
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            live.insert(strip.id.0);
+            for group in &strip.window_groups {
+                live.extend(group.tabs.iter().map(|tab| tab.id));
+            }
+        }
+    }
+    authors
+        .iter()
+        .filter(|(id, _)| live.contains(*id))
+        .map(|(id, author)| (*id, author.clone()))
+        .collect()
 }
 
 /// The desktop as peers share it: the tree and each tab's record.
-pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    let mut desktop = stored_desktop(
-        handle,
-        &shared.records.borrow(),
-        &shared.unbound.borrow(),
-        &shared.authors.borrow(),
-    );
-    desktop.tree = handle.shared_tree();
-    serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
+pub(crate) fn shared_value(
+    handle: &DesktopHandle,
+    shared: &Shared,
+) -> tilo_desktop_model::ownership::SharedDesktop {
+    let tree = handle.shared_tree();
+    let records = live_records(&shared.records.borrow(), &shared.unbound.borrow(), &tree);
+    let authors = live_authors(&shared.authors.borrow(), &tree);
+    tilo_desktop_model::ownership::SharedDesktop {
+        tree,
+        records,
+        authors,
+    }
 }
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
@@ -1806,7 +1846,7 @@ pub(crate) fn apply_shared(
     shared: &Shared,
     value: &serde_json::Value,
 ) -> Result<(), String> {
-    let desktop: StoredDesktop =
+    let desktop: tilo_desktop_model::ownership::SharedDesktop =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     if desktop.tree.workspaces.is_empty() {
         return Err("a desktop needs a workspace".into());
@@ -1859,7 +1899,7 @@ pub(crate) fn return_to(
     shared: &Shared,
     value: &serde_json::Value,
 ) -> Result<(), String> {
-    let desktop: StoredDesktop =
+    let desktop: tilo_desktop_model::ownership::SharedDesktop =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     {
         let mut authors = shared.authors.borrow_mut();
@@ -1884,17 +1924,11 @@ pub(crate) fn return_to(
     apply_shared(handle, shared, value)
 }
 
-fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDesktop> {
-    let stored = store.read(key).ok()??;
-    let desktop: StoredDesktop = serde_json::from_slice(&stored.bytes).ok()?;
-    (!desktop.tree.workspaces.is_empty()).then_some(desktop)
-}
-
 /// The record bindings of a stored desktop, for the tabs whose application
 /// the page still registers: bound where the application is loaded, as
 /// record ids where it is not yet.
 fn stored_records(
-    desktop: &StoredDesktop,
+    desktop: &tilo_desktop_model::ownership::SharedDesktop,
 ) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
     let mut apps = HashMap::new();
     for workspace in &desktop.tree.workspaces {
@@ -1924,6 +1958,57 @@ fn stored_records(
         }
     }
     (bound, unbound)
+}
+
+/// The room's desk document as this profile keeps it, opening whatever an
+/// older build kept for it: the desk's own document, or the desktop it stored
+/// as JSON beside a log of its changes, read into the document once with the
+/// author and time of every change it made
+/// ([`tilo_desktop_surface::history_log::desk_document`]).
+fn open_desk(
+    store: &dyn DurableStore,
+    key: &StorageKey,
+    history_key: &StorageKey,
+    author: &str,
+) -> AutoCommit {
+    let stored = store
+        .read(key)
+        .ok()
+        .flatten()
+        .filter(|stored| !stored.bytes.is_empty());
+    let Some(stored) = stored else {
+        return AutoCommit::new();
+    };
+    if let Ok(document) = AutoCommit::load(&stored.bytes)
+        && tilo_desktop_model::desktop_doc::holds(&document)
+    {
+        return document;
+    }
+    let old: Option<tilo_desktop_model::ownership::SharedDesktop> =
+        serde_json::from_slice(&stored.bytes).ok();
+    let old = old.filter(|desktop| !desktop.tree.workspaces.is_empty());
+    let mut log = store
+        .read(history_key)
+        .ok()
+        .flatten()
+        .filter(|stored| !stored.bytes.is_empty())
+        .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
+        .unwrap_or_default();
+    let document = tilo_desktop_surface::history_log::desk_document(
+        &mut log,
+        old.as_ref(),
+        automerge::ActorId::from(author.as_bytes()),
+        ui::time::unix_now_i64(),
+    );
+    if document.base_heads().is_empty() {
+        return document;
+    }
+    // The desk is in its one document now, and the JSON tree and the log it
+    // came from give way to it: a store that keeps no removal keeps them
+    // empty.
+    let _ = store.write(key, WriteOp::Replace(document.save()), None);
+    let _ = store.write(history_key, WriteOp::Replace(Vec::new()), None);
+    document
 }
 
 /// Mount the room's desktop from the profile, or seed one: one workspace
@@ -1977,12 +2062,18 @@ pub(crate) fn mount(
     }
     shared.linked = linked_accounts(&shared, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
+    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
+    let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
+    let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
         let (bound, unbound) = stored_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;
         *shared.authors.borrow_mut() = stored.authors;
-        stored.tree
+        // How this device showed the desk — the strip and window in front,
+        // the widths, the displays — as it was left, as native opens it.
+        let mut tree = stored.tree;
+        tilo_desktop_model::desktop_doc::rebuild_view(&document, &mut tree);
+        tree
     } else {
         let definitions: Vec<(&str, &'static str)> = match apps {
             Some(ids) => ids
@@ -2008,13 +2099,6 @@ pub(crate) fn mount(
             .unwrap_or("Workspace");
         tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
     };
-    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
-    let history = store
-        .read(&history_key)
-        .ok()
-        .flatten()
-        .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
-        .unwrap_or_default();
     let notifications_key =
         StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
@@ -2042,9 +2126,8 @@ pub(crate) fn mount(
         records: Rc::clone(&shared.records),
         unbound: Rc::clone(&shared.unbound),
         authors: Rc::clone(&shared.authors),
-        history: Rc::new(RefCell::new(history)),
-        history_key,
-        history_dirty: Cell::new(false),
+        document: Rc::new(RefCell::new(document)),
+        peer: inputs.peer,
         notifications,
         notifications_key,
         saved_notifications_revision,

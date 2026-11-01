@@ -1,12 +1,11 @@
 //! The page desktop's workspace history, which its session serves the
 //! Activity app.
 //!
-//! The desktop's own history is a desktop log
-//! (`tilo_desktop_surface::history_log`): in a certified room the room's
-//! replicated desktop document, every peer's changes in it; otherwise the
-//! log this profile keeps beside its stored desktop. The records the
-//! windows show carry their own histories, read from detached copies of
-//! the open documents.
+//! The desktop's own history is the desk's document
+//! (`tilo_desktop_model::desktop_doc`), the same one native keeps: in a
+//! certified room the room's replicated copy, every peer's changes in it;
+//! otherwise this profile's own. The records the windows show carry their
+//! own histories, read from detached copies of the open documents.
 //!
 //! The activity model's code is linked in, unless the `deferred-activity`
 //! feature leaves it to the bundling crate: the browser desktop hands over
@@ -174,12 +173,12 @@ pub(crate) struct PageHistory {
     peer: Option<u32>,
     author: String,
     shared: crate::desktop::Shared,
-    /// The profile's own log, kept by `desktop::Persistence`.
-    log: Rc<RefCell<AutoCommit>>,
+    /// The profile's own copy of the desk's document, kept by
+    /// `desktop::Persistence`.
+    document: Rc<RefCell<AutoCommit>>,
     host: Rc<PageActivityHost>,
-    /// Who each desktop change's actor is, from the last read.
+    /// Who each actor of the desk's document is, from the last read.
     authors: BTreeMap<String, String>,
-    partial: bool,
     person_of: PersonOf,
 }
 
@@ -212,31 +211,30 @@ impl PageHistory {
         author: String,
         store: Rc<dyn DurableStore>,
         shared: crate::desktop::Shared,
-        log: Rc<RefCell<AutoCommit>>,
+        document: Rc<RefCell<AutoCommit>>,
         person_of: PersonOf,
     ) -> Self {
         Self {
             peer,
             author: author.clone(),
             shared,
-            log,
+            document,
             host: Rc::new(PageActivityHost {
                 author,
                 store,
                 room: room.to_owned(),
             }),
             authors: BTreeMap::new(),
-            partial: false,
             person_of,
         }
     }
 
-    /// The room's replicated desktop when the page has one, else the
-    /// profile's log.
-    fn desktop_log(&self) -> AutoCommit {
+    /// The room's replicated copy of the desk's document when the page has
+    /// one, else this profile's own.
+    fn desk_document(&self) -> AutoCommit {
         self.peer
             .and_then(crate::replication::desktop_history)
-            .unwrap_or_else(|| self.log.borrow().clone())
+            .unwrap_or_else(|| self.document.borrow().clone())
     }
 
     fn bound(&self, tree: &DesktopTree, workspace: WorkspaceId) -> Vec<(String, RecordCheckout)> {
@@ -499,13 +497,14 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         tree: &DesktopTree,
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
-        let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
-        let history = history_log::workspace_history(self.desktop_log(), room);
-        self.authors = history.authors;
-        self.partial = history.truncated;
+        tree.workspaces.iter().find(|w| w.id == workspace)?;
         let mut desktop = tree.clone();
         desktop.active = workspace;
-        ActivitySnapshot::new(desktop, history.doc).ok()
+        // The desk's history is the desk's document: every change in it, by
+        // the person who made it, as native reads the same document.
+        let mut document = self.desk_document();
+        self.authors = history_log::authors_of(&mut document);
+        Some(ActivitySnapshot::of_desktop(desktop, document))
     }
 
     fn record_histories(
@@ -529,10 +528,6 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
                 }
             })
             .collect()
-    }
-
-    fn history_is_partial(&self) -> bool {
-        self.partial
     }
 
     fn activity_pane(&self) -> ActivityPaneCode {
@@ -570,12 +565,13 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
             })
     }
 
-    /// The heads of every record the active workspace's windows show.
+    /// The heads of the desk's document and of every record the active
+    /// workspace's windows show.
     fn revision(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.peer
             .and_then(crate::replication::desktop_history_heads)
-            .unwrap_or_else(|| self.log.borrow().base_heads())
+            .unwrap_or_else(|| self.document.borrow().base_heads())
             .hash(&mut hasher);
         let mut tree_records = self.shared.bound_records();
         tree_records.compact_sort_by_key(|(tab, _)| *tab);
