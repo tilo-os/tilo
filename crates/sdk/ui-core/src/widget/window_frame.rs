@@ -40,6 +40,10 @@ pub struct WindowFrameProps {
     pub name: Option<String>,
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,
+    /// The shell lists this window's actions where the person reaches them (the desktop
+    /// bar's window menu): its header's actions that do not fit give way with no door of
+    /// their own. Without it what does not fit goes behind the header's door.
+    pub lists_actions: bool,
     /// The frame's controls (close, and what else the shell offers on the window), at the
     /// trailing end of the window's bar.
     #[component(slot)]
@@ -54,6 +58,7 @@ pub struct WindowFrameProps {
 pub struct WindowFrame {
     name: Option<String>,
     focused: bool,
+    lists_actions: bool,
     layers: Layers,
     /// The slot a host is changing: 0 for the controls, 1 for the content.
     editing: usize,
@@ -93,6 +98,7 @@ impl Described for WindowFrame {
         let WindowFrameProps {
             name,
             focused,
+            lists_actions,
             controls,
             body,
         } = props;
@@ -110,6 +116,7 @@ impl Described for WindowFrame {
         Self {
             name,
             focused,
+            lists_actions,
             layers,
             editing: 1,
             merged: true,
@@ -121,13 +128,16 @@ impl Described for WindowFrame {
     }
 
     fn set_props(&mut self, props: WindowFrameProps) -> bool {
-        let changed = self.focused != props.focused || self.name != props.name;
+        let changed = self.focused != props.focused
+            || self.name != props.name
+            || self.lists_actions != props.lists_actions;
         if self.name != props.name && !self.merged {
             // The own bar shows the name: build it again with the new one.
             self.merged = true;
         }
         self.name = props.name;
         self.focused = props.focused;
+        self.lists_actions = props.lists_actions;
         changed
     }
 
@@ -211,6 +221,7 @@ impl WindowFrame {
             controls_width: self.controls_width + m.inset,
             revealed: true,
             top_inset: 0.0,
+            lists_actions: self.lists_actions,
         };
         let merged = self
             .column()

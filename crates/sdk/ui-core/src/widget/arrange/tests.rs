@@ -11,6 +11,12 @@ use crate::tokens::Rhythm;
 use crate::widget::{Spacer, Widget};
 
 fn solve(root: &mut dyn Widget, theme: &Theme, width: f32) {
+    solve_in(root, theme, width, taffy::AvailableSpace::MaxContent);
+}
+
+/// Solve `root` at `width`, its height under `height`: a column that shrinks what it holds to
+/// its minimum lays it out under a min-content constraint.
+fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::AvailableSpace) {
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, theme, &mut nodes);
@@ -24,7 +30,7 @@ fn solve(root: &mut dyn Widget, theme: &Theme, width: f32) {
             node,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::MaxContent,
+                height,
             },
             &nodes,
             &bindings,
@@ -234,6 +240,45 @@ fn a_hugging_grid_holds_the_items_it_places() {
                 "at {scale}x, item {index} {r:?} is inside the grid {bounds:?}"
             );
         }
+    }
+}
+
+/// A hugging grid at its smallest still holds its cards whole: a card's body is as tall as
+/// what it holds whether the card is measured or laid out, so a column that shrinks the grid
+/// to its minimum never leaves a card standing past the grid's edge or over the next row. (A
+/// layers' cell takes the room it is given; under a min-content constraint it is given none,
+/// so a card whose body holds layers measured them away: a preset picker's card stood past
+/// its grid.)
+#[test]
+fn a_hugging_grid_at_its_smallest_holds_its_cards_whole() {
+    for scale in [1.0, 1.5, 2.0] {
+        let theme = Theme::dark();
+        let _held = crate::widget::enter_device_scale(scale);
+        let card = |art: f32, rest: f32| {
+            let body = Stack::stack()
+                .push(Box::new(Layers::layers().push(boxed(art))) as crate::widget::Element)
+                .push(boxed(rest));
+            Box::new(crate::widget::Card::new(Box::new(body)).with_title("A preset"))
+                as crate::widget::Element
+        };
+        let mut grid = Grid::columns(2)
+            .hugging()
+            .push(card(24.3, 40.0))
+            .push(card(17.1, 90.7))
+            .push(card(16.0, 60.2));
+        solve_in(&mut grid, &theme, 601.3, taffy::AvailableSpace::MinContent);
+        let bounds = grid.get_rect();
+        let placed = rects(&grid);
+        for (index, r) in placed.iter().enumerate() {
+            assert!(
+                r.y1 <= bounds.y1 + 0.01,
+                "at {scale}x, card {index} {r:?} is inside the grid {bounds:?}"
+            );
+        }
+        assert!(
+            placed[0].y1.max(placed[1].y1) <= placed[2].y0,
+            "at {scale}x, the second row stands under the first: {placed:?}"
+        );
     }
 }
 
@@ -682,5 +727,40 @@ fn a_spacer_takes_the_leftover_room_and_no_gap_of_its_own() {
             left.x0.abs() < 0.5 && (right.x1 - 600.0).abs() < 0.5,
             "{direction:?}: {r:?}"
         );
+    }
+}
+
+/// A text field has no width of its own content; where a row that wraps lays it out at its own
+/// width it stands at the theme's least width for a field, never 0 — hugging or filling, with
+/// the show/hide control or without, beside a button — at a phone's widths and a desktop's.
+#[test]
+fn every_text_field_in_a_wrapping_row_stands_at_least_its_own_width() {
+    use crate::widget::{Button, TextInput};
+    let theme = Theme::dark();
+    let least = f64::from(TextInput::own_width_in(&theme));
+    assert!(least > 0.0, "a field's own width is never 0");
+    let field = || TextInput::new(vec![crate::PathSegment::Field("name".into())]);
+    for width in [320.0, 390.0, 1280.0] {
+        let mut row = Row::row()
+            .fill_width()
+            .wrap()
+            .push(Box::new(field().with_placeholder("Name a new workspace")))
+            .push(Box::new(field().with_secret(true)))
+            .push_fit(Box::new(field()), Fit::hug().width(Sizing::fill(1.0)))
+            .push(Box::new(Button::new("create", "Create")));
+        solve(&mut row, &theme, width);
+        let r = rects(&row);
+        for (index, field) in r.iter().take(3).enumerate() {
+            assert!(
+                field.width() + 0.5 >= least,
+                "field {index} at {width} px is {}, less than its {least}",
+                field.width()
+            );
+            assert!(
+                field.width() <= f64::from(width) + 0.5,
+                "field {index} at {width} px stays inside the row: {}",
+                field.width()
+            );
+        }
     }
 }

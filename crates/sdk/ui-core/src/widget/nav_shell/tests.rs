@@ -10,6 +10,7 @@ mod band;
 mod capabilities;
 mod hosted;
 mod inspector_sheet;
+mod listed_actions;
 mod nothing_listed;
 mod replan;
 mod sidebar_button;
@@ -1855,6 +1856,7 @@ fn the_window_bar_merges_into_the_header_row() {
                 controls_width: width,
                 revealed: false,
                 top_inset: 0.0,
+                lists_actions: false,
             })),
         "a header row takes the window's bar"
     );
@@ -1914,6 +1916,7 @@ fn a_header_in_the_window_bar_hides_until_reached_for() {
             controls_width: width,
             revealed,
             top_inset: 0.0,
+            lists_actions: false,
         })
     };
 
@@ -1975,6 +1978,7 @@ fn a_header_in_the_window_bar_hides_until_reached_for() {
             controls_width: width,
             revealed: true,
             top_inset: 36.0,
+            lists_actions: false,
         }));
     settle(&mut h, 1280, 800);
     let g = geometry(&h);

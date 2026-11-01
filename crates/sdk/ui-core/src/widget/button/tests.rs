@@ -1748,3 +1748,56 @@ fn keys_plain_ink_and_bound_state() {
     icons_grow_with_the_text_scale();
     enabled_follows_its_state_and_bounds_are_spoken();
 }
+
+/// A node's margins are its parent's (an arrangement puts its gaps there): a button without a
+/// count leaves them as they are, and one with a count adds the count's room to them, once.
+/// Either way a second layout pass finds nothing to change, so the layout settles.
+#[test]
+fn a_button_only_adds_its_counts_room_to_the_margins_its_parent_gave() {
+    let theme = Theme::light();
+    let mut text = TextRenderer::new();
+    let parents = taffy::Rect {
+        left: taffy::LengthPercentageAuto::length(8.0),
+        right: taffy::LengthPercentageAuto::length(8.0),
+        top: taffy::LengthPercentageAuto::length(4.0),
+        bottom: taffy::LengthPercentageAuto::length(4.0),
+    };
+    let laid = |mut button: Button, text: &mut TextRenderer| {
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let node = button.build_layout(&mut tree, &theme, &mut map);
+        let mut style = tree.style(node).unwrap().clone();
+        style.margin = parents;
+        tree.set_style(node, style).unwrap();
+        button.adjust_layout_style(&mut tree, node, text);
+        let first = tree.style(node).unwrap().margin;
+        let changed = button.adjust_layout_style(&mut tree, node, text);
+        (first, changed, tree.style(node).unwrap().margin)
+    };
+
+    let (first, changed, after) = laid(Button::new("save", "Save"), &mut text);
+    assert_eq!(
+        first, parents,
+        "a button with no count leaves its parent's margins"
+    );
+    assert!(
+        !changed && after == parents,
+        "and finds nothing to change again"
+    );
+
+    let counted = Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications").with_count(
+        crate::widget::BadgeContent::Count(2),
+        crate::widget::ChipStyle::Live,
+    );
+    let (first, changed, after) = laid(counted, &mut text);
+    let px = |m: taffy::LengthPercentageAuto| m.into_raw().value();
+    assert_eq!(px(first.left), 8.0, "the leading margin stays the parent's");
+    assert!(
+        px(first.right) > 8.0,
+        "the count's room adds to the parent's: {first:?}"
+    );
+    assert!(
+        !changed && after == first,
+        "a second pass adds nothing more: {after:?}"
+    );
+}
