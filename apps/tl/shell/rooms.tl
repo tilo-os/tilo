@@ -16,7 +16,9 @@ view workspaces(d: Desk) {
             }
         }
         row(gap: .related, align: .end, wrap: true) {
-            ui.TextInput(value: name, placeholder: "Name a new workspace") {
+            // A field has no width of its own: in a row that wraps it takes the line's room,
+            // never less than a name's.
+            ui.TextInput(value: name, placeholder: "Name a new workspace", fill, min: 16rem) {
                 on submit: create_room(d, name)
             }
             ui.Button("Create", icon: .plus, role: .primary) {
@@ -43,6 +45,6 @@ view room_card(r: Room) {
                 }
             }
         }
-        on activate: switch_to_key(r.key, r.current)
+        on activate: switch_to_key(r)
     }
 }

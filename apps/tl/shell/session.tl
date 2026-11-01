@@ -9,17 +9,18 @@
 /// What the session's door does not publish yet (an agent's menu, asking about a window,
 /// following, messaging, calling and seeing a person's work, a task's log) is addressed to the
 /// desk, which refuses it as an action it lacks: the press reaches the session, and the refusal
-/// is the shell's to show, never a quiet drop.
+/// is the shell's to show, never a quiet drop. Each action takes the resource it is about (the
+/// window, the person, the workspace, else the desk), on which its effect is queued.
 ///
 /// The address of the window `w` on the session's door: its tab's resource.
 fn window(w: Win) -> Text {
     return "desktop:tab:{w.key}"
 }
 
-/// Brings `key`'s workspace to the front, unless it is there already.
-action switch_to_key(key: Text, current: Bool) (icon: .layers, label: "Switch to") {
-    require not current "It is in front already"
-    outside("session.switch_workspace", key)
+/// Brings the workspace `r` to the front, unless it is there already.
+action switch_to_key(r: Room) (icon: .layers, label: "Switch to") {
+    require not r.current "It is in front already"
+    outside("session.switch_workspace", r.key)
 }
 
 /// Brings the window `w` to the front: its workspace, its strip, and it.
@@ -44,18 +45,18 @@ action move_to_room(w: Win, workspace: Text) (icon: .layers, label: "Move to a w
 
 /// Searches the whole workspace, what apps and files hold, for `query`: the platform's search,
 /// which the overview's window search is not.
-action submit_search(query: Text) (icon: .search, label: "Search everything") {
+action submit_search(d: Desk, query: Text) (icon: .search, label: "Search everything") {
     outside("session.run", ("desktop:desk", "open-search", [("query", query)]))
 }
 
 /// Opens a person's menu: follow them, message them, see what they are working on.
-action show_person(key: Text) (icon: .user, label: "Their menu") {
-    outside("session.run", ("desktop:chrome", "show-person", [("person", key)]))
+action show_person(p: Person) (icon: .user, label: "Their menu") {
+    outside("session.run", ("desktop:chrome", "show-person", [("person", p.key)]))
 }
 
 /// Opens an agent's menu: see what it is doing and undo what it did.
-action show_agent(key: Text) (icon: .bot, label: "Its menu") {
-    outside("session.run", ("session:desk", "show-agent", [("agent", key)]))
+action show_agent(a: Agent) (icon: .bot, label: "Its menu") {
+    outside("session.run", ("session:desk", "show-agent", [("agent", a.key)]))
 }
 
 /// Asks an agent about the window `w`: its title, the app it shows and what it holds.
@@ -64,38 +65,38 @@ action ask_about(w: Win) (icon: .bot, label: "Ask an agent", group: "Window") {
 }
 
 /// Tells the session which surface the desk shows.
-action show_surface(wanted: Text) (icon: .layers, label: "Show") {
+action show_surface(d: Desk, wanted: Text) (icon: .layers, label: "Show") {
     outside("session.run", ("session:desk", "show-surface", [("surface", wanted)]))
 }
 
 /// Closes the surface `wanted`, if it is the one the desk shows.
-action close_surface(wanted: Text) (icon: .x, label: "Close") {
+action close_surface(d: Desk, wanted: Text) (icon: .x, label: "Close") {
     outside("session.run", ("session:desk", "close-surface", [("surface", wanted)]))
 }
 
-/// Follows `who`: opens what they are on, in the person's shell.
-action follow(who: Text) (icon: .eye, label: "Follow") {
-    outside("session.run", ("session:desk", "follow", [("person", who)]))
+/// Follows `p`: opens what they are on, in the person's shell.
+action follow(p: Person) (icon: .eye, label: "Follow") {
+    outside("session.run", ("session:desk", "follow", [("person", p.key)]))
 }
 
 /// Stops following whoever the person follows.
-action stop_following() (icon: .eye_off, label: "Stop following") {
+action stop_following(d: Desk) (icon: .eye_off, label: "Stop following") {
     outside("session.run", ("session:desk", "stop-following", []))
 }
 
-/// Opens a chat with `who`, in a window of its own beside the one in front.
-action message(who: Text) (icon: .message_circle, label: "Message") {
-    outside("session.run", ("session:desk", "message", [("person", who)]))
+/// Opens a chat with `p`, in a window of its own beside the one in front.
+action message(p: Person) (icon: .message_circle, label: "Message") {
+    outside("session.run", ("session:desk", "message", [("person", p.key)]))
 }
 
-/// Calls `who`, in the workspace's call.
-action call(who: Text) (icon: .phone, label: "Call") {
-    outside("session.run", ("session:desk", "call", [("person", who)]))
+/// Calls `p`, in the workspace's call.
+action call(p: Person) (icon: .phone, label: "Call") {
+    outside("session.run", ("session:desk", "call", [("person", p.key)]))
 }
 
-/// Shows what `who` is working on: their windows and their tasks, read-only.
-action see_work(who: Text) (icon: .list, label: "What they are working on") {
-    outside("session.run", ("session:desk", "see-work", [("person", who)]))
+/// Shows what `p` is working on: their windows and their tasks, read-only.
+action see_work(p: Person) (icon: .list, label: "What they are working on") {
+    outside("session.run", ("session:desk", "see-work", [("person", p.key)]))
 }
 
 /// Runs one of a notification's choices: the desk's `act-on-notice`, naming the notice and the
@@ -116,18 +117,18 @@ action clear_notices(d: Desk) (icon: .trash, label: "Clear all") {
 }
 
 /// Asks the agent `agent` about `subject`, with what was typed: the session's runs' `ask`.
-action send_to_agent(agent: Text, subject: Text, words: Text) (icon: .send, label: "Send") {
+action send_to_agent(d: Desk, agent: Text, subject: Text, words: Text) (icon: .send, label: "Send") {
     require words != "" "Write what to ask first"
     outside("session.run", ("agent-runs", "ask", [("agent", agent), ("title", words), ("subject", subject)]))
 }
 
 /// Stops the task `key`: its run's `stop-run`.
-action stop_task(key: Text) (icon: .square, label: "Stop") {
+action stop_task(d: Desk, key: Text) (icon: .square, label: "Stop") {
     outside("session.run", ("agent-run:{key}", "stop-run", []))
 }
 
 /// Opens the task `key`'s log: each step it ran, what it changed and Undo.
-action open_task(key: Text) (icon: .list, label: "Its log") {
+action open_task(d: Desk, key: Text) (icon: .list, label: "Its log") {
     outside("session.run", ("session:desk", "open-task", [("task", key)]))
 }
 

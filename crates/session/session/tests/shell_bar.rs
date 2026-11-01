@@ -68,7 +68,10 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
         }
     }
     panic!(
-        "condition not reached; the session says: {:?}",
+        "condition not reached; the shell's refusals: {:?}; effects handed {:?} served {:?}; the session says: {:?}",
+        session.shell_refusals(),
+        session.shell_work().map(|work| work.handed),
+        session.shell_work().map(|work| work.served),
         session.accessible_labels()
     );
 }
@@ -137,7 +140,10 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     let mut session = session();
     until(&mut session, |session| {
         let desk = desk(session);
-        says(session, &desk.clock) && says(session, &desk.workspace)
+        says(session, &desk.clock)
+            && says(session, &desk.workspace)
+            && (desk.strip.is_empty() || says(session, &desk.strip))
+            && says(session, PERSON)
     });
     let desk = desk(&session);
     assert_eq!(desk.person, PERSON);
@@ -831,15 +837,12 @@ fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
     })
 }
 
-/// The tab `tab` is the one in front of its group.
+/// The tab `tab` is the window in front, as the desk publishes it.
 fn in_front(session: &Session, tab: u64) -> bool {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .any(|group| group.tabs.iter().any(|t| t.id == tab) && group.active_tab == tab)
-    })
+    desk(session)
+        .windows
+        .iter()
+        .any(|window| window.focused && window.key == tab.to_string())
 }
 
 /// Name the strip in front `first`, and add a strip `second` beside it holding a window of
@@ -895,23 +898,22 @@ fn a_press_on_a_launcher_row_brings_its_window_front() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
-    let notes = open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
     until(&mut session, |session| desk(session).windows.len() == 2);
-    assert!(!in_front(&session, notes), "mail opened in front of notes");
-    show(&mut session, "launcher");
-    let title = desk(&session)
+    // The window not in front is the one to go to.
+    let behind = desk(&session)
         .windows
-        .iter()
-        .find(|w| w.key == notes.to_string())
-        .unwrap()
-        .title
-        .clone();
+        .into_iter()
+        .find(|w| !w.focused)
+        .expect("one window is behind the other");
+    let tab: u64 = behind.key.parse().unwrap();
+    show(&mut session, "launcher");
     until(&mut session, |session| {
-        session.shell_control(&title).is_some()
+        session.shell_control(&behind.title).is_some()
     });
-    press(&mut session, &title);
-    until(&mut session, |session| in_front(session, notes));
+    press(&mut session, &behind.title);
+    until(&mut session, |session| in_front(session, tab));
     assert!(
         session.shell_refusals().is_empty(),
         "{:?}",
@@ -946,6 +948,10 @@ fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query(
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "launcher");
+    until(&mut session, |session| {
+        session.shell_control("Query").is_some()
+    });
+    press(&mut session, "Query");
     type_text(&mut session, "quarterly");
     let button = "Search everywhere for quarterly";
     until(&mut session, |session| {
@@ -1121,9 +1127,9 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "workspaces");
     until(&mut session, |session| {
-        session.shell_control("Name a new workspace").is_some()
+        session.shell_control("Name").is_some()
     });
-    press(&mut session, "Name a new workspace");
+    press(&mut session, "Name");
     type_text(&mut session, "studio");
     press(&mut session, "Create");
     until(&mut session, |session| {

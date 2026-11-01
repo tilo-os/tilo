@@ -392,11 +392,13 @@ impl Shell {
         work
     }
 
-    /// What the bar refused since the session started, in its words: every display's.
+    /// What the bar refused since the session started, in its words: every display's, and
+    /// what the door refused of what the bar asked.
     pub(crate) fn refusals(&self) -> Vec<String> {
         self.parts
             .iter()
             .flat_map(|(_, part)| part.borrow().refusals().to_vec())
+            .chain(self.link.refused())
             .collect()
     }
 

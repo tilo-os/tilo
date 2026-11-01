@@ -124,13 +124,13 @@ view strip_header(a: Arrangement, v: Viewing, s: ArrangementStrip, in_front: Boo
         }
         ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
-                on choose: resize_strip(s.key, permille_of(.narrow))
+                on choose: resize_strip(arrangement, s.key, permille_of(.narrow))
             }
             ui.MenuItem("Normal", checked: .some(width_of(s.width) == .normal)) {
-                on choose: resize_strip(s.key, permille_of(.normal))
+                on choose: resize_strip(arrangement, s.key, permille_of(.normal))
             }
             ui.MenuItem("Wide", checked: .some(width_of(s.width) == .wide)) {
-                on choose: resize_strip(s.key, permille_of(.wide))
+                on choose: resize_strip(arrangement, s.key, permille_of(.wide))
             }
         }
     }
@@ -167,17 +167,17 @@ view place_controls(a: Arrangement, p: ArrangementPlace) {
             ui.Badge("Pinned", dot: true)
         }
         ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
-            on press: pin_place(p.key, not p.pinned)
+            on press: pin_place(arrangement, p.key, not p.pinned)
         }
         ui.Button("Close place", icon: .x, icon_only: true, role: .plain) {
-            on press: close_place(p.key)
+            on press: close_place(arrangement, p.key)
         }
         if a.rows.len() > 1 {
             ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .plain) {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: move_place(p.key, r.key)
+                            on choose: move_place(arrangement, p.key, r.key)
                         }
                     }
                 }

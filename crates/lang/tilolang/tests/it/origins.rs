@@ -74,6 +74,16 @@ fn a_session_run_is_an_invocation_by_address() {
     assert!(!codes(text).is_empty(), "session.act takes one text");
 }
 
+/// An outside effect is queued on the action's resource: an action that takes none is refused
+/// where it is written, not trapped at its first press.
+#[test]
+fn an_outside_effect_needs_a_resource_to_queue_on() {
+    let none = "action go(key: Text) {\n    outside(\"session.act\", key)\n}";
+    assert_eq!(codes(none), ["E047"]);
+    let some = "type D {\n    to: Text\n}\naction go(d: D, key: Text) {\n    outside(\"session.act\", key)\n}";
+    assert!(codes(some).is_empty(), "{:?}", codes(some));
+}
+
 #[test]
 fn a_named_filter_tests_a_set_holding_a_value() {
     let src = "type T {\n    boxes: Set<Text>\n    search {\n        filter \"Inbox\" = boxes.contains(\"inbox\")\n    }\n}";

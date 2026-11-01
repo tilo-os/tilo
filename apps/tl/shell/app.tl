@@ -350,7 +350,7 @@ view bar_part(d: Desk, part: BarPart) {
         row(gap: .tight, align: .center) {
             if space.wide {
                 for p in d.people {
-                    person_chip(p)
+                    person_chip(d, p)
                 }
             }
             if d.ask != "" {
@@ -373,7 +373,7 @@ view bar_part(d: Desk, part: BarPart) {
         ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
     } else if part.slot == .agent {
         for a in d.agents {
-            agent_chip(a)
+            agent_chip(d, a)
         }
     } else if part.slot == .status {
         row(gap: .tight, align: .center) {

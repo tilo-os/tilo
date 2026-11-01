@@ -692,6 +692,9 @@ pub struct SessionLink {
     handed: Cell<u64>,
     served: Cell<u64>,
     answers: RefCell<BTreeMap<Ask, Result<(), String>>>,
+    /// What the door refused of what the shell asked, in its words: each refusal, kept for
+    /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
+    refused: RefCell<Vec<String>>,
 }
 
 impl SessionLink {
@@ -737,10 +740,19 @@ impl SessionLink {
             let answer = invoke(ask);
             if let Err(why) = &answer {
                 tracing::warn!(?ask, why, "the session refused what the shell asked");
+                self.refused
+                    .borrow_mut()
+                    .push(format!("{} on {}: {why}", ask.action, ask.resource));
             }
             self.answers.borrow_mut().insert(ask.clone(), answer);
         }
         !asked.is_empty()
+    }
+
+    /// What the door refused of what the shell asked since the session started, in its words.
+    #[must_use]
+    pub fn refused(&self) -> Vec<String> {
+        self.refused.borrow().clone()
     }
 
     /// Whether the shell asked something the session has not run yet.
