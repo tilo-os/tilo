@@ -167,7 +167,7 @@ pub(crate) fn shown(
     notification.scheduled_target = sent
         .scheduled
         .map(|occurrence| ScheduledNotificationTarget {
-            workspace: occurrence.room,
+            workspace: occurrence.workspace,
             token: occurrence.token,
             occurrence_ms: occurrence.occurrence_ms,
             calendar_alarm: occurrence.calendar_alarm,
