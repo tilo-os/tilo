@@ -2,9 +2,9 @@
 //! to read this machine and carry out its effects.
 //!
 //! [`DeviceHost`] reads network, radios, Bluetooth and the power mode
-//! through `os-actions`, follows the media players through the
-//! session's audio helper, and is handed the sound the audio service reads
-//! ([`DeviceHost::sound`]), whose actions every sound change becomes.
+//! through `os-actions`, is handed the sound and the players the audio
+//! service reads ([`DeviceHost::sound`], [`DeviceHost::media`]), whose
+//! actions every sound change and every media press becomes.
 //! Nothing it does waits on the device: reads and writes run on workers
 //! that wake the session when they are done, and the session lands them on
 //! its own thread with [`DeviceHost::pump`]. The effects only the desktop
@@ -13,12 +13,12 @@
 //! the session as [`SessionRequest`]s.
 //!
 //! Its seams are the reads ([`DeviceReads`]), the dispatcher
-//! ([`os_actions::Dispatcher`]), the person's settings ([`Preferences`])
-//! and the players' transport ([`PlayerLink`]), so a test drives the panel
-//! with stand-ins for all of them.
+//! ([`os_actions::Dispatcher`]) and the person's settings
+//! ([`Preferences`]), so a test drives the panel with stand-ins for all of
+//! them.
 
 mod apply;
-mod players;
+mod media;
 mod reads;
 mod refresh;
 mod sound;
@@ -33,7 +33,6 @@ use std::time::{Duration, Instant};
 use os_actions::{Dispatcher, RadioChange};
 use settings_store::hardware::QuickSettingsConfig;
 
-pub use players::PlayerLink;
 pub use reads::{DeviceReads, OsReads};
 pub use refresh::Wake;
 
@@ -146,8 +145,6 @@ pub enum SessionRequest {
     Effect(QsEffect),
     /// Tell the person: a change that did not happen, a network joined.
     Notify { title: String, body: String },
-    /// An audio device arrived or left, for the desktop to sound.
-    AudioDevice { connected: bool },
 }
 
 /// The device behind the panel. Cheap to clone; every clone is the same
@@ -164,7 +161,7 @@ struct Inner {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     preferences: Box<dyn Preferences>,
     radio: RefCell<Option<RadioTicket>>,
-    players: RefCell<Option<players::Players>>,
+    media: RefCell<media::Media>,
     requests: RefCell<Vec<SessionRequest>>,
     wifi_scanned_at: Cell<Option<Instant>>,
     wake: Wake,
@@ -196,7 +193,7 @@ impl DeviceHost {
             dispatcher,
             preferences,
             radio: RefCell::new(None),
-            players: RefCell::new(None),
+            media: RefCell::new(media::Media::default()),
             requests: RefCell::new(Vec::new()),
             wifi_scanned_at: Cell::new(None),
             wake,
@@ -211,19 +208,24 @@ impl DeviceHost {
         Self::new(Device::os(), wake)
     }
 
-    /// Follow what plays through `link`; a link given before is let go.
-    pub fn follow_players(&self, link: PlayerLink) {
-        let players = players::Players::start(link, Arc::clone(&self.0.wake));
-        *self.0.players.borrow_mut() = Some(players);
-    }
-
     /// Land the sound the audio service reads: which outputs there are and
     /// which plays, the level and mute, and the microphone. The audio
     /// service owns the graph, so this is the panel's only sound reading.
     pub fn sound(&self, sound: &audio::sound::Sound) {
         sound::land(&mut self.0.state.borrow_mut(), sound);
-        if let Some(players) = self.0.players.borrow_mut().as_mut() {
-            players.set_outputs(sound::destinations(sound));
+        self.feed();
+    }
+
+    /// Land what plays as the audio service reads it: the players, where
+    /// each's playhead is, how long what it plays is, the cover it names and
+    /// where its sound can go, and the speaker group this device plays it
+    /// on. The audio service owns the players, so this is the card's only
+    /// reading of them.
+    pub fn media(&self, reading: audio::media::Media, speakers: Option<String>) {
+        {
+            let mut media = self.0.media.borrow_mut();
+            media.land(reading, Instant::now());
+            media.set_speakers(speakers);
         }
         self.feed_now_playing();
         self.feed();
@@ -242,9 +244,7 @@ impl DeviceHost {
     /// The offer shows at once, and stays until the person takes it or the
     /// session hands over another.
     pub fn handoff(&self, offer: Option<crate::MediaOffer>) {
-        if let Some(players) = self.0.players.borrow_mut().as_mut() {
-            players.set_offer(offer);
-        }
+        self.0.media.borrow_mut().set_offer(offer);
         self.feed_now_playing();
         self.feed();
     }
@@ -255,11 +255,7 @@ impl DeviceHost {
     /// source to send.
     #[must_use]
     pub fn playing_source(&self) -> Option<crate::PlayingSource> {
-        self.0
-            .players
-            .borrow()
-            .as_ref()
-            .and_then(|players| players.playing_source(Instant::now()))
+        self.0.media.borrow().playing_source(Instant::now())
     }
 
     /// The host as the panel takes it ([`crate::prepare`]).
@@ -329,15 +325,9 @@ impl DeviceHost {
             .wifi_scanned_at
             .get()
             .and_then(|at| at.checked_add(WIFI_RESCAN));
-        let playhead = (self.0.open.get()
-            && self
-                .0
-                .players
-                .borrow()
-                .as_ref()
-                .is_some_and(players::Players::playing))
-        .then(|| Instant::now().checked_add(PLAYHEAD))
-        .flatten();
+        let playhead = (self.0.open.get() && self.0.media.borrow().playing())
+            .then(|| Instant::now().checked_add(PLAYHEAD))
+            .flatten();
         [scan, playhead].into_iter().flatten().min()
     }
 
@@ -351,18 +341,6 @@ impl DeviceHost {
         }
         self.land_radio();
         let now = Instant::now();
-        let devices = self
-            .0
-            .players
-            .borrow_mut()
-            .as_mut()
-            .map(|players| players.drain(now))
-            .unwrap_or_default();
-        self.0.requests.borrow_mut().extend(
-            devices
-                .into_iter()
-                .map(|connected| SessionRequest::AudioDevice { connected }),
-        );
         self.rescan_open_wifi(now);
         self.feed_now_playing();
         self.feed();
@@ -379,12 +357,7 @@ impl DeviceHost {
     }
 
     fn feed_now_playing(&self) {
-        let playing = self
-            .0
-            .players
-            .borrow_mut()
-            .as_mut()
-            .and_then(|players| players.now_playing(Instant::now()));
+        let playing = self.0.media.borrow_mut().now_playing(Instant::now());
         self.0.state.borrow_mut().now_playing = playing;
     }
 
@@ -978,25 +951,24 @@ impl DeviceHost {
                     tracing::warn!(%error, "could not keep the Quick Settings arrangement");
                 }
             }
-            effect @ (QsEffect::PlayPause
-            | QsEffect::PreviousTrack
-            | QsEffect::NextTrack
-            | QsEffect::Seek { .. }
-            | QsEffect::ChoosePlayer { .. }
-            | QsEffect::ResumePlayback { .. }) => {
-                self.0
-                    .players
-                    .borrow_mut()
-                    .as_mut()
-                    .ok_or_else(|| "nothing plays".to_owned())?
-                    .run(&effect)?;
+            QsEffect::ChoosePlayer { player } => {
+                self.0.media.borrow_mut().choose(&player)?;
                 self.feed_now_playing();
+            }
+            QsEffect::ResumePlayback { request } => {
+                self.0.media.borrow_mut().resume(&request)?;
+                self.feed_now_playing();
+                self.ask(QsEffect::ResumePlayback { request });
             }
             QsEffect::SetDoNotDisturb { on } => {
                 state().do_not_disturb = on;
                 self.ask(QsEffect::SetDoNotDisturb { on });
             }
-            effect @ (QsEffect::HandOffBluetooth { .. }
+            effect @ (QsEffect::PlayPause
+            | QsEffect::PreviousTrack
+            | QsEffect::NextTrack
+            | QsEffect::Seek { .. }
+            | QsEffect::HandOffBluetooth { .. }
             | QsEffect::PressDevice { .. }
             | QsEffect::RouteSound { .. }
             | QsEffect::RouteStream { .. }

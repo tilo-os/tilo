@@ -257,6 +257,14 @@ struct Shared {
     /// The machine's charge and what holds it awake, as the panel was last fed
     /// them.
     panel_power: mount::panel_power::PanelPower,
+    /// The session another of the person's devices handed this one, as the
+    /// now-playing card shows it, until they continue it here.
+    handoff: std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>,
+    /// The services' revision and the speaker group session the panel last
+    /// took what plays from: its reading carries the players' covers, so it
+    /// is read only when one of the services published something or the
+    /// sound moved onto or off a speaker group.
+    media_fed: std::cell::Cell<Option<(u64, Option<[u8; 16]>)>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -1569,6 +1577,8 @@ impl Session {
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
             panel_power: mount::panel_power::PanelPower::default(),
+            handoff: std::cell::RefCell::new(None),
+            media_fed: std::cell::Cell::new(None),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,

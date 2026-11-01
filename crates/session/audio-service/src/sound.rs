@@ -41,6 +41,21 @@ pub fn output_node(id: &str) -> Option<u32> {
 /// How far a step of the volume moves it.
 pub const VOLUME_STEP: f32 = 0.05;
 
+/// Where the sound can go, as what plays names it: one destination per
+/// output, the one playing marked.
+#[must_use]
+pub fn destinations(sound: &Sound) -> Vec<super::media::Output> {
+    sound
+        .outputs
+        .iter()
+        .map(|device| super::media::Output {
+            token: output_id(device.node),
+            label: device.label.clone(),
+            current: device.chosen,
+        })
+        .collect()
+}
+
 /// What the `sound` resource reads.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]

@@ -10,13 +10,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::{BufReader, Write};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, channel};
 
 use tilo_quick_settings::device::testing::{Kept, Machine};
-use tilo_quick_settings::device::{Device, DeviceHost, PlayerLink, SessionRequest};
+use tilo_quick_settings::device::{Device, DeviceHost, SessionRequest};
 use tilo_quick_settings::host::{FixtureHost, Lent};
 use tilo_quick_settings::hosted::{
     PersonalDevice, SendableSound, SoundAsk, SoundRoute, device_rows, remote_audio_rows,
@@ -708,78 +707,6 @@ fn leaving_the_bluetooth_section_stops_looking_for_devices() {
     );
 }
 
-/// The helper's side of the line: the requests the panel sent, and a way
-/// to say what plays.
-struct Helper {
-    say: Sender<String>,
-    heard: Receiver<String>,
-}
-
-impl Helper {
-    fn link() -> (PlayerLink, Self) {
-        let (say, said) = channel::<String>();
-        let (sent, heard) = channel::<String>();
-        let link = PlayerLink::new(
-            Lines(sent, Vec::new()),
-            BufReader::new(Said(said, Vec::new())),
-        );
-        (link, Self { say, heard })
-    }
-
-    fn players(&self, players: Vec<audio::Player>) {
-        self.say
-            .send(audio::Event::Players { players }.line())
-            .unwrap();
-    }
-
-    fn request(&self) -> audio::Request {
-        let line = tilo_test_env::recv("a request to the helper", &self.heard);
-        audio::Request::parse(&line).expect("a request line")
-    }
-}
-
-/// Requests, a line at a time.
-struct Lines(Sender<String>, Vec<u8>);
-
-impl Write for Lines {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.1.extend_from_slice(bytes);
-        while let Some(end) = self.1.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.1.drain(..=end).collect();
-            let _ = self
-                .0
-                .send(String::from_utf8_lossy(&line).trim_end().to_owned());
-        }
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Events, as the helper writes them.
-struct Said(Receiver<String>, Vec<u8>);
-
-impl std::io::Read for Said {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.1.is_empty() {
-            match self.0.recv() {
-                Ok(line) => {
-                    self.1 = line.into_bytes();
-                    self.1.push(b'\n');
-                }
-                Err(_) => return Ok(0),
-            }
-        }
-        let n = out.len().min(self.1.len());
-        for (slot, byte) in out.iter_mut().zip(self.1.drain(..n)) {
-            *slot = byte;
-        }
-        Ok(n)
-    }
-}
-
 /// A press on one of the person's devices is the session's to answer: the
 /// panel names the row's key and which part of it was pressed, and holds no
 /// device fabric of its own.
@@ -961,79 +888,92 @@ fn the_devices_section_lists_the_sounds_that_travel_and_what_asks_for_one() {
     );
 }
 
-fn player(bus: &str, identity: &str, status: audio::Status) -> audio::Player {
-    audio::Player {
-        bus_name: format!("org.mpris.MediaPlayer2.{bus}"),
-        unique_name: ":1.7".into(),
-        pid: None,
-        package_id: None,
-        desktop_entry: None,
-        identity: Some(identity.into()),
-        status,
+/// A player as the audio service publishes one, playing.
+fn playing_player(bus: &str, identity: &str) -> audio::media::Player {
+    let bus = format!("org.mpris.MediaPlayer2.{bus}");
+    audio::media::Player {
+        token: audio::media::player_token(&bus),
+        bus,
+        identity: identity.into(),
         title: Some("Clair de lune".into()),
         artist: Some("Claude Debussy".into()),
-        url: None,
-        art_url: None,
-        track_id: Some("/track/1".into()),
-        length_us: Some(300_000_000),
-        position_us: 72_000_000,
-        rate: 1.0,
+        playing: true,
+        paused: false,
         can_play: true,
         can_pause: true,
+        can_next: true,
+        can_previous: true,
+        art: None,
+        position_ms: 72_000,
+        rate: 1.0,
+        duration_ms: Some(300_000),
         can_seek: true,
-        can_go_next: true,
-        can_go_previous: true,
+        url: None,
+        app_id: None,
+        session_id: None,
+    }
+}
+
+/// What plays, as the audio service publishes it: `players`, and the
+/// machine's two outputs to play them on.
+fn media(players: Vec<audio::media::Player>) -> audio::media::Media {
+    audio::media::Media {
+        players,
+        outputs: vec![
+            audio::media::Output {
+                token: audio::sound::output_id(40),
+                label: "Speakers".into(),
+                current: true,
+            },
+            audio::media::Output {
+                token: audio::sound::output_id(41),
+                label: "Headphones".into(),
+                current: false,
+            },
+        ],
+        problem: None,
     }
 }
 
 #[test]
-fn what_plays_is_fed_from_the_players_and_steered_through_the_effects() {
+fn what_plays_is_fed_from_the_reading_and_steered_through_the_session() {
     let machine = Machine::laptop();
     let mut desk = Desk::on(&machine);
-    let (link, helper) = Helper::link();
-    desk.host.follow_players(link);
     assert!(!desk.has("qs-now-playing"), "nothing plays, no card");
 
-    helper.players(vec![
-        player("music", "Music", audio::Status::Playing),
-        player("browser", "Browser", audio::Status::Paused),
-    ]);
-    desk.until("the players", |state| state.now_playing.is_some());
+    let mut paused = playing_player("browser", "Browser");
+    paused.playing = false;
+    paused.paused = true;
+    desk.host
+        .media(media(vec![playing_player("music", "Music"), paused]), None);
+    desk.app.settle();
     let playing = desk.host.state().now_playing.unwrap();
     assert_eq!(playing.title, "Clair de lune");
+    assert_eq!(playing.subtitle, "Claude Debussy");
     assert_eq!(playing.player_name, "Music");
-    assert!(playing.playing);
+    assert!(playing.playing && playing.can_toggle && playing.can_next);
+    assert_eq!(playing.position_ms, 72_000.0, "where the service read it");
+    assert_eq!(playing.duration_ms, 300_000.0);
     assert!(desk.has("qs-now-playing"));
     assert!(
         desk.has("qs-now-playing-player"),
         "two players to choose from"
     );
 
+    // Every press is the panel's effect: the session hands it to the audio
+    // service's actions, so the card never reaches a player itself.
     desk.app.harness().click_named("transport.play").unwrap();
     desk.app.settle();
     assert_eq!(
-        helper.request(),
-        audio::Request::Control {
-            bus_name: "org.mpris.MediaPlayer2.music".into(),
-            command: audio::PlayerCommand::PlayPause,
-        },
+        desk.host.take_requests(),
+        [SessionRequest::Effect(QsEffect::PlayPause)],
         "the press goes to the player in front"
-    );
-    assert!(
-        !desk.host.state().now_playing.unwrap().playing,
-        "shown paused at once"
     );
 
     desk.app.effect(&QsEffect::Seek { fraction: 0.5 }).unwrap();
     assert_eq!(
-        helper.request(),
-        audio::Request::Control {
-            bus_name: "org.mpris.MediaPlayer2.music".into(),
-            command: audio::PlayerCommand::SetPosition {
-                track_id: "/track/1".into(),
-                position_us: 150_000_000,
-            },
-        }
+        desk.host.take_requests(),
+        [SessionRequest::Effect(QsEffect::Seek { fraction: 0.5 })]
     );
 
     desk.app
@@ -1045,48 +985,26 @@ fn what_plays_is_fed_from_the_players_and_steered_through_the_effects() {
         desk.host.state().now_playing.unwrap().player_name,
         "Browser"
     );
+    assert!(
+        desk.host.take_requests().is_empty(),
+        "which player the card steers is the card's own"
+    );
     desk.app.effect(&QsEffect::NextTrack).unwrap();
     assert_eq!(
-        helper.request(),
-        audio::Request::Control {
-            bus_name: "org.mpris.MediaPlayer2.browser".into(),
-            command: audio::PlayerCommand::Next,
-        },
-        "the chosen player is the one steered"
-    );
-
-    helper
-        .say
-        .send(audio::Event::Device { connected: true }.line())
-        .unwrap();
-    drop(helper);
-    desk.until("the helper going", |state| state.now_playing.is_none());
-    assert!(
-        desk.host
-            .take_requests()
-            .contains(&SessionRequest::AudioDevice { connected: true }),
-        "an audio device arriving is the session's to sound"
+        desk.host.take_requests(),
+        [SessionRequest::Effect(QsEffect::NextTrack)],
+        "and the chosen player is the one the service is asked to skip"
     );
 }
 
 #[test]
-fn the_cards_destinations_are_the_machines_outputs_and_choosing_one_is_the_sessions() {
+fn the_cards_destinations_are_the_readings_and_choosing_one_is_the_sessions() {
     let machine = Machine::laptop();
     let mut desk = Desk::on(&machine);
-    let (link, helper) = Helper::link();
-    desk.host.follow_players(link);
-    helper.players(vec![player("music", "Music", audio::Status::Playing)]);
-    desk.until("the players", |state| state.now_playing.is_some());
-    assert!(
-        !desk.has("qs-now-playing-output"),
-        "nothing has read where the sound can go"
-    );
-
-    // The audio service's reading is where the card's destinations come
-    // from, the output that plays marked.
-    desk.host.sound(&sound());
+    desk.host
+        .media(media(vec![playing_player("music", "Music")]), None);
     desk.app.settle();
-    let playing = desk.host.state().now_playing.expect("still playing");
+    let playing = desk.host.state().now_playing.expect("something plays");
     assert_eq!(
         playing
             .outputs
@@ -1106,37 +1024,57 @@ fn the_cards_destinations_are_the_machines_outputs_and_choosing_one_is_the_sessi
         output: audio::sound::output_id(41),
     };
     desk.app.effect(&choose).unwrap();
+    assert_eq!(desk.host.take_requests(), [SessionRequest::Effect(choose)]);
+}
+
+#[test]
+fn the_speaker_group_the_sound_plays_on_is_the_cards_line() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.host.media(
+        media(vec![playing_player("music", "Music")]),
+        Some("Living room".into()),
+    );
+    desk.app.settle();
     assert_eq!(
-        desk.host.take_requests(),
-        [SessionRequest::Effect(choose)],
-        "the card asks the session"
+        desk.host.state().now_playing.unwrap().speakers.as_deref(),
+        Some("Playing on Living room"),
+        "this device plays its sound on a group"
     );
+    let said = "Playing on Living room";
     assert!(
-        helper.heard.try_recv().is_err(),
-        "and never the players' helper"
+        desk.app.harness().a11y_node_named(said).is_some(),
+        "the group is read out: {said:?}"
     );
+}
+
+/// The request id every test's offer carries.
+const REQUEST: &str = "00112233445566778899aabbccddeeff";
+
+/// A session another device hands over: `source` playing at 1:23.
+fn offer(source: media::handoff::HandoffSource) -> MediaOffer {
+    MediaOffer {
+        request_id: REQUEST.into(),
+        package_id: "so.tilo.music".into(),
+        title: "Clair de lune".into(),
+        source_label: "Studio".into(),
+        source,
+        position_ms: 83_000.0,
+        playing: true,
+    }
 }
 
 #[test]
 fn resuming_the_other_device_s_playhead_is_asked_from_the_card() {
     let machine = Machine::laptop();
     let mut desk = Desk::on(&machine);
-    let (link, helper) = Helper::link();
-    desk.host.follow_players(link);
 
     // Another of the person's devices hands this one what it played, while
     // nothing plays here: the card is that offer, saying what it is.
-    desk.host.handoff(Some(MediaOffer {
-        request_id: "00112233445566778899aabbccddeeff".into(),
-        package_id: "so.tilo.music".into(),
-        title: "Clair de lune".into(),
-        source_label: "Studio".into(),
-        source: media::handoff::HandoffSource::RemoteStream {
+    desk.host
+        .handoff(Some(offer(media::handoff::HandoffSource::RemoteStream {
             url: "https://media.example/clair.flac".into(),
-        },
-        position_ms: 83_000.0,
-        playing: true,
-    }));
+        })));
     desk.app.settle();
     assert!(
         desk.has("qs-now-playing-resume"),
@@ -1148,31 +1086,75 @@ fn resuming_the_other_device_s_playhead_is_asked_from_the_card() {
         "the row is read as the session another device hands over: {said:?}"
     );
 
-    // Pressing it is the helper's to carry out, with the session's exact
-    // request, app, source and playhead.
+    // Pressing it is the session's to carry out, naming the offer it handed
+    // over; the card stops offering it.
     desk.app
         .harness()
         .click_named("qs-now-playing-resume")
         .unwrap();
     desk.app.settle();
     assert_eq!(
-        helper.request(),
-        audio::Request::Resume {
-            request: audio::ResumeRequest {
-                request_id: [
-                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
-                    0xdd, 0xee, 0xff,
-                ],
-                package_id: "so.tilo.music".into(),
-                source: audio::ResumeSource::Uri("https://media.example/clair.flac".into()),
-                position_ms: 83_000,
-                playing: true,
-            }
-        }
+        desk.host.take_requests(),
+        [SessionRequest::Effect(QsEffect::ResumePlayback {
+            request: REQUEST.into(),
+        })]
     );
-    assert!(helper.heard.try_recv().is_err(), "a resume is one request");
     assert!(
         !desk.has("qs-now-playing-resume"),
         "continued, nothing is left to offer"
+    );
+    assert!(
+        desk.app
+            .effect(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .is_err(),
+        "and the offer is over"
+    );
+}
+
+#[test]
+fn a_stale_handoff_is_refused_and_a_source_this_device_cannot_open_too() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    assert!(
+        desk.app
+            .effect(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .is_err(),
+        "no handoff at all"
+    );
+    desk.host
+        .handoff(Some(offer(media::handoff::HandoffSource::RemoteStream {
+            url: "https://media.example/clair.flac".into(),
+        })));
+    assert!(
+        desk.app
+            .effect(&QsEffect::ResumePlayback {
+                request: "ffeeddccbbaa99887766554433221100".into(),
+            })
+            .is_err(),
+        "another handoff's press"
+    );
+    assert!(desk.host.take_requests().is_empty(), "nothing was asked");
+
+    // What another app keeps as its own resource is not something this
+    // device can open, and the card says so instead of asking.
+    desk.host
+        .handoff(Some(offer(media::handoff::HandoffSource::AppResource {
+            uri: "tilo://music/track/1".into(),
+        })));
+    assert!(
+        desk.app
+            .effect(&QsEffect::ResumePlayback {
+                request: REQUEST.into(),
+            })
+            .is_err(),
+        "this device cannot resume that source"
+    );
+    assert!(
+        desk.host.take_requests().is_empty(),
+        "the session is not asked"
     );
 }

@@ -13,6 +13,7 @@ pub(crate) mod devices;
 pub(crate) mod displays;
 pub mod drives;
 pub mod firstboot;
+pub(crate) mod media;
 pub(crate) mod overview;
 pub(crate) mod panel_power;
 pub(crate) mod panel_system;

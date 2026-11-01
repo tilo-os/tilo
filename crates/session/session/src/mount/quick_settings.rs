@@ -10,7 +10,7 @@
 use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::Command;
 use tilo_quick_settings::QsEffect;
-use tilo_quick_settings::device::SessionRequest;
+use tilo_quick_settings::device::{DeviceHost, SessionRequest};
 use tilo_sheets::Seat as _;
 
 use crate::{GENERATION, SessionCommand, Shared};
@@ -68,6 +68,22 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
     }
 }
 
+/// Take in every reading the panel shows from the service that publishes
+/// it, then let the panel take them in.
+fn land(shared: &Shared, device: &DeviceHost) {
+    // The audio service's reading is the only one of the sound: the panel
+    // shows it and its effects change it there.
+    super::audio::land(shared);
+    // What plays is published by the same service, from the players it
+    // follows: the card shows that reading too.
+    super::media::land(shared);
+    device.pump();
+    super::devices::land(shared);
+    super::displays::land(shared);
+    super::panel_power::land(shared);
+    super::panel_system::land(shared);
+}
+
 /// Land what the device host read and carry out what the panel asked of the
 /// desktop.
 pub(crate) fn answer(shared: &Shared) {
@@ -75,14 +91,7 @@ pub(crate) fn answer(shared: &Shared) {
         return;
     };
     device.set_open(shared.overlays.is_open(Slot::QuickSettings));
-    // The audio service's reading is the only one of the sound: the panel
-    // shows it and its effects change it there.
-    super::audio::land(shared);
-    device.pump();
-    super::devices::land(shared);
-    super::displays::land(shared);
-    super::panel_power::land(shared);
-    super::panel_system::land(shared);
+    land(shared, device);
     for request in device.take_requests() {
         match request {
             SessionRequest::Effect(QsEffect::PowerMenu) => {
@@ -162,6 +171,7 @@ pub(crate) fn answer(shared: &Shared) {
                 shared.clipboard.clear();
             }
             other if super::audio::follow(shared, &other) => {}
+            other if super::media::follow(shared, &other) => {}
             other if super::displays::follow(shared, &other) => {}
             other if super::devices::follow(shared, &other) => {}
             other => {
