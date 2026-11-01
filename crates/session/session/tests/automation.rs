@@ -295,18 +295,16 @@ fn post_a_message(home: &tilo_test_env::TestHome) {
 /// Step the session until it started a shortcut `wanted` run.
 #[track_caller]
 fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
-    let started = std::time::Instant::now();
-    loop {
+    let mut seen = Vec::new();
+    // A firing waits for the ledger that records it to be on disk, and a
+    // writer busy with the rest of the suite is what makes it take a while:
+    // the bound is the suite's own, not a second count.
+    tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
-        let runs = session.take_finished_shortcut_runs();
-        if runs.len() >= wanted {
-            return runs.iter().map(|run| run.shortcut.id.clone()).collect();
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "no shortcut run started"
-        );
-    }
+        seen.extend(session.take_finished_shortcut_runs());
+        (seen.len() >= wanted).then_some(())
+    });
+    seen.iter().map(|run| run.shortcut.id.clone()).collect()
 }
 
 #[test]
