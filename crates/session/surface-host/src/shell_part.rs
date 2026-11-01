@@ -157,6 +157,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "system.tl",
         include_str!("../../../../apps/tl/shell/system.tl"),
     ),
+    (
+        "traditional.tl",
+        include_str!("../../../../apps/tl/shell/traditional.tl"),
+    ),
 ];
 /// The shell package's ids lock.
 const SHELL_IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");

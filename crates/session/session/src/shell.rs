@@ -179,6 +179,12 @@ impl Shell {
         Rc::clone(&self.link)
     }
 
+    /// The surface the desk shows over its windows, by the name the views read (`d.here`):
+    /// `none` at rest.
+    pub(crate) fn surface(&self) -> String {
+        self.link.surface()
+    }
+
     /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
@@ -350,6 +356,16 @@ impl crate::Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(());
+        };
+        // The shell's views draw the centre over the desk, so while it is up the person is
+        // looking at what the notices say: they are read, as they are while the panel's own
+        // centre shows them. The bell's count, the centre's header and its rows read the one
+        // set, so they never disagree. It is the same surface the views read (`d.here`).
+        if shell.surface() == crate::overlays::Overlay::Centre.name() {
+            self.shared.notices.mark_read();
+        }
         let Some(shell) = self.shell.as_mut() else {
             return Ok(());
         };

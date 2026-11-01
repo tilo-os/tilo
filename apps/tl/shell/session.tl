@@ -10,22 +10,22 @@ action switch_to_key(key: Text, current: Bool) (icon: .layers, label: "Switch to
 }
 
 /// Brings the window `w` to the front: its workspace, its strip, and it.
-action focus_window(w: Win) (icon: .arrow_right, label: "Go there") {
+action focus_window(w: Win) (icon: .arrow_right, label: "Go there", group: "Window") {
     outside("session.run", ("focus-window", w.key))
 }
 
 /// Closes the window `w`.
-destructive action close_window(w: Win) (icon: .x, label: "Close") {
+destructive action close_window(w: Win) (icon: .x, label: "Close", group: "Window") {
     outside("session.run", ("close-window", w.key))
 }
 
 /// Carries the window `w` onto the strip `strip` of its workspace.
-action move_to_strip(w: Win, strip: Text) (icon: .arrow_right, label: "Move to a strip") {
+action move_to_strip(w: Win, strip: Text) (icon: .arrow_right, label: "Move to a strip", group: "Window") {
     outside("session.run", ("move-window-to-strip", w.key, strip))
 }
 
 /// Carries the window `w` into the workspace `workspace`.
-action move_to_room(w: Win, workspace: Text) (icon: .layers, label: "Move to a workspace") {
+action move_to_room(w: Win, workspace: Text) (icon: .layers, label: "Move to a workspace", group: "Window") {
     outside("session.run", ("move-window-to-workspace", w.key, workspace))
 }
 
@@ -46,7 +46,7 @@ action show_agent(key: Text) (icon: .bot, label: "Its menu") {
 }
 
 /// Asks an agent about the window `w`: its title, the app it shows and what it holds.
-action ask_about(w: Win) (icon: .bot, label: "Ask an agent") {
+action ask_about(w: Win) (icon: .bot, label: "Ask an agent", group: "Window") {
     outside("session.run", ("ask-about-window", w.key))
 }
 
@@ -85,19 +85,21 @@ action see_work(who: Text) (icon: .list, label: "What they are working on") {
     outside("session.run", ("see-work", who))
 }
 
-/// Runs one of a notification's actions on it.
+/// Runs one of a notification's choices: the desk's `act-on-notice`, naming the notice and the
+/// key its sender gave the choice. What any action on the desk is: attributed, checked and
+/// undoable.
 action notice_action(n: Notice, key: Text) (icon: .check, label: "Act on it") {
-    outside("session.notify", ("invoke", n.key, key))
+    outside("session.notify", ("session:desk", "act-on-notice", ("notice", n.key), ("action", key)))
 }
 
-/// Closes a notification.
+/// Closes a notification: the desk's `dismiss-notice`.
 action dismiss_notice(n: Notice) (icon: .x, label: "Dismiss") {
-    outside("session.notify", ("dismiss", n.key))
+    outside("session.notify", ("session:desk", "dismiss-notice", ("notice", n.key)))
 }
 
-/// Clears every notification in the centre, which Undo puts back.
+/// Clears every notification in the centre, which Undo puts back: the desk's `clear-notices`.
 action clear_notices(d: Desk) (icon: .trash, label: "Clear all") {
-    outside("session.notify", ("clear", ""))
+    outside("session.notify", ("session:desk", "clear-notices"))
 }
 
 /// Asks the agent `agent` about `subject`, with what was typed.

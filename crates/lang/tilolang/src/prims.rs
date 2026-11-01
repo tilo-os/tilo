@@ -209,6 +209,7 @@ pub const BUILTINS: &[&str] = &[
     "dated",
     "open",
     "set",
+    "resource",
 ];
 
 /// The fields of `workspace`.

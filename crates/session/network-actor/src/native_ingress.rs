@@ -64,6 +64,15 @@ impl Routes {
             route.link.retry();
         }
     }
+    /// Every room this device hosts itself, as its routes now stand: their
+    /// sessions join in process, and a join that has not happened yet is
+    /// work this device's loop keeps, not nothing.
+    pub(super) fn local(&self) -> impl Iterator<Item = u64> + '_ {
+        self.entries
+            .iter()
+            .filter(|(_, route)| route.local)
+            .map(|(&ws, _)| ws)
+    }
 }
 
 /// One room's session, held for this actor: each session up, and each

@@ -3522,6 +3522,15 @@ impl ActorState {
             || !self.hosts.is_empty()
             || self.remote_host_sessions()
             || self.native_routes.any_remote()
+            // A room this device hosts itself is joined in process, and a
+            // join that has not happened yet is retried here as a remote
+            // one's dial is: no session of its own host leaves its apps,
+            // and its room's own governance, waiting with nothing to wake
+            // them.
+            || self
+                .native_routes
+                .local()
+                .any(|ws| !self.host_sessions.keys().any(|(topic, _)| *topic == ws))
             || !self.pending_remote_actions.is_empty()
     }
 
@@ -3537,6 +3546,11 @@ impl ActorState {
         {
             room_governance::Sessions::Open
         } else if self.native_routes.establishing(ws)
+            // A room this device hosts itself is joined in process, and that
+            // join is retried until it is up: its session is coming, not
+            // gone, so what waits for a session waits for it rather than
+            // being refused as if the room had no host.
+            || self.native_routes.is_local(ws)
             || self
                 .connecting_hosts
                 .iter()

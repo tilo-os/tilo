@@ -101,9 +101,8 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "session.notify",
-        "The same as `session.run`, for the notification centre's actions: `notifications.banners`' \
-         `open`, `dismiss`, `act` and `reply`, and the desk's `clear-notices` and \
-         `dismiss-notice`.",
+        "The same as `session.run`, for the notification centre's actions on the desk: \
+         `clear-notices`, `dismiss-notice` and `act-on-notice`.",
     ),
     (
         "session.launch",

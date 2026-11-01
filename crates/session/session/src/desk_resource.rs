@@ -62,6 +62,13 @@ pub(crate) enum DeskEffect {
         #[param("The notice, by its id")]
         notice: String,
     },
+    /// Run one of the choices the notice `notice` offers, by the key its sender gave it.
+    ActOnNotice {
+        #[param("The notice, by its id")]
+        notice: String,
+        #[param("The choice, by its key")]
+        action: String,
+    },
     /// Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.
     WalkSwitcher {
         #[param("How far to walk; 1 the next window, -1 the one before")]
@@ -589,6 +596,13 @@ impl Service for Desk {
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
             self.commit_switcher();
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::ActOnNotice { notice, action } = &effect {
+            let id = notice.parse::<u64>().map_err(|_| {
+                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
+            })?;
+            self.notices.invoke_action(id, action);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::DismissNotice { notice } = &effect {

@@ -79,6 +79,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Action",
                 "The action applied to the resource: what a control runs.",
             ),
+            (
+                "group",
+                "Option<Text>",
+                "The run of the resource's actions it stands in, as the app names it \
+                 (`group: \"Reply\"`); empty for one in no run.",
+            ),
+            (
+                "frequent",
+                "Bool",
+                "Whether it is a command the person reaches for on most things of its type \
+                 (`frequent: true`): a surface showing the resource's actions draws it directly.",
+            ),
         ],
     },
     ValueType {

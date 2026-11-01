@@ -3537,6 +3537,12 @@ impl FrameHarness {
                     self.root
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
+                // A widget the build just made heard nothing yet: containers hand the
+                // environment down as they build, and a control that makes its own faces (a
+                // toolbar's, a row's) keeps it until this tells it. Tell the whole tree once
+                // it exists, so every target is sized for how the person reaches the window
+                // from the first frame, as the live app's rebuild does.
+                self.root.set_interaction_environment(self.interaction);
                 self.admit_layout_maps();
                 self.layout_nodes_built = self
                     .layout_nodes_built
