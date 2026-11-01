@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashSet;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn request(dir: PathBuf) -> NewAppRequest {
     NewAppRequest {
@@ -3533,7 +3534,8 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         let runtime = served["interfaces"]["runtime"]
             .as_integer()
             .expect("runtime");
-        let manifest: toml::Value = toml::from_str(&app_manifest(&spec)).expect("manifest");
+        let manifest: toml::Value =
+            toml::from_str(&app_manifest(&spec).expect("manifest")).expect("manifest");
         let services = manifest["sandbox"]["services"]
             .as_table()
             .expect("services");
@@ -5824,7 +5826,7 @@ while true; do sleep 0.2; done\n",
     let child = KillOnDrop(
         std::process::Command::new(&script)
             .arg(&state)
-            .spawn()
+            .spawn_locked()
             .expect("app process"),
     );
     let ready = state.with_extension("ready");
@@ -6000,7 +6002,7 @@ fn seal_script(path: &Path) {
         .arg("755")
         .arg(&draft)
         .arg(path)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "install {}", path.display());
     std::fs::remove_file(&draft).unwrap();

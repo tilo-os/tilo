@@ -115,7 +115,7 @@ fn chat_person(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
             env.cert.user_public_key,
             env.cert.device_public_key,
         )
-        .in_room(&env.route.cluster_id)
+        .in_workspace(&env.route.cluster_id)
         .in_new_execution(),
         presentation(&env.route.cluster_id, &env.cert, &env.key),
     )

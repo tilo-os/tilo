@@ -7,7 +7,7 @@
 //! event the running app takes, and the route's committed history merges in
 //! as at any other time. Only a window whose record is not on this device
 //! yet (its first open here) waits: it shows the page's loading state until
-//! the join is over, and is built then from the room's committed history.
+//! the join is over, and is built then from the workspace's committed history.
 //! A later window of the process waits the same way, off the window's
 //! thread ([`crate::window_door`]).
 
@@ -84,7 +84,7 @@ fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs) -> LocalFirst {
 }
 
 /// Build the app `arriving` waited for, now that its join is over: from the
-/// room's committed history, in the scope its manager wakes.
+/// workspace's committed history, in the scope its manager wakes.
 fn dispatch_arrived(
     spec: &LaunchSpec,
     args: &LaunchArgs,

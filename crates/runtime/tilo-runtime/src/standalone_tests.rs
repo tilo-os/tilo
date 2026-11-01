@@ -14,6 +14,7 @@ use tilo_action_broker::services::{
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -100,7 +101,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor)
-        .in_room(&workspace_id)
+        .in_workspace(&workspace_id)
         .in_new_execution();
     let host = RuntimeActionHost {
         broker,
@@ -218,7 +219,7 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .stdout(std::fs::File::create(&log).unwrap())
-        .status()
+        .status_locked()
         .unwrap();
     let stdout = std::fs::read_to_string(&log).unwrap();
     assert!(status.success(), "{stdout}");
@@ -598,7 +599,7 @@ fn a_running_host_holds_the_persons_own_documents_store() {
     // of theirs need agree on.
     assert_eq!(
         personal.store_key(),
-        collab_types::person_room(&identity.user_public_key).to_string()
+        collab_types::personal_cluster(&identity.user_public_key).to_string()
     );
     assert!(personal.rows().is_empty(), "nothing is written yet");
 }
@@ -794,7 +795,7 @@ fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
         tilo_action_policy::Subject::App("so.tilo.caller".into()),
-        tilo_action_policy::TreePath::room(workspace)
+        tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
             .resource("target.document")

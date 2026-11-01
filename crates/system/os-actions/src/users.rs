@@ -243,12 +243,13 @@ fn in_group(gid: libc::gid_t) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn an_administrator_is_a_member_of_wheel() {
         let groups = std::process::Command::new("id")
             .arg("-nG")
-            .output()
+            .output_locked()
             .expect("id runs");
         let in_wheel = String::from_utf8_lossy(&groups.stdout)
             .split_whitespace()

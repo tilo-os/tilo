@@ -1,7 +1,7 @@
 //! Rasterizing frames into one retained target: only a frame's damage (or
 //! all of it), its scroll copies made first and its backdrops blurred. Every
 //! host that keeps the pixels it presented draws through [`RetainedRaster`]:
-//! the native app's render worker, the room's render service and the
+//! the native app's render worker, the workspace's render service and the
 //! browser desktop, so they produce the same pixels from the same frame.
 
 use crate::damage::{FineDamageRect, area, coalesce_regions, pixel_rect};
@@ -117,7 +117,7 @@ pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
 /// What a host keeps between frames to rasterize them into one retained
 /// target: the damage scratch, the backdrop blur and, on a software adapter,
 /// the CPU canvas. The app's own render worker draws with it, and so does the
-/// room's render service for each surface it draws for an app
+/// workspace's render service for each surface it draws for an app
 /// (`tilo-render-service`), so both produce the same pixels from the same
 /// frame.
 pub struct RetainedRaster {

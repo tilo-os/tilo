@@ -17,6 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::{Digest, Sha256};
 
@@ -110,7 +111,7 @@ impl Fixture {
         Command::new(&self.tool)
             .args(args)
             .arg(&self.uki)
-            .output()
+            .output_locked()
             .unwrap()
     }
 
@@ -358,18 +359,18 @@ fn usage_and_missing_sections_are_refusals() {
         &fixture.run(&["osrel"]),
         "this PE has no .osrel section, so systemd-boot would have no title to show for it",
     );
-    let output = Command::new(&fixture.tool).output().unwrap();
+    let output = Command::new(&fixture.tool).output_locked().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("tilo-uki-cmdline set-osrel KEY=VALUE")
     );
     let output = Command::new(&fixture.tool)
         .args(["boot-digest"])
-        .output()
+        .output_locked()
         .unwrap();
     refused(&output, "boot-digest needs one UKI path");
     // Under its own name the binary is still the ESP writer.
-    let output = Command::new(helper()).arg("show").output().unwrap();
+    let output = Command::new(helper()).arg("show").output_locked().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }
 
@@ -380,7 +381,7 @@ fn suite(script: &str) {
     let output = Command::new("python3")
         .arg(Path::new(REPO).join(script))
         .env("TILO_UKI_CMDLINE", &fixture.tool)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

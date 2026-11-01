@@ -213,7 +213,7 @@ impl AppBrokerState {
             format!("app-action:{}", uuid::Uuid::new_v4()),
             Subject::App(request.app_id.clone()),
             tilo_actions::action_node(
-                &TreePath::room(request.workspace.clone()),
+                &TreePath::workspace(request.workspace.clone()),
                 &request.target_app,
                 resource_kind,
                 &request.resource,

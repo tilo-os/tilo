@@ -268,3 +268,19 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
             .await
     );
 }
+
+/// A request written while its scopes were called rooms still reads, and a
+/// new one is written under the workspace's name: the owner action it names
+/// is the same, so its approval still covers it.
+#[test]
+fn a_request_stored_under_the_old_field_names_still_reads() {
+    let (request, _) = action(vec!["ab".repeat(32)], 1024);
+    let written = serde_json::to_string(&request).unwrap();
+    assert!(written.contains("\"source_workspace\""), "{written}");
+    assert!(written.contains("\"destination_workspace\""), "{written}");
+    let stored = written
+        .replace("\"source_workspace\"", "\"source_room\"")
+        .replace("\"destination_workspace\"", "\"destination_room\"");
+    let read: LegacyImportRequest = serde_json::from_str(&stored).unwrap();
+    assert_eq!(read, request);
+}

@@ -258,6 +258,7 @@ fn mount_id(file: &std::fs::File) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn missing_or_nonabsolute_dependencies_fail_before_guest_launch() {
@@ -388,7 +389,7 @@ mod tests {
                 });
             }
         }
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(
             output.status.success(),
             "{case}: {}\n{}",

@@ -713,6 +713,9 @@ pub struct SessionLink {
     handed: Cell<u64>,
     served: Cell<u64>,
     answers: RefCell<BTreeMap<Ask, Result<(), String>>>,
+    /// What the door refused of what the shell asked, in its words: each refusal, kept for
+    /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
+    refused: RefCell<Vec<String>>,
 }
 
 impl SessionLink {
@@ -758,10 +761,19 @@ impl SessionLink {
             let answer = invoke(ask);
             if let Err(why) = &answer {
                 tracing::warn!(?ask, why, "the session refused what the shell asked");
+                self.refused
+                    .borrow_mut()
+                    .push(format!("{} on {}: {why}", ask.action, ask.resource));
             }
             self.answers.borrow_mut().insert(ask.clone(), answer);
         }
         !asked.is_empty()
+    }
+
+    /// What the door refused of what the shell asked since the session started, in its words.
+    #[must_use]
+    pub fn refused(&self) -> Vec<String> {
+        self.refused.borrow().clone()
     }
 
     /// Whether the shell asked something the session has not run yet.
@@ -872,22 +884,28 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
     }
 }
 
-/// The ask `session.run` carries: `(resource, action, (argument, value)…)`. The shell names the
+/// The ask `session.run` carries: `(resource, action, [(argument, value)…])`, an action
+/// invocation as every caller of the action protocol addresses one. The shell names the
 /// session's own resource and action, as the door publishes them (a window's `focus` on
 /// `desktop:tab:7`, the chrome's `move-tab-to-strip`), and each argument by the name the
-/// action's own fields have. `session.notify` is the same, on the notification centre.
+/// action's own fields have. `session.notify` is the same, on the notification centre. The
+/// tilolang checker holds every such effect to this shape (`tilolang::origin::payload_type`).
 fn run_ask(payload: &Json, capability: &str) -> Result<Ask, String> {
+    let shape =
+        || format!("{capability} takes (resource, action, [(argument, value)…]), not {payload}");
     let Json::Array(items) = payload else {
-        return Err(format!(
-            "{capability} takes (resource, action, (argument, value)…), not {payload}"
-        ));
+        return Err(shape());
     };
-    let (Some(Json::String(resource)), Some(Json::String(action))) = (items.first(), items.get(1))
+    let [
+        Json::String(resource),
+        Json::String(action),
+        Json::Array(given),
+    ] = items.as_slice()
     else {
-        return Err(format!("{capability} names its resource and action first"));
+        return Err(shape());
     };
     let mut arguments = BTreeMap::new();
-    for argument in items.iter().skip(2) {
+    for argument in given {
         let Json::Array(pair) = argument else {
             return Err(format!(
                 "{capability} takes each argument as (name, value), not {argument}"
@@ -1949,7 +1967,7 @@ fn shell_standing(
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
         Subject::app(app),
-        TreePath::room(SHELL_ROOM).app(app),
+        TreePath::workspace(SHELL_ROOM).app(app),
         KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(person),
@@ -2547,8 +2565,14 @@ impl ShellPart {
         &self.refusals
     }
 
-    fn due(&self) -> bool {
-        self.input || self.again || self.origin.borrow().due()
+    /// Whether the part owes a turn: input, a turn that ran out of exchanges, the session's
+    /// work, or its window holding something for the instance — a layout at a new size (its
+    /// display told after it settled) gave the bar a new space, which the views read.
+    fn due(&mut self) -> bool {
+        self.input
+            || self.again
+            || self.origin.borrow().due()
+            || self.window().is_some_and(|window| window.telling())
     }
 }
 
@@ -2728,6 +2752,10 @@ impl SurfaceHost for ShellPart {
         self.widgets.cursor()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.widgets.next_deadline()
+    }
+
     fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
@@ -2795,110 +2823,7 @@ mod readings;
 use readings::PlaceInvoker;
 
 #[cfg(test)]
-mod tests_support {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
-
-    use super::*;
-    use tilo_compositor::KeyModifiers;
-
-    /// A desk at rest with two windows and two workspaces.
-    pub(super) fn reading_with_windows() -> DeskReading {
-        DeskReading {
-            person: "Pat".to_owned(),
-            clock: "4:28 PM".to_owned(),
-            workspace: "Desk".to_owned(),
-            strip: "Main".to_owned(),
-            windows: vec![
-                WindowReading {
-                    key: "11".to_owned(),
-                    title: "Release planning".to_owned(),
-                    origin_app: "Notes".to_owned(),
-                    strip: "Main".to_owned(),
-                    workspace: "Desk".to_owned(),
-                    focused: true,
-                    ..WindowReading::default()
-                },
-                WindowReading {
-                    key: "12".to_owned(),
-                    title: "Inbox".to_owned(),
-                    origin_app: "Mail".to_owned(),
-                    strip: "Main".to_owned(),
-                    workspace: "Desk".to_owned(),
-                    ..WindowReading::default()
-                },
-            ],
-            ..DeskReading::default()
-        }
-    }
-
-    /// A part over `reading`, its outputs set.
-    pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
-        let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
-        let app = packages
-            .last()
-            .expect("the shell compiles last")
-            .meta
-            .app
-            .clone();
-        let link = Rc::new(SessionLink::default());
-        link.publish(reading);
-        let mut part = ShellPart::new(
-            ShellIdentity {
-                app: &app,
-                packages,
-                person: "Pat",
-                link: Rc::clone(&link),
-                record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
-                seed: true,
-            },
-            32,
-            1.0,
-            std::sync::Arc::new(|| {}),
-            None,
-        );
-        part.outputs_changed(&[(0, 0, 1280, 800)]);
-        part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        (part, link)
-    }
-
-    pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
-        HostKey {
-            keycode: 0,
-            pressed,
-            repeat: false,
-            keysym,
-            unmodified_keysym: keysym,
-            text: None,
-            modifiers: KeyModifiers::default(),
-        }
-    }
-
-    /// Tab, held with Alt (`pressed` is Alt's, not Tab's); Shift walks the other way.
-    pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
-        HostKey {
-            modifiers: KeyModifiers {
-                alt,
-                shift,
-                ..KeyModifiers::default()
-            },
-            ..key(0xff09, true)
-        }
-    }
-
-    /// `Alt_L`, held (`true`) or let go.
-    pub(super) fn alt(pressed: bool) -> HostKey {
-        HostKey {
-            modifiers: KeyModifiers {
-                alt: pressed,
-                ..KeyModifiers::default()
-            },
-            ..key(0xffe9, pressed)
-        }
-    }
-}
+mod tests_support;
 
 #[cfg(test)]
 mod tests;
@@ -2907,93 +2832,4 @@ mod tests;
 mod places;
 
 #[cfg(test)]
-mod surface_keys {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
-
-    use super::tests_support::{alt, key, part_with, reading_with_windows, tab};
-    use tilo_compositor::{KeyClaim, SurfaceHost as _};
-
-    #[test]
-    fn alt_tab_asks_for_the_switcher_from_rest() {
-        let (mut part, link) = part_with(reading_with_windows());
-        assert_ne!(
-            part.claim_key(&tab(true, true), false, false),
-            KeyClaim::Pass
-        );
-        part.key(&tab(true, true));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("walk-switcher".to_owned()),
-            "Alt+Tab asks the desk for its switcher"
-        );
-        // Holding Alt and pressing Tab again walks the switcher on.
-        link.asked.borrow_mut().clear();
-        part.key(&tab(true, false));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("walk-switcher".to_owned())
-        );
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
-            Some(std::collections::BTreeMap::from([(
-                "steps".to_owned(),
-                "1".to_owned()
-            )]))
-        );
-    }
-
-    #[test]
-    fn letting_alt_go_commits_the_switcher() {
-        let mut reading = reading_with_windows();
-        reading.here = "switcher".to_owned();
-        let (mut part, link) = part_with(reading);
-        link.asked.borrow_mut().clear();
-        assert_ne!(part.claim_key(&alt(false), false, false), KeyClaim::Pass);
-        part.key(&alt(false));
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("commit-switcher".to_owned()),
-            "letting Alt go goes to the window the walk reached"
-        );
-    }
-
-    #[test]
-    fn escape_closes_the_surface_that_is_up() {
-        let mut reading = super::tests_support::reading_with_windows();
-        reading.here = "overview".to_owned();
-        let (mut part, link) = part_with(reading);
-        assert_ne!(part.claim_key(&escape(), false, false), KeyClaim::Pass);
-        part.key(&escape());
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("close-surface".to_owned())
-        );
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.arguments.clone()),
-            Some(std::collections::BTreeMap::from([(
-                "surface".to_owned(),
-                "overview".to_owned()
-            )]))
-        );
-    }
-
-    #[test]
-    fn a_surface_up_makes_the_part_cover_the_outputs() {
-        let mut reading = super::tests_support::reading_with_windows();
-        reading.here = "launcher".to_owned();
-        let (part, _link) = part_with(reading);
-        assert_eq!(
-            part.widgets.placement().size,
-            (1280, 800),
-            "the launcher has the desk's room"
-        );
-        assert!(
-            part.accepts_pointer(640.0, 400.0),
-            "the launcher takes presses"
-        );
-    }
-
-    fn escape() -> tilo_compositor::HostKey {
-        key(0xff1b, true)
-    }
-}
+mod surface_keys;

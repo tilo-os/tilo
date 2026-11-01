@@ -775,6 +775,7 @@ fn attest_selected_descriptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn dropped_grant_retains_native_custody_until_confirmed_child_exit() {
@@ -788,7 +789,7 @@ mod tests {
             .stdin(Stdio::from(File::from(std::os::fd::OwnedFd::from(input))))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let key = format!("target:{}", uuid::Uuid::new_v4());
         let grant = ReadOnlyMediaGrant {

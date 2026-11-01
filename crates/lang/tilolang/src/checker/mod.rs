@@ -102,6 +102,9 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// Whether the callable takes a resource: an outside effect is queued on the first one,
+    /// so an action without one cannot hand any over.
+    takes_resource: bool,
     /// The role of the action being checked (`primary`, `destructive`, `migration`): a
     /// migration reads `(previously)` fields.
     role: Option<String>,
@@ -405,6 +408,11 @@ impl Checker<'_> {
         };
         self.st.scopes.push(HashMap::new());
         self.st.sinks.push(Vec::new());
+        self.st.takes_resource = params.iter().any(|p| match &p.ty {
+            Ty::Record(key) => !crate::host::is_value(key),
+            Ty::Union(_) => true,
+            _ => false,
+        });
         for p in params {
             self.declare(&p.name, p.ty.clone());
         }

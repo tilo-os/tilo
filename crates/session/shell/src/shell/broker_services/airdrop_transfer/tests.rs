@@ -6,6 +6,7 @@ use super::*;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::AtomicUsize;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::state::{Capability, FsMode, GRANT_SESSION, WorkspaceTree};
@@ -337,7 +338,7 @@ fn extracted(archive: &[u8]) -> Vec<u8> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     child.stdin.take().unwrap().write_all(archive).unwrap();
     let output = child.wait_with_output().unwrap();

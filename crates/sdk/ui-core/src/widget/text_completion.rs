@@ -1,5 +1,5 @@
 //! Inline completion in a text field: `:shortcode` offers the catalogue's
-//! emoji and `@name` offers the room's people and agents, in the one list
+//! emoji and `@name` offers the workspace's people and agents, in the one list
 //! beside the caret.
 //!
 //! A field offers both by default; what it offers is a property of the field

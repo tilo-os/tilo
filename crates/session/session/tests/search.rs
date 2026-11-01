@@ -497,8 +497,8 @@ fn active_room(session: &Session) -> String {
 /// runs appears as one directory, which is what the worker following the
 /// device's indexes is told about.
 fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: &[(&str, &str)]) {
-    let directory =
-        app_state::room_index_directory(home.data(), package, room).expect("an index directory");
+    let directory = app_state::workspace_index_directory(home.data(), package, room)
+        .expect("an index directory");
     let staged = directory.with_file_name(format!("staging-{room}"));
     for old in [&staged, &directory] {
         if old.exists() {
@@ -521,14 +521,14 @@ fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: 
 /// The records `package`'s index of `room` names, read the way the workspace's
 /// apps read them: the record set's own discovery over the index document.
 fn known_in(package: &str, room: &str) -> Vec<String> {
-    let Ok(mut store) = app_state::DocStore::open_room(package, room) else {
+    let Ok(mut store) = app_state::DocStore::open_workspace(package, room) else {
         return Vec::new();
     };
     let Some(index) = store.load().ok().flatten() else {
         return Vec::new();
     };
     let mut records = ui::record::RecordSet::in_memory().with_home(room);
-    records.discover_room(&index);
+    records.discover_workspace(&index);
     records
         .known_records()
         .iter()

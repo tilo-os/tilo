@@ -49,8 +49,8 @@ impl ResourceApp for AlbumApp {
 
 #[test]
 fn two_windows_in_two_rooms_keep_their_content_apart() {
-    let mut first = TestApp::<AlbumApp>::in_room("room-first").unwrap();
-    let mut second = TestApp::<AlbumApp>::in_room("room-second").unwrap();
+    let mut first = TestApp::<AlbumApp>::in_workspace("room-first").unwrap();
+    let mut second = TestApp::<AlbumApp>::in_workspace("room-second").unwrap();
     assert_eq!(
         SEEN.with(|seen| seen.borrow().len()),
         2,

@@ -82,7 +82,7 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
     if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
         return None;
     }
-    // Frames drawn by the room's render service: connect to it while the app
+    // Frames drawn by the workspace's render service: connect to it while the app
     // constructs instead of opening a device. The early window is still made.
     if crate::render_thread::remote::requested() {
         crate::render_thread::remote::prepare();

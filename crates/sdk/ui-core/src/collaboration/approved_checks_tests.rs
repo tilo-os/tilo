@@ -73,11 +73,11 @@ async fn approved_check_reported_bridge_forwards_before_terminal_and_freezes_lat
 
 #[test]
 fn approved_check_bridge_routes_two_live_records_of_one_app_by_actual_dispatch_target() {
-    let room = uuid::Uuid::new_v4();
+    let workspace = uuid::Uuid::new_v4();
     let first_route =
-        crate::collaboration::RouteSpec::record("so.tilo.git-client", room, "first-record");
+        crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "first-record");
     let second_route =
-        crate::collaboration::RouteSpec::record("so.tilo.git-client", room, "second-record");
+        crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "second-record");
     let (first, mut first_receive) = admit_for_test(first_route.channel_id()).unwrap();
     let (_second, mut second_receive) = admit_for_test(second_route.channel_id()).unwrap();
     let address =
@@ -104,7 +104,7 @@ fn approved_check_bridge_routes_two_live_records_of_one_app_by_actual_dispatch_t
     );
     assert!(first_receive.try_recv().is_err());
     let foreign = crate::host_operation::OperationTarget::new(
-        crate::collaboration::RouteSpec::record("so.tilo.git-client", room, "foreign-record"),
+        crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "foreign-record"),
         address,
     );
     assert!(foreign.approved_check(first_id, "regression").is_err());

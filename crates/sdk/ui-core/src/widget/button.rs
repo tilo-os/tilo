@@ -64,6 +64,10 @@ pub struct Button {
     /// measured, in `adjust_layout_style`.
     count: Option<CountBadge>,
     count_size: vello::kurbo::Size,
+    /// Whether the node's margins hold the count's room, set by `keep_room_for_count`. A
+    /// button with no count leaves its margins to whoever places it (a drop zone centres its
+    /// button by auto margins), so the two never set them back and forth.
+    count_room: bool,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -188,6 +192,7 @@ impl Button {
             badge: None,
             count: None,
             count_size: vello::kurbo::Size::ZERO,
+            count_room: false,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -264,7 +269,7 @@ impl Button {
     /// [`Self::on_effect`] for an effect whose scope is the person's own
     /// device and nothing shared: copying to their clipboard, applying their
     /// own appearance, starting a draft of their own. A room's grants have
-    /// nothing to consent to, so a guest presses it as the room's owner
+    /// nothing to consent to, so a guest presses it as the workspace's owner
     /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
     /// to make is decided as that change's own action.
     #[must_use]
@@ -1848,6 +1853,10 @@ impl Button {
             } else {
                 (0.0, 0.0)
             };
+        let room = past_x > 0.0 || past_y > 0.0;
+        if !room && !self.count_room {
+            return false;
+        }
         let Ok(style) = taffy.style(node) else {
             return false;
         };
@@ -1859,11 +1868,14 @@ impl Button {
             bottom: length(past_y),
         };
         if style.margin == margin {
+            self.count_room = room;
             return false;
         }
         let mut style = style.clone();
         style.margin = margin;
-        taffy.set_style(node, style).is_ok()
+        let set = taffy.set_style(node, style).is_ok();
+        self.count_room = room && set;
+        set
     }
 
     /// The face's height on the node, as the input asks for it now: a button made before the
@@ -1948,6 +1960,8 @@ impl Widget for Button {
     ) -> NodeId {
         self.observe_i18n_revision();
         self.measured_width = None;
+        // A fresh node holds no margins of the count's.
+        self.count_room = false;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         if let Some((control, side)) = &mut self.transport {
             *side = crate::widget::TransportFace::side(*control, theme);

@@ -7,21 +7,21 @@ use tilo_user_identity::DeviceCert;
 use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
 use crate::registry::IdentityProfile;
 
-/// `cert` belongs to the identity selected for `room` and its device is not
-/// revoked.
+/// `cert` belongs to the identity selected for `workspace` and its device is
+/// not revoked.
 ///
 /// # Errors
 ///
 /// Returns a message when no identity is selected, the stores cannot be read,
 /// or the certificate's identity or device does not qualify.
-pub fn authorize(room: &str, cert: &DeviceCert) -> Result<(), String> {
-    let (profile, fleet) = selected_fleet(room)?;
+pub fn authorize(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
+    let (profile, fleet) = selected_fleet(workspace)?;
     check_identity_and_revocation(&profile, &fleet, cert)
 }
 
 /// [`authorize`], and the device is enrolled in the identity's fleet.
-pub fn authorize_join(room: &str, cert: &DeviceCert) -> Result<(), String> {
-    let (profile, fleet) = selected_fleet(room)?;
+pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
+    let (profile, fleet) = selected_fleet(workspace)?;
     check_identity_and_revocation(&profile, &fleet, cert)?;
     if !fleet
         .certificates
@@ -33,9 +33,9 @@ pub fn authorize_join(room: &str, cert: &DeviceCert) -> Result<(), String> {
     Ok(())
 }
 
-/// The identity selected for `room` and one verified snapshot of its fleet.
-fn selected_fleet(room: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
-    let profile = crate::registry::selected_identity_profile(room)
+/// The identity selected for `workspace` and one verified snapshot of its fleet.
+fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
+    let profile = crate::registry::selected_identity_profile(workspace)
         .map_err(|e| e.to_string())?
         .ok_or("workspace identity unavailable")?;
     let fleet = DeviceFleetStore::from_env()
@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     use crate::device_fleet::loads_on_this_thread;
 
-    const ROOM: &str = "workspace";
+    const WORKSPACE: &str = "workspace";
 
     /// A provisioned identity the environment points at.
     struct Fixture {
@@ -95,7 +95,7 @@ mod tests {
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
-            let profile = crate::registry::selected_identity_profile(ROOM)
+            let profile = crate::registry::selected_identity_profile(WORKSPACE)
                 .expect("registry")
                 .expect("selected identity");
             let cert = store()
@@ -123,8 +123,8 @@ mod tests {
         /// Authorizes this device twice; returns how many fleet loads it took.
         fn authorize_join_twice(&self) -> usize {
             let before = loads_on_this_thread();
-            authorize_join(ROOM, &self.cert).expect("an enrolled device joins");
-            authorize_join(ROOM, &self.cert).expect("an enrolled device joins again");
+            authorize_join(WORKSPACE, &self.cert).expect("an enrolled device joins");
+            authorize_join(WORKSPACE, &self.cert).expect("an enrolled device joins again");
             loads_on_this_thread().saturating_sub(before)
         }
 
@@ -208,11 +208,11 @@ mod tests {
         assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
         fixture.revoke();
         assert_eq!(
-            authorize_join(ROOM, &fixture.cert),
+            authorize_join(WORKSPACE, &fixture.cert),
             Err("device revoked or identity mismatched".into())
         );
         assert_eq!(
-            authorize(ROOM, &fixture.cert),
+            authorize(WORKSPACE, &fixture.cert),
             Err("device revoked or identity mismatched".into())
         );
     }
@@ -232,7 +232,7 @@ mod tests {
 
         std::fs::write(&path, &revoked).expect("external revocation");
         assert_eq!(
-            authorize_join(ROOM, &fixture.cert),
+            authorize_join(WORKSPACE, &fixture.cert),
             Err("device revoked or identity mismatched".into())
         );
 
@@ -241,7 +241,7 @@ mod tests {
         settle(&path);
         assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
         std::fs::write(&path, b"{ not a fleet").expect("external corruption");
-        assert!(authorize_join(ROOM, &fixture.cert).is_err());
-        assert!(authorize(ROOM, &fixture.cert).is_err());
+        assert!(authorize_join(WORKSPACE, &fixture.cert).is_err());
+        assert!(authorize(WORKSPACE, &fixture.cert).is_err());
     }
 }

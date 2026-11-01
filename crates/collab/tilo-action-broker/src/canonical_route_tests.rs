@@ -37,7 +37,7 @@ fn canonical_caller(workspace: &signed_worker::OriginalWorkspace) -> tilo_action
         workspace.cert.user_public_key,
         workspace.cert.device_public_key,
     )
-    .in_room(workspace.route.cluster_id.clone())
+    .in_workspace(workspace.route.cluster_id.clone())
     .in_new_execution()
 }
 

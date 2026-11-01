@@ -44,6 +44,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_lock::MutexRecover as _;
@@ -175,7 +176,7 @@ struct Link {
 
 impl Link {
     fn ip(args: &[&str]) {
-        let status = Command::new("ip").args(args).status().unwrap();
+        let status = Command::new("ip").args(args).status_locked().unwrap();
         assert!(status.success(), "ip {args:?} failed");
     }
 
@@ -184,7 +185,9 @@ impl Link {
         let names = [format!("tbench-a-{tag}"), format!("tbench-b-{tag}")];
         let (va, vb) = (format!("tba{tag}"), format!("tbb{tag}"));
         for ns in &names {
-            let _ = Command::new("ip").args(["netns", "del", ns]).status();
+            let _ = Command::new("ip")
+                .args(["netns", "del", ns])
+                .status_locked();
             Self::ip(&["netns", "add", ns]);
             Self::ip(&["netns", "exec", ns, "ip", "link", "set", "lo", "up"]);
         }
@@ -201,7 +204,7 @@ impl Link {
             let status = Command::new("ip")
                 .args(["netns", "exec", ns, "tc", "qdisc", "add", "dev", dev])
                 .args(["root", "netem", "delay", &delay, "limit", "100000"])
-                .status()
+                .status_locked()
                 .unwrap();
             assert!(status.success(), "tc netem failed");
         }
@@ -223,7 +226,7 @@ impl Link {
                 "/sys/class/net/{}/statistics/rx_bytes",
                 self.devices[i]
             ))
-            .output()
+            .output_locked()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
     }
@@ -232,7 +235,9 @@ impl Link {
 impl Drop for Link {
     fn drop(&mut self) {
         for ns in &self.names {
-            let _ = Command::new("ip").args(["netns", "del", ns]).status();
+            let _ = Command::new("ip")
+                .args(["netns", "del", ns])
+                .status_locked();
         }
     }
 }
@@ -291,7 +296,7 @@ impl Daemon {
             .arg(store)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_locked().unwrap();
         let (tx, lines) = mpsc::channel();
         let logs = Arc::new(Mutex::new(Vec::new()));
         let verbose = std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some();
@@ -395,16 +400,21 @@ impl Drop for Daemon {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        let _ = Command::new("umount").arg("-l").arg(&self.mount).status();
+        let _ = Command::new("umount")
+            .arg("-l")
+            .arg(&self.mount)
+            .status_locked();
     }
 }
 
-fn remove_room(live: &Path) {
-    let Some(room) = live.file_name() else { return };
+fn remove_workspace(live: &Path) {
+    let Some(workspace) = live.file_name() else {
+        return;
+    };
     let Some(store) = live.parent().and_then(Path::parent) else {
         return;
     };
-    let epochs = store.join(".epochs").join(room);
+    let epochs = store.join(".epochs").join(workspace);
     if let Ok(entries) = std::fs::read_dir(&epochs) {
         for e in entries.flatten() {
             let _ = fs_native::btrfs::delete_subvolume(&e.path());
@@ -414,22 +424,22 @@ fn remove_room(live: &Path) {
     let _ = fs_native::btrfs::delete_subvolume(live);
 }
 
-struct Rooms(Vec<PathBuf>);
+struct LiveWorkspaces(Vec<PathBuf>);
 
-impl Drop for Rooms {
+impl Drop for LiveWorkspaces {
     fn drop(&mut self) {
         for live in &self.0 {
-            remove_room(live);
+            remove_workspace(live);
         }
     }
 }
 
 /// Two devices of one person. Dropped in field order: daemons first, then
-/// their rooms, then the link and the directory.
+/// their workspaces, then the link and the directory.
 struct Pair {
     host: Daemon,
     peer: Daemon,
-    _rooms: Rooms,
+    _workspaces: LiveWorkspaces,
     link: Option<Link>,
     _dir: tempfile::TempDir,
 }
@@ -448,8 +458,8 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
         std::env::var_os("TILO_FS_BENCH_DIR").map_or_else(|| "/var/tmp".into(), PathBuf::from);
     let temp = tempfile::tempdir_in(base).unwrap();
     let dir = temp.path().to_path_buf();
-    // Identities (and so room ids) differ per run: a run never reuses a
-    // room another run left or still uses.
+    // Identities (and so workspace ids) differ per run: a run never reuses a
+    // workspace another run left or still uses.
     let salt = u8::try_from(std::process::id() % 83).unwrap_or(0);
     let seed = seed.wrapping_add(salt.wrapping_mul(3));
     let person = [seed; 32];
@@ -489,11 +499,11 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
     );
     peer.wait_line("Joined workspace");
     peer.wait_serving();
-    let rooms = Rooms(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
+    let workspaces = LiveWorkspaces(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
     Pair {
         host,
         peer,
-        _rooms: rooms,
+        _workspaces: workspaces,
         link,
         _dir: temp,
     }
@@ -790,7 +800,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env("GIT_COMMITTER_EMAIL", "bench@example.invalid")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .output()
+        .output_locked()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())

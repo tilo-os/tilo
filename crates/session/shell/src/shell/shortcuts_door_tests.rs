@@ -835,7 +835,7 @@ impl Door {
             .app_action_broker()
             .expect("the action broker")
             .start_triggered_shortcut_run(
-                &Caller::local_person(person).in_room(self.room.to_string()),
+                &Caller::local_person(person).in_workspace(self.room.to_string()),
                 &self.room.to_string(),
                 shortcut,
                 trigger,
@@ -1666,7 +1666,7 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     // A grant on the whole app lets the run take the step, but consents to
     // no confirmation in advance.
     tidy.grant.push(Rule::new(
-        TreePath::root().any(Level::Room).app(FIXTURE),
+        TreePath::root().any(Level::Workspace).app(FIXTURE),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
     ));
@@ -2652,7 +2652,7 @@ fn run_interactively(door: &Door, shortcut: &str) -> u64 {
         .app_action_broker()
         .expect("the action broker")
         .start_interactive_shortcut_run(
-            &Caller::local_person(door.session_person()).in_room(door.room.to_string()),
+            &Caller::local_person(door.session_person()).in_workspace(door.room.to_string()),
             &door.room.to_string(),
             shortcut,
             Map::new(),

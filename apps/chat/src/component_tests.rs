@@ -1220,7 +1220,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         .find(|request| matches!(request.command.command, Command::Join { .. }))
         .expect("the actual shared action enters the browser media lane");
     assert_eq!(joining.app, "so.tilo.chat");
-    assert_eq!(joining.room, workspace);
+    assert_eq!(joining.workspace, workspace);
     assert_eq!(joining.record, "", "Chat uses its package-primary route");
     assert_eq!(joining.instance, "1");
     let mut live = Snapshot::unavailable();

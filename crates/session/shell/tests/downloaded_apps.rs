@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use shell::shell::add_app_sheet::Answer;
 use shell::shell::app_list::AppSource;
@@ -56,7 +57,10 @@ impl Running {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::copy("/usr/bin/sleep", path).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let child = std::process::Command::new(path).arg("60").spawn().unwrap();
+        let child = std::process::Command::new(path)
+            .arg("60")
+            .spawn_locked()
+            .unwrap();
         let running = Self { child };
         // Until it has exec'd, the process is still a copy of this test.
         let deadline = Instant::now() + WAIT;

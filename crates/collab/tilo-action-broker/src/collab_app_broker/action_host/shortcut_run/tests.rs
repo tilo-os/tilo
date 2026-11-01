@@ -201,7 +201,7 @@ impl Fixture {
             },
         };
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(principal).in_room(&workspace_id);
+        let caller = Caller::local_person(principal).in_workspace(&workspace_id);
         let origin = InvocationCaller::NativePerson {
             invocation,
             workspace: workspace_id.clone(),
@@ -412,7 +412,7 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
 async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
     let workspace = fixture.caller.room().unwrap().to_string();
-    fixture.caller = Caller::local_person("another-person").in_room(workspace);
+    fixture.caller = Caller::local_person("another-person").in_workspace(workspace);
     assert!(start_direct(&fixture, None).is_err());
     tokio::task::yield_now().await;
     assert!(!fixture.state.has_finished_shortcut_runs());

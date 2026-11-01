@@ -5,6 +5,7 @@
 use std::io::{BufRead, Write as _};
 use std::path::PathBuf;
 use std::rc::Rc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_state::{DocOwner, DocWriter, FsStore};
 use automerge::transaction::Transactable as _;
@@ -54,7 +55,7 @@ fn leases_exclude_across_processes_and_release_on_exit() {
                 if first_shared {
                     command.env("TILO_FS_STORE_TEST_SHARED", "1");
                 }
-                let mut child = command.spawn().unwrap();
+                let mut child = command.spawn_locked().unwrap();
                 let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
                 loop {
                     let mut line = String::new();
@@ -88,7 +89,7 @@ fn leases_exclude_across_processes_and_release_on_exit() {
 }
 
 /// A second window of one app is a second instance of the same process tree
-/// opening the same room document: it joins as a secondary writer under an
+/// opening the same workspace document: it joins as a secondary writer under an
 /// actor of its own, and the first window keeps the stored author, its own
 /// values and its own compatibility with what it wrote.
 #[test]

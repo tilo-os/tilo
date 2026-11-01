@@ -252,6 +252,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::process::Command;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn namespace(executable: &Path, operator: &Path) -> Command {
         let mut command = Command::new("timeout");
@@ -422,7 +423,7 @@ mod tests {
                 .arg(proof.installed_path());
             command.args(["--setenv", CASE, case, "--", "/fixture", "--exact",
                 "component_pins::tests::retained_runtime_trust_is_exact_and_does_not_trust_an_old_publisher_globally", "--nocapture"]);
-            let output = command.output().unwrap();
+            let output = command.output_locked().unwrap();
             assert!(
                 output.status.success(),
                 "{case}: {} {}",
@@ -521,7 +522,7 @@ mod tests {
             }
             command.args(["--setenv", CASE, case, "--", "/fixture", "--exact",
                 "component_pins::tests::installed_component_pins_use_real_readonly_files_and_fail_closed", "--nocapture"]);
-            let output = command.output().unwrap();
+            let output = command.output_locked().unwrap();
             assert!(
                 output.status.success(),
                 "case {case}: {}",

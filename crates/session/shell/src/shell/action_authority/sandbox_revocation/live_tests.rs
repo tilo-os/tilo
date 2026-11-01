@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const MODE: &str = "TILO_REVOCATION_PROBE";
 const ROOT: &str = "TILO_REVOCATION_ROOT";
@@ -62,8 +63,8 @@ fn sandbox_process_probe(mode: &str) {
         )
         .unwrap()
     });
-    let _child =
-        (mode != "descendant").then(|| Process(command(&root, "descendant").spawn().unwrap()));
+    let _child = (mode != "descendant")
+        .then(|| Process(command(&root, "descendant").spawn_locked().unwrap()));
     let mut control = UnixStream::connect(root.join("control.sock")).unwrap();
     bounded(&control);
     control
@@ -104,7 +105,7 @@ impl LiveTree {
         listener.set_nonblocking(true).unwrap();
         let mut root = Process(
             command(scratch.path(), if gate { "gate" } else { "directory" })
-                .spawn()
+                .spawn_locked()
                 .unwrap(),
         );
         let deadline = tilo_test_env::hang_deadline();

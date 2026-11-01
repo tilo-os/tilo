@@ -3,6 +3,7 @@
 
 use std::io::Read;
 use std::os::fd::{FromRawFd, OwnedFd};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_sandbox::job::{JobSpec, Launch, Root, SpawnError};
 
@@ -148,7 +149,7 @@ pub fn start_in_child(dir: &std::path::Path) -> i32 {
         ])
         .env(STARTER_ENV, dir)
         .stdout(std::process::Stdio::null())
-        .status()
+        .status_locked()
         .expect("run the starter");
     let error = std::fs::read_to_string(dir.join("error")).unwrap_or_default();
     assert!(

@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -496,7 +497,7 @@ printf 'gate\n' >>'{}'
             .env("TILO_IMAGE_TRUST_UPDATE_LOCK", root.join("update.lock"))
             .env("TILO_IMAGE_TRUST_DIR", root.join("trust"))
             .env("REFUSE_GATE", if refuse { "1" } else { "0" })
-            .output()
+            .output_locked()
             .unwrap()
     };
     let result = run(false);
@@ -535,7 +536,7 @@ fn the_updater_runs_the_compiled_selector() {
 fn the_command_line_is_one_argument() {
     let binary = tilo_test_env::package_binary!("tilo-board-successor");
     for args in [&[][..], &["applicable", "extra"][..]] {
-        let output = Command::new(&binary).args(args).output().unwrap();
+        let output = Command::new(&binary).args(args).output_locked().unwrap();
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),

@@ -21,7 +21,6 @@ use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::link::SharedLink;
-use tilo_quick_settings::device::DeviceHost;
 use tilo_quick_settings::hosted::{
     DevicesReading, PersonalDevice, SendableSound, SoundAsk, SoundRoute,
 };
@@ -45,15 +44,15 @@ pub const KIND: &str = "session.devices";
 #[must_use]
 pub(crate) fn current(
     fabric: &SharedLink,
-    device: &DeviceHost,
+    readings: &crate::status::Shared,
     chosen: &RefCell<Option<u64>>,
 ) -> DevicesReading {
     let playing = fabric
         .require_media()
         .is_ok()
-        .then(|| device.playing_source())
+        .then(|| readings.borrow().handover())
         .flatten()
-        .map(|source| source.title);
+        .map(|handover| handover.title);
     let devices = read(fabric);
     let audio = remote_audio::snapshot(None);
     if chosen
@@ -141,7 +140,9 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
 /// fabric every pass, so a device that comes or goes is one revision.
 pub(crate) struct Served {
     fabric: SharedLink,
-    device: DeviceHost,
+    /// What the services read of this device, of which the reading says
+    /// what plays here that a device can take.
+    readings: crate::status::Shared,
     /// The sound of this device's that a press on a device would send.
     chosen: Rc<RefCell<Option<u64>>>,
     /// The reading last reported, so a pass that changed nothing is no
@@ -150,15 +151,15 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    /// The service publishing what `fabric`, this device and `chosen` read.
+    /// The service publishing what `fabric`, `readings` and `chosen` read.
     pub(crate) fn new(
         fabric: SharedLink,
-        device: DeviceHost,
+        readings: crate::status::Shared,
         chosen: Rc<RefCell<Option<u64>>>,
     ) -> Self {
         Self {
             fabric,
-            device,
+            readings,
             chosen,
             published: RefCell::new(None),
         }
@@ -166,7 +167,7 @@ impl Served {
 
     /// The reading as it stands now.
     fn current(&self) -> DevicesReading {
-        current(&self.fabric, &self.device, &self.chosen)
+        current(&self.fabric, &self.readings, &self.chosen)
     }
 }
 

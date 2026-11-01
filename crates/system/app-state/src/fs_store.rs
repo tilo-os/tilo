@@ -32,9 +32,10 @@ use durable_store::{
 
 use crate::{
     ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOAD_HINT_FILE, LOCK_FILE,
-    RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate, acquire_writer_lock,
-    claim_marker, ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
-    validate_absolute_directory, validate_package_id, validate_record_key,
+    RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, StoreError, WORKSPACES_DIR, acquire_gate,
+    acquire_writer_lock, claim_marker, ensure_state_dir, io_err, open_directory, same_file,
+    sync_directory_ancestors, validate_absolute_directory, validate_package_id,
+    validate_record_key,
 };
 use prepared::{Access, Preparation, Snapshot};
 use tilo_lock::MutexRecover as _;
@@ -288,32 +289,33 @@ fn package_dir_in(root: &Path, package: &str) -> Result<PathBuf, StoreError> {
     Ok(root.join(package))
 }
 
-/// Where `package`'s room index of `workspace` lives under `root`: the
-/// directory whose entries change with that index, which a watcher arms on to
-/// hear of every record the room has taken in or let go. The directory of
-/// every room of that package is its parent.
+/// Where `package`'s index of `workspace` lives under `root`: the directory
+/// whose entries change with that index, which a watcher arms on to hear of
+/// every record the workspace has taken in or let go. The directory of every
+/// workspace of that package is its parent.
 ///
 /// # Errors
-/// A package or room name that is not an identity, a root that is not an
+/// A package or workspace name that is not an identity, a root that is not an
 /// absolute directory, or a key that names no document.
-pub fn room_index_directory(
+pub fn workspace_index_directory(
     root: &Path,
     package: &str,
     workspace: &str,
 ) -> Result<PathBuf, SeamError> {
-    let key = StorageKey::room_index(package, workspace);
+    let key = StorageKey::workspace_index(package, workspace);
     match target_in(root, &key)? {
         Target::Document(directory) => Ok(directory),
         Target::View(_) => Err(SeamError::InvalidKey {
             key: key.to_string(),
-            reason: "a room index is a document".into(),
+            reason: "a workspace index is a document".into(),
         }),
     }
 }
 
-/// Every room index below `root`, as its package and room: one directory per
-/// package holding one per room, whatever this device shows of them.
-fn room_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
+/// Every workspace index below `root`, as its package and workspace: one
+/// directory per package holding one per workspace, whatever this device
+/// shows of them.
+fn workspace_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
     let mut packages = Vec::new();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -330,25 +332,28 @@ fn room_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
         }
     }
     packages.sort();
-    let mut room_indexes = Vec::new();
+    let mut indexes = Vec::new();
     for package in packages {
-        let rooms = root.join(&package).join(ROOMS_DIR);
-        let entries = match fs::read_dir(&rooms) {
+        let workspaces = root.join(&package).join(WORKSPACES_DIR);
+        let entries = match fs::read_dir(&workspaces) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(io_err(format!("listing {}", rooms.display()), error).into()),
+            Err(error) => {
+                return Err(io_err(format!("listing {}", workspaces.display()), error).into());
+            }
         };
         for entry in entries {
-            let entry = entry.map_err(|e| io_err(format!("listing {}", rooms.display()), e))?;
-            if let Some(room) = entry.file_name().to_str().map(str::to_owned)
-                && validate_record_key(&room).is_ok()
+            let entry =
+                entry.map_err(|e| io_err(format!("listing {}", workspaces.display()), e))?;
+            if let Some(workspace) = entry.file_name().to_str().map(str::to_owned)
+                && validate_record_key(&workspace).is_ok()
                 && entry.path().is_dir()
             {
-                room_indexes.push((package.clone(), room));
+                indexes.push((package.clone(), workspace));
             }
         }
     }
-    Ok(room_indexes)
+    Ok(indexes)
 }
 
 fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
@@ -362,18 +367,18 @@ fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
             validate_record_key(record)?;
             Ok(Target::Document(
                 package_dir_in(root, package)?
-                    .join(ROOMS_DIR)
+                    .join(WORKSPACES_DIR)
                     .join(workspace)
                     .join(RECORDS_DIR)
                     .join(record),
             ))
         }
         StorageKey::Package { package } => Ok(Target::Document(package_dir_in(root, package)?)),
-        StorageKey::RoomIndex { package, workspace } => {
+        StorageKey::WorkspaceIndex { package, workspace } => {
             validate_record_key(workspace)?;
             Ok(Target::Document(
                 package_dir_in(root, package)?
-                    .join(ROOMS_DIR)
+                    .join(WORKSPACES_DIR)
                     .join(workspace),
             ))
         }
@@ -985,7 +990,7 @@ impl DurableStore for FsStore {
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
         validate_record_key(claimant)?;
         let marker = match key {
-            // A room record adopted under a new identity (see
+            // A workspace record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
             StorageKey::Record { .. } => match self.target(key)? {
                 Target::Document(directory) => directory.join(RECORD_SUCCESSOR_CLAIM),
@@ -999,7 +1004,7 @@ impl DurableStore for FsStore {
             _ => {
                 return Err(SeamError::InvalidKey {
                     key: key.to_string(),
-                    reason: "only room records are claimed".into(),
+                    reason: "only workspace records are claimed".into(),
                 });
             }
         };
@@ -1016,7 +1021,7 @@ impl DurableStore for FsStore {
         validate_record_key(workspace)?;
         let directory = self
             .package_dir(package)?
-            .join(ROOMS_DIR)
+            .join(WORKSPACES_DIR)
             .join(workspace)
             .join(RECORDS_DIR);
         let entries = match fs::read_dir(&directory) {
@@ -1043,8 +1048,8 @@ impl DurableStore for FsStore {
         Ok(records)
     }
 
-    fn room_indexes(&self) -> Result<Vec<(String, String)>, SeamError> {
-        room_indexes_in(&self.root)
+    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, SeamError> {
+        workspace_indexes_in(&self.root)
     }
 
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
@@ -2193,17 +2198,17 @@ mod tests {
     }
 
     #[test]
-    fn records_lists_one_rooms_committed_documents_sorted() {
+    fn records_lists_one_workspaces_committed_documents_sorted() {
         let tmp = TempDir::new().unwrap();
         let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         assert!(store.records("so.tilo.test", "room-a").unwrap().is_empty());
-        for (room, name, bytes) in [
+        for (workspace, name, bytes) in [
             ("room-a", "b-rec", b"doc".as_slice()),
             ("room-a", "a-rec", b"doc"),
             ("room-a", "empty", b""),
             ("room-b", "elsewhere", b"doc"),
         ] {
-            let key = StorageKey::record("so.tilo.test", room, name);
+            let key = StorageKey::record("so.tilo.test", workspace, name);
             let _lease = store.lease(&key).unwrap();
             store
                 .write(&key, WriteOp::Replace(bytes.to_vec()), None)
@@ -2287,7 +2292,8 @@ mod tests {
                 .unwrap();
             store.flush(None).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
             assert_eq!(fs::read(directory.join(ACTOR_FILE)).unwrap(), b"ab01");
             assert!(directory.join(CANONICAL_GATE).is_file());
@@ -2311,8 +2317,8 @@ mod tests {
             for (key, directory) in [
                 (StorageKey::package("so.tilo.test"), package.clone()),
                 (
-                    StorageKey::room_index("so.tilo.test", "room-a"),
-                    package.join(ROOMS_DIR).join("room-a"),
+                    StorageKey::workspace_index("so.tilo.test", "room-a"),
+                    package.join(WORKSPACES_DIR).join("room-a"),
                 ),
             ] {
                 let shared = store.lease_shared(&key).unwrap();
@@ -2492,7 +2498,8 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
             let revision = store
                 .write(&key, WriteOp::Replace(b"visible".to_vec()), None)
@@ -2516,7 +2523,8 @@ mod tests {
             let key = record("rec");
             let _lease = store.lease(&key).unwrap();
             let directory =
-                DocStore::room_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec").unwrap();
+                DocStore::workspace_record_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    .unwrap();
             fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
             fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
             store

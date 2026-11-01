@@ -54,26 +54,26 @@ mod view_key_tests {
     }
 
     #[test]
-    fn the_presence_scope_is_the_workspace_room_or_nothing() {
-        // phase: the_presence_scope_is_the_room_the_documents_go_to
-        // The presence scope is the room, and it is the *same* room the
+    fn the_presence_scope_is_the_workspace_or_nothing() {
+        // phase: the_presence_scope_is_the_workspace_the_documents_go_to
+        // The presence scope is the workspace, and it is the *same* workspace the
         // collaboration address uses — deriving the two separately is how a
-        // window ends up announcing into one room while addressing documents to
+        // window ends up announcing into one workspace while addressing documents to
         // another. It's also what makes a collaborator's cursor follow them from
         // the editor into the file manager: neither app names itself.
         {
-            let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+            let workspace = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_WORKSPACE_ID", room);
+            env.set("TILO_WORKSPACE_ID", workspace);
             assert_eq!(
                 local_workspace_key(),
                 Some(PresenceKey::Workspace {
-                    id: room.to_string()
+                    id: workspace.to_string()
                 })
             );
             assert_eq!(
                 crate::collaboration::local_cluster_id().to_string(),
-                room,
+                workspace,
                 "presence must be scoped from the same value the routing uses"
             );
         }
@@ -88,7 +88,7 @@ mod view_key_tests {
         // phase: empty_workspace_id_is_treated_as_unset
         // An env var set to the empty string is what a shell script produces
         // when the variable it meant to forward was itself unset. Taking it
-        // literally would put every such app in one room.
+        // literally would put every such app in one workspace.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_WORKSPACE_ID", "");
@@ -131,9 +131,9 @@ mod view_key_tests {
         // one end and not the other.
         {
             for key in [
-                PresenceKey::desktop_pointer("room-7"),
+                PresenceKey::desktop_pointer("workspace-7"),
                 PresenceKey::surface_pointer("so.tilo.word-processor"),
-                PresenceKey::tile_pointer("room-7", 0x1234_5678_9abc),
+                PresenceKey::tile_pointer("workspace-7", 0x1234_5678_9abc),
             ] {
                 let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
                 let back: PresenceKey =
@@ -158,7 +158,7 @@ mod view_key_tests {
         }
         // phase: every_spelling_of_the_desktop_reads_as_the_desktop
         // The two older spellings of the desktop still mean it: a session's
-        // room-scoped republish, and the tag the old keyless cursor path was
+        // workspace-scoped republish, and the tag the old keyless cursor path was
         // re-keyed to.
         {
             assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());

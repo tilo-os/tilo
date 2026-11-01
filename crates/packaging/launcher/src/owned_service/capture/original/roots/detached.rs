@@ -278,6 +278,7 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const MODE: &str = "TILO_DETACHED_ROOT_NATIVE_PROBE";
     const SELECTOR: &str = "owned_service::capture::original::roots::detached::tests::fresh_launch_mounts_refuse_unapproved_children_and_preserve_base";
     struct OwnedChild(Option<Child>);
@@ -461,7 +462,7 @@ mod tests {
                 Ok(())
             });
         }
-        let mut owned = OwnedChild(Some(command.spawn().unwrap()));
+        let mut owned = OwnedChild(Some(command.spawn_locked().unwrap()));
         let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(status) = owned.0.as_mut().unwrap().try_wait().unwrap() {

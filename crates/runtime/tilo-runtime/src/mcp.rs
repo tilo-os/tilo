@@ -568,7 +568,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn new(host: H, workspace: String, actor: String) -> Self {
         let caller = Caller::local_person(actor.clone())
-            .in_room(workspace.clone())
+            .in_workspace(workspace.clone())
             .in_new_execution();
         let agent = agent_id(&caller);
         let caller = caller.delegated_to(agent);
@@ -585,7 +585,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
         let caller = Caller::local_agent(agent_id)
-            .in_room(workspace.clone())
+            .in_workspace(workspace.clone())
             .acting_for(person)
             .in_new_execution();
         Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)

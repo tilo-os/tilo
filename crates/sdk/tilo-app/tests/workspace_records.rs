@@ -85,8 +85,8 @@ fn names(record: &WorkspaceRecord<WorkspaceEmoji>) -> Vec<String> {
 
 #[test]
 fn every_app_of_the_room_reads_and_adds_to_the_one_record_its_owner_keeps() {
-    let mut chat = TestApp::<ChatApp>::in_room(ROOM).unwrap();
-    let mut notes = TestApp::<NotesApp>::in_room(ROOM).unwrap();
+    let mut chat = TestApp::<ChatApp>::in_workspace(ROOM).unwrap();
+    let mut notes = TestApp::<NotesApp>::in_workspace(ROOM).unwrap();
     let kept = chat.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
     let in_notes = notes.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
     let route = kept.record().route().unwrap();
@@ -159,7 +159,7 @@ fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let mut chat = TestApp::<ChatApp>::in_room(ROOM).unwrap();
+    let mut chat = TestApp::<ChatApp>::in_workspace(ROOM).unwrap();
     let kept = chat.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
     assert!(names(&kept).is_empty(), "a fresh room has none yet");
     let settled = Rc::new(RefCell::new(Vec::new()));

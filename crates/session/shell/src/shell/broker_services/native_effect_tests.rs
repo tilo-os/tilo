@@ -495,7 +495,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     let surface = wait_for_membership_surface(&broker, fixture.room);
     let person = hex::encode(fixture.certificate.user_public_key);
     let caller = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
     let page = host
@@ -515,7 +515,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
         !page.rows.is_empty(),
         "the native facade lists after checking certified seat custody"
     );
-    let seat = Caller::local_person(&person).in_room(fixture.room.to_string());
+    let seat = Caller::local_person(&person).in_workspace(fixture.room.to_string());
     assert!(
         host.query(&seat, CatalogueQuery::default())
             .wait_timeout(tilo_test_env::hang_bound())
@@ -567,7 +567,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     assert_eq!(retry.1.invocation, receipt.invocation);
     assert!(cloned.observe(&caller, &request.invocation).is_some());
     let separate = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     assert!(cloned.observe(&separate, &request.invocation).is_none());
     // A separately opened certified owner sees this job. Actor-text admission
@@ -598,8 +598,8 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     // identity; admission is where a displayed Person must be the seat's
     // certified one. Neither a forged label nor a Person without a room
     // acquires native custody.
-    let forged =
-        Caller::local_person("display-label-is-not-authority").in_room(fixture.room.to_string());
+    let forged = Caller::local_person("display-label-is-not-authority")
+        .in_workspace(fixture.room.to_string());
     assert!(
         host.invoke(&forged, forged_request)
             .wait_timeout(tilo_test_env::hang_bound())
@@ -633,7 +633,7 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
     wait_for_membership_surface(&broker, fixture.room);
     let person = hex::encode(fixture.certificate.user_public_key);
     let caller = Caller::local_person(&person)
-        .in_room(fixture.room.to_string())
+        .in_workspace(fixture.room.to_string())
         .in_new_execution();
     let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
     // Native governance, the shortcut library and keyboard settings stay in
@@ -1011,7 +1011,7 @@ fn failed_effect(
     .encode()
     .unwrap();
     let caller = Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-        .in_room(&room)
+        .in_workspace(&room)
         .in_new_execution();
     let host = actions
         .certified_local_action_host(&caller, &evidence)

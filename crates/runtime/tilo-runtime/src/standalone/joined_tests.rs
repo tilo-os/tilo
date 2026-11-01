@@ -442,7 +442,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, act
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
-    let owner = Caller::local_person(actor).in_room(workspace_id.clone());
+    let owner = Caller::local_person(actor).in_workspace(workspace_id.clone());
     let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
         policy_time: origin.capture().unwrap(),
         host: qualified,

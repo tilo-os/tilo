@@ -5,7 +5,7 @@ fn editor_grant(workspace: &str) -> Grant {
     Grant::new(
         "editor-reads",
         Subject::Role(Role::Editor),
-        TreePath::room(workspace),
+        TreePath::workspace(workspace),
         KindSet::READ,
         Answer::Allow,
         Subject::Role(Role::Owner),

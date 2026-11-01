@@ -196,7 +196,9 @@ readers = ["crates/native/tests/oracle.rs"]
     def test_production_tree_is_fully_classified(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/suites.py"), "check"],
                                 cwd=ROOT, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # `check` prints its findings on stdout.
+        self.assertEqual(result.returncode, 0,
+                         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
 
 
 READER_MANIFEST = """

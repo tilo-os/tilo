@@ -59,7 +59,7 @@ impl Grants for Workspace {
         self.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
-            TreePath::room(workspace),
+            TreePath::workspace(workspace),
             kinds,
             Answer::Allow,
             Subject::Person(owner),

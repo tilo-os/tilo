@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::*;
 
@@ -2333,7 +2334,7 @@ impl LauncherStandIn {
             .args(["-c", "sleep 30 & echo $!; read -r _; kill $!"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("spawn a launcher stand-in");
         let mut line = String::new();
         std::io::BufReader::new(child.stdout.take().expect("stand-in stdout"))
@@ -2373,7 +2374,7 @@ fn locked_canonical_writer(canonical: &Path) -> LauncherStandIn {
         .args(["sh", "-c", "echo locked; read -r _"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut line = String::new();
     std::io::BufReader::new(child.stdout.take().unwrap())
@@ -2499,7 +2500,7 @@ fn retiring_writer_whose_launcher_exited_holds_no_replacement() {
     let room = uuid::Uuid::new_v4().to_string();
     let mut launcher = std::process::Command::new("/bin/sleep")
         .arg("infinity")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let pid = launcher.id();
     register_launched_process(pid, &package, Some(&room), true);

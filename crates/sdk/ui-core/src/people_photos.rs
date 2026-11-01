@@ -1,7 +1,7 @@
 //! The pictures people chose for themselves, as this process learnt them.
 //!
 //! A person's picture belongs to their profile, which the hosts of their
-//! rooms keep signed by their root (their name and picture); the host
+//! workspaces keep signed by their root (their name and picture); the host
 //! process fetches it and puts it here, under the person's root key (hex).
 //! The places a person shows up know them by other ids too (the device
 //! their presence comes from), so the host also names whose each of those

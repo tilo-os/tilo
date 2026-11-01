@@ -2,6 +2,7 @@ use super::*;
 use crate::apply::Apply as _;
 use crate::systemd::SystemdApply;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn tree(path: &Path, marker: &str) {
     fs::create_dir_all(path.join("usr/lib")).unwrap();
@@ -278,7 +279,7 @@ fn session_views_flatten_vm_and_slot_layers_in_real_mount_namespace() {
             "--exact",
             "--nocapture",
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

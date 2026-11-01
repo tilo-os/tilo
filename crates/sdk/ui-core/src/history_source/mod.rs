@@ -5,7 +5,7 @@
 //! walking the change graph via [`tilo_resource::history::versions`] to emit one
 //! [`HistoryEntry`] per change with author, timestamp, op class, and a
 //! summary of what changed. It lives in `ui` (not a leaf crate) because
-//! both an app's history and the compositor's room-level timeline need it.
+//! both an app's history and the compositor's workspace-level timeline need it.
 //!
 //! A row says what a change did as the change's action record names it
 //! ([`sentence::step_summary`]); a change made outside any action (a framework
@@ -48,11 +48,11 @@ pub mod runs;
 pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
-pub(crate) use authors::room_agents_revision;
+pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
     agent_display_label, agent_principal_name, author_coloured, author_for_identity,
-    local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
+    local_identity_author, participant_display_label, set_workspace_agents, short_id, stable_hue,
 };
 /// Undo, redo, restore and checkpoints written into the document, below
 /// the toolkit.

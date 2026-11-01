@@ -77,21 +77,12 @@ view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, foc
 /// reaches the app. `lists`: the desk's bar lists the window's actions (`bar_lists_actions`), so
 /// the frame tells its header to let what does not fit give way to that menu instead of a door.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
-    let shown = placed_resource(p.record)
     ui.WindowFrame(name: .some(place_title(p)), focused: focused, lists_actions: lists, fill) {
         controls: {
             frame_buttons(a, p)
         }
         body: {
-            if let r = shown {
-                if meta(r).opens {
-                    show(r, fill)
-                } else {
-                    ui.WindowWell(place: p.key, min: 12rem, fill)
-                }
-            } else {
-                ui.WindowWell(place: p.key, min: 12rem, fill)
-            }
+            place_view(p, fill)
         }
     }
 }
@@ -112,14 +103,14 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != p.strip {
                         ui.MenuItem(r.name) {
-                            on choose: move_place(p.key, r.key)
+                            on choose: move_place(arrangement, p.key, r.key)
                         }
                     }
                 }
             }
         }
         ui.Button("Close", icon: .x, icon_only: true, role: .bar) {
-            on press: close_place(p.key)
+            on press: close_place(arrangement, p.key)
         }
     }
 }
@@ -137,7 +128,7 @@ view action_bar(a: Arrangement, room: BarRoom) {
             if let r = placed_resource(p.record) {
                 action_run(place_title(p), actions(r), room)
             } else {
-                window_commands(a, p)
+                window_commands(a, p, room)
             }
         }
     }
@@ -260,18 +251,19 @@ fn placed_resource(record: Text) -> Option<host.Resource> {
 }
 
 /// The shell's own commands on a window whose record it cannot read (a foreign surface): its
-/// name, moving it to another row, and closing it.
-view window_commands(a: Arrangement, p: ArrangementPlace) {
-    ui.MenuButton(place_title(p), role: .bar) {
+/// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
+/// window's icon alone, as an app's window's one menu is.
+view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
+    ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one and space.width < 18.0, role: .bar) {
         for r in a.rows {
             if r.key != p.strip {
                 ui.MenuItem(r.name, icon: .navigation) {
-                    on choose: move_place(p.key, r.key)
+                    on choose: move_place(arrangement, p.key, r.key)
                 }
             }
         }
         ui.MenuItem("Close", icon: .x) {
-            on choose: close_place(p.key)
+            on choose: close_place(arrangement, p.key)
         }
     }
 }

@@ -1,5 +1,8 @@
 //! Explicit Linux prerequisite/kernel checks. They fail on missing facilities;
 //! passing these alone does not qualify actual tilo-agent/model/provider work.
+
+#[cfg(target_os = "linux")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 #[cfg(all(target_os = "linux", feature = "managed-tree-test"))]
 #[path = "managed/tree.rs"]
 mod tree;
@@ -23,14 +26,14 @@ fn managed_kernel_identity_tracks_exact_child_lifetime() {
         Command::new("/bin/sh")
             .args(["-c", "read -r line"])
             .stdin(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("real child required"),
     );
     let other = Reap(
         Command::new("/bin/sh")
             .args(["-c", "read -r line"])
             .stdin(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("independent child required"),
     );
     let owned_identity =
@@ -82,7 +85,7 @@ fn managed_linux_namespace_prerequisites_are_mandatory() {
             "/dev",
             "/usr/bin/true",
         ])
-        .output()
+        .output_locked()
         .expect("bwrap is required for explicit managed Linux qualification");
     assert!(
         result.status.success(),

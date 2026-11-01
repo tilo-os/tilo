@@ -1551,10 +1551,13 @@ impl Widget for Scrollable {
         // layout rect still contains the pointer. A child that already owns
         // pointer capture continues receiving motion/release so drag and
         // pressed-state cleanup remain correct.
+        // A menu open anywhere in the content holds the pointer as a capture does: its
+        // `modal_capture` reaches up through every container, where `wants_pointer_capture`
+        // is only what each container chose to pass on.
         let child_has_capture = self
             .child
             .as_ref()
-            .is_some_and(|child| child.wants_pointer_capture());
+            .is_some_and(|child| crate::widget::holds_pointer(child.as_ref()));
         let pointer_in_content = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.content_viewport_rect().contains(ctx.logical(position))

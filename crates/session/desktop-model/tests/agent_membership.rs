@@ -94,7 +94,7 @@ fn a_grant_on_another_room_is_not_membership_here() {
     ws.grant(Grant {
         id: GrantId::new("other-room"),
         subject: Subject::agent("other-room"),
-        node: TreePath::room("a-different-durable-room"),
+        node: TreePath::workspace("a-different-durable-room"),
         ..agent_grant(&ws, "other-room", ws.node())
     });
     assert_eq!(
@@ -110,7 +110,7 @@ fn the_people_roster_is_the_owner_and_the_members() {
     ws.grant(Grant::new(
         "elsewhere",
         Subject::person("not-a-member-here"),
-        TreePath::room("other-room"),
+        TreePath::workspace("other-room"),
         KindSet::ALL,
         Answer::Allow,
         Subject::person("ada"),

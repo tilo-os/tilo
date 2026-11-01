@@ -17,7 +17,7 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
     endpoint
         .serve_sessions(Arc::new(move || {
             let caller = Caller::authenticated([4; 32], [5; 32])
-                .in_room("workspace")
+                .in_workspace("workspace")
                 .in_new_execution();
             seen.lock().unwrap().push(caller.clone());
             McpServer::admitted(host.clone(), caller)
@@ -64,7 +64,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
                 McpServer::admitted(
                     host.clone(),
                     Caller::authenticated([4; 32], [5; 32])
-                        .in_room("other-workspace")
+                        .in_workspace("other-workspace")
                         .in_new_execution(),
                 )
             }))

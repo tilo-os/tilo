@@ -78,7 +78,7 @@ impl ShellNetwork {
     /// The room topic of a room record's content, or `None` for a route
     /// that is no shared room.
     fn record_content_topic(&self, route: &CrdtRoute) -> Option<u64> {
-        if self.is_local_person_room(&route.cluster_id) {
+        if self.is_local_personal_cluster(&route.cluster_id) {
             return None;
         }
         RoomId::parse(&route.cluster_id)
@@ -88,7 +88,7 @@ impl ShellNetwork {
 
     /// Ask the devices of `route`'s room for `hash`.
     pub fn want_record_content(&self, route: &CrdtRoute, hash: &str) {
-        if self.is_local_person_room(&route.cluster_id) {
+        if self.is_local_personal_cluster(&route.cluster_id) {
             self.want_person_content(route, hash);
             return;
         }
@@ -111,7 +111,7 @@ impl ShellNetwork {
         let handle = |endpoint: &iroh::EndpointId| {
             tilo_network_actor::behaviour::peer_liveness_handle(endpoint)
         };
-        if self.is_local_person_room(&route.cluster_id) {
+        if self.is_local_personal_cluster(&route.cluster_id) {
             let Some(user) = self.local_person else {
                 return ContentSources::default();
             };
@@ -211,7 +211,7 @@ impl ShellNetwork {
     /// Tell `peer`, which asked `route`'s room for `hash`, this device keeps
     /// none of it.
     pub fn lacks_record_content(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
-        if self.is_local_person_room(&route.cluster_id) {
+        if self.is_local_personal_cluster(&route.cluster_id) {
             let Some(user_public_key) = self.person_fabric() else {
                 return;
             };
@@ -252,7 +252,7 @@ impl ShellNetwork {
 
     /// Send `piece` to `peer`, which asked `route`'s room for it.
     pub fn answer_record_content(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
-        if self.is_local_person_room(&route.cluster_id) {
+        if self.is_local_personal_cluster(&route.cluster_id) {
             self.answer_person_content(route, peer, piece);
             return;
         }
@@ -295,7 +295,8 @@ impl ShellNetwork {
                 cluster_id,
                 hash,
             } => {
-                if requester == self.local_peer_hash || self.is_local_person_room(&cluster_id) {
+                if requester == self.local_peer_hash || self.is_local_personal_cluster(&cluster_id)
+                {
                     return;
                 }
                 self.remember_requester(ws, requester, transport);
@@ -315,7 +316,8 @@ impl ShellNetwork {
                 bytes,
                 ..
             } => {
-                if requester != self.local_peer_hash || self.is_local_person_room(&cluster_id) {
+                if requester != self.local_peer_hash || self.is_local_personal_cluster(&cluster_id)
+                {
                     return;
                 }
                 InboundRecordContent::Piece {
@@ -335,7 +337,8 @@ impl ShellNetwork {
                 cluster_id,
                 hash,
             } => {
-                if requester != self.local_peer_hash || self.is_local_person_room(&cluster_id) {
+                if requester != self.local_peer_hash || self.is_local_personal_cluster(&cluster_id)
+                {
                     return;
                 }
                 InboundRecordContent::Lacks {
@@ -430,7 +433,7 @@ impl ShellNetwork {
         transport: iroh::EndpointId,
         payload: PersonalFabricPayload,
     ) {
-        let Some(room) = self.local_person_room() else {
+        let Some(room) = self.local_personal_cluster() else {
             return;
         };
         let peer = tilo_network_actor::behaviour::peer_liveness_handle(&transport);
@@ -742,7 +745,7 @@ pub(super) mod tests {
         let phone_content = content_over(&on_phone);
         let route = tilo_action_broker::route::CrdtRoute::record(
             "so.tilo.tube",
-            collab_types::person_room(&user).to_string(),
+            collab_types::personal_cluster(&user).to_string(),
             "history",
         );
         let poster: Vec<u8> = (0..PIECE_BYTES + 9)
@@ -804,7 +807,7 @@ pub(super) mod tests {
 
         // A collaborator asking a room topic for it is never answered.
         on_laptop.dispatch_neighbour_msg(
-            workspace_topic_id(collab_types::person_room(&user).into()),
+            workspace_topic_id(collab_types::personal_cluster(&user).into()),
             phone.public(),
             None,
             false,

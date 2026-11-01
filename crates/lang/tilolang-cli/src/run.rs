@@ -250,13 +250,14 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A run that ends, however it ends, stops the session it started and waits until it has.
     #[test]
     fn dropping_a_started_session_stops_it() {
         let mut child = Command::new("sleep")
             .arg("600")
-            .spawn()
+            .spawn_locked()
             .expect("a process stands in for the session");
         drop(Started::new(&child).expect("a pidfd"));
         let status = child
@@ -269,7 +270,7 @@ mod tests {
     /// A session that already ended is left as it is.
     #[test]
     fn a_session_that_ended_is_not_signalled() {
-        let mut child = Command::new("true").spawn().expect("a process");
+        let mut child = Command::new("true").spawn_locked().expect("a process");
         let started = Started::new(&child).expect("a pidfd");
         assert!(child.wait().expect("its status").success());
         drop(started);

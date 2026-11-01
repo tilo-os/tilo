@@ -678,7 +678,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
     let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
         // Map keys are lexical, but the default role grants have a deliberate
-        // order in `room_role_grants`: by role as `Role::ALL` lists them, then
+        // order in `workspace_role_grants`: by role as `Role::ALL` lists them, then
         // by the index in their `role:<role>:<index>` id. Rebuild that order
         // (index 10 after 9, not after 1) before exposing the policy to the
         // live tree.

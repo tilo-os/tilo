@@ -13,6 +13,7 @@ use std::{
     ffi::OsString, fs, os::unix::fs::PermissionsExt, process::Command, sync::atomic::AtomicBool,
     time::Duration,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 use zeroize::Zeroizing;
 mod runnable;
 
@@ -807,7 +808,7 @@ fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
             .env("TMPDIR", "/tmp")
             .env_remove("TMP")
             .env_remove("TEMP")
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

@@ -838,8 +838,9 @@ mod tests {
         let home = tilo_test_env::TestHome::new().expect("a home");
         // An index this device keeps, naming a record that is not the row's:
         // the row names one no workspace holds.
-        let directory = app_state::room_index_directory(home.data(), "so.tilo.notes", "elsewhere")
-            .expect("an index directory");
+        let directory =
+            app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
+                .expect("an index directory");
         std::fs::create_dir_all(&directory).expect("the index's directory");
         let mut index = automerge::AutoCommit::new();
         let kept = ui::record::RecordId::parse("file:/work/Kept.odt").expect("a record id");
@@ -888,8 +889,9 @@ mod tests {
         std::fs::write(&file, "what the record holds").expect("the record's file");
         let record = ui::record::RecordId::for_file(&file);
         // The workspace that holds it names it in its index.
-        let directory = app_state::room_index_directory(home.data(), "so.tilo.notes", "elsewhere")
-            .expect("an index directory");
+        let directory =
+            app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
+                .expect("an index directory");
         std::fs::create_dir_all(&directory).expect("the index's directory");
         let mut index = automerge::AutoCommit::new();
         assert!(ui::record::index::reference(

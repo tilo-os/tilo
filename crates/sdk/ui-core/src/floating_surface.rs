@@ -297,7 +297,7 @@ pub enum FloatingSurfaceClientMessage {
         version: u16,
     },
     /// Complete primary-surface marker inventory from a successfully presented
-    /// SDK frame. The host resolves surface and room from launch custody.
+    /// SDK frame. The host resolves surface and workspace from launch custody.
     ActionMarkers {
         markers: Vec<crate::PaintedActionMarker>,
     },

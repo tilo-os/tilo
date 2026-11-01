@@ -60,10 +60,10 @@ pub enum ContentRefusal {
     /// No window runs, or its host lent it no store.
     #[error("this window has no content store to read {0} from")]
     NoStore(String),
-    /// The window's store is not a room's, so a hash would name content from
-    /// anywhere on this machine.
-    #[error("{0} cannot be read here: this window's content store is not a room's")]
-    NotInRoom(String),
+    /// The window's store is not a workspace's, so a hash would name content
+    /// from anywhere on this machine.
+    #[error("{0} cannot be read here: this window's content store does not name a workspace")]
+    NotInWorkspace(String),
     /// The room does not reference the content, or this device does not
     /// hold it.
     #[error("{0} is not readable in this room: put the content into this room first")]
@@ -107,7 +107,7 @@ pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
     }
     let store = current().ok_or_else(|| ContentRefusal::NoStore(named.clone()))?;
     if !store.workspace_scoped() {
-        return Err(ContentRefusal::NotInRoom(named));
+        return Err(ContentRefusal::NotInWorkspace(named));
     }
     store
         .read(hash)
@@ -247,7 +247,7 @@ mod tests {
     }
 
     /// A byte parameter takes its bytes inline or by a reference to content
-    /// the window's room holds, and refuses any other hash.
+    /// the window's workspace holds, and refuses any other hash.
     #[test]
     fn a_byte_parameter_reads_a_reference_only_from_the_workspaces_store() {
         let window = tilo_wake::WakeScope::new();
@@ -262,10 +262,10 @@ mod tests {
         assert_eq!(inline.bytes, [1, 2, 3]);
         let named =
             decode(serde_json::json!({"bytes": reference, "more": [[4], reference]})).unwrap();
-        assert_eq!(named.bytes, b"a picture the room holds");
+        assert_eq!(named.bytes, b"a picture the workspace holds");
         assert_eq!(
             named.more,
-            [b"\x04".to_vec(), b"a picture the room holds".to_vec()]
+            [b"\x04".to_vec(), b"a picture the workspace holds".to_vec()]
         );
 
         let missing = format!("tilo.content:{elsewhere}");
@@ -297,7 +297,7 @@ mod tests {
         let _entered = window.enter();
         assert_eq!(
             read_reference(&reference),
-            Err(ContentRefusal::NotInRoom(reference.clone()))
+            Err(ContentRefusal::NotInWorkspace(reference.clone()))
         );
     }
 }

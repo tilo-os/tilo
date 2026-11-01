@@ -40,7 +40,7 @@ impl OrdinaryConfirmation {
     }
 
     /// This request as the door's answer made it: the invocation needs the
-    /// person's go-ahead (the room's grants ask first) even where the action
+    /// person's go-ahead (the workspace's grants ask first) even where the action
     /// declares no confirmation, so the person is asked, told who decides,
     /// instead of the request waiting unseen for an answer nobody asks for.
     #[must_use]
@@ -72,7 +72,7 @@ impl OrdinaryConfirmation {
         self.snapshot.contract.can_be_undone()
     }
 
-    /// Why the person is asked, when the room's grants ask rather than the
+    /// Why the person is asked, when the workspace's grants ask rather than the
     /// action itself.
     pub(crate) fn asked(&self) -> Option<&str> {
         self.asked.as_deref()

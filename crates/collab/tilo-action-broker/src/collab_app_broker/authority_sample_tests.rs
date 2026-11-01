@@ -234,7 +234,7 @@ fn invocation_fixture(
     state.replace_published_surfaces_for_test(vec![write_surface(workspace)]);
     let receiver = state.capture_invocations_for_test(7);
     let caller = Caller::local_person(owner())
-        .in_room(workspace.to_owned())
+        .in_workspace(workspace.to_owned())
         .in_new_execution();
     authority.reset();
     (state, caller, receiver)

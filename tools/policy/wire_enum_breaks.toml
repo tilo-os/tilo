@@ -9,6 +9,11 @@
 # reason = "why no stored or sent bytes depend on its variant positions"
 
 [[break]]
+file = "crates/collab/collab-types/src/caps.rs"
+enum = "PrincipalWire"
+reason = "the workspace principal changes name in place, from `Room` to `Workspace`: its postcard position (4) and every byte written before stay the same, a stored subject and a signed authority revision over it still read and verify, and JSON written before under the old name still reads it"
+
+[[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "WorkspaceMembershipCommand"
 reason = "puts the retired task grant commands back at their places: rooms and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"

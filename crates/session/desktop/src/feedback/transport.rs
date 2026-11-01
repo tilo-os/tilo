@@ -57,7 +57,7 @@ impl Enrollment {
         }
         let room = destination.room.clone();
         let caller = |identity: &Identity| {
-            Caller::authenticated(identity.user, identity.device).in_room(room.clone())
+            Caller::authenticated(identity.user, identity.device).in_workspace(room.clone())
         };
         Ok(Self {
             destination: Destination {

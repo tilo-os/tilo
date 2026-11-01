@@ -289,7 +289,7 @@ mod identity_fs_tests {
             Grant::new(
                 id,
                 PolicySubject::Person(person.to_owned()),
-                TreePath::room(room),
+                TreePath::workspace(room),
                 KindSet::READ,
                 Answer::Allow,
                 PolicySubject::Person("owner".into()),
@@ -358,7 +358,7 @@ mod identity_fs_tests {
         tree.desktop.workspaces[0].grant(Grant::new(
             "alice-denied",
             PolicySubject::Person(alice_id),
-            TreePath::room(&first_room),
+            TreePath::workspace(&first_room),
             KindSet::READ,
             Answer::Deny,
             PolicySubject::Person("owner".into()),
@@ -672,8 +672,8 @@ pub fn read_local_presence_hue() -> collab_types::presence::PresenceHue {
 /// it has no roster to invite anyone into, and its records travel only
 /// between that person's devices, so no invite or enrollment may turn it
 /// into a room collaborators share.
-pub fn is_local_person_room(room: RoomId) -> bool {
-    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
+pub fn is_local_personal_cluster(room: RoomId) -> bool {
+    collab_types::personal_cluster_of(&local_user_id()) == Some(room.as_uuid())
 }
 
 /// Identity acting in a specific durable room.
@@ -2246,7 +2246,7 @@ impl WorkspaceTree {
     /// room refuses every governance change rather than trusting whoever
     /// answers.
     pub fn join_room(&mut self, name: &str, room: RoomId) -> Option<WorkspaceId> {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return None;
         }
         if let Some(held) = self.desktop.workspaces.iter().find(|w| w.room() == room) {
@@ -2267,7 +2267,7 @@ impl WorkspaceTree {
     /// this. Made through the stored form, as a file from before would be.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn stand_in_room(&mut self, id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return false;
         }
         let joining = !self.desktop.workspaces.iter().any(|w| w.room() == room);
@@ -3357,7 +3357,7 @@ impl WorkspaceTree {
     /// owns and governs the room is the room's own governance, projected
     /// with its replica. Returns whether the tree changed.
     pub fn adopt_personal_room(&mut self, room: RoomId, name: &str) -> bool {
-        if room.is_nil() || is_local_person_room(room) {
+        if room.is_nil() || is_local_personal_cluster(room) {
             return false;
         }
         if let Some(index) = self
@@ -5711,7 +5711,7 @@ mod workspace_tree_lifecycle_tests {
             Grant::new(
                 id,
                 Subject::Person(person.to_owned()),
-                TreePath::room(&room),
+                TreePath::workspace(&room),
                 KindSet::READ,
                 Answer::Allow,
                 Subject::Person("owner".into()),

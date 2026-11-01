@@ -271,9 +271,10 @@ mod tests {
         let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.to_path_buf()));
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", body).unwrap();
-        let landing =
-            super::super::transfer::install_room_document(&store, PACKAGE, WORKSPACE, &mut doc)
-                .unwrap();
+        let landing = super::super::transfer::install_workspace_document(
+            &store, PACKAGE, WORKSPACE, &mut doc,
+        )
+        .unwrap();
         store.flush(None).unwrap();
         assert!(matches!(landing.durability(&*store), Durability::Durable));
         drop(store);

@@ -48,6 +48,7 @@ toml.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 
 [[test]]

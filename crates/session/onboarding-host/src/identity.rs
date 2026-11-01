@@ -452,7 +452,7 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     let Ok(person) = <[u8; 32]>::try_from(bytes) else {
         return false;
     };
-    let room = collab_types::person_room(&person);
+    let room = collab_types::personal_cluster(&person);
     tilo_identity_host::broker::trusted_current_device(&room.to_string()).is_ok_and(
         |(_, certificate)| {
             certificate.user_public_key == person && !certificate.capabilities.foreign
@@ -488,6 +488,7 @@ pub fn session_home() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn identity_minting_waits_for_the_acknowledged_consequence() {
@@ -716,7 +717,7 @@ mod tests {
                 .env("XDG_STATE_HOME", fixture.path().join("state"))
                 .env("TILO_IDENTITY_ROOT", fixture.path().join("system"))
                 .env(runtime_identity::FILE_SECRETS_ENV, "1")
-                .status().unwrap();
+                .status_locked().unwrap();
             assert!(status.success());
             return;
         }

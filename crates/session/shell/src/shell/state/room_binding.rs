@@ -283,7 +283,7 @@ pub(crate) fn room_holds_files(data_home: &std::path::Path, room: RoomId) -> boo
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             _ => {}
         }
-        if present(&entry.path().join(app_state::ROOMS_DIR).join(&name)) {
+        if present(&entry.path().join(app_state::WORKSPACES_DIR).join(&name)) {
             return true;
         }
     }

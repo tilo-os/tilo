@@ -7,6 +7,7 @@
 use std::io::{BufReader, Write as _};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_vm_protocol::{
     BuildJob, BuildTarget, Client, Gc, JobLine, JobOutput, LayerList, Owner, Provenance, Status,
@@ -105,7 +106,7 @@ fn run(root: &Path, path: &str, job: &BuildJob) -> (JobLine, String) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(&serde_json::to_vec(job).unwrap()).unwrap();
@@ -221,7 +222,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
             .arg(root.path().join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut client = Client::new(
             BufReader::new(rpc.stdout.take().unwrap()),

@@ -358,6 +358,109 @@ impl Drop for EnvLock {
     }
 }
 
+/// Start a process with the environment as it stands outside every other
+/// test's [`ScopedEnv`].
+///
+/// A child copies the process environment when it starts. Started while
+/// another test's scope is open, it would inherit that test's values: a shell
+/// started beside a test that points `TILO_LAUNCHER_BIN` at a recording
+/// stand-in runs its app spawner through that stand-in, and the other test
+/// reads the launch as its own. These take [`lock`] for the moment the child
+/// starts, so it sees only what this thread set.
+pub trait SpawnUnderEnvLock {
+    /// [`std::process::Command::spawn`], under [`lock`].
+    ///
+    /// # Errors
+    ///
+    /// As `spawn`.
+    fn spawn_locked(&mut self) -> io::Result<std::process::Child>;
+    /// [`std::process::Command::output`], under [`lock`] while the child starts:
+    /// its output and errors are captured, and its input is this process's
+    /// unless the command names one.
+    ///
+    /// # Errors
+    ///
+    /// As `output`.
+    fn output_locked(&mut self) -> io::Result<std::process::Output>;
+    /// [`std::process::Command::status`], under [`lock`] while the child starts.
+    ///
+    /// # Errors
+    ///
+    /// As `status`.
+    fn status_locked(&mut self) -> io::Result<std::process::ExitStatus>;
+}
+
+impl SpawnUnderEnvLock for std::process::Command {
+    fn spawn_locked(&mut self) -> io::Result<std::process::Child> {
+        let _env = lock();
+        self.spawn()
+    }
+
+    fn output_locked(&mut self) -> io::Result<std::process::Output> {
+        self.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        self.spawn_locked()?.wait_with_output()
+    }
+
+    fn status_locked(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.spawn_locked()?.wait()
+    }
+}
+
+/// [`SpawnUnderEnvLock`] for `tokio::process::Command`: the child starts
+/// under [`lock`], and the wait for it runs without the lock.
+#[cfg(feature = "tokio")]
+pub trait SpawnUnderEnvLockAsync {
+    /// `tokio::process::Command::spawn`, under [`lock`].
+    ///
+    /// # Errors
+    ///
+    /// As `spawn`.
+    fn spawn_locked(&mut self) -> io::Result<tokio::process::Child>;
+    /// `tokio::process::Command::output`, under [`lock`] while the child
+    /// starts: its output and errors are captured, and its input is this
+    /// process's unless the command names one.
+    ///
+    /// # Errors
+    ///
+    /// As `output`.
+    fn output_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::Output>> + Send;
+    /// `tokio::process::Command::status`, under [`lock`] while the child starts.
+    ///
+    /// # Errors
+    ///
+    /// As `status`.
+    fn status_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::ExitStatus>> + Send;
+}
+
+#[cfg(feature = "tokio")]
+impl SpawnUnderEnvLockAsync for tokio::process::Command {
+    fn spawn_locked(&mut self) -> io::Result<tokio::process::Child> {
+        let _env = lock();
+        self.spawn()
+    }
+
+    fn output_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::Output>> + Send {
+        self.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let child = self.spawn_locked();
+        async move { child?.wait_with_output().await }
+    }
+
+    fn status_locked(
+        &mut self,
+    ) -> impl std::future::Future<Output = io::Result<std::process::ExitStatus>> + Send {
+        let child = self.spawn_locked();
+        async move { child?.wait().await }
+    }
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "this crate is the one sanctioned writer of the process environment"
@@ -715,6 +818,31 @@ mod tests {
         }
     }
 
+    /// A child started while another thread's scope is open waits for it to close, so it never
+    /// inherits that scope's values.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_started_beside_another_scope_inherits_none_of_it() {
+        const LEAK: &str = "TILO_TEST_ENV_SELFTEST_LEAK";
+        let (opened, on_open) = std::sync::mpsc::channel();
+        let scope = thread::spawn(move || {
+            let mut env = ScopedEnv::new();
+            env.set(LEAK, "the other test's value");
+            opened.send(()).unwrap();
+            // Long enough that a child started without the lock starts inside the scope.
+            thread::sleep(std::time::Duration::from_millis(200));
+            drop(env);
+        });
+        on_open.recv().unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf %s \"${TILO_TEST_ENV_SELFTEST_LEAK-}\""])
+            .output_locked()
+            .unwrap();
+        scope.join().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    }
+
     /// Setting restores an absent variable to absent; set and remove restore the prior value; nested
     /// scopes unwind in order on one thread; a panicking scope restores and releases the lock;
     /// concurrent scopes are serialised.
@@ -938,7 +1066,7 @@ mod tests {
             let output = std::process::Command::new(shell)
                 .arg(arg)
                 .arg("once")
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(output.status.success());
             assert_eq!(output.stdout, b"ran once");
@@ -956,7 +1084,11 @@ mod tests {
                         for round in 0..25 {
                             let path = dir.path().join(format!("fixture-{thread_index}-{round}"));
                             let body = format!("#!/bin/sh\nprintf '{thread_index}-{round}'\n");
-                            let output = script(&path, &body).unwrap().command().output().unwrap();
+                            let output = script(&path, &body)
+                                .unwrap()
+                                .command()
+                                .output_locked()
+                                .unwrap();
                             assert!(output.status.success());
                             assert_eq!(output.stdout, format!("{thread_index}-{round}").as_bytes());
                         }

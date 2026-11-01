@@ -146,7 +146,7 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
     let standing = standing.clone();
     let people = people.clone();
     Rc::new(move |who: &Principal, target: &ResourceRef| {
-        let workspace = TreePath::room(standing.room());
+        let workspace = TreePath::workspace(standing.workspace());
         let node = match kinds.get(&target.ty) {
             Some((app, kind, Some(own))) => workspace
                 .app(app)
@@ -195,7 +195,7 @@ mod tests {
         policy.grants.push(Grant::new(
             "hide-secret",
             Subject::person("cy"),
-            TreePath::room("workspace")
+            TreePath::workspace("workspace")
                 .app("notes")
                 .kind("tl.notes.Note")
                 .resource("secret"),
@@ -239,7 +239,7 @@ mod tests {
     fn who_reads_a_resource_is_what_the_policy_answers_for_each_person() {
         let (standing, people) = (standing(), people());
         let node = |id: &str| {
-            TreePath::room("workspace")
+            TreePath::workspace("workspace")
                 .app("notes")
                 .kind("tl.notes.Note")
                 .resource(id)

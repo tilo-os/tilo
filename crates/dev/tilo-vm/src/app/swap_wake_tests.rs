@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Guest {
     state: &'static str,
@@ -282,7 +284,7 @@ fn component_swap_resumes_both_initial_and_preapply_connections() {
             "TILO_SWAP_WAKE_PROTOCOL",
             tilo_vm_protocol::PROTOCOL_VERSION.to_string(),
         )
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

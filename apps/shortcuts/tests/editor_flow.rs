@@ -222,7 +222,7 @@ fn open_with(workspace: Workspace) -> (Arc<TestHost>, RemoteActionsGuard, TestAp
     let host = Arc::new(workspace.host());
     let guard = RemoteActions::enter(
         Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
-        Caller::local_app(APP_ID).in_room("room"),
+        Caller::local_app(APP_ID).in_workspace("room"),
     );
     let app = TestApp::<App>::new().expect("the app opens");
     (host, guard, app)

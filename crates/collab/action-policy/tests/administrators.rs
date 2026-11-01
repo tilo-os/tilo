@@ -1,4 +1,4 @@
-//! A room's administrator: an Editor the owner gave every governance action.
+//! A workspace's administrator: an Editor the owner gave every governance action.
 //! They govern, an Editor by role alone does not, and their role, a foreign
 //! device, an agent, a ban and a restriction still bound them.
 
@@ -17,42 +17,42 @@ fn cx() -> Context<'static> {
     Context::at(NOW)
 }
 
-/// Room `r` owned by [`OWNER`] with `members`, and `administrator` made its
+/// Workspace `r` owned by [`OWNER`] with `members`, and `administrator` made its
 /// administrator by the owner.
-fn room(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
-    let mut room = WorkspacePolicy::new("r", OWNER);
+fn workspace(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
+    let mut workspace = WorkspacePolicy::new("r", OWNER);
     for (person, role) in members {
-        room.members.insert((*person).to_owned(), *role);
+        workspace.members.insert((*person).to_owned(), *role);
     }
-    room.grants.push(roles::administrator_grant(
+    workspace.grants.push(roles::administrator_grant(
         "r",
         administrator,
         Subject::person(OWNER),
     ));
-    room
+    workspace
 }
 
 #[test]
 fn an_administrator_runs_every_governance_action_and_an_editor_none() {
-    let room = room(&[(BOB, Role::Editor), (CAROL, Role::Editor)], CAROL);
-    let bob = Authority::person(room.party(BOB));
-    let carol = Authority::person(room.party(CAROL));
+    let workspace = workspace(&[(BOB, Role::Editor), (CAROL, Role::Editor)], CAROL);
+    let bob = Authority::person(workspace.party(BOB));
+    let carol = Authority::person(workspace.party(CAROL));
     for action in governance::ALL {
         assert_eq!(
-            room.check_action(&carol, action, &cx(), false),
+            workspace.check_action(&carol, action, &cx(), false),
             Ok(()),
             "an administrator runs {action}"
         );
         assert!(
             matches!(
-                room.check_action(&bob, action, &cx(), true),
+                workspace.check_action(&bob, action, &cx(), true),
                 Err(Refusal::NotPermitted(_))
             ),
             "an Editor by role alone does not run {action}"
         );
     }
     // The grant reaches governance only: content stays the Editor's.
-    let send = TreePath::room("r")
+    let send = TreePath::workspace("r")
         .app("mail")
         .kind("mail.message")
         .resource("m1")
@@ -65,7 +65,7 @@ fn an_administrator_runs_every_governance_action_and_an_editor_none() {
 
 #[test]
 fn an_administrator_never_hands_out_or_reaches_above_their_role() {
-    let room = room(
+    let workspace = workspace(
         &[
             (BOB, Role::Editor),
             (CAROL, Role::Editor),
@@ -74,77 +74,85 @@ fn an_administrator_never_hands_out_or_reaches_above_their_role() {
         ],
         CAROL,
     );
-    let carol = Authority::person(room.party(CAROL));
-    room.check_invite(CAROL, &carol, Role::Editor, &cx(), false)
+    let carol = Authority::person(workspace.party(CAROL));
+    workspace
+        .check_invite(CAROL, &carol, Role::Editor, &cx(), false)
         .unwrap();
     assert_eq!(
-        room.check_invite(CAROL, &carol, Role::Moderator, &cx(), false),
+        workspace.check_invite(CAROL, &carol, Role::Moderator, &cx(), false),
         Err(Refusal::AboveActorRole {
             actor: Some(Role::Editor),
             wanted: Role::Moderator
         })
     );
     assert_eq!(
-        room.check_invite(CAROL, &carol, Role::Owner, &cx(), false),
+        workspace.check_invite(CAROL, &carol, Role::Owner, &cx(), false),
         Err(Refusal::OwnerRole)
     );
     let set = |person: &str, role| Change::SetRole {
         person: person.into(),
         role,
     };
-    room.check(CAROL, &carol, &set("v", Role::Editor), &cx(), false)
+    workspace
+        .check(CAROL, &carol, &set("v", Role::Editor), &cx(), false)
         .unwrap();
     assert!(matches!(
-        room.check(CAROL, &carol, &set(BOB, Role::Moderator), &cx(), false),
+        workspace.check(CAROL, &carol, &set(BOB, Role::Moderator), &cx(), false),
         Err(Refusal::AboveActorRole { .. })
     ));
     let remove = |person: &str| Change::RemoveMember {
         person: person.into(),
     };
-    room.check(CAROL, &carol, &remove("v"), &cx(), false)
+    workspace
+        .check(CAROL, &carol, &remove("v"), &cx(), false)
         .unwrap();
     for person in [BOB, "m"] {
         assert!(matches!(
-            room.check(CAROL, &carol, &remove(person), &cx(), false),
+            workspace.check(CAROL, &carol, &remove(person), &cx(), false),
             Err(Refusal::NotBelowActor { .. })
         ));
     }
     assert_eq!(
-        room.check(CAROL, &carol, &remove(OWNER), &cx(), false),
+        workspace.check(CAROL, &carol, &remove(OWNER), &cx(), false),
         Err(Refusal::Owner)
     );
     // A grant beyond what the administrator holds on its node.
     let wider = Grant::new(
         "wider",
         Subject::person(BOB),
-        room.node(),
+        workspace.node(),
         KindSet::OUTSIDE,
         Answer::Allow,
         Subject::person(CAROL),
     );
     assert!(matches!(
-        room.check(CAROL, &carol, &Change::Grant(wider), &cx(), false),
+        workspace.check(CAROL, &carol, &Change::Grant(wider), &cx(), false),
         Err(Refusal::AboveActorGrant { .. })
     ));
 }
 
 #[test]
 fn an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent() {
-    let room = room(&[(CAROL, Role::Editor)], CAROL);
+    let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
     let bound = roles::foreign_device_bound();
-    let foreign = room.person_on_device(CAROL, true, &bound);
+    let foreign = workspace.person_on_device(CAROL, true, &bound);
     let delegation = roles::agent_delegation("r", "scribe", CAROL);
-    let agent = Authority::person(room.party(CAROL)).bounded_by(delegation.party(&room.grants));
+    let agent =
+        Authority::person(workspace.party(CAROL)).bounded_by(delegation.party(&workspace.grants));
     for action in governance::ALL {
-        assert!(room.check_action(&foreign, action, &cx(), true).is_err());
-        assert!(room.check_action(&agent, action, &cx(), true).is_err());
+        assert!(
+            workspace
+                .check_action(&foreign, action, &cx(), true)
+                .is_err()
+        );
+        assert!(workspace.check_action(&agent, action, &cx(), true).is_err());
     }
 }
 
 #[test]
 fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
     let until = NOW + 60_000;
-    let mut restricted = room(&[(CAROL, Role::Editor), (BOB, Role::Moderator)], CAROL);
+    let mut restricted = workspace(&[(CAROL, Role::Editor), (BOB, Role::Moderator)], CAROL);
     for person in [CAROL, BOB] {
         restricted.grants.push(roles::restriction_grant(
             "r",
@@ -170,7 +178,7 @@ fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
         "a lapsed restriction holds nobody off"
     );
 
-    let mut banned = room(&[(CAROL, Role::Editor)], CAROL);
+    let mut banned = workspace(&[(CAROL, Role::Editor)], CAROL);
     banned
         .grants
         .push(roles::block_grant("r", CAROL, Subject::person(OWNER)));
@@ -187,13 +195,13 @@ fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
 }
 
 #[test]
-fn an_administrator_grant_on_the_rooms_resource_is_outranked_by_the_editor_rule() {
-    let mut room = WorkspacePolicy::new("r", OWNER);
-    room.members.insert(CAROL.into(), Role::Editor);
+fn an_administrator_grant_on_the_workspace_resource_is_outranked_by_the_editor_rule() {
+    let mut workspace = WorkspacePolicy::new("r", OWNER);
+    workspace.members.insert(CAROL.into(), Role::Editor);
     let legacy = Grant::new(
         roles::administrator_grant_id(CAROL).as_str(),
         Subject::person(CAROL),
-        roles::room_resource("r"),
+        roles::workspace_resource("r"),
         KindSet::ALL,
         Answer::Allow,
         Subject::person(OWNER),
@@ -217,10 +225,10 @@ fn an_administrator_grant_on_the_rooms_resource_is_outranked_by_the_editor_rule(
             "rewriting {other:?} would widen it"
         );
     }
-    room.grants.push(legacy);
-    let carol = Authority::person(room.party(CAROL));
+    workspace.grants.push(legacy);
+    let carol = Authority::person(workspace.party(CAROL));
     assert!(matches!(
-        room.check_action(&carol, governance::INVITE, &cx(), false),
+        workspace.check_action(&carol, governance::INVITE, &cx(), false),
         Err(Refusal::NotPermitted(_))
     ));
 }

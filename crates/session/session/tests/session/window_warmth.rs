@@ -5,6 +5,7 @@
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_app_launch::Connects as _;
 use tilo_desktop_model::ids::WorkspaceId;
@@ -144,7 +145,7 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
     // in front.
     let mut app_process = std::process::Command::new("sleep")
         .arg("120")
-        .spawn()
+        .spawn_locked()
         .expect("a launched app's process");
     let app = "org.example.Notes";
     launches.started(app_process.id(), app, "private", false);

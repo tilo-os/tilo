@@ -17,20 +17,14 @@ use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
 use crate::{DeviceHost, Doors, OnboardingView, Options, PanelHost, QuickSettings, SessionCommand};
 
-/// Quick settings as a popover under the bar, lent `panel`'s readings
-/// (which `readings` then holds too).
+/// Quick settings as a popover under the bar.
 pub(crate) fn mount_quick_settings(
     compositor: &mut Compositor,
     doors: &mut Doors,
     panel: Rc<dyn PanelHost>,
     options: &Options,
-    readings: &crate::panels::Readings,
     overlays: &Overlays,
 ) -> bool {
-    let panel = Rc::new(crate::panels::Tap {
-        inner: panel,
-        feed: Rc::clone(readings),
-    });
     match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
         .and_then(|component| ui::App::from_component(component, (options.presentation)()))
     {
@@ -145,7 +139,6 @@ pub(crate) fn mount_device(
     compositor: &mut Compositor,
     doors: &mut Doors,
     options: &mut Options,
-    readings: &crate::panels::Readings,
     overlays: &Overlays,
 ) -> (Option<DeviceHost>, bool) {
     let (device, panel) = match options.quick_settings.take() {
@@ -158,8 +151,7 @@ pub(crate) fn mount_device(
         Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
         None => (None, None),
     };
-    let quick_settings = panel.is_some_and(|panel| {
-        mount_quick_settings(compositor, doors, panel, options, readings, overlays)
-    });
+    let quick_settings = panel
+        .is_some_and(|panel| mount_quick_settings(compositor, doors, panel, options, overlays));
     (device, quick_settings)
 }

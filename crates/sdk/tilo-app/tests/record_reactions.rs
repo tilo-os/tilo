@@ -133,7 +133,7 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
 
 #[test]
 fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() {
-    use tilo_app::permissions::{LOCAL_ROOM, PermissionContext, Role, Standing, policy};
+    use tilo_app::permissions::{LOCAL_WORKSPACE, PermissionContext, Role, Standing, policy};
     let mut app = TestApp::<PosterApp>::new().unwrap();
     app.settle();
     assert_eq!(
@@ -143,10 +143,10 @@ fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() 
     );
 
     // Ada owns the room and is away; the person is an Editor in it.
-    let mut room = policy::WorkspacePolicy::new(LOCAL_ROOM, "ada");
+    let mut room = policy::WorkspacePolicy::new(LOCAL_WORKSPACE, "ada");
     room.members.insert(ME.into(), Role::Editor);
     app.set_permissions(PermissionContext::from_standing(
-        LOCAL_ROOM,
+        LOCAL_WORKSPACE,
         Standing::person(room, ME),
     ));
     app.settle();

@@ -7,6 +7,7 @@ use std::{
 };
 use tilo_identity_host::provisioning::{IdentityStorage, ensure_throwaway_test_identity};
 use tilo_runtime::RuntimeServices as _;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn profile(root: &Path, case: &str) -> io::Result<PathBuf> {
     let profile = root.join(case);
@@ -107,7 +108,7 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
             .args(["--setenv",CHILD_PROFILE]).arg(&profile)
             .arg("--").arg(std::env::current_exe().unwrap())
             .args(["--exact","runtime_host::admission_tests::readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity","--nocapture"])
-            .output().expect("native admission startup requires working bubblewrap");
+            .output_locked().expect("native admission startup requires working bubblewrap");
         assert!(
             output.status.success(),
             "{case}: {}\n{}",

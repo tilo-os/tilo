@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Stands in for Cargo: `metadata` names a fake SDK checkout; a build
 /// records its arguments and linker, and reports one shared library.
@@ -210,7 +211,7 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
-        command.output().expect("run tilo-app")
+        command.output_locked().expect("run tilo-app")
     }
 
     fn log(&self, name: &str) -> String {

@@ -1087,6 +1087,7 @@ mod image_interface_tests {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A socket file with nothing listening on it — what a session that
     /// exited without unlinking leaves behind. Binding and dropping the
@@ -1841,7 +1842,7 @@ mod tests {
             let seen = std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
-                .output()
+                .output_locked()
                 .expect("spawning an unrelated child");
             let seen = String::from_utf8_lossy(&seen.stdout);
             assert!(

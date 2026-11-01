@@ -110,7 +110,7 @@ impl PresenceCtx {
     }
 
     /// Observe semantic work without claiming its resource belongs to this
-    /// rendering surface. The shell People roster uses this after the room
+    /// rendering surface. The shell People roster uses this after the workspace
     /// broker has authenticated and routed the event; app canvases continue
     /// to use `apply_remote_presence`, whose resource-key check prevents an
     /// interaction from painting in unrelated applications.
@@ -143,7 +143,7 @@ impl PresenceCtx {
         let user = UserId(interaction.actor.id.clone());
         self.set_participant_kind(&user, ParticipantKind::from(interaction.actor.kind));
         self.set_acting_for(&user, interaction.actor.for_person.clone().map(UserId));
-        // Software the room's roster does not know (a Shortcut's run) is
+        // Software the workspace's roster does not know (a Shortcut's run) is
         // named by the run it works in.
         if interaction.actor.kind.acts_for_someone()
             && !self.names.contains_key(&user)
@@ -1181,7 +1181,7 @@ mod tests {
                     .is_empty()
             );
         }
-        // phase: room_fanout_only_paints_the_addressed_app_surface
+        // phase: workspace_fanout_only_paints_the_addressed_app_surface
         {
             let at = crate::time::now();
             let update = interaction(10, 1, InteractionPhase::Applying);

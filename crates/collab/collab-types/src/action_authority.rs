@@ -43,17 +43,21 @@ struct StoredProjection {
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {
-    /// The built-in roles' grants are the code's, so they are narrowed to the
-    /// app here as [`AppActionAuthorityProjection::project`] narrowed them:
-    /// a projection reads back as the projection of the current policy.
-    /// Grants given in the room stay as written, for
+    /// The grants the code makes — the built-in roles' and the session's own
+    /// app and device panel — are narrowed to the app here as
+    /// [`AppActionAuthorityProjection::project`] narrowed them, so a
+    /// projection reads back as the projection of the current policy. Grants
+    /// given in the room stay as written, for
     /// [`AppActionAuthorityProjection::validate`] to judge.
     fn from(stored: StoredProjection) -> Self {
         let mut policy = stored.policy;
         let app = policy.node().app(&stored.app_id);
-        policy
-            .grants
-            .retain(|grant| !roles::is_role_grant(grant) || grant.node.overlaps(&app));
+        policy.grants.retain(|grant| {
+            let code_made = roles::is_role_grant(grant)
+                || roles::is_session_app(grant)
+                || roles::is_device_panel(grant);
+            !code_made || grant.node.overlaps(&app)
+        });
         Self {
             schema_version: stored.schema_version,
             room: stored.room,
@@ -108,7 +112,7 @@ impl AppActionAuthorityProjection {
         }
         let app = self.policy.node().app(&self.app_id);
         for grant in &self.policy.grants {
-            if !grant.node.overlaps(&app) || grant.node.room_id() != Some(self.room.as_str()) {
+            if !grant.node.overlaps(&app) || grant.node.workspace_id() != Some(self.room.as_str()) {
                 return Err("invalid host action policy projection");
             }
         }
@@ -161,8 +165,8 @@ mod tests {
         invalid.schema_version = 2;
         assert!(invalid.validate().is_err(), "another schema is refused");
         for node in [
-            TreePath::room("room-a").app("so.tilo.settings"),
-            TreePath::room("room-b"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-b"),
             TreePath::root(),
         ] {
             let mut invalid = original.clone();
@@ -207,6 +211,23 @@ mod tests {
         assert_eq!(read, policy());
     }
 
+    /// The grants the code makes for the session's own app reach it, so a
+    /// projection of that app keeps them and reads back as it was written,
+    /// in the order it wrote them.
+    #[test]
+    fn a_projection_of_the_sessions_own_app_reads_back_as_written() {
+        let projection = AppActionAuthorityProjection::project(
+            &WorkspacePolicy::new("room-a", "person-a"),
+            tilo_action_policy::roles::SESSION_APP,
+            "person-a",
+            false,
+        );
+        let read: AppActionAuthorityProjection =
+            serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+        read.validate().unwrap();
+        assert_eq!(read, projection);
+    }
+
     /// A grant the room gave that reaches beyond the app is still refused
     /// when read, not dropped.
     #[test]
@@ -215,7 +236,7 @@ mod tests {
         written.policy.grants.push(Grant::new(
             "foreign",
             Subject::person("person-b"),
-            TreePath::room("room-a").app("so.tilo.settings"),
+            TreePath::workspace("room-a").app("so.tilo.settings"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),
@@ -233,7 +254,7 @@ mod tests {
             room.grants.push(Grant::new(
                 id,
                 Subject::person("person-b"),
-                TreePath::room("room-a").app(app),
+                TreePath::workspace("room-a").app(app),
                 KindSet::UNDOABLE,
                 Answer::Allow,
                 Subject::person("person-a"),
@@ -283,7 +304,7 @@ mod tests {
         projection.policy.grants.push(Grant::new(
             "governance",
             Subject::person("person-a"),
-            roles::room_resource("room-a"),
+            roles::workspace_resource("room-a"),
             KindSet::ALL,
             Answer::Allow,
             Subject::person("person-a"),

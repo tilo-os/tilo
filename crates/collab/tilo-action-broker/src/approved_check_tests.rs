@@ -133,7 +133,7 @@ fn person(workspace: &signed_worker::OriginalWorkspace) -> (tilo_actions::remote
             workspace.cert.user_public_key,
             workspace.cert.device_public_key,
         )
-        .in_room(&workspace.route.cluster_id)
+        .in_workspace(&workspace.route.cluster_id)
         .in_new_execution(),
         signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key),
     )

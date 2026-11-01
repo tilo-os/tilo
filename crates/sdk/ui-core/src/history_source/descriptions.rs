@@ -28,7 +28,7 @@ use crate::widget::history_group::{from_hex16, hex16};
 pub use collaboration::history_source::{DESCRIPTIONS_KEY, is_description_marker};
 
 /// A description is one short sentence; past this it is a paragraph that
-/// no row has room for.
+/// no row has workspace for.
 pub const MAX_DESCRIPTION_LEN: usize = 160;
 
 /// Every description the document carries, by the change it describes.

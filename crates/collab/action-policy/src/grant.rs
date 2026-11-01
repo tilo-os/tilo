@@ -69,7 +69,7 @@ impl fmt::Display for Answer {
     }
 }
 
-/// A role preset. A member of a room holds one; the room keeps the grants each
+/// A role preset. A member of a workspace holds one; the workspace keeps the grants each
 /// role carries (see [`crate::roles`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -230,11 +230,11 @@ pub enum Lifetime {
     UntilRevoked,
 }
 
-/// A lifetime as rooms store it, read and written. A grant once lived while
-/// a task of the room was open; those tasks are gone, and such a grant reads
-/// as one that has expired, so a room that holds one still loads. The task
+/// A lifetime as workspaces store it, read and written. A grant once lived while
+/// a task of the workspace was open; those tasks are gone, and such a grant reads
+/// as one that has expired, so a workspace that holds one still loads. The task
 /// keeps its place: compact encodings (postcard) name a variant by its
-/// position, and a room's stored grants and the digests of its
+/// position, and a workspace's stored grants and the digests of its
 /// administration requests are made of those bytes, so every lifetime is
 /// written as it always was.
 #[derive(Serialize, Deserialize)]

@@ -1,6 +1,8 @@
 use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::fs::PermissionsExt as _;
+#[cfg(feature = "native-current-device-qualification")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, IdentityPaths, persist};
 const PASSWORD: &[u8] = b"a private device transport password";
 struct Fixture {
@@ -544,7 +546,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
             Ok(())
         });
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = command.spawn_locked().unwrap();
     let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {

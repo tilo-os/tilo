@@ -184,7 +184,7 @@ impl DeviceClass {
     /// A foreign device never keeps a native certificate it finds on disk,
     /// and a throwaway never one that does not expire. Any certificate that
     /// expires is reissued once it is due for renewal ([`renewal_due_at`]):
-    /// an expiring certificate is never how a device loses its rooms.
+    /// an expiring certificate is never how a device loses its workspaces.
     fn must_reissue(self, cert: &DeviceCert, now_ns: u64) -> bool {
         let due = renewal_due_at(cert).is_some_and(|due| now_ns >= due);
         due || match self {
@@ -627,7 +627,8 @@ pub struct JoinedDeviceLayout<'a> {
     pub local_system: &'a IdentityPaths,
     /// This machine's home-peer registry, copied when it is present.
     pub local_home_peers: &'a Path,
-    /// This machine's exported workspace room ids, copied when the file exists.
+    /// This machine's exported personal room list, copied when the file
+    /// exists; the shell publishes it under that name.
     pub local_rooms: &'a Path,
 }
 
@@ -896,7 +897,7 @@ fn safe_account_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
-fn valid_room_id(value: &str) -> bool {
+fn valid_workspace_id(value: &str) -> bool {
     let mut parts = value.split('-');
     let expected = [8, 4, 4, 4, 12];
     expected.into_iter().all(|len| {
@@ -918,7 +919,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
     let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
         return Ok(());
     };
-    if ids.len() > 256 || ids.iter().any(|id| !valid_room_id(id)) {
+    if ids.len() > 256 || ids.iter().any(|id| !valid_workspace_id(id)) {
         return Ok(());
     }
     if let Some(parent) = dest.parent() {
@@ -932,8 +933,8 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Where this session publishes the workspace rooms a newly enrolled device
-/// should join. Absent when the process has no home or state directory.
+/// Where this session publishes the workspaces a newly enrolled device should
+/// join. Absent when the process has no home or state directory.
 #[must_use]
 pub fn personal_rooms_export_path() -> Option<PathBuf> {
     Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
@@ -2031,7 +2032,7 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one enrollment scenario keeps the two fleets, the copied rooms, and the absent root secret together"
+        reason = "one enrollment scenario keeps the two fleets, the copied workspace list, and the absent root secret together"
     )]
     fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
         use ed25519_dalek::Signer;

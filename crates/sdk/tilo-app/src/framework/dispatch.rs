@@ -599,11 +599,11 @@ impl DispatchCore {
     /// Whether the room this record is in has anyone besides this window's
     /// participant, its owner or a member, here now or not: what it holds is
     /// shared with them.
-    pub(crate) fn room_has_others(&self) -> bool {
+    pub(crate) fn workspace_has_others(&self) -> bool {
         self.permissions
             .borrow()
             .as_ref()
-            .is_some_and(ui_core::permissions::LivePermissions::room_has_others)
+            .is_some_and(ui_core::permissions::LivePermissions::workspace_has_others)
     }
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
@@ -1101,7 +1101,7 @@ impl<R: Resource> Dispatcher<R> {
     /// Whether the record is shared: someone else belongs to its room, or
     /// is in it with `people` now. Where it is, reactions are offered.
     pub fn is_shared(&self, people: &super::People) -> bool {
-        self.core.room_has_others() || people.others_here()
+        self.core.workspace_has_others() || people.others_here()
     }
 
     /// Whether the participant may apply `action`

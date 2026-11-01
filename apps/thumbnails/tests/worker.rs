@@ -30,6 +30,7 @@ mod cases {
     use std::path::Path;
     use std::process::{Command, ExitCode};
     use std::sync::{Arc, Mutex};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use launcher::capture::CaptureCancellation;
     use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
@@ -196,7 +197,7 @@ mod cases {
     /// Bubblewrap is the package sandbox; without it nothing here can be
     /// observed, which is a broken environment, not a reason to skip.
     fn require_bubblewrap() {
-        let probe = Command::new("bwrap").arg("--version").output();
+        let probe = Command::new("bwrap").arg("--version").output_locked();
         assert!(
             probe.as_ref().is_ok_and(|output| output.status.success()),
             "bwrap is not runnable ({probe:?}). It is how every Tilo package runs, so a \

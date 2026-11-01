@@ -350,7 +350,7 @@ pub(crate) trait ControlHost: HostCore {
         self.outer_control_settled(&intent.address, on_behalf_of, &result);
         match result {
             Ok(_) => true,
-            // The action needs no confirmation of its own, but the room's
+            // The action needs no confirmation of its own, but the workspace's
             // grants ask the person here before it runs.
             Err(DoorError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(

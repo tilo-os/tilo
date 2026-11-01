@@ -283,7 +283,7 @@ impl ReviewedInstalledRetainedLaunch {
         }
         // B's initial retained group route is exclusively the canonical personal
         // room. Reject shared-workspace context BEFORE opening any RW source.
-        if request.room() != runtime_collab::retained_person::personal_room(&person) {
+        if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
             return Err(refused());
         }
         let mut proof = ProofClient::connect(stream, &request, cancel)?;
@@ -583,7 +583,7 @@ impl InstalledRetainedLaunchInput {
         if binding.app_id != "so.tilo.file-explorer"
             || binding.resource_record != "retained-home"
             || binding.room
-                != runtime_collab::retained_person::personal_room(&self.person_public_key())
+                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
             || !plan.categories.home
             || !matches!(
                 plan.home_policy,
@@ -607,7 +607,7 @@ impl InstalledRetainedLaunchInput {
             .ok_or_else(refused)?;
         if !crate::is_operation_id(id)
             || binding.room
-                != runtime_collab::retained_person::personal_room(&self.person_public_key())
+                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
         {
             return Err(refused());
         }
@@ -828,6 +828,7 @@ mod different_uid_native {
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::process::CommandExt;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const CHILD: &str = "TILO_RETAINED_EXECUTING_PEER_TEST";
     const SELECTOR: &str = "setup::installed_retained_actor::different_uid_native::root_observes_actual_nonroot_task_without_inferring_original_credentials";
 
@@ -885,7 +886,7 @@ mod different_uid_native {
                 let _ = self.0.wait();
             }
         }
-        let mut child = OwnedChild(command.spawn().expect("actual different-UID child"));
+        let mut child = OwnedChild(command.spawn_locked().expect("actual different-UID child"));
         drop((executable, socket, child_stream));
         root_stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))

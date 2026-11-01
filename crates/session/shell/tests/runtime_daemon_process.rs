@@ -10,6 +10,7 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The runtime host every test launches.
 fn runtime_binary() -> std::path::PathBuf {
@@ -82,7 +83,7 @@ fn status(profile: &Path) -> Value {
 fn run_true(profile: &Path, app: &str) -> std::process::Output {
     host(profile)
         .args(["--run-app", app, "--", "/usr/bin/true"])
-        .output()
+        .output_locked()
         .unwrap()
 }
 /// A helper app's collaboration manager once it has joined the broker.
@@ -129,7 +130,7 @@ fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
         .map(|_| {
             host(profile.path())
                 .args(["--run-app", "dev.tilo.race", "--", "/usr/bin/true"])
-                .spawn()
+                .spawn_locked()
                 .unwrap()
         })
         .collect();
@@ -141,7 +142,7 @@ fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
         .arg("--connect")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     writeln!(
         proxy.stdin.take().unwrap(),
@@ -164,7 +165,7 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
         .env_remove("TILO_PARTICIPATION")
         .current_dir("/tmp")
         .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_PARTICIPATION\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -192,7 +193,10 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() {
         String::from_utf8_lossy(&first.stderr)
     );
     let before = status(profile.path());
-    let competing = host(profile.path()).arg("--daemon").output().unwrap();
+    let competing = host(profile.path())
+        .arg("--daemon")
+        .output_locked()
+        .unwrap();
     assert!(!competing.status.success());
     // It fails on the held profile lock itself, not after waiting for it.
     let stderr = String::from_utf8_lossy(&competing.stderr);
@@ -255,7 +259,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log))
-            .spawn()
+            .spawn_locked()
             .unwrap()
     };
     apps.0.push(start_app("dev.tilo.independent-first"));
@@ -362,7 +366,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
                 Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", TEST, "--nocapture"])
                     .env("TILO_SDK_FAMILY_STAGE", "child")
-                    .spawn()
+                    .spawn_locked()
                     .unwrap(),
             )
         } else {
@@ -387,7 +391,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
-    let mut family = Family(command.spawn().unwrap());
+    let mut family = Family(command.spawn_locked().unwrap());
     // The launcher bounds the daemon start itself and exits with the reason
     // when it fails, which the loop reports at once.
     let deadline = Instant::now().checked_add(LAUNCHER_START_CAP).unwrap();
@@ -438,7 +442,7 @@ fn explicit_profile_overrides_are_propagated_to_app_descendants() {
             "-c",
             "printf '%s' \"$TILO_RUNTIME_PROFILE\"",
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

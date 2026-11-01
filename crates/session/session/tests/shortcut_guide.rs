@@ -281,19 +281,11 @@ fn listen_for(session: &mut Session, action: &str) {
 /// row's own keycaps (and the Resets of the rows above) and take it.
 #[track_caller]
 fn reset_pair(session: &mut Session, action: &str) {
-    let guide_now = guide(session);
-    let row = guide_now
-        .pairs
-        .iter()
-        .position(|pair| pair.previous.action == action)
-        .unwrap_or_else(|| panic!("the guide has no {action} row"));
-    let above: usize = guide_now.pairs[..row]
-        .iter()
-        .map(|pair| 2 + usize::from(pair.changed))
-        .sum();
-    for _ in 0..above + 2 {
-        tap(session, KEY_TAB);
-    }
+    // The guide keeps the keyboard on the row the person rebound: its first
+    // keycap. The row's second keycap stands after it and Reset after that,
+    // so Tab walks to Reset from where they already are.
+    tap(session, KEY_TAB);
+    tap(session, KEY_TAB);
     tap(session, KEY_ENTER);
     until(session, |session| !pair(&guide(session), action).changed);
 }

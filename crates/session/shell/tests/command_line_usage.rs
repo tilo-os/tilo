@@ -2,6 +2,7 @@
 //! the compositor starts anything: no spawner, no identity check, no session.
 
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Run the production binary in a throwaway runtime, so a regression that
 /// starts a session anyway finds nothing of this process's to touch.
@@ -19,7 +20,7 @@ fn shell(args: &[&str]) -> Output {
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("DISPLAY")
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
-        .output()
+        .output_locked()
         .expect("run shell")
 }
 

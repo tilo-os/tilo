@@ -11,7 +11,7 @@ use crate::theme::Theme;
 
 impl TextInput {
     /// What this field offers inline: emoji from the toolkit's catalogue
-    /// and mentions from the room's roster, both by default for prose. A
+    /// and mentions from the workspace's roster, both by default for prose. A
     /// secret or numeric field offers neither whatever its owner asks, so
     /// nothing can be inserted into it and nothing echoes it.
     #[must_use]
@@ -38,7 +38,7 @@ impl TextInput {
         self.refresh_completion();
     }
 
-    /// People the app knows of that the room's presence does not (someone
+    /// People the app knows of that the workspace's presence does not (someone
     /// who wrote in a channel and has since left): offered after the
     /// roster for `@` completion.
     #[must_use]

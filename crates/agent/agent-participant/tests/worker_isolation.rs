@@ -26,6 +26,7 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
 use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -137,7 +138,10 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         // A package primary uses its store namespace, not a minted identity.
         assert_eq!(ui::record::identity(&doc), None);
     } else {
-        assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(WORKSPACE));
+        assert_eq!(
+            ui::record::workspace_scope(&doc).as_deref(),
+            Some(WORKSPACE)
+        );
         assert_eq!(
             ui::record::identity(&doc),
             Some(ui::record::RecordCheckout::new(default, kind))
@@ -298,7 +302,7 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
 fn kill(pid: u32) {
     let status = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success());
     // Dead once it is gone or a zombie waiting for its parent.

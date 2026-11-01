@@ -175,7 +175,7 @@ fn admitted_fixture(
             vec![Grant::new(
                 "agent",
                 Subject::agent("scribe"),
-                TreePath::room(workspace),
+                TreePath::workspace(workspace),
                 KindSet::ALL,
                 Answer::Allow,
                 Subject::person("governor"),
@@ -275,7 +275,7 @@ fn assert_exact_binding(
 
 fn action_node(workspace: &str, requirement: &NativeTaskActionRequirement) -> TreePath {
     tilo_actions::action_node(
-        &TreePath::room(workspace),
+        &TreePath::workspace(workspace),
         &requirement.app,
         &requirement.resource_kind,
         &requirement.resource,
@@ -298,7 +298,7 @@ fn assert_independent_task_grants(
             &[Grant::new(
                 "other-task-deny",
                 Subject::task(&other),
-                TreePath::room(workspace),
+                TreePath::workspace(workspace),
                 KindSet::ALL,
                 Answer::Deny,
                 Subject::person("governor"),
@@ -341,7 +341,7 @@ fn assert_live_starter_revocation(
         peer.permissions(starter.device_public_key, now)
             .unwrap()
             .allows(
-                &TreePath::room(workspace),
+                &TreePath::workspace(workspace),
                 tilo_action_policy::ActionKind::Undoable,
                 now
             )
@@ -553,7 +553,7 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         collab_types::Role::Editor,
         Some(AgentPreset::Operator),
     );
-    let notes = TreePath::room(workspace).app("so.tilo.notes");
+    let notes = TreePath::workspace(workspace).app("so.tilo.notes");
     peer.governance_mut()
         .put_governed_grants(
             &[Grant::new(
@@ -653,7 +653,7 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
             &[Grant::new(
                 "starter-reads-notes",
                 Subject::person(hex::encode(starter.user_public_key)),
-                TreePath::room(workspace).app("so.tilo.notes"),
+                TreePath::workspace(workspace).app("so.tilo.notes"),
                 KindSet::UNDOABLE,
                 Answer::Deny,
                 Subject::person("governor"),
@@ -696,7 +696,7 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
             &[Grant::new(
                 "starter-browses",
                 Subject::person(hex::encode(starter.user_public_key)),
-                TreePath::room(workspace).app("so.tilo.browser"),
+                TreePath::workspace(workspace).app("so.tilo.browser"),
                 KindSet::OUTSIDE,
                 Answer::Allow,
                 Subject::person("governor"),

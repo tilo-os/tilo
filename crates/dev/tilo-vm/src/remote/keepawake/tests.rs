@@ -2,6 +2,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_vm_protocol::{Client, PROTOCOL_VERSION};
 
@@ -38,7 +39,7 @@ for line in sys.stdin:
         .arg(renewing)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("start the owned protocol fixture");
     let mut client = Client::new(
         BufReader::new(child.stdout.take().expect("fixture stdout")),
@@ -83,7 +84,7 @@ fn quiet_builder_renews_through_real_hello_and_keeps_framed_header() {
         ])
         .arg(&renewing)
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("start the quiet builder");
     let mut stream = Stream::new(BufReader::new(
         builder.stdout.take().expect("builder stdout"),

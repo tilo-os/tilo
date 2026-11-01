@@ -99,7 +99,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
         serde_json::json!([tilo_actions::DOCUMENT_READ_TAG])
     );
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();
-    let value = serde_json::json!({"version":1,"record":{"roomId":"77777777-7777-4777-8777-777777777777","appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":{"segments":[{"block":"p1","kind":"paragraph","text":"hello","complete":true}]},"nextCursor":null});
+    let value = serde_json::json!({"version":1,"record":{"workspaceId":"77777777-7777-4777-8777-777777777777","appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":{"segments":[{"block":"p1","kind":"paragraph","text":"hello","complete":true}]},"nextCursor":null});
     decoded
         .result
         .validate(&tilo_actions::ActionOutput {
@@ -231,7 +231,7 @@ fn read_text_defaults_to_one_markdown_page_of_up_to_64_blocks() {
     assert_eq!(segments["segments"][4]["row"], 1);
     assert_eq!(segments["segments"][4]["table"], "t1");
     for content in [page.content, segments] {
-        let value = serde_json::json!({"version":1,"record":{"roomId":null,"appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":content,"nextCursor":null});
+        let value = serde_json::json!({"version":1,"record":{"workspaceId":null,"appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":content,"nextCursor":null});
         resource.actions[0]
             .contract
             .result

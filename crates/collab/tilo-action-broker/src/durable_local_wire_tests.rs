@@ -439,7 +439,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 .expect("the durable invocation's caller");
             assert_eq!(
                 continued,
-                tilo_actions::remote::Caller::local_agent("scribe").in_room(workspace.clone())
+                tilo_actions::remote::Caller::local_agent("scribe").in_workspace(workspace.clone())
             );
             assert!(rig.state.continuing_caller(904, invocation).is_none());
 
@@ -518,7 +518,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                         env.cert.user_public_key,
                         env.cert.device_public_key
                     )
-                    .in_room(workspace.clone())
+                    .in_workspace(workspace.clone())
                 )
             );
             *env.authority.certificate.lock().unwrap() = None;
@@ -895,7 +895,7 @@ async fn one_journal_answers_a_local_caller_and_the_persons_other_device() {
             let door = crate::collab_app_broker::device_host(Arc::clone(&rig.state));
             let device =
                 Caller::authenticated(env.cert.user_public_key, env.cert.device_public_key)
-                    .in_room(env.route.cluster_id.clone());
+                    .in_workspace(env.route.cluster_id.clone());
             let completed = |invocation| tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),

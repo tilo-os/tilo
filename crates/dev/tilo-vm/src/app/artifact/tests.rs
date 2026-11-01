@@ -1,5 +1,6 @@
 use super::*;
 use crate::hypervisor::CommandLine;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 // Exercise the real stdio transport and normal RPC sequence. Real SDK/TAPP
 // signatures and native closure are independently covered by tilo-vmd cohort tests.
@@ -111,7 +112,7 @@ fn consumer_checkout_accepts_exact_head_without_its_object_and_refuses_another_c
                 "commit.gpgsign=false",
             ])
             .args(args)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_owned()

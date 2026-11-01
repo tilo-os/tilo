@@ -370,6 +370,10 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow_mut().host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.desk.borrow().host.next_deadline()
+    }
+
     fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }

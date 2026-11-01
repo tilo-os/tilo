@@ -114,7 +114,7 @@ fn kept(app: &str, doc: AutoCommit, scratch: &Scratch) -> RecordStore {
     }
     let state = scratch.0.join("state");
     let profile = ui::application::NativeProfile::open(&state, None).unwrap();
-    let landing = ui::record::transfer::install_room_document(
+    let landing = ui::record::transfer::install_workspace_document(
         profile.store(),
         PACKAGE,
         KEPT_WORKSPACE,

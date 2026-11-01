@@ -96,6 +96,7 @@ mod tests {
             unix::{net::UnixStream, process::CommandExt},
         },
     };
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const CHILD: &str = "TILO_ORIGINAL_CALLER_FIXTURE_FD";
     const CHILD_TEST: &str = "capture::original_caller::tests::original_caller_fixture_child";
 
@@ -148,7 +149,7 @@ mod tests {
                     "capture::original_caller::tests::original_credentials_come_from_actual_kernel_admitted_peer_and_expire_on_exit",
                     "--nocapture",
                 ])
-                .output()
+                .output_locked()
                 .expect("non-root credential fixture namespace must start");
             assert!(
                 output.status.success()
@@ -209,7 +210,7 @@ mod tests {
                 Ok(())
             });
         }
-        let mut child = Owned(command.spawn().unwrap_or_else(|error| {
+        let mut child = Owned(command.spawn_locked().unwrap_or_else(|error| {
             let status = std::fs::read_to_string("/proc/self/status").unwrap();
             let capabilities: Vec<_> = status.lines().filter(|line| line.starts_with("Cap") || line.starts_with("Seccomp")).collect();
             panic!("credential fixture spawn: {error}; {capabilities:?}; uid_map={:?}; gid_map={:?}; setgroups={:?}", std::fs::read_to_string("/proc/self/uid_map"), std::fs::read_to_string("/proc/self/gid_map"), std::fs::read_to_string("/proc/self/setgroups"));

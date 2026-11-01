@@ -27,7 +27,7 @@ use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, ROUTE_KEY, SOUND_KEY}
 use tilo_quick_settings::{QsEffect, RowPart};
 use tilo_speaker_service::remote_audio;
 
-use crate::{DeviceHost, Shared, devices};
+use crate::{Shared, devices};
 
 /// What the panel was last fed of the person's devices, so the session's
 /// reading is read every pass but the panel is written only when what it
@@ -111,10 +111,7 @@ fn press(shared: &Shared, row: &str, part: RowPart) {
     let Ok(target) = DeviceId::new(row) else {
         return;
     };
-    let Some(host) = &shared.device else {
-        return;
-    };
-    let reading = devices::current(fabric, host, &shared.devices.chosen);
+    let reading = devices::current(fabric, &shared.readings, &shared.devices.chosen);
     let Some(device) = reading.devices.into_iter().find(|device| device.id == row) else {
         return;
     };
@@ -145,11 +142,11 @@ fn press(shared: &Shared, row: &str, part: RowPart) {
         }
         return;
     }
-    let source = shared
-        .device
-        .as_ref()
-        .and_then(DeviceHost::playing_source)
-        .filter(|_| device.online && fabric.require_media().is_ok());
+    let source = {
+        let readings = shared.readings.borrow();
+        readings.handover()
+    }
+    .filter(|_| device.online && fabric.require_media().is_ok());
     let Some(source) = source else {
         super::quick_settings::open_settings(shared, device.settings_link());
         return;

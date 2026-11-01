@@ -93,7 +93,7 @@ impl PersonalStore {
     /// cluster as the store that carries it.
     #[must_use]
     pub fn store_key(&self) -> String {
-        collab_types::person_room(&self.root).to_string()
+        collab_types::personal_cluster(&self.root).to_string()
     }
 
     /// This device's certificate.

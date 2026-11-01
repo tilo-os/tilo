@@ -9,7 +9,7 @@
 //! plumbing of its own. Where the workspace has no emoji of a name, or the
 //! window none registered, `:name:` stays text.
 //!
-//! Adding and removing emoji are actions of that record, which the room's
+//! Adding and removing emoji are actions of that record, which the workspace's
 //! grants decide ([`EmojiSource::can_manage`]): the shared picker offers
 //! "Add emoji" only to whoever may.
 

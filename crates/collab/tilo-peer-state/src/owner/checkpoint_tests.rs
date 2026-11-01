@@ -521,7 +521,7 @@ fn checkpoint_reader_fixture() -> (
     let mut grants = vec![Grant::new(
         "checkpoint-workspace-deny",
         subject.clone(),
-        TreePath::room(testing::WORKSPACE).app("so.tilo.chat"),
+        TreePath::workspace(testing::WORKSPACE).app("so.tilo.chat"),
         KindSet::READ,
         Answer::Deny,
         issuer.clone(),
@@ -685,7 +685,7 @@ fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::Device
                                     .to_hex()
                                     .as_str(),
                             ),
-                            tilo_action_policy::TreePath::room(testing::WORKSPACE),
+                            tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
                             tilo_action_policy::KindSet::UNDOABLE,
                             tilo_action_policy::Answer::Deny,
                             tilo_action_policy::Subject::person(
