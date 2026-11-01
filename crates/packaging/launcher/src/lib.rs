@@ -77,8 +77,10 @@ pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+// Where it lives: hosts that start no launcher hold the same gate over the
+// apps they start themselves (`runtime_portal::registration_gate`).
 #[cfg(unix)]
-pub mod registration_gate;
+pub use runtime_portal::registration_gate;
 #[cfg(target_os = "linux")]
 pub mod retained_view;
 #[cfg(target_os = "linux")]

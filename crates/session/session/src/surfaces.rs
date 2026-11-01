@@ -385,6 +385,10 @@ pub enum StartError {
         /// The system's refusal.
         source: std::io::Error,
     },
+    /// The gate that holds the app until the session recorded its launch
+    /// could not be made: without it the app could reach the session ahead of
+    /// its record, so it is not started at all.
+    Gate(std::io::Error),
 }
 
 impl std::fmt::Display for StartError {
@@ -395,6 +399,10 @@ impl std::fmt::Display for StartError {
             Self::Spawn { program, source } => {
                 write!(formatter, "{} did not start: {source}", program.display())
             }
+            Self::Gate(error) => write!(
+                formatter,
+                "the gate holding the app until its launch is recorded: {error}"
+            ),
         }
     }
 }
@@ -669,6 +677,11 @@ impl Surfaces {
             // display of the desktop around a nested session is not one.
             .env_remove("DISPLAY")
             .stdin(Stdio::null());
+        // The launch is recorded once the process exists, and the app must
+        // not reach the session before it is: this holds it at its stdin
+        // until then, as the launcher is held for an app the session opens.
+        let registration =
+            launcher::registration_gate::install(&mut command).map_err(StartError::Gate)?;
         // Safety: this runs in the child between `fork` and `exec`, where
         // the app has done nothing yet; it touches no memory the parent
         // shares with other threads. The actions descriptor is moved out of
@@ -715,6 +728,14 @@ impl Surfaces {
             // A surface app is the session's own program, run in its own
             // place: no package sandbox has the documents store bound in.
             launches.started(child.id(), &surface.app_id, room, false);
+        }
+        // The record exists: the app may reach what it published.
+        if let Err(error) = registration.release() {
+            tracing::warn!(
+                surface = %surface.name,
+                %error,
+                "a surface app was not released to its session"
+            );
         }
         // The child has its own copies: these would only keep the
         // connections' other ends open after the app is gone.

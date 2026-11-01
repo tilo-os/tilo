@@ -1,14 +1,20 @@
-//! The registration gate between a host that launches `tilo-launcher` and
-//! the launcher it starts.
+//! The registration gate between a host and a child the host admits by a
+//! launch record.
 //!
-//! A host records each launch (pid, start time, app, workspace) so the broker can
-//! attest the launcher when it connects. `Command::spawn` returns only after
-//! the child exists, and a fast child could connect before the host recorded
-//! it. The gate closes that race at the source: the host hands the child one
-//! end of a private socket pair, the launcher blocks on it before doing any
-//! launch work, and the host releases it only after the record exists. The
-//! broker can then attest once, with no retry, and an unrecorded process is
-//! refused at once.
+//! A host records each launch (pid, start time, app, workspace) so the
+//! broker can attest the process when it connects. `Command::spawn` returns
+//! only after the child exists, and a fast child could connect before the
+//! host recorded it. The gate closes that race at the source: the host hands
+//! the child one end of a private socket pair, the child blocks on it before
+//! it reaches the session, and the host releases it only after the record
+//! exists. The broker can then attest once, with no retry, and an unrecorded
+//! process is refused at once.
+//!
+//! Two kinds of host start such a child: a session starting `tilo-launcher`
+//! for an app it opens ([`install`]), and a session starting its own surface
+//! apps directly — the bar, the desk, the panels, the views it binds to a
+//! slot of the shell — which call [`wait_on_stdin`] before they connect their
+//! services.
 //!
 //! The child's end arrives as its **stdin**. Any other inherited descriptor
 //! would need a `pre_exec` hook to clear its close-on-exec flag, and a
@@ -16,8 +22,8 @@
 //! compositor, a copy of every page table of a large multi-threaded process
 //! and a copy-on-write fault on each page its own threads touch next — where
 //! without one it uses `posix_spawn`, whose cost does not grow with the host.
-//! The launcher puts `/dev/null` on its stdin once released
-//! ([`wait_on_stdin`]), so nothing it runs inherits the gate.
+//! The child puts `/dev/null` on its stdin once released ([`wait_on_stdin`]),
+//! so nothing it runs inherits the gate.
 
 #[cfg(not(target_os = "linux"))]
 use std::io::Read as _;
@@ -28,37 +34,36 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 
-/// The variable a host sets when the gate is the launcher's stdin. Internal to
-/// a host and the launcher it starts; the launcher removes it before anything
-/// it runs could inherit it.
+/// The variable a host sets when the gate is the child's stdin. Internal to a
+/// host and the child it starts; the child removes it, or replaces its stdin,
+/// before anything it runs could inherit it.
 pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_STDIN";
 
 /// The variable an earlier host set instead, naming an inherited descriptor
-/// (at least 3) the launcher waits on. Still honoured, so a launcher accepts a
-/// host from before [`LAUNCH_REGISTRATION_STDIN_ENV`]; [`install`] never sets
-/// it.
+/// (at least 3) the child waits on. Still honoured, so a child accepts a host
+/// from before [`LAUNCH_REGISTRATION_STDIN_ENV`]; [`install`] never sets it.
 pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
 /// The host's end of a launch's registration gate.
 ///
-/// Dropping it without [`Self::release`] closes the gate: the launcher reads
-/// end-of-file and refuses to launch.
+/// Dropping it without [`Self::release`] closes the gate: the child reads
+/// end-of-file and goes no further.
 #[derive(Debug)]
 pub struct RegistrationGate(UnixStream);
 
 impl RegistrationGate {
-    /// Let the launcher go on. Call only once the launch is recorded.
+    /// Let the child go on. Call only once the launch is recorded.
     pub fn release(mut self) -> io::Result<()> {
         self.0.write_all(&[1])
     }
 
     /// [`Self::release`], handing the launcher the shell's window door for
-    /// the app (`runtime_portal::windows`) with the release: the launcher
-    /// passes it on to the app it starts.
+    /// the app (`crate::windows`) with the release: the launcher passes it on
+    /// to the app it starts.
     #[cfg(target_os = "linux")]
     pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         use std::os::fd::AsFd as _;
-        runtime_portal::jobs::send(self.0.as_fd(), &[&[1]], &[door])
+        crate::jobs::send(self.0.as_fd(), &[&[1]], &[door])
     }
 }
 
@@ -78,8 +83,9 @@ pub fn take_window_door() -> Option<OwnedFd> {
 }
 
 /// Make `command` start gated: its child's stdin is a private socket, named by
-/// [`LAUNCH_REGISTRATION_STDIN_ENV`], that it waits on before any launch work,
-/// until the returned gate is released. This replaces any stdin set before.
+/// [`LAUNCH_REGISTRATION_STDIN_ENV`], that it waits on before it reaches the
+/// session, until the returned gate is released. This replaces any stdin set
+/// before.
 ///
 /// Drop `command` once it has spawned: it holds the child's end until then.
 ///
@@ -95,10 +101,9 @@ pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
     Ok(RegistrationGate(release))
 }
 
-/// [`install`] for a host that starts the launcher some other way than
-/// `command.spawn()` (the app spawner, [`crate::spawner`]): `command` gets the
-/// gate's variable, and the child's end comes back to be placed as the
-/// launcher's stdin.
+/// [`install`] for a host that starts the child some other way than
+/// `command.spawn()` (the launcher's app spawner): `command` gets the gate's
+/// variable, and the child's end comes back to be placed as its stdin.
 ///
 /// # Errors
 ///
@@ -111,14 +116,15 @@ pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, 
     Ok((RegistrationGate(release), OwnedFd::from(wait)))
 }
 
-/// The launcher's side of [`install`]: wait for the release on stdin, then put
-/// `/dev/null` there. Call it first in `main`, while the process has one
-/// thread and nothing has read stdin.
+/// The child's side of [`install`]: wait for the host's release on stdin,
+/// then put `/dev/null` there. Call it first in `main`, while the process has
+/// one thread and nothing has read stdin, or in an app before it connects its
+/// session's services.
 ///
 /// # Errors
 ///
 /// End-of-file when the host dropped the gate unreleased, or the error of
-/// reading stdin or of replacing it. The launcher must not go on after any.
+/// reading stdin or of replacing it. The child must not go on after any.
 pub fn wait_on_stdin() -> io::Result<()> {
     read_release()?;
     let null = std::fs::File::open("/dev/null")?;
@@ -149,7 +155,7 @@ fn read_release() -> io::Result<()> {
 #[cfg(target_os = "linux")]
 fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
     let mut release = [0_u8; 1];
-    let Some((1, fds)) = runtime_portal::jobs::receive(gate, &mut release)? else {
+    let Some((1, fds)) = crate::jobs::receive(gate, &mut release)? else {
         return Err(io::ErrorKind::UnexpectedEof.into());
     };
     Ok(fds.into_iter().next())

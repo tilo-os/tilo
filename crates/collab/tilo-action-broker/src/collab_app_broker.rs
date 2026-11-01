@@ -10723,9 +10723,9 @@ async fn authenticate_launcher_handoff(
         });
     }
 
-    // Every host records a launch before it releases the launcher's
-    // registration gate (`launcher::registration_gate`), so the record exists
-    // before the launcher can connect, and one look decides. A direct
+    // Every host records a launch before it releases the child's
+    // registration gate (`runtime_portal::registration_gate`), so the record
+    // exists before the child can connect, and one look decides. A direct
     // tilo-launcher command never obtains a record and is refused at once
     // instead of becoming a way around admin/admission checks.
     let launch = services
