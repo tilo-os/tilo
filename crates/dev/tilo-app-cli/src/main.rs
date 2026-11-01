@@ -99,8 +99,8 @@ enum Command {
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
-    /// Run a build of this app, or a bot's program, in a running room, for
-    /// everyone in it.
+    /// Run a build of this app, or a bot's program, in a running workspace,
+    /// for everyone in it.
     Push(tilo_app_cli::push::PushArgs),
 }
 

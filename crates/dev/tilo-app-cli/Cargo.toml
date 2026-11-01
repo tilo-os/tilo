@@ -60,8 +60,8 @@ zip.workspace = true
 # Reuse the validator generation/features already locked in workspace-hack.
 wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 workspace-hack = { version = "0.1" }
-# `tilo-app push`: a device of the developer's dials the room's host and
-# invokes the room's governance.
+# `tilo-app push`: a device of the developer's dials the workspace's host
+# and invokes the workspace's governance.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-automation = { path = "../../collab/automation" }
