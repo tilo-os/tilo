@@ -19,7 +19,7 @@ device-grant-denied = { $device ->
     [camera] { $app } may not use the camera
    *[microphone] { $app } may not use the microphone
 }
-device-grant-room = in workspace { $room }
+device-grant-workspace = in workspace { $workspace }
 device-grant-revoke = Revoke
 device-grant-revoke-description = Forget this decision: a running capture stops, and the person is asked again next time.
 # What an agent acting for the person asks before it first acts in an app
