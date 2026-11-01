@@ -941,7 +941,7 @@ impl Shared {
 }
 
 /// An action of a workspace record the desktop asked the workspace's host to run, as
-/// the page reads it from the mount's status (`record-action`) and answers it
+/// the page reads it from the mount's status (`room-action`) and answers it
 /// ([`crate::browser::desktop_exports::desktop_record_action_answer`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct RecordActionRequest {

@@ -64,7 +64,7 @@ export function invokeMembershipAction({membership, workspace, resource, action,
 
 /**
  * Have the workspace's host run an action of a workspace record for the person, as
- * the desktop's chrome asks (a `record-action` host request: `{id, app,
+ * the desktop's chrome asks (a `room-action` host request: `{id, app,
  * action, arguments}`): the host runs it through the record's own door, as
  * them (`peer.actions`). An empty resource names the record's own, so the
  * page needs none of the app's code. Resolves `{ok: value}` or `{error}`.

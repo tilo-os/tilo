@@ -204,7 +204,7 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
 }
 
 /// The workspace's host answered the workspace action `request` the desktop asked for
-/// (a `record-action` host request): `answer` is `{"ok": value}` or
+/// (a `room-action` host request): `answer` is `{"ok": value}` or
 /// `{"error": "why"}`.
 ///
 /// # Errors
