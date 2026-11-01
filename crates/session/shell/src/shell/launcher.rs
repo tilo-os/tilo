@@ -2073,7 +2073,7 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         detail: e.to_string(),
     });
     // What the catalogue says of renamed apps reaches every decision in this process.
-    let _ = installed_earlier_ids();
+    let _ = crate::shell::installed_registry::read_earlier_ids();
     apps
 }
 

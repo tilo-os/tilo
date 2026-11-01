@@ -60,13 +60,16 @@ pub struct InputOrder {
     sent: HashMap<u32, Sent>,
     /// The launch behind each shell-ui connection.
     processes: HashMap<u64, u32>,
-    /// The launch of each Wayland client's process, by its pid, as first looked up.
-    launches: HashMap<u32, u32>,
 }
 
 /// The launch the process `pid` is part of, by its supervisor's pid: an app's Wayland client
 /// and its shell-ui connection can be different processes of one launch (the launcher connects
 /// the shell-ui and hands it to the app). A process of no launch is its own.
+///
+/// It walks the process's ancestry in `/proc`, so it is asked where a connection is admitted,
+/// off the compositor's loop: the Wayland client's launch is its
+/// [`crate::compositor::state::ClientState::launch_custody`], and the shell-ui connection's is
+/// read on that connection's thread.
 #[must_use]
 pub fn launch_of(pid: u32) -> u32 {
     #[cfg(target_os = "linux")]
@@ -78,10 +81,11 @@ pub fn launch_of(pid: u32) -> u32 {
 }
 
 impl InputOrder {
-    /// The shell-ui `connection` is from the launch `pid` (its supervisor's: [`launch_of`]).
-    pub fn connected(&mut self, connection: u64, pid: Option<u32>) {
-        if let Some(pid) = pid {
-            self.processes.insert(connection, pid);
+    /// The shell-ui `connection` is from the launch `launch` (its supervisor's pid:
+    /// [`launch_of`]).
+    pub fn connected(&mut self, connection: u64, launch: Option<u32>) {
+        if let Some(launch) = launch {
+            self.processes.insert(connection, launch);
         }
     }
 
@@ -93,10 +97,9 @@ impl InputOrder {
         }
     }
 
-    /// The input event with `serial` was sent to a client of the process `pid`, of the launch
-    /// `launch` finds for it.
-    pub fn sent(&mut self, pid: u32, serial: u32, launch: impl FnOnce(u32) -> u32) {
-        let launch = *self.launches.entry(pid).or_insert_with(|| launch(pid));
+    /// The input event with `serial` was sent to a client of the launch `launch` (its
+    /// supervisor's pid: [`launch_of`]).
+    pub fn sent(&mut self, launch: u32, serial: u32) {
         if self.processes.values().any(|known| *known == launch) {
             self.sent.entry(launch).or_default().since.push(serial);
         }
@@ -136,15 +139,15 @@ mod tests {
         let mut order = InputOrder::default();
         order.connected(7, Some(100));
         assert_eq!(order.after_input(7, 5), None, "nothing sent yet");
-        order.sent(100, 3, |pid| pid);
-        order.sent(100, 4, |pid| pid);
+        order.sent(100, 3);
+        order.sent(100, 4);
         // Another process's input is not this one's.
-        order.sent(200, 5, |pid| pid);
-        order.sent(100, 6, |pid| pid);
+        order.sent(200, 5);
+        order.sent(100, 6);
         assert_eq!(order.after_input(7, 5), Some(4));
         assert_eq!(order.after_input(7, 6), Some(6));
         order.placed();
-        order.sent(100, 9, |pid| pid);
+        order.sent(100, 9);
         assert_eq!(
             order.after_input(7, 8),
             Some(6),
@@ -158,10 +161,10 @@ mod tests {
     fn the_shell_ui_connection_and_the_wayland_client_of_one_launch_are_one_app() {
         let mut order = InputOrder::default();
         // The launcher (supervisor 50) connected the shell-ui and handed it to the app (pid 51),
-        // whose Wayland client gets the keys.
+        // whose Wayland client gets the keys: both are the launch 50's.
         order.connected(7, Some(50));
-        order.sent(51, 3, |pid| if pid == 51 { 50 } else { pid });
-        order.sent(60, 4, |pid| pid);
+        order.sent(50, 3);
+        order.sent(60, 4);
         assert_eq!(order.after_input(7, 9), Some(3));
     }
 
@@ -169,8 +172,8 @@ mod tests {
     fn serials_compare_across_their_wrap() {
         let mut order = InputOrder::default();
         order.connected(1, Some(100));
-        order.sent(100, u32::MAX, |pid| pid);
-        order.sent(100, 1, |pid| pid);
+        order.sent(100, u32::MAX);
+        order.sent(100, 1);
         assert_eq!(order.after_input(1, 0), Some(u32::MAX));
         assert_eq!(order.after_input(1, 1), Some(1));
     }
