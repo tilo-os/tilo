@@ -1,13 +1,13 @@
-//! A room's administrators govern it: the governance writer gives them a
-//! grant the Editor's own rule on the room's resource does not outrank, and
-//! rewrites the grant rooms held before it so their administrators govern
+//! A workspace's administrators govern it: the governance writer gives them a
+//! grant the Editor's own rule on the workspace's resource does not outrank, and
+//! rewrites the grant workspaces held before it so their administrators govern
 //! too.
 use super::*;
 use tilo_action_policy::KindSet;
 use tilo_action_policy::roles::{self, governance};
 
-/// How many of the room's governance actions the member with device
-/// `device` may run, as `peer`'s room policy decides it now.
+/// How many of the workspace's governance actions the member with device
+/// `device` may run, as `peer`'s workspace policy decides it now.
 fn governs(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> usize {
     let member = peer.permissions(device, now).unwrap();
     let bound = roles::foreign_device_bound();
@@ -59,22 +59,25 @@ fn an_administrator_governs_and_an_editor_does_not() {
 }
 
 #[test]
-fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
+fn an_administrator_grant_on_the_workspaces_resource_is_rewritten_once() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let person = hex::encode(user);
     let owner = Subject::Person(hex::encode(peer.owner()));
-    // The grant as rooms held it before: on the room's resource, where the
+    // The grant as workspaces held it before: on the workspace's resource, where the
     // Editor's Deny at the same node outranks it.
     let legacy = Grant::new(
         roles::administrator_grant_id(&person).as_str(),
         Subject::Person(person.clone()),
-        roles::room_resource(peer.room()),
+        roles::room_resource(peer.workspace_id()),
         KindSet::ALL,
         Answer::Allow,
         owner.clone(),
     );
-    assert!(roles::is_legacy_administrator_grant(peer.room(), &legacy));
+    assert!(roles::is_legacy_administrator_grant(
+        peer.workspace_id(),
+        &legacy
+    ));
     peer.governance_mut()
         .put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
         .unwrap();
@@ -101,7 +104,11 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
         .collect::<Vec<_>>();
     assert_eq!(
         rewritten,
-        [&roles::administrator_grant(peer.room(), &person, owner)]
+        [&roles::administrator_grant(
+            peer.workspace_id(),
+            &person,
+            owner
+        )]
     );
     assert!(
         !peer
@@ -112,7 +119,7 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
 }
 
 #[test]
-fn reconciling_a_room_without_old_grants_writes_nothing_and_needs_no_writer() {
+fn reconciling_a_workspace_without_old_grants_writes_nothing_and_needs_no_writer() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let stranger = SigningKey::from_bytes(&[77; 32]);
@@ -124,13 +131,13 @@ fn reconciling_a_room_without_old_grants_writes_nothing_and_needs_no_writer() {
     );
 }
 
-/// An administrator moderates the room as a Moderator does, an Editor not:
+/// An administrator moderates the workspace as a Moderator does, an Editor not:
 /// the grant comes and goes with the administrator's.
 #[test]
 fn an_administrator_moderates_and_an_editor_does_not() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-    let node = TreePath::room(peer.room())
+    let node = TreePath::room(peer.workspace_id())
         .app("so.tilo.chat")
         .kind("chat.message")
         .resource("welcome")
@@ -154,7 +161,7 @@ fn an_administrator_moderates_and_an_editor_does_not() {
     assert!(!moderates(&peer));
 }
 
-/// A member writes the room's membership from their own device, as far as
+/// A member writes the workspace's membership from their own device, as far as
 /// their grants reach: an administrator's device changes a role itself, an
 /// editor's cannot.
 #[test]
@@ -232,7 +239,7 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
     );
 }
 
-/// An administrator's own device lets an app author the room, as a grant
+/// An administrator's own device lets an app author the workspace, as a grant
 /// of their own; an editor's cannot, and letting it again changes nothing.
 #[test]
 fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
@@ -254,7 +261,7 @@ fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
             .workspace_mut()
             .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
             .is_err(),
-        "an editor lets no app author the room"
+        "an editor lets no app author the workspace"
     );
     peer.governance_mut()
         .set_member_administrator(user, &host_key, now)
@@ -286,7 +293,7 @@ fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
     );
 }
 
-/// The room's own settings an editor's device writes as `change`.
+/// The workspace's own settings an editor's device writes as `change`.
 fn change_settings(
     peer: &mut StatePeer,
     editor: &DeviceCert,
@@ -313,12 +320,12 @@ fn readers() -> tilo_action_policy::Preset {
     )
 }
 
-/// A member changes the room's own settings from their own device as far as
-/// their grants reach: an administrator renames the room, saves and assigns
+/// A member changes the workspace's own settings from their own device as far as
+/// their grants reach: an administrator renames the workspace, saves and assigns
 /// its grant sets and grants and takes back its apps' sandbox capabilities;
 /// an editor does none of it.
 #[test]
-fn an_administrators_own_device_changes_the_rooms_settings_and_an_editors_cannot() {
+fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_cannot() {
     use crate::workspace_membership::SettingsChange;
     use collab_types::caps::{Access, CapOverride, Principal, Scope, Subject as CapSubject};
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
@@ -344,7 +351,7 @@ fn an_administrators_own_device_changes_the_rooms_settings_and_an_editors_cannot
         .set_member_administrator(user, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
-    assert_eq!(peer.governance().room_name().as_deref(), Some("Plans"));
+    assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
     assert!(change_settings(&mut peer, &editor, sandbox, now).unwrap());
     let granted = peer.governance().governed_sandbox().unwrap();
     let [held] = granted.as_slice() else {
@@ -389,10 +396,10 @@ fn an_administrators_own_device_changes_the_rooms_settings_and_an_editors_cannot
     assert!(peer.governance().governed_sandbox().unwrap().is_empty());
 }
 
-/// A Moderator names the room by their role; a grant on one saved set's
+/// A Moderator names the workspace by their role; a grant on one saved set's
 /// assign node lets an editor assign that set, and nothing else.
 #[test]
-fn a_moderator_renames_the_room_and_a_grant_on_a_set_assigns_only_it() {
+fn a_moderator_renames_the_workspace_and_a_grant_on_a_set_assigns_only_it() {
     use crate::workspace_membership::SettingsChange;
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
@@ -409,7 +416,7 @@ fn a_moderator_renames_the_room_and_a_grant_on_a_set_assigns_only_it() {
     let on_set = tilo_action_policy::Grant::new(
         "assign-readers",
         tilo_action_policy::Subject::person(hex::encode(user)),
-        tilo_desktop_model::preset_assign_node(peer.room(), "Readers"),
+        tilo_desktop_model::preset_assign_node(peer.workspace_id(), "Readers"),
         KindSet::OUTSIDE,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Subject::person(owner),
@@ -437,5 +444,5 @@ fn a_moderator_renames_the_room_and_a_grant_on_a_set_assigns_only_it() {
         .set_member_role(user, crate::join::MemberRole::Moderator, &host_key, now)
         .unwrap();
     assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
-    assert_eq!(peer.governance().room_name().as_deref(), Some("Plans"));
+    assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
 }

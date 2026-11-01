@@ -11,6 +11,8 @@ license.workspace = true
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The SDR white the person may choose is the settings' range.
 settings-store = { path = "../../system/settings-store" }
+# A display's colour is part of what the session publishes of its displays.
+serde.workspace = true
 vello.workspace = true
 workspace-hack = { version = "0.1" }
 

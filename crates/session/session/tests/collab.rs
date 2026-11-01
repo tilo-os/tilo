@@ -24,7 +24,7 @@ use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_network_actor::{NetEvent, room_topic_id};
+use tilo_network_actor::{NetEvent, workspace_topic_id};
 use tilo_session::sync::{Client, OwnPresence};
 use tilo_session::{Options, Session};
 
@@ -80,7 +80,7 @@ fn desk() -> DesktopTree {
 /// One thing the other device said in the room.
 fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
     NetEvent::Msg {
-        ws: room_topic_id(room()),
+        ws: workspace_topic_id(room()),
         peer: device(from),
         membership_epoch: None,
         replayed: false,

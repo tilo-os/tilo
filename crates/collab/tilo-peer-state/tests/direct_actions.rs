@@ -1,5 +1,5 @@
 //! One device asks another device of its workspace for an action directly
-//! over iroh, with no room host, relay or network actor in between: the
+//! over iroh, with no workspace host, relay or network actor in between: the
 //! request reaches the device it names, is answered there as the caller the
 //! engine authorized, and is refused from the moment the asking device may
 //! no longer act.
@@ -29,7 +29,7 @@ use tilo_peer_state::join::{
     InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, decode_and_verify_invitation,
     issue_invitation, sign_join_proof, verify_join_proof,
 };
-use tilo_peer_state::{SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
     sign_device_cert, sign_revocation_entry,
@@ -37,7 +37,7 @@ use tilo_user_identity::{
 use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
 use web_time::SystemTime;
 
-const ROOM: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ELSEWHERE: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 /// How long a test waits for an answer before it counts as lost.
@@ -177,11 +177,11 @@ impl Engine {
 }
 
 /// The workspace `a.1` creates and seeds, with `roster` certified as the
-/// room's devices.
+/// workspace's devices.
 fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
     let now = SystemTime::now();
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         a.1.clone(),
         roster.to_vec(),
         RevocationList::new(),
@@ -191,7 +191,7 @@ fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
     peer.select_admission_v5().unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &a.1, roster).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &a.1, roster).unwrap(),
             documents: Vec::new(),
         },
         &a.0,
@@ -293,7 +293,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), ROOM);
+    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     // The request reaches the addressed device, which answers it from its
@@ -314,7 +314,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     );
     assert_eq!(
         answered_as.room(),
-        Some(ROOM),
+        Some(WORKSPACE),
         "confined to the workspace it named"
     );
     assert!(matches!(
@@ -364,7 +364,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
     let c = device(&stranger_root, 10);
     let (c_endpoint, c_plane) = asking(&c.0).await;
-    let stranger = c_plane.remote(c_endpoint.clone(), engine.addr(), ROOM);
+    let stranger = c_plane.remote(c_endpoint.clone(), engine.addr(), WORKSPACE);
     let refused = queried(
         &stranger,
         &Caller::authenticated(
@@ -381,7 +381,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     // another device, is not that device asking.
     let forged = SignedDeviceAction::sign(
         &DeviceAction {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             request_id: uuid::Uuid::from_u128(1),
             source: engine.device(),
             target: engine.device(),
@@ -410,7 +410,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     // A request naming a third device is not this one's to answer.
     let elsewhere = SignedDeviceAction::sign(
         &DeviceAction {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             request_id: uuid::Uuid::from_u128(2),
             source: b.1.device_public_key,
             target: c.1.device_public_key,
@@ -451,7 +451,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), ROOM);
+    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
 
@@ -514,7 +514,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
     );
 
     let (g_endpoint, g_plane) = asking(&g.0).await;
-    let remote = g_plane.remote(g_endpoint.clone(), engine.addr(), ROOM);
+    let remote = g_plane.remote(g_endpoint.clone(), engine.addr(), WORKSPACE);
     let caller =
         Caller::authenticated(guest_root.verifying_key().to_bytes(), g.1.device_public_key);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
@@ -557,7 +557,7 @@ fn guest(
     let issued = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: ROOM.into(),
+            room: WORKSPACE.into(),
             issuer: a.1.clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],
@@ -621,7 +621,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
         "Scribe",
         [10, 20, 30],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: Vec::new(),
         },
         ns(now - Duration::from_secs(1)),
@@ -641,7 +641,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     );
 
     let (helper_endpoint, helper_plane) = asking(&helper.0).await;
-    let remote = helper_plane.remote(helper_endpoint.clone(), engine.addr(), ROOM);
+    let remote = helper_plane.remote(helper_endpoint.clone(), engine.addr(), WORKSPACE);
     let caller = Caller::delegated_agent(
         "scribe",
         root.verifying_key().to_bytes(),
@@ -693,7 +693,7 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
     )
     .await;
     let (b_endpoint, b_plane) = asking(&b.0).await;
-    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), ROOM);
+    let remote = b_plane.remote(b_endpoint.clone(), engine.addr(), WORKSPACE);
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
 
     for _ in 0..2 {
@@ -748,14 +748,14 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     // never left for the asker to wait on.
     let wanted = SignedDeviceAction::sign(
         &DeviceAction {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             request_id: uuid::Uuid::from_u128(3),
             source: b.1.device_public_key,
             target: engine.device(),
             message: RemoteActionMessage::RecordRequest {
                 correlation: 5,
                 query: tilo_actions::remote::RecordQuery {
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     app: "test.app".into(),
                     record: "tab:1".into(),
                     offset: 0,

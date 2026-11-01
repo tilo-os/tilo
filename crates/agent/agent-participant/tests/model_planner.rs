@@ -19,7 +19,7 @@ use tilo_agent_participant::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
 const NOTES: &str = "so.tilo.notes";
 
@@ -37,7 +37,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let app = Replica::open(
         &catalogue,
         app_id,
-        ROOM,
+        WORKSPACE,
         "agent",
         tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
@@ -45,7 +45,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     .unwrap();
     let route = DocumentRoute {
         app_id: app_id.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record: app.wire_record().to_owned(),
     };
     let context = PlanContext {

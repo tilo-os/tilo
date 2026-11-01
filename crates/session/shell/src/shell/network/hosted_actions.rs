@@ -1,6 +1,6 @@
 //! Asking a hosted room's host: reading a resource view it serves, and
 //! whether another device hosts the room this one holds.
-use super::{ShellNetwork, room_topic_id};
+use super::{ShellNetwork, workspace_topic_id};
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use crate::shell::state::RoomId;
 
@@ -84,7 +84,7 @@ impl ShellNetwork {
         // Fresh ids do not collide with another palette's or room's counter.
         let correlation = uuid::Uuid::new_v4().as_u64_pair().0;
         let pending = self.request(
-            room_topic_id(room),
+            workspace_topic_id(room),
             target,
             RemoteActionMessage::CatalogueRequest { correlation, query },
         )?;

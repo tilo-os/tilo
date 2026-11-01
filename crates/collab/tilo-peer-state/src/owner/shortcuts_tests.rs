@@ -19,7 +19,7 @@ fn shortcut(id: &str) -> Shortcut {
 
 fn request(fixture: &Fixture, change: &ShortcutChange) -> OwnerCommitRequest {
     OwnerCommitRequest {
-        room: crate::owner::testing::ROOM.into(),
+        workspace: crate::owner::testing::WORKSPACE.into(),
         operation: CommitOperation::ShortcutChange {
             invocation: uuid::Uuid::new_v4(),
             caller: fixture.certificate.clone(),
@@ -31,11 +31,11 @@ fn request(fixture: &Fixture, change: &ShortcutChange) -> OwnerCommitRequest {
 fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
     owner
         .with_current(
-            RoomId::parse(crate::owner::testing::ROOM).unwrap(),
+            RoomId::parse(crate::owner::testing::WORKSPACE).unwrap(),
             |view| {
                 Ok(tilo_automation::decode_saved(
                     &tilo_desktop_model::projection::workspace_shortcuts_of(
-                        view.peer().admitted_room().ok_or("no room")?,
+                        view.peer().admitted_workspace().ok_or("no workspace")?,
                     ),
                 ))
             },
@@ -44,11 +44,11 @@ fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
 }
 
 #[test]
-fn a_saved_shortcut_is_a_room_write_that_survives_a_reopen() {
+fn a_saved_shortcut_is_a_workspace_write_that_survives_a_reopen() {
     let fixture = fixture();
     let mut water = shortcut("water");
-    crate::room::sign_saved_shortcut(
-        crate::owner::testing::ROOM,
+    crate::workspace::sign_saved_shortcut(
+        crate::owner::testing::WORKSPACE,
         &mut water,
         &fixture.certificate,
         &fixture.key,

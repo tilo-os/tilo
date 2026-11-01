@@ -27,7 +27,7 @@ fn active(
     id: &PendingEnrollmentId,
 ) -> Result<(), String> {
     let pending = owner
-        .pending_enrollment(intent.room())?
+        .pending_enrollment(intent.workspace())?
         .ok_or("native enrollment proof no longer retained")?;
     if pending.id() != id
         || pending.status() != PendingEnrollmentStatus::Active
@@ -37,7 +37,7 @@ fn active(
     }
     Ok(())
 }
-/// Redeem `invitation` for `local`, the workspace slot the room will show
+/// Redeem `invitation` for `local`, the local slot the workspace will show
 /// in where the host has slots. The signed Complete proof is durable before
 /// it is sent, and a retry resends exactly that proof.
 ///
@@ -204,8 +204,8 @@ pub async fn prepare_and_complete(
     active(&owner, &intent, &id)?;
     match response {
         // Admitted with the certificate the proof was made with, which
-        // custody has renewed since: the room takes the renewal through the
-        // membership exchange before the device takes the room in, so the
+        // custody has renewed since: the workspace takes the renewal through the
+        // membership exchange before the device takes the workspace in, so the
         // host holds the certificate this device presents from now on.
         JoinTransportResponse::Complete(bootstrap) if bootstrap.device_cert != device => {
             let grant = intent.verified_join().grant();
@@ -224,11 +224,11 @@ pub async fn prepare_and_complete(
         JoinTransportResponse::Complete(bootstrap) => {
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
-        // The host admitted this proof before, and the room has moved on
+        // The host admitted this proof before, and the workspace has moved on
         // since, so it no longer replays its answer: this device is a
-        // member, and takes the room's current state through the membership
+        // member, and takes the workspace's current state through the membership
         // exchange. Resending the proof would be refused forever, keeping
-        // the slot from the room it joined. A host from before it said so
+        // the slot from the workspace it joined. A host from before it said so
         // for a certificate that ran out since refuses that certificate
         // instead; custody has renewed it, and the exchange presents the
         // renewal.
@@ -252,10 +252,10 @@ pub async fn prepare_and_complete(
         // The host holds neither the challenge this proof answers nor a
         // completion of its request: it never admitted it and never will.
         // Kept, the proof would be resent and refused forever, and no new
-        // proof could be made for the room; the invitation is redeemed, if
+        // proof could be made for the workspace; the invitation is redeemed, if
         // at all, through a new challenge.
         JoinTransportResponse::Error { code, message } if lapsed(code, &message) => {
-            owner.drop_lapsed_enrollment(intent.room(), &id)?;
+            owner.drop_lapsed_enrollment(intent.workspace(), &id)?;
             // The proof carried the certificate custody has renewed since:
             // the invitation is asked for again at once, with the renewal.
             if intent.local_device() != &device {
@@ -294,7 +294,7 @@ fn lapsed(code: u16, message: &str) -> bool {
 }
 
 /// Whether a host's refusal of a Complete says it admitted the proof before
-/// and the room has moved on ([`join::JOIN_COMPLETED_REFRESH`]). A host from
+/// and the workspace has moved on ([`join::JOIN_COMPLETED_REFRESH`]). A host from
 /// before that code says the same in words, as a 403.
 fn completed(code: u16, message: &str) -> bool {
     code == join::JOIN_COMPLETED_REFRESH
@@ -312,8 +312,8 @@ fn expired(code: u16, message: &str) -> bool {
     code == 403 && message == tilo_user_identity::DeviceCertError::Expired.to_string()
 }
 
-/// The room's current state for a device that is a member: the membership
-/// exchange for `room` (its id and workspace), challenged and proven with
+/// The workspace's current state for a device that is a member: the membership
+/// exchange for `workspace` (its id and its relay workspace), challenged and proven with
 /// the device's key and presenting `device`, the certificate it is a member
 /// with or the renewal of it. The answer is checked by whoever takes it in
 /// ([`VerifiedNativeEnrollment::finalize`],
@@ -321,11 +321,11 @@ fn expired(code: u16, message: &str) -> bool {
 async fn prove_membership(
     client: &WorkspaceJoinClient,
     host: &iroh::EndpointAddr,
-    room: (String, u64),
+    workspace: (String, u64),
     device: &DeviceCert,
     identity: &HostIdentity,
 ) -> Result<join::JoinBootstrap, String> {
-    let (room, workspace_id) = room;
+    let (workspace, workspace_id) = workspace;
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -335,7 +335,7 @@ async fn prove_membership(
         .request(
             host.clone(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room,
+                room: workspace,
                 workspace_id,
                 device_cert: device.clone(),
                 request_id,
@@ -363,23 +363,23 @@ async fn prove_membership(
     }
 }
 
-/// Prove this device's membership of `room`, a room it joined, with the
-/// renewal of the certificate the room's record holds, when its custody
+/// Prove this device's membership of `workspace`, a workspace it joined, with the
+/// renewal of the certificate the workspace's record holds, when its custody
 /// holds one, and take the governor's answer in
 /// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
 ///
 /// # Errors
-/// The room is not joined here, custody is unreadable or changes during
+/// The workspace is not joined here, custody is unreadable or changes during
 /// the exchange, or the host refuses.
 pub async fn renew_membership(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     owner: NativeWorkspaceOwner,
-    room: crate::owner::RoomId,
+    workspace: crate::owner::RoomId,
 ) -> Result<bool, String> {
-    let (topic, hint, held) = owner.with_current(room, |view| {
+    let (topic, hint, held) = owner.with_current(workspace, |view| {
         Ok((
-            view.workspace(),
+            view.workspace_id(),
             view.transport_hint()?.clone(),
             view.device().clone(),
         ))
@@ -393,13 +393,13 @@ pub async fn renew_membership(
     let bootstrap = prove_membership(
         &client,
         &host.endpoint_addr,
-        (room.to_string(), topic),
+        (workspace.to_string(), topic),
         &renewed,
         &identity,
     )
     .await?;
     current(&identity, topic, &renewed)?;
-    owner.renew_membership(room, &renewed, &bootstrap, SystemTime::now())?;
+    owner.renew_membership(workspace, &renewed, &bootstrap, SystemTime::now())?;
     Ok(true)
 }
 
@@ -433,8 +433,8 @@ mod tests {
     }
 
     /// A device that the host admitted, but whose answer never reached it
-    /// (the laptop restarted mid-join), takes the room through the
-    /// membership exchange once the room moved on, rather than resending
+    /// (the laptop restarted mid-join), takes the workspace through the
+    /// membership exchange once the workspace moved on, rather than resending
     /// its proof forever (the Lounge, 2026-10-20).
     #[test]
     fn a_host_that_admitted_the_proof_before_sends_the_device_to_its_membership() {

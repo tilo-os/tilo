@@ -102,11 +102,11 @@ const MAX_FOLLOWED: usize = 1024;
 
 /// The workspaces a device answers for, as the plane reads them.
 ///
-/// A device whose rooms are held in a store of its own (a session's
+/// A device whose workspaces are held in a store of its own (a session's
 /// workspace owner) hands the plane this view of them instead of
-/// [`Replica`]s: the plane then reads a room's state when a request names
+/// [`Replica`]s: the plane then reads a workspace's state when a request names
 /// it, so a revocation, a removal or a new certificate is seen as it
-/// happens rather than as it was when the plane was handed the room.
+/// happens rather than as it was when the plane was handed the workspace.
 pub trait Workspaces: Send + Sync {
     /// Read the state of `workspace`, if this device holds it: whether it
     /// did.
@@ -121,9 +121,9 @@ pub struct ActionPlane(Arc<Inner>);
 struct Inner {
     /// The device whose signature every request it makes carries.
     device: SigningKey,
-    /// The workspaces this device holds, by room id.
+    /// The workspaces this device holds, by workspace id.
     replicas: Mutex<BTreeMap<String, Replica>>,
-    /// Where this device keeps its rooms, when they are not [`Replica`]s
+    /// Where this device keeps its workspaces, when they are not [`Replica`]s
     /// here ([`Workspaces`]).
     workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
@@ -181,7 +181,7 @@ impl ActionPlane {
         }))
     }
 
-    /// [`Self::new`] for a device whose rooms are held in `workspaces`
+    /// [`Self::new`] for a device whose workspaces are held in `workspaces`
     /// rather than as [`Replica`]s here.
     ///
     /// # Panics
@@ -216,7 +216,7 @@ impl ActionPlane {
         self.0
             .replicas
             .lock_recover()
-            .insert(replica.room(), replica);
+            .insert(replica.workspace(), replica);
     }
 
     /// Answer requests for the workspace `sync` syncs.

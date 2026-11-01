@@ -1,5 +1,5 @@
 /// Sentinel cluster id: `tilo_desktop_model::RoomId::nil` rendered as
-/// a string. A workspace announces this when its durable room identity
+/// a string. A workspace announces this when its durable workspace identity
 /// has not been minted yet; never delivered to or from — see
 /// [`CrdtRoute::is_addressable`].
 const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
@@ -20,7 +20,7 @@ pub struct CrdtRoute {
     pub cluster_id: String,
     /// The record the sender announced, or empty for an app whose state
     /// is still one document per `(app, cluster)`. Finest granularity —
-    /// two people editing different files in one room share app and
+    /// two people editing different files in one workspace share app and
     /// cluster, and only the record tells them apart. Routing key only.
     pub record_id: String,
 }
@@ -67,7 +67,7 @@ impl CrdtRoute {
     }
 
     /// Widen an app-scoped route to its cluster — presence rides this.
-    /// "Who else is here" is a fact about the room, so a peer editing a
+    /// "Who else is here" is a fact about the workspace, so a peer editing a
     /// different document is still a legitimate audience for it.
     #[must_use]
     pub fn to_cluster_scope(&self) -> Self {
@@ -93,11 +93,11 @@ impl CrdtRoute {
         }
     }
 
-    /// Whether a cluster id names a real room: not the empty string
-    /// (never said `Hello`) and not the nil uuid (a workspace whose room
+    /// Whether a cluster id names a real workspace: not the empty string
+    /// (never said `Hello`) and not the nil uuid (a workspace whose workspace
     /// identity has not been minted yet). The nil case must be checked
     /// separately from empty — otherwise every workspace still carrying
-    /// the sentinel would share one enormous room on every machine.
+    /// the sentinel would share one enormous workspace on every machine.
     pub(crate) fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
@@ -106,7 +106,7 @@ impl CrdtRoute {
     /// machine. Same test as [`Self::delivers_to`], because the
     /// receiving broker rebuilds the route from the wire fields and runs
     /// the identical check — publishing an unaddressable route would put
-    /// a frame in the room every receiver silently drops.
+    /// a frame in the workspace every receiver silently drops.
     pub fn is_publishable(&self) -> bool {
         Self::is_addressable(&self.cluster_id)
     }

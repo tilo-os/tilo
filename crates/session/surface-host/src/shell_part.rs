@@ -1829,8 +1829,10 @@ fn shell_standing(
     app: &str,
     person: &str,
 ) -> impl Fn() -> Option<tilo_action_policy::Standing> + 'static {
-    use tilo_action_policy::{Answer, Grant, KindSet, RoomPolicy, Standing, Subject, TreePath};
-    let mut policy = RoomPolicy::new(SHELL_ROOM, person);
+    use tilo_action_policy::{
+        Answer, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+    };
+    let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
         Subject::app(app),

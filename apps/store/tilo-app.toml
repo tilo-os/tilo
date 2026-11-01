@@ -51,7 +51,7 @@ mode = "host"
 collab     = "optional@12"
 tilo-fs     = "optional@12"
 app-host   = "required@5"
-identity   = "optional@12"
+identity   = "optional@13"
 
 [entrypoint]
 bin             = "bin/store"

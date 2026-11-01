@@ -64,7 +64,7 @@ impl Invoker for Sent {
 
 /// A host that runs the view and knows the app only by its package, with the app's player
 /// reading `level`.
-fn room(level: f64) -> (Host, ViewInstance, String, ModuleHash) {
+fn workspace(level: f64) -> (Host, ViewInstance, String, ModuleHash) {
     let doc = AutoCommit::new();
     let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
     let meta = service();
@@ -116,13 +116,13 @@ fn shown(view: &ViewInstance) -> Value {
 
 #[test]
 fn a_view_shows_the_reading_the_app_publishes() {
-    let (_host, view, _up, _module) = room(0.25);
+    let (_host, view, _up, _module) = workspace(0.25);
     assert_eq!(shown(&view), Value::Float(0.25));
 }
 
 #[test]
 fn a_new_reading_runs_the_view_again() {
-    let (host, mut view, _up, _module) = room(0.25);
+    let (host, mut view, _up, _module) = workspace(0.25);
     host.runtime()
         .set_reading(&player(), &json!({ "level": 0.75 }).to_string())
         .unwrap();
@@ -142,7 +142,7 @@ fn a_new_reading_runs_the_view_again() {
 
 #[test]
 fn the_same_reading_twice_changes_nothing() {
-    let (host, mut view, _up, _module) = room(0.25);
+    let (host, mut view, _up, _module) = workspace(0.25);
     let again = host
         .runtime()
         .set_reading(&player(), &json!({ "level": 0.25 }).to_string())
@@ -153,7 +153,7 @@ fn the_same_reading_twice_changes_nothing() {
 
 #[test]
 fn a_buttons_invocation_carries_the_views_author_and_the_player() {
-    let (host, view, up, module) = room(0.25);
+    let (host, view, up, module) = workspace(0.25);
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
     view.press(&up).expect("the button invokes the app's verb");
@@ -181,7 +181,7 @@ fn a_buttons_invocation_carries_the_views_author_and_the_player() {
 
 #[test]
 fn a_host_that_sends_no_invocation_on_says_so() {
-    let (_host, view, up, _module) = room(0.25);
+    let (_host, view, up, _module) = workspace(0.25);
     let why = view.press(&up).expect_err("nowhere to send it");
     assert!(
         format!("{why}").contains("an app this host does not run"),

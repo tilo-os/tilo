@@ -4,15 +4,15 @@ use crate::owner::{
     VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
     record,
 };
-use record::{StoredPendingEnrollment, StoredRoom};
+use record::{StoredPendingEnrollment, StoredWorkspace};
 
 pub(crate) fn validate_pending(
-    room: RoomId,
+    workspace: RoomId,
     pending: &StoredPendingEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
-    if room != pending.id.room()
-        || room != intent.room()
+    if workspace != pending.id.workspace()
+        || workspace != intent.workspace()
         || pending.id.digest() != intent.proof_digest()
         || pending.id.generation() == 0
     {
@@ -21,43 +21,45 @@ pub(crate) fn validate_pending(
     Ok(())
 }
 pub(crate) fn restore(
-    room: RoomId,
-    record: &StoredRoom,
+    workspace: RoomId,
+    record: &StoredWorkspace,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
     if !matches!(record.version, 2 | 3)
         || (record.version == 3) != record.effect_history_root.is_some()
-        || room != record.room
+        || workspace != record.workspace
         || record.generation == 0
         || record.continuity == 0
     {
-        return Err("invalid native committed room record".into());
+        return Err("invalid native committed workspace record".into());
     }
     match (&record.enrollment, &record.vouched) {
-        (Some(enrollment), None) => validate_enrollment(room, record, enrollment)?,
-        (None, Some(vouched)) => crate::owner::vouched::validate(room, record, &vouched.bootstrap)?,
-        // A room this device's own host keeps was founded here
+        (Some(enrollment), None) => validate_enrollment(workspace, record, enrollment)?,
+        (None, Some(vouched)) => {
+            crate::owner::vouched::validate(workspace, record, &vouched.bootstrap)?;
+        }
+        // A workspace this device's own host keeps was founded here
         // ([`NativeWorkspaceOwner::create_workspace`]): no other device
         // admitted this one into it, so there is neither an enrollment nor
         // a vouch to hold.
-        (None, None) if record.device == record.room_host => {}
+        (None, None) if record.device == record.workspace_host => {}
         (None, None) => {
-            return Err("a native room record holds no single enrollment".into());
+            return Err("a native workspace record holds no single enrollment".into());
         }
         (Some(_), Some(_)) => {
-            return Err("a native room record holds both an enrollment and a vouch".into());
+            return Err("a native workspace record holds both an enrollment and a vouch".into());
         }
     }
     let peer = StatePeer::restore(
         &record.peer,
-        &room.to_string(),
-        record.room_host.clone(),
+        &workspace.to_string(),
+        record.workspace_host.clone(),
         vec![record.device.clone()],
         tilo_user_identity::RevocationList::new(),
         now,
     )?;
     if !peer.admission_v5_selected() {
-        return Err("native committed room requires durable admission v5".into());
+        return Err("native committed workspace requires durable admission v5".into());
     }
     let view = NativeCommittedView {
         peer,
@@ -69,22 +71,22 @@ pub(crate) fn restore(
     Ok(view)
 }
 fn validate_enrollment(
-    room: RoomId,
-    record: &StoredRoom,
+    workspace: RoomId,
+    record: &StoredWorkspace,
     enrollment: &crate::owner::record::StoredEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
     let join = intent.verified_join();
     let grant = join.grant();
-    if intent.room() != room
-        || record.room_host != *join.room_authority()
-        || record.workspace != grant.workspace_id
+    if intent.workspace() != workspace
+        || record.workspace_host != *join.room_authority()
+        || record.workspace_id != grant.workspace_id
         || (record.device != *intent.local_device()
             && !crate::owner::renewal::renews(&record.device, intent.local_device()))
         || enrollment.transport_hint != *intent.transport_hint()
         || enrollment.invitation != join.signed_invitation()
     {
-        return Err("native committed room differs from its authenticated enrollment".into());
+        return Err("native committed workspace differs from its authenticated enrollment".into());
     }
     Ok(())
 }
@@ -97,7 +99,7 @@ fn validate_enrollment(
 /// the shape this build writes.
 pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bool, String> {
     let mut changed = false;
-    for record in storage.rooms.values_mut() {
+    for record in storage.workspaces.values_mut() {
         if let Some(enrollment) = &mut record.enrollment {
             let bytes = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?
                 .durable_bytes()?;
@@ -119,11 +121,11 @@ pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bo
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the
-    /// workspace slot the enrolled room will be shown in, where the host has
+    /// local slot the enrolled workspace will be shown in, where the host has
     /// slots.
     ///
     /// # Errors
-    /// The owner is fenced, the room is already enrolled or has another
+    /// The owner is fenced, the workspace is already enrolled or has another
     /// proof in flight, the slot is gone or the record cannot be published.
     pub fn prepare_enrollment_into(
         &self,
@@ -139,31 +141,36 @@ impl NativeWorkspaceOwner {
         }
         // Round trip only through B's checked historical proof decoder.
         let checked = VerifiedNativeEnrollmentIntent::restore(&bytes)?;
-        if checked.proof_digest() != intent.proof_digest() || checked.room() != intent.room() {
+        if checked.proof_digest() != intent.proof_digest()
+            || checked.workspace() != intent.workspace()
+        {
             return Err("native intent round-trip mismatch".into());
         }
         let _turn = self.0.mutation.lock();
-        let room = intent.room();
+        let workspace = intent.workspace();
         {
             let current = self.0.current.read();
-            if current.fenced || current.denied.contains(&room) || !self.0.store.healthy() {
+            if current.fenced || current.denied.contains(&workspace) || !self.0.store.healthy() {
                 return Err("native enrollment custody is fenced".into());
             }
         }
         let mut next = self.0.authority.read().clone();
-        if next.rooms.contains_key(&room) {
+        if next.workspaces.contains_key(&workspace) {
             return Err(
-                "room is already enrolled; identity replacement requires explicit custody handoff"
+                "workspace is already enrolled; identity replacement requires explicit custody handoff"
                     .into(),
             );
         }
-        // The workspace a join installs into is the room's own, made for
-        // it: never a workspace of another room, which would have to be
-        // re-pointed at this one.
+        // The slot a join installs into is the workspace's own, made for it:
+        // never a slot of another workspace, which would have to be re-pointed
+        // at this one.
         let target = local
-            .map(|workspace| match self.0.store.slot_room(workspace) {
-                Some(shown) if shown == room => Ok(record::EnrollmentTarget { workspace, room }),
-                Some(_) => Err("enrollment workspace is another room's"),
+            .map(|slot| match self.0.store.slot_workspace(slot) {
+                Some(shown) if shown == workspace => Ok(record::EnrollmentTarget {
+                    workspace: slot,
+                    prior_workspace: workspace,
+                }),
+                Some(_) => Err("enrollment workspace is another workspace's"),
                 None => Err("enrollment local slot no longer exists"),
             })
             .transpose()?;
@@ -173,13 +180,13 @@ impl NativeWorkspaceOwner {
                     .target
                     .as_ref()
                     .is_some_and(|other| other.workspace == target.workspace)
-                    && pending.id.room() != room
+                    && pending.id.workspace() != workspace
             })
         {
             return Err("local slot already has an unresolved enrollment proof".into());
         }
 
-        if let Some(pending) = next.pending.get(&room) {
+        if let Some(pending) = next.pending.get(&workspace) {
             let same_target = match (&pending.target, &target) {
                 (Some(stored), Some(target)) => stored.workspace == target.workspace,
                 (None, None) => true,
@@ -191,7 +198,7 @@ impl NativeWorkspaceOwner {
             {
                 return Ok(pending.id.clone());
             }
-            return Err("room already has an unresolved enrollment proof".into());
+            return Err("workspace already has an unresolved enrollment proof".into());
         }
         if next.pending.len() >= limits::MAX_PENDING {
             return Err("native pending enrollment quota exhausted".into());
@@ -200,10 +207,10 @@ impl NativeWorkspaceOwner {
             .revision
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
-        let id = PendingEnrollmentId::new(room, generation, intent.proof_digest());
+        let id = PendingEnrollmentId::new(workspace, generation, intent.proof_digest());
         next.revision = generation;
         next.pending.insert(
-            room,
+            workspace,
             StoredPendingEnrollment {
                 target,
                 id: id.clone(),
@@ -211,17 +218,17 @@ impl NativeWorkspaceOwner {
                 status: PendingEnrollmentStatus::Active,
             },
         );
-        self.publish_pending(&next, Some(room))?;
+        self.publish_pending(&next, Some(workspace))?;
         Ok(id)
     }
     pub fn pending_enrollment(
         &self,
-        room: RoomId,
+        workspace: RoomId,
     ) -> Result<Option<StoredPendingEnrollment>, String> {
         if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());
         }
-        Ok(self.0.authority.read().pending.get(&room).cloned())
+        Ok(self.0.authority.read().pending.get(&workspace).cloned())
     }
     /// The in-flight enrollment redeeming `invitation`, where the host has
     /// no slots to find it by.
@@ -280,12 +287,12 @@ impl NativeWorkspaceOwner {
     /// `id` names another attempt, or the record cannot be published.
     pub fn cancel_enrollment(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         id: &PendingEnrollmentId,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         let mut next = self.0.authority.read().clone();
-        let Some(pending) = next.pending.get(&room) else {
+        let Some(pending) = next.pending.get(&workspace) else {
             return Ok(false);
         };
         if &pending.id != id {
@@ -299,28 +306,28 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
         next.pending
-            .get_mut(&room)
+            .get_mut(&workspace)
             .ok_or("native pending enrollment disappeared")?
             .status = PendingEnrollmentStatus::Cancelled;
         self.publish_pending(&next, None)?;
         Ok(true)
     }
-    /// Drop the proof of attempt `id` into `room`, which its host answered
+    /// Drop the proof of attempt `id` into `workspace`, which its host answered
     /// it never admitted and no longer can
     /// ([`crate::join::JOIN_PROOF_LAPSED`]): resending it can only
-    /// be refused again, and while it is kept no new proof for the room can
+    /// be refused again, and while it is kept no new proof for the workspace can
     /// be made. Answers whether it was dropped.
     ///
     /// # Errors
     /// `id` names another attempt, or the record cannot be published.
     pub fn drop_lapsed_enrollment(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         id: &PendingEnrollmentId,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
         let mut next = self.0.authority.read().clone();
-        let Some(pending) = next.pending.get(&room) else {
+        let Some(pending) = next.pending.get(&workspace) else {
             return Ok(false);
         };
         if &pending.id != id {
@@ -330,11 +337,11 @@ impl NativeWorkspaceOwner {
             .revision
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
-        next.pending.remove(&room);
+        next.pending.remove(&workspace);
         self.publish_pending(&next, None)?;
         Ok(true)
     }
-    /// `required` is a room the owner must answer for from now on.
+    /// `required` is a workspace the owner must answer for from now on.
     fn publish_pending(
         &self,
         next: &NativeAuthorityStorage,
@@ -342,12 +349,12 @@ impl NativeWorkspaceOwner {
     ) -> Result<(), String> {
         self.0.publish(next, Change::Pending, &mut || {
             *self.0.authority.write() = next.clone();
-            if let Some(room) = required {
-                self.0.current.write().required.insert(room);
+            if let Some(workspace) = required {
+                self.0.current.write().required.insert(workspace);
             }
         })
     }
-    /// Install a completed enrollment: the room's first committed replica.
+    /// Install a completed enrollment: the workspace's first committed replica.
     ///
     /// # Errors
     /// The Complete does not match the persisted proof, the admitted role
@@ -358,14 +365,14 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let room = RoomId::parse(&enrollment.bootstrap().room)
-            .ok_or("noncanonical native enrollment room")?;
+        let workspace = RoomId::parse(&enrollment.bootstrap().room)
+            .ok_or("noncanonical native enrollment workspace")?;
         let pending = self
             .0
             .authority
             .read()
             .pending
-            .get(&room)
+            .get(&workspace)
             .cloned()
             .ok_or("native Complete proof was not persisted before transmission")?;
         if pending.id != *enrollment.pending_id() {
@@ -392,9 +399,9 @@ impl NativeWorkspaceOwner {
         )?;
         let app_messages = install_governance(&mut peer, bootstrap, now)?;
         tracing::debug!(
-            %room,
+            %workspace,
             app_messages,
-            "a room was installed on its governance; its app data follows through the room's sync"
+            "a workspace was installed on its governance; its app data follows through the workspace's sync"
         );
         if !peer.has_governance() {
             return Err("native enrollment is missing real admitted governance".into());
@@ -403,8 +410,8 @@ impl NativeWorkspaceOwner {
             .permissions(enrollment.local_device().device_public_key, now)
             .map_err(|error| error.to_string())?
             .role;
-        // A device of the governing person is the room's owner whatever its
-        // invitation granted: the owner holds its room like any member.
+        // A device of the governing person is the workspace's owner whatever its
+        // invitation granted: the owner holds its workspace like any member.
         let expected =
             if enrollment.local_device().user_public_key == bootstrap.host.user_public_key {
                 collab_types::Role::Owner
@@ -415,11 +422,11 @@ impl NativeWorkspaceOwner {
             return Err("actual admitted role differs from signed enrollment role".into());
         }
 
-        let record = StoredRoom {
+        let record = StoredWorkspace {
             version: 2,
-            room,
-            workspace: bootstrap.workspace_id,
-            room_host: bootstrap.host.clone(),
+            workspace,
+            workspace_id: bootstrap.workspace_id,
+            workspace_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),
             enrollment: Some(crate::owner::record::StoredEnrollment {
                 invitation: enrollment.verified_join().signed_invitation().to_vec(),
@@ -440,7 +447,11 @@ impl NativeWorkspaceOwner {
             join_ledger: crate::join_ledger::JoinLedger::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
-        self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
+        self.publish_workspace(
+            workspace,
+            NativeCommittedView { peer, record },
+            Some(&pending),
+        )
     }
     /// Admit and durably commit a document write signed by this device,
     /// with its outgoing custody, before any receipt.
@@ -463,16 +474,17 @@ impl NativeWorkspaceOwner {
         request: crate::owner_commit::OwnerCommitRequest,
         now: SystemTime,
     ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
-        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
-        self.commit_document_with_current(room, |_| Ok(request), now)
+        let workspace =
+            RoomId::parse(&request.workspace).ok_or("invalid native document workspace")?;
+        self.commit_document_with_current(workspace, |_| Ok(request), now)
     }
 
     /// Prepare a signed local document mutation from the current committed
-    /// room and admit it in the same owner turn. This keeps its sequence and
+    /// workspace and admit it in the same owner turn. This keeps its sequence and
     /// document basis current when other publications race the caller.
     pub fn commit_document_with_current(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         prepare: impl FnOnce(
             &crate::owner::NativeCommittedView,
         ) -> Result<crate::owner_commit::OwnerCommitRequest, String>,
@@ -480,10 +492,12 @@ impl NativeWorkspaceOwner {
     ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
         use crate::owner_commit::{CommitOperation, OwnerCommitReceipt};
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         let request = prepare(&candidate)?;
-        if RoomId::parse(&request.room) != Some(room) {
-            return Err("prepared native document room differs from selected room".into());
+        if RoomId::parse(&request.workspace) != Some(workspace) {
+            return Err(
+                "prepared native document workspace differs from selected workspace".into(),
+            );
         }
         let outgoing = publication::prepare(&request)?;
         let binding = request.binding()?;
@@ -532,25 +546,25 @@ impl NativeWorkspaceOwner {
             generation: candidate.generation(),
             aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
         };
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(receipt)
     }
 }
-/// Admit the room's governance from `bootstrap` into `peer`, in the order
+/// Admit the workspace's governance from `bootstrap` into `peer`, in the order
 /// the host published it, and answer how many app messages it left out.
 ///
-/// Becoming a member takes the room's governance alone: its membership,
+/// Becoming a member takes the workspace's governance alone: its membership,
 /// roles and policy, and the certificates they import, which are everything
 /// an app message is authorized against. An app message is not part of it.
 /// A host's bootstrap carries its own record publications as well (every
 /// checkpoint it published since its last full one), and a device that does
-/// not hold the room yet cannot decide many of them: the app surface a change
-/// names is read from the room's own content, and a sealed write needs its
+/// not hold the workspace yet cannot decide many of them: the app surface a change
+/// names is read from the workspace's own content, and a sealed write needs its
 /// record's checkpoint. Admitted here, each one waited in the peer's bounded
-/// prerequisite queue, so a busy room's bootstrap overflowed it and the join
+/// prerequisite queue, so a busy workspace's bootstrap overflowed it and the join
 /// failed however often it was tried. The host retains every one of those
-/// publications on its record's channel, and the room's sync delivers them
-/// once the room is installed, where each is authorized exactly as any later
+/// publications on its record's channel, and the workspace's sync delivers them
+/// once the workspace is installed, where each is authorized exactly as any later
 /// write is.
 pub(crate) fn install_governance(
     peer: &mut StatePeer,

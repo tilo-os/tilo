@@ -15,13 +15,13 @@ impl AppBrokerState {
 
     /// Whether `address` in `app_id` shows something, and so is taken only
     /// by a window of the app: its `open`, and any action of the view kind
-    /// it declares (an issue's page, its chat), as published in `room` or
+    /// it declares (an issue's page, its chat), as published in `workspace` or
     /// offered by its manifest. An instance with no window has nothing to
     /// show it in.
     pub(crate) fn action_shows(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         address: &tilo_actions::ActionAddress,
     ) -> bool {
         if address.action == APPLICATION_OPEN_ACTION {
@@ -31,7 +31,7 @@ impl AppBrokerState {
         self.published_surfaces()
             .into_iter()
             .chain(self.launchable.surfaces())
-            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
+            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
             .flat_map(|surface| surface.actions)
             .find(|action| {
                 action.action == address.action

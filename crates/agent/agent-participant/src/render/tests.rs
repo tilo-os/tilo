@@ -3,7 +3,7 @@
 use super::*;
 use crate::{AppCatalogue, Replica, ReplicaActor, Seed, component_apps};
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 /// What an agent's video record lists before its host decides, held in
 /// process as its worker holds it.
@@ -11,7 +11,7 @@ fn agents_video_survey() -> Vec<ActionDescriptor> {
     Replica::open(
         &AppCatalogue::new(component_apps()),
         VIDEO_EDITOR,
-        ROOM,
+        WORKSPACE,
         "editor",
         ReplicaActor::Agent,
         Seed::New,
@@ -50,7 +50,7 @@ fn a_person_is_never_offered_the_agent_renders() {
     let owner = Replica::open(
         &catalogue,
         VIDEO_EDITOR,
-        ROOM,
+        WORKSPACE,
         "ada",
         ReplicaActor::Owner,
         Seed::New,
@@ -104,7 +104,7 @@ fn a_render_larger_than_its_limit_is_not_kept() {
 }
 
 #[test]
-fn a_timeline_placing_content_the_room_lacks_is_refused() {
+fn a_timeline_placing_content_the_workspace_lacks_is_refused() {
     let mut project = Project::new("Cut");
     let track = video_editor::model::Track {
         kind: video_editor::model::TrackKind::Video,

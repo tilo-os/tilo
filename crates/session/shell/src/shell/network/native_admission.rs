@@ -99,10 +99,10 @@ impl State {
             && let Some(oldest) = held.waiting.pop_front()
         {
             tracing::warn!(
-                room = %oldest.room(),
+                room = %oldest.workspace(),
                 "a held relay input was let go: too many waiting for app surfaces; the room is replayed once one is named"
             );
-            held.let_go.insert(oldest.room());
+            held.let_go.insert(oldest.workspace());
         }
         held.waiting.push_back(input);
     }
@@ -274,7 +274,7 @@ impl ShellNetwork {
                         continue;
                     };
                     let (inputs, identity) = *pending;
-                    let room = inputs.first().map(native_ingress::Input::room);
+                    let room = inputs.first().map(native_ingress::Input::workspace);
                     // A panicking admission must not leave the loop waiting
                     // for it forever.
                     let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -1,5 +1,5 @@
 //! A tilolang host runs an app's instance without the toolkit: it drives a window in another
-//! end of a patch connection, commits what the person did there to the room record on the
+//! end of a patch connection, commits what the person did there to the workspace record on the
 //! instance's own connection, takes it back on the person's Undo, publishes the app's actions on
 //! that connection and runs what the broker delivers there as its invoker's step. An instance ends
 //! when its window closes.
@@ -30,7 +30,7 @@ use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::Value;
 
 const APP: &str = "so.tilo.lang.counter";
@@ -220,7 +220,7 @@ fn running_with(
     running_on(person, app, bundle, directory, automerge::AutoCommit::new())
 }
 
-/// [`running_with`], the record holding `doc` as the room handed it.
+/// [`running_with`], the record holding `doc` as the workspace handed it.
 fn running_on(
     person: &str,
     app: &str,
@@ -246,7 +246,7 @@ fn running_on(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::new(doc, manager, route.clone(), person);
+    let record = InstanceRecord::new(doc, manager, route.clone(), person);
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -254,7 +254,7 @@ fn running_on(
     let hosted = Hosted::with_record(
         Spec {
             app: app.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: 1,
             person: person.to_owned(),
         },
@@ -302,7 +302,7 @@ fn documents_sent(sent: &Sent) -> usize {
 }
 
 /// A host whose counter instance opens its record as the host does, joined on a broker the test
-/// plays, from the copy `documents` keeps: no committed read, as a sealed room's record the room
+/// plays, from the copy `documents` keeps: no committed read, as a sealed workspace's record the workspace
 /// does not hold yet opens.
 fn opened_from_own_copy(
     person: &str,
@@ -334,7 +334,7 @@ fn opened_from_own_copy_in(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::open_read(manager, None, documents, person).unwrap();
+    let record = InstanceRecord::open_read(manager, None, documents, person).unwrap();
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(APP).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -342,7 +342,7 @@ fn opened_from_own_copy_in(
     let hosted = Hosted::with_record(
         Spec {
             app: APP.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: 1,
             person: person.to_owned(),
         },
@@ -364,26 +364,26 @@ fn opened_from_own_copy_in(
     (host, window, sent, route)
 }
 
-/// What the room holds of the record: every change the instance sent on its connection, and
-/// nothing else, as a sealed room's channel keeps it.
-fn room_copy(sent: &Sent) -> automerge::AutoCommit {
-    let mut room = automerge::AutoCommit::new();
+/// What the workspace holds of the record: every change the instance sent on its connection, and
+/// nothing else, as a sealed workspace's channel keeps it.
+fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
+    let mut workspace = automerge::AutoCommit::new();
     for request in sent.borrow().iter() {
         if let CollabRequest::Document { mutation, .. } = request {
             let bytes = match mutation {
                 collab_types::DocumentMutation::Incremental(bytes)
                 | collab_types::DocumentMutation::Snapshot(bytes) => bytes,
             };
-            tilo_automerge::ApplyIncoming::load_incoming(&mut room, bytes).unwrap();
+            tilo_automerge::ApplyIncoming::load_incoming(&mut workspace, bytes).unwrap();
         }
     }
-    room
+    workspace
 }
 
 #[test]
-fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
-    // A record the room did not hold opens from the host's own copy, whose making (its schema
-    // stamp) is a change of this replica's. A press is the instance's first change to the room.
+fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds() {
+    // A record the workspace did not hold opens from the host's own copy, whose making (its schema
+    // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
     let documents: Rc<dyn durable_store::DurableStore> =
         Rc::new(durable_store::MemoryStore::default());
     let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
@@ -398,18 +398,18 @@ fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
     settle(&mut host, &mut window);
     assert_eq!(value_of(host.instances().next().unwrap()), 1);
 
-    // The room's copy alone is the whole record: nothing it holds builds on a change that never
-    // reached it, so a reader that has only the room's writes can read it back.
-    let room = room_copy(&sent);
+    // The workspace's copy alone is the whole record: nothing it holds builds on a change that never
+    // reached it, so a reader that has only the workspace's writes can read it back.
+    let workspace = workspace_copy(&sent);
     assert_eq!(
-        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        automerge::ReadDoc::get_missing_deps(&workspace, &[]),
         Vec::new(),
-        "every change the room's writes build on reached the room"
+        "every change the workspace's writes build on reached the workspace"
     );
 
-    // A fresh host, opened on the room's copy as a reopen reads it, shows the press.
+    // A fresh host, opened on the workspace's copy as a reopen reads it, shows the press.
     let (mut reopened, mut window, _sent, _inbox, _route) =
-        running_on("ada", APP, counter(), Rc::default(), room);
+        running_on("ada", APP, counter(), Rc::default(), workspace);
     settle(&mut reopened, &mut window);
     assert_eq!(
         value_of(reopened.instances().next().unwrap()),
@@ -807,7 +807,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     host.open(
         Spec {
             app: APP.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: 2,
             person: "grace".to_owned(),
         },
@@ -929,7 +929,7 @@ fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
     host.open(
         Spec {
             app: APP.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: 2,
             person: "grace".to_owned(),
         },
@@ -1512,12 +1512,12 @@ fn applier(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::new(doc, manager, route.clone(), person);
+    let record = InstanceRecord::new(doc, manager, route.clone(), person);
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
         Spec {
             app: APP.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: 1 << 62,
             person: person.to_owned(),
         },
@@ -1531,7 +1531,7 @@ fn applier(
     (applier, ours, sent)
 }
 
-/// Where the counter's Increment is published on a record of the room, and that record: the
+/// Where the counter's Increment is published on a record of the workspace, and that record: the
 /// one a task read, whose resources its change names.
 fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
     let (mut host, mut window, _sent, _inbox, _route) = running("ada");
@@ -1609,7 +1609,7 @@ fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
     );
     assert!(
         documents_sent(&sent) > 0,
-        "what it wrote was handed to the room"
+        "what it wrote was handed to the workspace"
     );
     // A preview made from an earlier read that no longer holds is applied as the record is
     // now, and the answer says it differed.
@@ -1686,16 +1686,16 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
     );
     assert!(
         documents_sent(&sent) > 0,
-        "the root and the change went to the room"
+        "the root and the change went to the workspace"
     );
 }
 
-/// A change its room refuses is taken back out of the record at its origin, and the task is
-/// answered why: the record is never left holding, building on and keeping a change the room
-/// has none of. Here the surface the room decides the record's changes by publishes the
+/// A change its workspace refuses is taken back out of the record at its origin, and the task is
+/// answered why: the record is never left holding, building on and keeping a change the workspace
+/// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
 #[test]
-fn a_change_the_room_refuses_is_never_kept() {
+fn a_change_the_workspace_refuses_is_never_kept() {
     let (address, doc) = increment();
     collaboration::app_surface::register_package(
         APP,
@@ -1724,15 +1724,19 @@ fn a_change_the_room_refuses_is_never_kept() {
         before,
         "the record holds nothing of the refused change"
     );
-    assert_eq!(documents_sent(&sent), 0, "nothing was handed to the room");
+    assert_eq!(
+        documents_sent(&sent),
+        0,
+        "nothing was handed to the workspace"
+    );
 }
 
 /// A record an older store wrote, whose first change is its schema stamp committed with no
-/// message, is handed to its room whole on the next send, every change of it claimed: the
+/// message, is handed to its workspace whole on the next send, every change of it claimed: the
 /// stamp, a root change with no deps that only sets the schema version, as the record's
 /// genesis. No change is rewritten and no id changes.
 #[test]
-fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole() {
+fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole() {
     let documents: Rc<dyn durable_store::DurableStore> =
         Rc::new(durable_store::MemoryStore::default());
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
@@ -1760,21 +1764,21 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole()
     }]);
     settle(&mut host, &mut window);
     assert_eq!(value_of(host.instances().next().unwrap()), 1);
-    let room = room_copy(&sent);
+    let workspace = workspace_copy(&sent);
     assert!(
-        automerge::ReadDoc::get_change_by_hash(&room, &stamp).is_some(),
-        "the stamp, unchanged, reached the room"
+        automerge::ReadDoc::get_change_by_hash(&workspace, &stamp).is_some(),
+        "the stamp, unchanged, reached the workspace"
     );
     assert_eq!(
-        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        automerge::ReadDoc::get_missing_deps(&workspace, &[]),
         Vec::new(),
-        "the room holds the whole record"
+        "the workspace holds the whole record"
     );
     for request in sent.borrow().iter() {
         if let CollabRequest::Document { mutation, .. } = request {
             let claims =
                 collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
-                    panic!("every change the room is handed is claimed: {error}")
+                    panic!("every change the workspace is handed is claimed: {error}")
                 });
             if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
                 assert_eq!(

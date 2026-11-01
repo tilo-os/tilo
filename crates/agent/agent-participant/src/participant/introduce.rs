@@ -1,9 +1,9 @@
-//! An agent shows in a room's Chat under its own name, as a person's
+//! An agent shows in a workspace's Chat under its own name, as a person's
 //! window announces its person when it opens the chat: on opening the
-//! room's chat record the agent introduces itself (Chat's `introduce`,
+//! workspace's chat record the agent introduces itself (Chat's `introduce`,
 //! housekeeping any member may do), so every member's chat names its
 //! messages by the label its person gave it rather than as someone the
-//! room has not named.
+//! workspace has not named.
 
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -12,13 +12,13 @@ use super::AgentParticipant;
 /// The app whose record an agent introduces itself in.
 const CHAT: &str = "so.tilo.chat";
 
-/// Chat's action that names its author in the room's roster.
+/// Chat's action that names its author in the workspace's roster.
 const INTRODUCE: &str = "introduce";
 
 impl AgentParticipant {
     /// Introduce the agent in the chat record just opened at `route`; any
     /// other record is left as it is. A refusal is logged, not raised: the
-    /// agent's messages still go out, under the name the room gives them.
+    /// agent's messages still go out, under the name the workspace gives them.
     pub(super) fn introduce_in_chat(&mut self, route: &DocumentRoute) {
         if route.app_id != CHAT {
             return;

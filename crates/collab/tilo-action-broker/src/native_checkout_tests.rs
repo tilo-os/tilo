@@ -1,7 +1,7 @@
 /// Publish through the actual collaboration wire channel with current signed admission
 /// and the host-retained launcher association, pinned to a real kernel socket.
 async fn checkout_channel(
-    room: &signed_worker::OriginalRoom,
+    workspace: &signed_worker::OriginalWorkspace,
     peer: u64,
     attested: bool,
 ) -> (
@@ -9,8 +9,8 @@ async fn checkout_channel(
     Option<Arc<native_media::LocalAppConnection>>,
     signed_worker::Connection,
 ) {
-    let (worker, _) = room.join_worker(peer).await;
-    let identity = room
+    let (worker, _) = workspace.join_worker(peer).await;
+    let identity = workspace
         .state
         .host_workers
         .lock()
@@ -23,8 +23,8 @@ async fn checkout_channel(
     let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
     let local = attested.then(|| {
         native_media::LocalAppConnection::attested(
-            room.route.app_id.clone(),
-            room.route.cluster_id.clone(),
+            workspace.route.app_id.clone(),
+            workspace.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(&socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
                 creation: None,
@@ -39,9 +39,9 @@ async fn checkout_channel(
         as_app: None,
         person_chat_views: RefCell::default(),
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
-        state: room.state.clone(),
-        directories: room.directories.clone(),
-        channel_id: room.route.channel_key(),
+        state: workspace.state.clone(),
+        directories: workspace.directories.clone(),
+        channel_id: workspace.route.channel_key(),
         peer_id: peer,
         connection_id: peer,
         verified_identity: identity,
@@ -49,8 +49,8 @@ async fn checkout_channel(
         route_access: RouteAccess::Own,
         lease: Some(Rc::new(ConnectionLease {
             local_media: local.clone(),
-            state: room.state.clone(),
-            directories: room.directories.clone(),
+            state: workspace.state.clone(),
+            directories: workspace.directories.clone(),
             peer_id: peer,
         })),
         _hold: None,
@@ -83,54 +83,74 @@ fn checkout_process() -> (u32, u64) {
 async fn certified_native_checkout_uses_actual_registered_route_and_rejects_wrong_lifetimes() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = signed_worker::OriginalRoom::new(
+            let workspace = signed_worker::OriginalWorkspace::new(
                 tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
             );
-            let (channel, local, _transport) = checkout_channel(&room, 71, true).await;
+            let (channel, local, _transport) = checkout_channel(&workspace, 71, true).await;
             let (pid, start) = checkout_process();
-            let root = room
+            let root = workspace
                 .state
-                .native_checkout(&room.route.app_id, &room.route.cluster_id, 73, pid, start)
+                .native_checkout(
+                    &workspace.route.app_id,
+                    &workspace.route.cluster_id,
+                    73,
+                    pid,
+                    start,
+                )
                 .unwrap();
-            assert_eq!(root.record_id, room.route.record_id);
+            assert_eq!(root.record_id, workspace.route.record_id);
             assert_ne!(root.record_id, "derived:default@tab:0000000000000049");
             for (app, cluster, instance, process, began) in [
-                ("foreign", room.route.cluster_id.as_str(), 73, pid, start),
-                (room.route.app_id.as_str(), "foreign", 73, pid, start),
                 (
-                    room.route.app_id.as_str(),
-                    room.route.cluster_id.as_str(),
+                    "foreign",
+                    workspace.route.cluster_id.as_str(),
+                    73,
+                    pid,
+                    start,
+                ),
+                (workspace.route.app_id.as_str(), "foreign", 73, pid, start),
+                (
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
                     74,
                     pid,
                     start,
                 ),
                 (
-                    room.route.app_id.as_str(),
-                    room.route.cluster_id.as_str(),
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
                     73,
                     u32::MAX,
                     start,
                 ),
                 (
-                    room.route.app_id.as_str(),
-                    room.route.cluster_id.as_str(),
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
                     73,
                     pid,
                     0,
                 ),
             ] {
                 assert!(
-                    room.state
+                    workspace
+                        .state
                         .native_checkout(app, cluster, instance, process, began)
                         .is_none()
                 );
             }
             local.unwrap().stop();
             assert!(
-                room.state
-                    .native_checkout(&room.route.app_id, &room.route.cluster_id, 73, pid, start)
+                workspace
+                    .state
+                    .native_checkout(
+                        &workspace.route.app_id,
+                        &workspace.route.cluster_id,
+                        73,
+                        pid,
+                        start
+                    )
                     .is_none()
             );
             drop(channel);
@@ -149,30 +169,32 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                 "missing-directory",
                 "replaced-record",
             ] {
-                let room = signed_worker::OriginalRoom::new(
+                let workspace = signed_worker::OriginalWorkspace::new(
                     tilo_user_identity::DeviceCapabilities::primary(),
                     None,
                     None,
                 );
                 let (channel, _, _transport) =
-                    checkout_channel(&room, 71, mode != "unattested").await;
+                    checkout_channel(&workspace, 71, mode != "unattested").await;
                 let second = if mode == "ambiguous" {
-                    Some(checkout_channel(&room, 72, true).await)
+                    Some(checkout_channel(&workspace, 72, true).await)
                 } else {
                     None
                 };
                 if mode == "revoked" {
-                    *room.authority.certificate.lock().unwrap() = None;
+                    *workspace.authority.certificate.lock().unwrap() = None;
                 }
                 if mode == "missing-directory" {
-                    room.state
+                    workspace
+                        .state
                         .action_directory_roots
                         .lock()
                         .unwrap()
                         .remove(&71);
                 }
                 if mode == "replaced-record" {
-                    room.state
+                    workspace
+                        .state
                         .action_directory_roots
                         .lock()
                         .unwrap()
@@ -182,8 +204,15 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                 }
                 let (pid, start) = checkout_process();
                 assert!(
-                    room.state
-                        .native_checkout(&room.route.app_id, &room.route.cluster_id, 73, pid, start)
+                    workspace
+                        .state
+                        .native_checkout(
+                            &workspace.route.app_id,
+                            &workspace.route.cluster_id,
+                            73,
+                            pid,
+                            start
+                        )
                         .is_none(),
                     "{mode} cannot select checkout custody"
                 );
@@ -191,7 +220,7 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                 drop(channel);
                 // The host closes a dropped channel once its close arrives.
                 tilo_test_env::within("the closed channels release their checkout", async {
-                    while !room.state.native_checkouts.lock().unwrap().is_empty() {
+                    while !workspace.state.native_checkouts.lock().unwrap().is_empty() {
                         tokio::task::yield_now().await;
                     }
                 })
@@ -208,14 +237,14 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
 async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = signed_worker::OriginalRoom::new(
+            let workspace = signed_worker::OriginalWorkspace::new(
                 tilo_user_identity::DeviceCapabilities::primary(),
                 None,
                 None,
             );
             let peer = 72;
-            let (_worker, _) = room.join_worker(peer).await;
-            let identity = room
+            let (_worker, _) = workspace.join_worker(peer).await;
+            let identity = workspace
                 .state
                 .host_workers
                 .lock()
@@ -227,9 +256,9 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
-                state: room.state.clone(),
-                directories: room.directories.clone(),
-                channel_id: room.route.channel_key(),
+                state: workspace.state.clone(),
+                directories: workspace.directories.clone(),
+                channel_id: workspace.route.channel_key(),
                 peer_id: peer,
                 connection_id: peer,
                 verified_identity: identity,
@@ -238,11 +267,13 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 lease: None,
                 _hold: None,
             });
-            let route = &room.route;
+            let route = &workspace.route;
             let op = collab_types::SignedOp::new_unsigned(
                 b"any op".to_vec(),
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
-                collab_types::Ed25519PublicKey::from_bytes(room.key.verifying_key().to_bytes()),
+                collab_types::Ed25519PublicKey::from_bytes(
+                    workspace.key.verifying_key().to_bytes(),
+                ),
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
                 collab_types::OpKind::Change,
                 std::time::SystemTime::now(),

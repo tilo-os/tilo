@@ -29,7 +29,7 @@ use tilo_agent_participant::apps::readable;
 use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const MESSAGES: &str = "so.tilo.messages";
 /// The resource every record-level operation is addressed to.
 const RECORD: &str = "tilo.messages";
@@ -77,8 +77,8 @@ fn read(record: &ConfinedReplica, args: Value) -> Value {
         .expect("read answers with what the record holds")
 }
 
-/// The content `output` names, as `room` keeps it.
-fn produced(room: &ContentStore, output: &tilo_actions::ActionOutput) -> String {
+/// The content `output` names, as `workspace` keeps it.
+fn produced(workspace: &ContentStore, output: &tilo_actions::ActionOutput) -> String {
     let address = output
         .resources
         .first()
@@ -91,7 +91,12 @@ fn produced(room: &ContentStore, output: &tilo_actions::ActionOutput) -> String 
         })
         .unwrap_or_else(|| panic!("one content resource: {output:?}"));
     let hash = tilo_actions::content_hash(&address).expect("a content address");
-    String::from_utf8(room.read(hash).expect("the room keeps what was exported")).unwrap()
+    String::from_utf8(
+        workspace
+            .read(hash)
+            .expect("the workspace keeps what was exported"),
+    )
+    .unwrap()
 }
 
 fn bodies(conversation: &Value) -> Vec<String> {
@@ -111,18 +116,18 @@ fn messages_is_in_the_agents_catalogue() {
 #[test]
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
-    let room = ContentStore::memory();
+    let workspace = ContentStore::memory();
     let catalogue = catalogue();
     let agent = ConfinedReplica::open(
         &catalogue,
         MESSAGES,
-        ROOM,
+        WORKSPACE,
         "assistant",
         &ReplicaActor::Agent,
         Seed::New,
     )
     .expect("a Messages record is held in a confined worker")
-    .lending(room.clone());
+    .lending(workspace.clone());
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
@@ -211,9 +216,9 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     assert_eq!(reply["direction"], "out");
     let replying = agent.take_mutation().unwrap().expect("the reply");
 
-    // Exporting as content the room keeps, for a grader or a replay.
+    // Exporting as content the workspace keeps, for a grader or a replay.
     let markdown = produced(
-        &room,
+        &workspace,
         &step(
             &agent,
             "export-content",
@@ -228,7 +233,7 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
         assert!(markdown.contains(expected), "{expected}: {markdown}");
     }
     let exported: Value = serde_json::from_str(&produced(
-        &room,
+        &workspace,
         &step(&agent, "export-content", json!({ "format": "json" })),
     ))
     .unwrap();
@@ -252,7 +257,7 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let mut page = Replica::open(
         &catalogue,
         MESSAGES,
-        ROOM,
+        WORKSPACE,
         "ada",
         ReplicaActor::Owner,
         Seed::Existing {

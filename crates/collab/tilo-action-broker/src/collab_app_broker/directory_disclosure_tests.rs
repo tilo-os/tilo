@@ -34,13 +34,15 @@ impl Person {
     fn id(&self) -> String {
         principal_id_for_root(self.root.verifying_key().to_bytes())
     }
-    fn presentation(&self, room: &str) -> Vec<u8> {
+    fn presentation(&self, workspace: &str) -> Vec<u8> {
         runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.into(),
+            workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&self.certificate).unwrap(),
             proof: self
                 .device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }
@@ -355,7 +357,7 @@ impl Fixture {
         let other_device = Person::new(101, 107);
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(71),
-            "Directory disclosure room",
+            "Directory disclosure workspace",
         );
         workspace.set_owner(owner.id());
         workspace.admit(editor.id(), CapRole::Editor);
@@ -452,7 +454,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                     }
                 }
             }
-            // Even the room's Owner cannot inspect another person's private view.
+            // Even the workspace's Owner cannot inspect another person's private view.
             let foreign_publisher =
                 Connection::join(&state, &directories, &route, &editor, &owner.id()).await;
             foreign_publisher.publish(rows()).await;
@@ -471,7 +473,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 false,
                 "",
             );
-            // Legacy registrations do not acquire the room owner's identity.
+            // Legacy registrations do not acquire the workspace owner's identity.
             directories
                 .directories
                 .borrow_mut()
@@ -701,7 +703,7 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
             .await;
             for authenticated_publisher in [true, false] {
                 if !authenticated_publisher {
-                    // No publisher certificate must not turn the room owner
+                    // No publisher certificate must not turn the workspace owner
                     // or a caller-supplied participant label into its identity.
                     fixture
                         .directories

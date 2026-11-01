@@ -11,10 +11,10 @@
 //! Layout: `<root>/<artifact uuid>.ops`, a sequence of records
 //! `len (u32 LE) || postcard(SignedOp)`. The index (seq → offset) is rebuilt
 //! by scanning on first use; a torn final record from a crash is cut off.
-//! Beside each log, `<artifact uuid>.room` names the room whose members may
-//! page through it, and `<artifact uuid>.record` the record it is: room, app
+//! Beside each log, `<artifact uuid>.workspace` names the workspace whose members may
+//! page through it, and `<artifact uuid>.record` the record it is: workspace, app
 //! and record id, one per line, so a later session still knows which
-//! records of an app this device holds in a room.
+//! records of an app this device holds in a workspace.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -230,25 +230,25 @@ pub struct CollabHistoryStore {
 /// The record an artifact's history is, as its `.record` file says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HeldRecord {
-    room: String,
+    workspace: String,
     app_id: String,
     record_id: String,
 }
 
 impl HeldRecord {
     fn encode(&self) -> String {
-        format!("{}\n{}\n{}", self.room, self.app_id, self.record_id)
+        format!("{}\n{}\n{}", self.workspace, self.app_id, self.record_id)
     }
 
     fn decode(text: &str) -> Option<Self> {
         let mut lines = text.split('\n');
-        let (room, app_id, record_id) = (lines.next()?, lines.next()?, lines.next()?);
+        let (workspace, app_id, record_id) = (lines.next()?, lines.next()?, lines.next()?);
         let held = Self {
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             app_id: app_id.to_owned(),
             record_id: record_id.to_owned(),
         };
-        (lines.next().is_none() && !room.is_empty() && !app_id.is_empty()).then_some(held)
+        (lines.next().is_none() && !workspace.is_empty() && !app_id.is_empty()).then_some(held)
     }
 }
 
@@ -334,19 +334,19 @@ impl CollabHistoryStore {
         self.log(artifact)?.append_all(ops)
     }
 
-    /// Remember that `artifact`'s history belongs to the room `cluster_id`,
-    /// beside its log, so a later session still knows which room's members
+    /// Remember that `artifact`'s history belongs to the workspace `cluster_id`,
+    /// beside its log, so a later session still knows which workspace's members
     /// may page through it. The binding's sync is left to the caller.
     ///
     /// # Errors
     ///
     /// Returns the I/O error of writing the binding.
-    pub fn bind_room(
+    pub fn bind_workspace(
         &mut self,
         artifact: ArtifactId,
         cluster_id: &str,
     ) -> std::io::Result<Unsynced> {
-        let path = self.room_path(artifact);
+        let path = self.workspace_path(artifact);
         if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
             return Ok(Unsynced::default());
         }
@@ -366,15 +366,15 @@ impl CollabHistoryStore {
         Ok(unsynced)
     }
 
-    /// The room `artifact`'s history was bound to, if any session bound it.
-    pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
-        fs::read_to_string(self.room_path(artifact))
+    /// The workspace `artifact`'s history was bound to, if any session bound it.
+    pub fn workspace_of(&self, artifact: ArtifactId) -> Option<String> {
+        fs::read_to_string(self.workspace_path(artifact))
             .ok()
-            .filter(|room| !room.is_empty())
+            .filter(|workspace| !workspace.is_empty())
     }
 
-    fn room_path(&self, artifact: ArtifactId) -> PathBuf {
-        self.root.join(format!("{}.room", artifact.0))
+    fn workspace_path(&self, artifact: ArtifactId) -> PathBuf {
+        self.root.join(format!("{}.workspace", artifact.0))
     }
 
     fn record_path(&self, artifact: ArtifactId) -> PathBuf {
@@ -423,7 +423,7 @@ impl CollabHistoryStore {
                         }
                     };
                     let Some(held) = HeldRecord::decode(&text) else {
-                        unreadable(&"contents are not room, app and record lines");
+                        unreadable(&"contents are not workspace, app and record lines");
                         return None;
                     };
                     Some((ArtifactId(artifact), held))
@@ -433,7 +433,7 @@ impl CollabHistoryStore {
     }
 
     /// Remember that `artifact`'s history is the record `record_id` of the
-    /// app `app_id` in the room `cluster_id` ([`Self::bind_room`] included),
+    /// app `app_id` in the workspace `cluster_id` ([`Self::bind_workspace`] included),
     /// so a later session still knows the records it holds there
     /// ([`Self::records_in`]). The binding's sync is left to the caller.
     ///
@@ -448,14 +448,14 @@ impl CollabHistoryStore {
         record_id: &str,
     ) -> std::io::Result<Unsynced> {
         let held = HeldRecord {
-            room: cluster_id.to_owned(),
+            workspace: cluster_id.to_owned(),
             app_id: app_id.to_owned(),
             record_id: record_id.to_owned(),
         };
         if self.held_records().get(&artifact) == Some(&held) {
             return Ok(Unsynced::default());
         }
-        let room = self.bind_room(artifact, cluster_id)?;
+        let workspace = self.bind_workspace(artifact, cluster_id)?;
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -467,18 +467,18 @@ impl CollabHistoryStore {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(held.encode().as_bytes())?;
-        let mut unsynced = room;
+        let mut unsynced = workspace;
         unsynced.defer(&file)?;
         self.held_records().insert(artifact, held);
         Ok(unsynced)
     }
 
-    /// The records of the app `app_id` in the room `cluster_id` this store
+    /// The records of the app `app_id` in the workspace `cluster_id` this store
     /// holds history of, this session or an earlier one.
     pub fn records_in(&mut self, app_id: &str, cluster_id: &str) -> Vec<String> {
         self.held_records()
             .values()
-            .filter(|held| held.app_id == app_id && held.room == cluster_id)
+            .filter(|held| held.app_id == app_id && held.workspace == cluster_id)
             .map(|held| held.record_id.clone())
             .collect()
     }
@@ -647,7 +647,7 @@ mod tests {
             let envelope = signed(&key, artifact, seq, sealed);
             channels
                 .record_history(
-                    &crate::route::CrdtRoute::record("so.tilo.notes", "room-a", "page"),
+                    &crate::route::CrdtRoute::record("so.tilo.notes", "workspace-a", "page"),
                     &envelope,
                 )
                 .sync()

@@ -56,6 +56,47 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.edit(root / "os/components.toml", entry + "\n", "")
         self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
 
+    def test_session_surface_programs_are_shipped_beside_the_session(self):
+        with self.subTest(phase='the repository ships every program the session starts'):
+            self.assertEqual(check.audit(REPO), [])
+        with self.subTest(phase='a surface app no component ships fails at its call site'):
+            root = self.fixture()
+            self.edit(root / "os/components.toml",
+                      '  { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },\n', "")
+            errors = "\n".join(check.audit(root))
+            self.assertIn("crates/session/session/src/main.rs:", errors)
+            self.assertIn("starts 'tilo-lock-screen' beside itself", errors)
+            self.assertIn('to = "/usr/bin/tilo-lock-screen"', errors)
+        with self.subTest(phase='a surface app installed where the session does not look fails'):
+            root = self.fixture()
+            self.edit(root / "os/components.toml", '{ from = "osk", to = "/usr/bin/tilo-osk"',
+                      '{ from = "osk", to = "/usr/libexec/tilo-osk"')
+            errors = "\n".join(check.audit(root))
+            self.assertIn("starts 'tilo-osk' beside itself, but no component installs it there", errors)
+            self.assertIn("/usr/libexec/tilo-osk", errors)
+
+    def test_session_surface_programs_are_read_from_literals_and_constants(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "crates/session/probe/src"
+        source.mkdir(parents=True)
+        (source / "literal.rs").write_text('fn start() { program_path("tilo-lock-screen") }\n')
+        (source / "constant.rs").write_text('const PROGRAM: &str = "tilo-osk";\n'
+                                            'fn start() { program_path(PROGRAM) }\n')
+        (source / "locate.rs").write_text('fn start() { Surface::locate("tilo-window-menu") }\n')
+        (source / "passthrough.rs").write_text("fn start(name: &str) { program_path(name) }\n")
+        (source / "opaque.rs").write_text('fn start() { program_path(INSTALLED) }\n')
+        (source / "tests").mkdir()
+        (source / "tests/fixture.rs").write_text('fn start() { program_path("tilo-test-only") }\n')
+        programs, unreadable = check.session_programs(root)
+        self.assertEqual([(posix, name) for posix, _, name in programs],
+                         [("crates/session/probe/src/constant.rs", "tilo-osk"),
+                          ("crates/session/probe/src/literal.rs", "tilo-lock-screen"),
+                          ("crates/session/probe/src/locate.rs", "tilo-window-menu")])
+        self.assertEqual([(posix, identifier) for posix, _, identifier in unreadable],
+                         [("crates/session/probe/src/opaque.rs", "INSTALLED")])
+
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(check.audit(REPO), [])

@@ -38,7 +38,7 @@ struct Open {
 pub(super) struct Following {
     pub caller: Caller,
     pub origin: Option<InvocationCaller>,
-    pub room: String,
+    pub workspace: String,
     pub app_id: String,
     pub descriptor: ActionDescriptor,
     pub witnessed: bool,
@@ -252,7 +252,7 @@ impl AppBrokerState {
         let (workspace, actor, now) = self.current_framework_authority(
             &following.caller,
             following.origin.as_ref(),
-            &following.room,
+            &following.workspace,
         )?;
         self.framework_policy(
             (&workspace, &actor, now),

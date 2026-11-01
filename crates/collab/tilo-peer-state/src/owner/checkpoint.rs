@@ -1,4 +1,4 @@
-//! Native app-record checkpoints. Content is retained before a signed room root
+//! Native app-record checkpoints. Content is retained before a signed workspace root
 //! crosses the owner's ordinary publication barrier. No historical grants survive.
 use crate::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, RoomId, Store};
 use crate::owner_commit::{CommitBinding, CommitTarget};
@@ -45,7 +45,11 @@ pub struct NativeCheckpoint {
     pub id: uuid::Uuid,
     /// Original capture request name; current names live in the signed index.
     pub original_name: String,
-    pub room: RoomId,
+    /// The workspace this manifest captures. Manifests written before the
+    /// engine's vocabulary named the workspace carry `room`, and a manifest is
+    /// re-encoded byte for byte when it is read, so the key stays.
+    #[serde(rename = "room")]
+    pub workspace: RoomId,
     pub captured_generation: u64,
     pub captured_aggregate: [u8; 32],
     /// Person identity from authenticated admission, not an argument or grant copy.
@@ -79,7 +83,7 @@ pub struct CheckpointCompleteness {
     pub file_topology: bool,
     /// Content an app document references (media, blobs): never captured here.
     pub referenced_content: bool,
-    /// Room governance, membership and the checkpoint index itself: excluded.
+    /// Workspace governance, membership and the checkpoint index itself: excluded.
     pub governance: bool,
 }
 impl CheckpointCompleteness {
@@ -284,12 +288,12 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
 }
 fn manifest(
     store: &dyn Store,
-    room: RoomId,
+    workspace: RoomId,
     ack: &CheckpointAcknowledgement,
 ) -> Result<NativeCheckpoint, String> {
     let manifest: NativeCheckpoint = read(store, ack.manifest)?;
     if manifest.version != 1
-        || manifest.room != room
+        || manifest.workspace != workspace
         || manifest.id != ack.id
         || manifest.captured_generation != ack.captured_generation
     {
@@ -397,7 +401,7 @@ pub(crate) fn validate_restore(
         return Ok(());
     }
     for ack in index(view, store)?.checkpoints.values() {
-        let checkpoint = manifest(store, view.record.room, ack)?;
+        let checkpoint = manifest(store, view.record.workspace, ack)?;
         let mut total = 0usize;
         for entry in &checkpoint.entries {
             total = total
@@ -410,9 +414,9 @@ pub(crate) fn validate_restore(
     Ok(())
 }
 
-pub(crate) fn binding(room: RoomId, address: [u8; 32]) -> CommitBinding {
+pub(crate) fn binding(workspace: RoomId, address: [u8; 32]) -> CommitBinding {
     CommitBinding {
-        room: room.to_string(),
+        workspace: workspace.to_string(),
         target: CommitTarget::NativeCheckpointRoot { root: address },
         request_digest: *blake3::Hasher::new_derive_key(
             "Tilo native checkpoint root publication v1",
@@ -434,7 +438,7 @@ fn retain_manifest(
         version: 1,
         id: capture.id,
         original_name: capture.name.into(),
-        room: candidate.record.room,
+        workspace: candidate.record.workspace,
         captured_generation: candidate.generation(),
         captured_aggregate: *blake3::hash(&candidate.record.peer).as_bytes(),
         author: Some(caller.user_public_key),
@@ -454,7 +458,7 @@ fn retain_manifest(
         )? {
             DocumentRead::Captured(captured) => captured,
             DocumentRead::CheckpointPending => {
-                return Err("native checkpoint capture pending room checkpoint".into());
+                return Err("native checkpoint capture pending workspace checkpoint".into());
             }
             DocumentRead::Unchanged(_) => {
                 return Err("native checkpoint capture missing snapshot".into());
@@ -488,8 +492,8 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<serde_json::Value, String> {
         request.digest()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
-        self.with_current(room, |view| {
+        let workspace = RoomId::parse(&request.workspace).ok_or("invalid checkpoint workspace")?;
+        self.with_current(workspace, |view| {
             view.peer.workspace().check_checkpoint_writer(key, now)
         })?;
         match &request.command {
@@ -499,7 +503,7 @@ impl NativeWorkspaceOwner {
                 routes,
             } => {
                 let ack = self.capture_checkpoint_bound(
-                    room,
+                    workspace,
                     &request.caller,
                     key,
                     CheckpointCapture {
@@ -515,7 +519,7 @@ impl NativeWorkspaceOwner {
             }
             CheckpointCommand::NameBind { name, id } => {
                 let ack = self.bind_checkpoint_name_bound(
-                    room,
+                    workspace,
                     &request.caller,
                     key,
                     name,
@@ -525,11 +529,11 @@ impl NativeWorkspaceOwner {
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
             CheckpointCommand::Inspect { id } => {
-                let retained = self.read_checkpoint(room, &request.caller, *id, now)?;
+                let retained = self.read_checkpoint(workspace, &request.caller, *id, now)?;
                 serde_json::to_value(retained.manifest).map_err(|e| e.to_string())
             }
             CheckpointCommand::Find { name } => {
-                let ack = self.resolve_checkpoint_name(room, &request.caller, name, now)?;
+                let ack = self.resolve_checkpoint_name(workspace, &request.caller, name, now)?;
                 serde_json::to_value(ack).map_err(|e| e.to_string())
             }
         }
@@ -546,17 +550,17 @@ impl NativeWorkspaceOwner {
     /// incomplete data, pending checkpoint, content I/O or metadata publication failure.
     pub fn capture_checkpoint(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         key: &SigningKey,
         capture: CheckpointCapture<'_>,
         now: SystemTime,
     ) -> Result<CheckpointAcknowledgement, String> {
-        self.capture_checkpoint_bound(room, caller, key, capture, now, None)
+        self.capture_checkpoint_bound(workspace, caller, key, capture, now, None)
     }
     fn capture_checkpoint_bound(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         key: &SigningKey,
         capture: CheckpointCapture<'_>,
@@ -570,7 +574,7 @@ impl NativeWorkspaceOwner {
             return Err("nil native checkpoint id".into());
         }
         let _turn = self.0.mutation.lock();
-        let candidate = self.with_current(room, |v| Ok(v.clone()))?;
+        let candidate = self.with_current(workspace, |v| Ok(v.clone()))?;
         candidate
             .peer
             .workspace()
@@ -589,7 +593,7 @@ impl NativeWorkspaceOwner {
         }
         let mut index = index(&candidate, self.0.store.as_ref())?;
         if let Some(ack) = retry(&index, request)? {
-            let checkpoint = manifest(self.0.store.as_ref(), room, &ack)?;
+            let checkpoint = manifest(self.0.store.as_ref(), workspace, &ack)?;
             for entry in &checkpoint.entries {
                 document(self.0.store.as_ref(), entry)?;
             }
@@ -599,7 +603,7 @@ impl NativeWorkspaceOwner {
             if request.is_some() {
                 return Err("checkpoint id already exists without this invocation binding".into());
             }
-            let existing = manifest(self.0.store.as_ref(), room, ack)?;
+            let existing = manifest(self.0.store.as_ref(), workspace, ack)?;
             if existing
                 .entries
                 .iter()
@@ -645,12 +649,12 @@ impl NativeWorkspaceOwner {
             generation,
         });
         retain_result(&mut index, request, &ack)?;
-        self.publish_checkpoint_index(room, candidate, &index, key, now)?;
+        self.publish_checkpoint_index(workspace, candidate, &index, key, now)?;
         Ok(ack)
     }
     fn publish_checkpoint_index(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         mut candidate: NativeCommittedView,
         index: &Index,
         key: &SigningKey,
@@ -665,7 +669,7 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("checkpoint generation exhausted")?;
-        self.with_current(room, |previous| {
+        self.with_current(workspace, |previous| {
             candidate.peer.publication_mut().durable_mutation_messages(
                 &previous.peer,
                 key,
@@ -678,10 +682,10 @@ impl NativeWorkspaceOwner {
         candidate.record.generation = generation;
         crate::owner::publication::replace_governance_checkpoint(
             &mut candidate,
-            binding(room, address),
+            binding(workspace, address),
             now,
         )?;
-        self.publish_room(room, candidate, None)
+        self.publish_workspace(workspace, candidate, None)
     }
     /// Move a human name to an existing immutable checkpoint. No content/grants copy.
     ///
@@ -690,18 +694,18 @@ impl NativeWorkspaceOwner {
     #[cfg(test)]
     pub fn bind_checkpoint_name(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         key: &SigningKey,
         name: &str,
         id: uuid::Uuid,
     ) -> Result<(), String> {
-        self.bind_checkpoint_name_bound(room, caller, key, name, id, None)
+        self.bind_checkpoint_name_bound(workspace, caller, key, name, id, None)
             .map(|_| ())
     }
     fn bind_checkpoint_name_bound(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         key: &SigningKey,
         name: &str,
@@ -711,7 +715,7 @@ impl NativeWorkspaceOwner {
         name_valid(name)?;
         let now = SystemTime::now();
         let _turn = self.0.mutation.lock();
-        let candidate = self.with_current(room, |v| Ok(v.clone()))?;
+        let candidate = self.with_current(workspace, |v| Ok(v.clone()))?;
         candidate
             .peer
             .workspace()
@@ -725,7 +729,7 @@ impl NativeWorkspaceOwner {
             .checkpoints
             .get(&id)
             .ok_or("native checkpoint id absent")?;
-        let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
+        let checkpoint = manifest(self.0.store.as_ref(), workspace, ack)?;
         for entry in &checkpoint.entries {
             candidate.peer.workspace().check_checkpoint_reader(
                 caller,
@@ -758,7 +762,7 @@ impl NativeWorkspaceOwner {
         });
         index.names.insert(name.into(), id);
         retain_result(&mut index, request, &ack)?;
-        self.publish_checkpoint_index(room, candidate, &index, key, now)?;
+        self.publish_checkpoint_index(workspace, candidate, &index, key, now)?;
         Ok(ack)
     }
     /// Every move of the movable `name`, oldest first, so a person can see who
@@ -768,11 +772,11 @@ impl NativeWorkspaceOwner {
     /// Unknown name, or a retained index that is not the accepted one.
     pub fn checkpoint_name_history(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         name: &str,
     ) -> Result<Vec<NameBinding>, String> {
         name_valid(name)?;
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             let index = index(view, self.0.store.as_ref())?;
             if !index.names.contains_key(name) {
                 return Err("native checkpoint name absent".into());
@@ -791,13 +795,13 @@ impl NativeWorkspaceOwner {
     /// Unknown name, current read refusal or absent/corrupt retained content.
     pub fn resolve_checkpoint_name(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         name: &str,
         now: SystemTime,
     ) -> Result<CheckpointAcknowledgement, String> {
         name_valid(name)?;
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             let index = index(view, self.0.store.as_ref())?;
             let id = index
                 .names
@@ -807,7 +811,7 @@ impl NativeWorkspaceOwner {
                 .checkpoints
                 .get(id)
                 .ok_or("native checkpoint name is dangling")?;
-            let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
+            let checkpoint = manifest(self.0.store.as_ref(), workspace, ack)?;
             for entry in &checkpoint.entries {
                 view.peer.workspace().check_checkpoint_reader(
                     caller,
@@ -828,18 +832,18 @@ impl NativeWorkspaceOwner {
     /// Current caller denial or any absent, corrupt or unsupported retained content.
     pub fn read_checkpoint(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         caller: &DeviceCert,
         id: uuid::Uuid,
         now: SystemTime,
     ) -> Result<MaterializedCheckpoint, String> {
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             let index = index(view, self.0.store.as_ref())?;
             let ack = index
                 .checkpoints
                 .get(&id)
                 .ok_or("native checkpoint id absent")?;
-            let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
+            let checkpoint = manifest(self.0.store.as_ref(), workspace, ack)?;
             for entry in &checkpoint.entries {
                 view.peer.workspace().check_checkpoint_reader(
                     caller,

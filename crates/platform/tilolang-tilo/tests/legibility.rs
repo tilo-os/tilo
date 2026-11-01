@@ -64,7 +64,7 @@ fn runs(versions: &[Version]) -> Vec<Option<&str>> {
         .collect()
 }
 
-/// Ada's room after an agent's run tidied her notes and tasks.
+/// Ada's workspace after an agent's run tidied her notes and tasks.
 pub(crate) struct Tidied {
     pub(crate) ada: Replica,
     /// The note the run made, the one it renamed and the one it deleted.

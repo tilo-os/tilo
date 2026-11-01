@@ -2,8 +2,8 @@ use runtime_fs::blobs::{BlobClient, BlobPrincipal, MAX_READ_CHUNK, write_handoff
 
 use super::*;
 
-fn scope(room: &str, app: &str) -> BlobScope {
-    BlobScope::new(room, app).unwrap()
+fn scope(workspace: &str, app: &str) -> BlobScope {
+    BlobScope::new(workspace, app).unwrap()
 }
 
 #[tokio::test]
@@ -12,7 +12,7 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     {
         let store = Arc::new(ContentStore::memory());
         let media = DocumentMedia::new(Arc::clone(&store));
-        let photos = scope("room-1", "so.tilo.photos");
+        let photos = scope("workspace-1", "so.tilo.photos");
 
         let hash = media.store(&photos, b"an image".to_vec()).await.unwrap();
         assert_eq!(
@@ -25,11 +25,15 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
         assert!(media.contains(&photos, hash).await);
         assert_eq!(media.len_of(&photos, hash).await, Some(8));
 
-        assert!(media.contains(&scope("room-1", "so.tilo.chat"), hash).await);
+        assert!(
+            media
+                .contains(&scope("workspace-1", "so.tilo.chat"), hash)
+                .await
+        );
 
-        // Another room: the bytes are right there, and still unreadable, because
-        // nothing that room reads references them.
-        let other = scope("room-2", "so.tilo.photos");
+        // Another workspace: the bytes are right there, and still unreadable,
+        // because nothing that workspace reads references them.
+        let other = scope("workspace-2", "so.tilo.photos");
         assert_eq!(
             media.read_range(other.clone(), hash, 0, u32::MAX).await,
             ReadOutcome::Unavailable
@@ -49,7 +53,7 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     // Phase `references_survive_a_restart_of_the_store`.
     {
         let dir = tempfile::tempdir().unwrap();
-        let photos = scope("room-1", "so.tilo.photos");
+        let photos = scope("workspace-1", "so.tilo.photos");
         let hash = {
             let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
             let media = DocumentMedia::new(Arc::clone(&store));
@@ -74,7 +78,7 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
         let too_big = vec![0_u8; usize::try_from(MAX_BLOB_BYTES).unwrap() + 1];
         assert!(matches!(
             media
-                .store(&scope("room-1", "so.tilo.photos"), too_big)
+                .store(&scope("workspace-1", "so.tilo.photos"), too_big)
                 .await,
             Err(BlobError::TooLarge { .. })
         ));
@@ -85,7 +89,7 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
 #[tokio::test]
 async fn ranged_reads_after_a_restart_read_only_the_range() {
     let dir = tempfile::tempdir().unwrap();
-    let photos = scope("room-1", "so.tilo.photos");
+    let photos = scope("workspace-1", "so.tilo.photos");
     let data = pattern(9 * 1024 * 1024 + 12_345);
     let hash = {
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
@@ -128,7 +132,7 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
     for max_len in [0, MAX_READ_CHUNK] {
         assert_eq!(
             media
-                .read_range(scope("room-2", "so.tilo.photos"), hash, 0, max_len)
+                .read_range(scope("workspace-2", "so.tilo.photos"), hash, 0, max_len)
                 .await,
             ReadOutcome::Unavailable
         );
@@ -147,7 +151,7 @@ async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
     use std::io::{Seek, SeekFrom, Write};
 
     let dir = tempfile::tempdir().unwrap();
-    let photos = scope("room-1", "so.tilo.photos");
+    let photos = scope("workspace-1", "so.tilo.photos");
     let data = pattern(9 * 1024 * 1024 + 12_345);
     let hash = {
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
@@ -196,7 +200,7 @@ async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
 #[tokio::test]
 async fn ranged_reads_keep_the_verified_file_chunk_fallback() {
     let store = Arc::new(ContentStore::memory());
-    let photos = scope("room-1", "so.tilo.photos");
+    let photos = scope("workspace-1", "so.tilo.photos");
     let data = pattern(3 * 1024 * 1024);
     let content = store.write_content(&data).await.unwrap().unwrap();
     let manifest = store.manifest(content).await.unwrap();
@@ -230,15 +234,15 @@ const PROOF_SOCKET: &str = "TILO_MEDIA_PROOF_SOCKET";
 const PROOF_HASH: &str = "TILO_MEDIA_PROOF_HASH";
 const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\n pixels put by one application";
 
-fn launcher_connection(socket: &Path, room: &str, app: &str) -> BlobClient {
+fn launcher_connection(socket: &Path, workspace: &str, app: &str) -> BlobClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    write_handoff(&mut stream, &BlobPrincipal::App(scope(room, app))).unwrap();
+    write_handoff(&mut stream, &BlobPrincipal::App(scope(workspace, app))).unwrap();
     BlobClient::from_app_stream(stream).unwrap()
 }
 
 /// The capability end to end: one app process puts an image through the
 /// launcher-scoped socket; a second process and the session (as the shell
-/// stages launch content) read it; an app in another room holding the same
+/// stages launch content) read it; an app in another workspace holding the same
 /// hash reads nothing.
 #[test]
 fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
@@ -246,7 +250,7 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
         std::env::var_os(PROOF_SOCKET),
         std::env::var(PROOF_HASH).ok(),
     ) {
-        let reader = launcher_connection(Path::new(&socket), "room-1", "so.tilo.photos");
+        let reader = launcher_connection(Path::new(&socket), "workspace-1", "so.tilo.photos");
         assert_eq!(
             reader.read_all(&hash).unwrap(),
             ReadOutcome::Ready {
@@ -270,7 +274,7 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
         serve_socket(&socket, media).unwrap()
     };
 
-    let writer = launcher_connection(&socket, "room-1", "so.tilo.photos");
+    let writer = launcher_connection(&socket, "workspace-1", "so.tilo.photos");
     let stored = writer.put(IMAGE, "image/png").unwrap();
     assert_eq!(stored.hash, blake3::hash(IMAGE).to_hex().to_string());
 
@@ -297,30 +301,31 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     );
 
     let session = BlobClient::connect_session(&socket).unwrap();
-    let shell_view = session.scope("room-1", "so.tilo.photos").unwrap();
+    let shell_view = session.scope("workspace-1", "so.tilo.photos").unwrap();
     assert!(matches!(
         shell_view.read_all(&stored.hash).unwrap(),
         ReadOutcome::Ready { .. }
     ));
 
-    let stranger = launcher_connection(&socket, "room-2", "so.tilo.chat");
+    let stranger = launcher_connection(&socket, "workspace-2", "so.tilo.chat");
     assert_eq!(
         stranger.read_all(&stored.hash).unwrap(),
         ReadOutcome::Unavailable
     );
     assert!(!stranger.has(&stored.hash).unwrap());
-    let elsewhere = session.scope("room-2", "so.tilo.photos").unwrap();
+    let elsewhere = session.scope("workspace-2", "so.tilo.photos").unwrap();
     assert_eq!(
         elsewhere.read_all(&stored.hash).unwrap(),
         ReadOutcome::Unavailable
     );
 }
 
-/// Content put piece by piece through room A's neutral scope (as the
-/// content put door does) is read by any app of room A that holds its hash
-/// and by nothing of room B; an upload dropped unfinished stores nothing.
+/// Content put piece by piece through workspace A's neutral scope (as the
+/// content put door does) is read by any app of workspace A that holds its
+/// hash and by nothing of workspace B; an upload dropped unfinished stores
+/// nothing.
 #[test]
-fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
+fn content_put_through_one_workspaces_scope_is_unavailable_through_another_workspaces() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -336,7 +341,7 @@ fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
     let session = BlobClient::connect_session(&socket).unwrap();
     let content = pattern(runtime_fs::blobs::MAX_PUT_CHUNK + 4321);
     let mut upload = session
-        .scope("room-a", "tilo.content")
+        .scope("workspace-a", "tilo.content")
         .unwrap()
         .begin_upload("application/octet-stream")
         .unwrap();
@@ -348,7 +353,7 @@ fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
     assert_eq!(stored.hash, blake3::hash(&content).to_hex().to_string());
     assert_eq!(stored.len, content.len() as u64);
 
-    let notes = launcher_connection(&socket, "room-a", "so.tilo.notes");
+    let notes = launcher_connection(&socket, "workspace-a", "so.tilo.notes");
     assert_eq!(
         notes.read_all(&stored.hash).unwrap(),
         ReadOutcome::Ready {
@@ -356,19 +361,22 @@ fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
             total_len: content.len() as u64,
         }
     );
-    for (room, app) in [("room-b", "tilo.content"), ("room-b", "so.tilo.notes")] {
-        let elsewhere = launcher_connection(&socket, room, app);
+    for (workspace, app) in [
+        ("workspace-b", "tilo.content"),
+        ("workspace-b", "so.tilo.notes"),
+    ] {
+        let elsewhere = launcher_connection(&socket, workspace, app);
         assert_eq!(
             elsewhere.read_all(&stored.hash).unwrap(),
             ReadOutcome::Unavailable,
-            "{room}/{app}"
+            "{workspace}/{app}"
         );
-        assert!(!elsewhere.has(&stored.hash).unwrap(), "{room}/{app}");
+        assert!(!elsewhere.has(&stored.hash).unwrap(), "{workspace}/{app}");
     }
 
     let abandoned = b"never finished";
     let mut upload = session
-        .scope("room-a", "tilo.content")
+        .scope("workspace-a", "tilo.content")
         .unwrap()
         .begin_upload("application/octet-stream")
         .unwrap();
@@ -407,13 +415,14 @@ impl crate::public_content::Origin for OneVersion {
     }
 }
 
-/// The public copy end to end: apps in different rooms keep the device's
+/// The public copy end to end: apps in different workspaces keep the device's
 /// one copy through their launcher-scoped sockets, read the same bytes
 /// under the same hash; the session asks for a refresh, which leaves a copy
 /// that was just fetched alone. Released by every app, the copy stays until
-/// the device needs its room, and then comes back on the next read.
+/// the device needs its room for something else, and then comes back on the
+/// next read.
 #[test]
-fn a_public_copy_is_one_per_device_for_apps_in_every_room() {
+fn a_public_copy_is_one_per_device_for_apps_in_every_workspace() {
     const NAME: &str = "gutenberg-catalogue";
     let catalogue = b"Text#,Type,Title\n1,Text,The Declaration of Independence\n".to_vec();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -441,8 +450,8 @@ fn a_public_copy_is_one_per_device_for_apps_in_every_room() {
     };
     let asked = || asked.load(std::sync::atomic::Ordering::SeqCst);
 
-    let books = launcher_connection(&socket, "room-1", "so.tilo.ebook");
-    let search = launcher_connection(&socket, "room-2", "so.tilo.search");
+    let books = launcher_connection(&socket, "workspace-1", "so.tilo.ebook");
+    let search = launcher_connection(&socket, "workspace-2", "so.tilo.search");
     assert_eq!(
         books.public_read_all(NAME).unwrap(),
         Err(ReadOutcome::Unavailable),
@@ -459,7 +468,7 @@ fn a_public_copy_is_one_per_device_for_apps_in_every_room() {
     assert_eq!(
         search.public_read_all(NAME).unwrap(),
         Ok((catalogue.clone(), hash.clone())),
-        "another room reads the same copy"
+        "another workspace reads the same copy"
     );
 
     let session = BlobClient::connect_session(&socket).unwrap();
@@ -614,7 +623,7 @@ impl DeviceHarness {
             runtime.handle().clone(),
         )
         .unwrap();
-        let client = launcher_connection(&socket, "room-1", "so.tilo.photos");
+        let client = launcher_connection(&socket, "workspace-1", "so.tilo.photos");
         let store = tilo_content::ContentStore::from_backend(Arc::new(
             tilo_content_device::DeviceBackend::new(client),
         ));
@@ -802,7 +811,7 @@ fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
         ttl: std::time::Duration::from_secs(30),
     };
 
-    let app = launcher_connection(&socket, "room-1", "so.tilo.file-explorer");
+    let app = launcher_connection(&socket, "workspace-1", "so.tilo.file-explorer");
     assert!(
         app.attribute_writes(scribe(vec!["/var/workspace/Reports"]))
             .is_err()

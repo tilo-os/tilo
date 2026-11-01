@@ -292,7 +292,7 @@ impl<'g> Verdict<'g> {
 
     /// The `Once` grants a run on this verdict spends: those it relied on,
     /// unless it refuses. The door that runs the action hands them to
-    /// [`crate::RoomPolicy::spend`] (or its host's revocation of them), so a
+    /// [`crate::WorkspacePolicy::spend`] (or its host's revocation of them), so a
     /// grant given for one use is gone after it.
     #[must_use]
     pub fn spent(&self) -> Vec<GrantId> {

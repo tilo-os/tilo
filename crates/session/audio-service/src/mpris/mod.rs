@@ -336,6 +336,7 @@ impl Mpris {
             match &command {
                 PlayerCommand::PlayPause => mpris.call(&bus_name, "PlayPause", &()).await,
                 PlayerCommand::Pause => mpris.call(&bus_name, "Pause", &()).await,
+                PlayerCommand::Stop => mpris.call(&bus_name, "Stop", &()).await,
                 PlayerCommand::Next => mpris.call(&bus_name, "Next", &()).await,
                 PlayerCommand::Previous => mpris.call(&bus_name, "Previous", &()).await,
                 PlayerCommand::SetPosition {

@@ -422,7 +422,7 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     let docked = bar.rect;
     let menu = bar.ws_pill_rect.center();
 
-    chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+    bar.set_presence(TopBarPresence::Hidden);
     assert!(bar.is_layout_dirty(), "hiding re-lays the column out");
     assert!(
         bar.take_structure_dirty(),
@@ -439,7 +439,7 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
     assert!(!click(&mut bar, menu), "hidden takes no press");
     assert!(chrome.borrow().intents.is_empty());
 
-    chrome.borrow_mut().top_bar = TopBarPresence::Shown;
+    bar.set_presence(TopBarPresence::Shown);
     assert!(bar.needs_redraw(), "showing repaints the bar");
     assert!(
         !bar.is_layout_dirty() && !bar.take_structure_dirty(),
@@ -454,7 +454,7 @@ fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
         &[ChromeIntent::ToggleWorkspaceMenu]
     );
 
-    chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+    bar.set_presence(TopBarPresence::Hidden);
     assert!(bar.needs_redraw(), "hiding again clears it from the screen");
     assert!(!painted(&mut bar));
 }
@@ -2498,7 +2498,7 @@ fn the_placement_gives_every_display_a_place_of_its_own() {
     // A fullscreen window names the monitor of its display.
     assert_eq!(
         Placement::of(&tree, &["monitor".to_owned()]).fullscreen,
-        [1]
+        [Some(1)]
     );
     assert!(
         Placement::of(&tree, &["unplugged".to_owned()])
@@ -2508,13 +2508,13 @@ fn the_placement_gives_every_display_a_place_of_its_own() {
 }
 
 /// A desk of one display needs no placing: the bar's own layout stands it
-/// across the desk.
+/// across the desk, and a window covering that display is the one bar's.
 #[test]
 fn one_display_needs_no_places() {
     let mut tree = DesktopTree::default();
     tree.reconcile_displays(&[display(0, "panel", 0.0)]);
-    assert_eq!(
-        Placement::of(&tree, &["panel".to_owned()]),
-        Placement::default()
-    );
+    assert_eq!(Placement::of(&tree, &[]), Placement::default());
+    let covered = Placement::of(&tree, &["panel".to_owned()]);
+    assert!(covered.bars.is_empty(), "one bar needs no placing");
+    assert_eq!(covered.fullscreen, [None], "and it steps aside");
 }

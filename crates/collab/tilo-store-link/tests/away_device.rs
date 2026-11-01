@@ -24,13 +24,13 @@ use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::direct::DirectSync;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 use tilo_store_link::{StoreSession, cursors, workspace_of};
 use tilo_store_node::{ALPN, Appetite, Cursor, FixedAccess, Lineage, Store, StoreNode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::SystemTime;
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
@@ -68,11 +68,11 @@ fn addr(endpoint: &Endpoint) -> EndpointAddr {
 }
 
 fn channel() -> ChannelId {
-    collab_types::document_channel_id(APP, ROOM, RECORD)
+    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
 }
 
 fn artifact() -> ArtifactId {
-    collab_types::document_artifact_id(APP, ROOM, RECORD)
+    collab_types::document_artifact_id(APP, WORKSPACE, RECORD)
 }
 
 fn sealer(
@@ -114,9 +114,9 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
     let author = a_key.verifying_key().to_bytes();
 
-    // A holds the room and its record from the start.
+    // A holds the workspace and its record from the start.
     let mut a = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         a_cert.clone(),
         roster.clone(),
         RevocationList::new(),
@@ -129,7 +129,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     document.commit_edit("fixture", "value");
     a.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &a_cert, &roster).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: RECORD.into(),
@@ -151,7 +151,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     // The workspace's store device admits both members.
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(dir.path(), Appetite::StoreAll).unwrap());
-    let workspace = workspace_of(ROOM).unwrap();
+    let workspace = workspace_of(WORKSPACE).unwrap();
     let mut access = FixedAccess::new();
     access.admit(workspace, author);
     access.admit(workspace, b_key.verifying_key().to_bytes());
@@ -231,7 +231,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     // B has the workspace's roster and governance from its join answer and
     // none of its history: the store is what it lacks.
     let mut b = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         a_cert.clone(),
         roster.clone(),
         RevocationList::new(),
@@ -239,9 +239,9 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     )
     .unwrap();
     b.select_admission_v5().unwrap();
-    // Its join answer: the room's governance, without a record's history.
-    let NeighbourMsg::SyncResp { changes, room } = a.read(StatePeer::room_message) else {
-        panic!("the room's answer is its governance");
+    // Its join answer: the workspace's governance, without a record's history.
+    let NeighbourMsg::SyncResp { changes, room } = a.read(StatePeer::workspace_message) else {
+        panic!("the workspace's answer is its governance");
     };
     b.receive_from(
         TransportOrigin::RetainedRelayDelta(author),
@@ -262,7 +262,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     .await
     .unwrap();
     assert_eq!(b_session.catch_up(&b).await.unwrap(), 1);
-    let line = Lineage::of(APP, ROOM, RECORD, author);
+    let line = Lineage::of(APP, WORKSPACE, RECORD, author);
     assert_eq!(
         cursors(&b),
         vec![Cursor {

@@ -478,6 +478,77 @@ fn owner_action_is_bounded_and_exclusive_with_other_modes() {
     assert!(args(&["--owner-action", &"x".repeat(32 * 1024 + 1)]).is_err());
 }
 
+/// A launcher outside this repository passes the flag by the name it had
+/// before the workspace was called a workspace.
+#[test]
+fn run_app_reads_the_workspace_flag_it_had_another_name_for() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+    let named = args(&[
+        "--profile",
+        "/tmp/profile",
+        "--run-app",
+        "so.tilo.photos",
+        "--workspace",
+        workspace,
+        "--",
+        "/bin/true",
+    ])
+    .unwrap();
+    let Mode::RunApp {
+        workspace: Some(id),
+        ..
+    } = &named.mode
+    else {
+        panic!("the launch was parsed as {:?}", named.mode);
+    };
+    assert_eq!(id, workspace);
+
+    let old = args(&[
+        "--profile",
+        "/tmp/profile",
+        "--run-app",
+        "so.tilo.photos",
+        "--room",
+        workspace,
+        "--",
+        "/bin/true",
+    ])
+    .unwrap();
+    assert_eq!(old.mode, named.mode);
+
+    assert!(
+        args(&[
+            "--profile",
+            "/tmp/profile",
+            "--run-app",
+            "so.tilo.photos",
+            "--room",
+            "not-a-workspace",
+            "--",
+            "/bin/true",
+        ])
+        .is_err()
+    );
+}
+
+/// The status probe of a daemon started before the field was called
+/// `workspace` answers `room`, which reads as the same.
+#[test]
+fn the_status_probe_reads_the_field_name_it_had() {
+    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+    let old: super::Status = serde_json::from_str(&format!(
+        "{{\"version\":1,\"pid\":42,\"room\":\"{workspace}\"}}"
+    ))
+    .unwrap();
+    assert_eq!(old.workspace, workspace);
+    let new: super::Status = serde_json::from_str(&format!(
+        "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
+    ))
+    .unwrap();
+    assert_eq!(new.workspace, old.workspace);
+}
+
 #[test]
 fn dev_mode_is_an_explicit_daemon_flag() {
     let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
@@ -598,7 +669,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
             page.providers = vec![CatalogueProvider {
                 provider: "7".into(),
                 app_id: "so.tilo.notes".into(),
-                room: "room".into(),
+                room: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             }];
@@ -647,7 +718,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_room("room"),
+        tilo_actions::remote::Caller::local_person("owner").in_room("workspace"),
     ));
     let runtime = tilo_rt::try_app().unwrap();
     runtime.handle().block_on(search.refresh()).unwrap();
@@ -665,13 +736,13 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
                     stream,
                     &std::sync::Arc::new(crate::mcp::McpServer::new(
                         host.clone(),
-                        "room".into(),
+                        "workspace".into(),
                         "owner".into(),
                     )),
                     &super::Status {
                         version: 1,
                         pid: 1,
-                        room: "room".into(),
+                        workspace: "workspace".into(),
                     },
                     None,
                     &search,
@@ -708,7 +779,7 @@ fn native_socket_serves_parallel_requests() {
     let host = GatedHost::default();
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_room("room"),
+        tilo_actions::remote::Caller::local_person("owner").in_room("workspace"),
     ));
     let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
     let serving = {
@@ -718,13 +789,13 @@ fn native_socket_serves_parallel_requests() {
                 served,
                 &std::sync::Arc::new(crate::mcp::McpServer::new(
                     host,
-                    "room".into(),
+                    "workspace".into(),
                     "owner".into(),
                 )),
                 &super::Status {
                     version: 1,
                     pid: 1,
-                    room: "room".into(),
+                    workspace: "workspace".into(),
                 },
                 None,
                 &search,

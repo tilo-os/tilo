@@ -34,7 +34,7 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
-use support::{ROOM, enrol, start_host, wait_for};
+use support::{ROOM as WORKSPACE, enrol, start_host, wait_for};
 
 const VIDEO: &str = "so.tilo.video-editor";
 
@@ -79,7 +79,7 @@ impl Planner for Recording {
     }
 }
 
-/// Ed's delegation: the room and the video editor, for an hour.
+/// Ed's delegation: the workspace and the video editor, for an hour.
 fn delegate_to_ed(root: &ed25519_dalek::SigningKey, agent_device: &support::Device) -> Delegation {
     let now = tilo_clock::unix_now_ns();
     Delegation::sign(
@@ -91,7 +91,7 @@ fn delegate_to_ed(root: &ed25519_dalek::SigningKey, agent_device: &support::Devi
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -129,7 +129,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
@@ -279,7 +279,7 @@ impl Planner for Coordinated {
 /// fresh agent, and there is no second check. The item's agent itself is
 /// not checked.
 /// An agent, Ed, granted the video editor and planning with `planner`, in a
-/// room on a host of its own, admitted: the host, a laptop taking part, the host's
+/// workspace on a host of its own, admitted: the host, a laptop taking part, the host's
 /// state, the agent and its steering.
 async fn ed_planning_with(
     planner: Box<dyn Planner>,
@@ -316,7 +316,7 @@ async fn ed_planning_with(
         "Ed",
         [0x2a, 0x7c, 0xd1],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: vec![VIDEO.into()],
         },
         now,
@@ -332,7 +332,7 @@ async fn ed_planning_with(
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {

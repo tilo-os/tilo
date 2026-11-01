@@ -22,7 +22,7 @@ pub(super) async fn commit_at_own_host(
     }
     let committed = async {
         let host = network
-            .room_host()
+            .workspace_host()
             .ok_or("this device's host is not open yet")?;
         // The host commits on this network's runtime, never in the caller's
         // future: that future is polled on the broker's loop, and the room

@@ -25,7 +25,7 @@ pub(super) fn restore(
         collab_types::verify_op(op).map_err(err)?;
         let payload = collab_types::validate_whole_document_payload_route(
             &route.app,
-            &core.room,
+            &core.workspace,
             &route.record,
             op,
         )
@@ -36,8 +36,8 @@ pub(super) fn restore(
         ) {
             return Err("sealed history holds a cleartext write".into());
         }
-        let admitted =
-            DocumentAdmission::from_op(&core.room, &route.app, &route.record, op).map_err(err)?;
+        let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
+            .map_err(err)?;
         if core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
             return Err("sealed history lacks exact admission evidence".into());
         }

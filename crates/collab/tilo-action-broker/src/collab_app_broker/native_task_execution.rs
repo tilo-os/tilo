@@ -465,7 +465,7 @@ impl AppBrokerState {
                 .as_ref()
                 .ok_or("native task journal unavailable")?;
             let found = journal.lookup(&InvocationKey {
-                room: run.cluster_id.clone(),
+                workspace: run.cluster_id.clone(),
                 host: journal.host(),
                 invocation,
                 owner: InvocationOwner::NativeTask {
@@ -654,7 +654,7 @@ impl AppBrokerState {
 
     pub(super) fn offer_native_run(
         &self,
-        room: &str,
+        workspace: &str,
         binding: NativeTaskBinding,
         envelope: TaskRunEnvelope,
         subscriber: (u64, mpsc::UnboundedSender<TaskRunEnvelope>),
@@ -666,7 +666,7 @@ impl AppBrokerState {
             .lock()
             .map_err(|_| "task run registry unavailable")?;
         if let Some(prior) = pending.get(&run_id) {
-            if prior.cluster_id != room
+            if prior.cluster_id != workspace
                 || prior.task_id != binding.task_id
                 || prior.agent_id != binding.agent_id
             {
@@ -684,7 +684,7 @@ impl AppBrokerState {
             PendingTaskRun {
                 peer_id,
                 agent_id: binding.agent_id.clone(),
-                cluster_id: room.into(),
+                cluster_id: workspace.into(),
                 task_id: binding.task_id.clone(),
                 lease: envelope.lease.clone(),
                 action_context: envelope.action_context.clone(),
@@ -712,18 +712,18 @@ impl AppBrokerState {
     }
 
     pub(super) fn refresh_native_task_delivery(self: &Arc<Self>) {
-        let rooms = match self.task_subscribers.lock() {
+        let workspaces = match self.task_subscribers.lock() {
             Ok(subscribers) => {
-                let rooms = subscribers
+                let workspaces = subscribers
                     .values()
                     .map(|subscriber| subscriber.cluster_id.clone())
                     .collect::<std::collections::BTreeSet<_>>();
                 drop(subscribers);
-                rooms
+                workspaces
             }
             Err(_) => return,
         };
-        self.refresh_tracker_runs(&rooms);
+        self.refresh_tracker_runs(&workspaces);
     }
 
     pub(super) fn native_task_status(

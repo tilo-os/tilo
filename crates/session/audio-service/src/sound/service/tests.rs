@@ -6,7 +6,7 @@ use tilo_actions::DoorError;
 use tilo_service::{Service, Started};
 
 use super::super::SOUND;
-use super::{Graph, SoundService};
+use super::{Graph, Read, SoundService};
 
 fn device(id: u32, label: &str, default: bool) -> AudioDevice {
     AudioDevice {
@@ -25,6 +25,8 @@ fn device(id: u32, label: &str, default: bool) -> AudioDevice {
 /// A graph in memory: the control's calls are recorded and applied.
 struct Fake {
     graph: Mutex<AudioGraph>,
+    /// Who `PipeWire` says is recording; the graph alone does not say it.
+    uses: Mutex<Vec<media::audio::capture::MediaUse>>,
     calls: Mutex<Vec<String>>,
 }
 
@@ -53,6 +55,7 @@ impl Fake {
                 }],
                 ..AudioGraph::default()
             }),
+            uses: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -74,8 +77,11 @@ impl Fake {
 }
 
 impl Graph for Fake {
-    fn read(&self) -> AudioGraph {
-        self.graph.lock().expect("graph").clone()
+    fn read(&self) -> Read {
+        Read {
+            graph: self.graph.lock().expect("graph").clone(),
+            uses: self.uses.lock().expect("uses").clone(),
+        }
     }
 
     fn control(&self) -> &dyn GraphControl {
@@ -145,6 +151,33 @@ fn arguments(value: Value) -> Map<String, Value> {
 
 fn read(service: &SoundService) -> Value {
     service.read(SOUND).expect("published")
+}
+
+/// Who records is part of the sound reading: the bar shows it, and the
+/// session hands it to whoever draws the bar.
+#[test]
+fn the_reading_names_who_is_using_the_camera_or_the_microphone() {
+    let fake = Fake::laptop();
+    *fake.uses.lock().expect("uses") = vec![media::audio::capture::MediaUse {
+        client_id: 61,
+        pid: 4242,
+        app_id: "so.tilo.meet".into(),
+        label: "Meet".into(),
+        binary: std::path::PathBuf::from("/usr/bin/meet"),
+        kind: media::audio::capture::MediaKind::Camera,
+    }];
+    let service = service(&fake);
+    assert_eq!(
+        read(&service)["uses"],
+        json!([{
+            "client-id": 61,
+            "pid": 4242,
+            "app-id": "so.tilo.meet",
+            "label": "Meet",
+            "binary": "/usr/bin/meet",
+            "kind": "camera"
+        }])
+    );
 }
 
 /// The volume and mute act on the output in use and land in the reading;
@@ -262,6 +295,7 @@ fn an_output_is_chosen_from_its_child() {
 fn without_an_output_the_volume_is_unavailable() {
     let fake = Arc::new(Fake {
         graph: Mutex::new(AudioGraph::default()),
+        uses: Mutex::new(Vec::new()),
         calls: Mutex::new(Vec::new()),
     });
     let mut service = service(&fake);
@@ -339,6 +373,7 @@ fn the_input_level_and_the_cards_profiles_are_taken() {
             }],
             ..AudioGraph::default()
         }),
+        uses: Mutex::new(Vec::new()),
         calls: Mutex::new(Vec::new()),
     });
     let mut service = service(&fake);

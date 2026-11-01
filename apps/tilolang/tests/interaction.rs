@@ -336,7 +336,7 @@ fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
     use ui::permissions::policy::{self, Role, Subject, roles::AgentPreset};
     let me = app.permissions().standing().person.clone();
     let id = app.permissions().standing().room().to_owned();
-    let mut policy = policy::RoomPolicy::new(&id, &me);
+    let mut policy = policy::WorkspacePolicy::new(&id, &me);
     policy.members.insert("u_mia".to_owned(), Role::Editor);
     policy.members.insert("u_leo".to_owned(), Role::Viewer);
     policy

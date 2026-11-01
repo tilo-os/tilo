@@ -237,10 +237,13 @@ impl HostedRooms for NativeHostedRooms {
             // records are channels each app opens and keeps in its own
             // profile, never documents the owner commits or reads out.
             NativeOwnerStatus::Open(owner) => {
-                owner.contains_room(room)
+                owner.contains_workspace(room)
                     && !owner
                         .with_current(room, |view| {
-                            Ok(view.room_host().capabilities.takes_part_in_room_channels())
+                            Ok(view
+                                .workspace_host()
+                                .capabilities
+                                .takes_part_in_room_channels())
                         })
                         .unwrap_or(false)
             }
@@ -320,7 +323,7 @@ impl HostedRooms for NativeHostedRooms {
         let owner = self.owner().ok()?;
         owner
             .with_current(room, |view| {
-                let doc = view.peer().admitted_room().ok_or("no room")?;
+                let doc = view.peer().admitted_workspace().ok_or("no room")?;
                 let entry = import::entries(doc)
                     .remove(&import::key(id))
                     .ok_or("no such proposal")?;
@@ -347,7 +350,7 @@ impl HostedRooms for NativeHostedRooms {
                 if member.role != collab_types::Role::Owner {
                     return Ok(None);
                 }
-                let doc = view.peer().admitted_room().ok_or("no room")?;
+                let doc = view.peer().admitted_workspace().ok_or("no room")?;
                 let certificates = view.peer().certificates();
                 let now = tilo_clock::unix_now();
                 Ok(Some(

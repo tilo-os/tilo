@@ -205,8 +205,10 @@ impl ExternalHistoryFactory {
         identity_paths: &tilo_user_identity::IdentityPaths,
         runtime: Option<ExternalHistoryRuntime>,
     ) -> io::Result<Option<Arc<Self>>> {
-        let room = collab_types::person_room(&credentials.user_public_key());
-        if authority.workspace() != room || publisher.workspace_id() != room {
+        let personal_workspace = collab_types::person_room(&credentials.user_public_key());
+        if authority.workspace() != personal_workspace
+            || publisher.workspace_id() != personal_workspace
+        {
             return Ok(None);
         }
         let durable_revocations =

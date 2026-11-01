@@ -34,7 +34,7 @@ use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
-use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
+use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy};
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
@@ -807,7 +807,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached workspace.
             ws.policy.grants =
-                RoomPolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
+                WorkspacePolicy::unowned(ws.room().to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;

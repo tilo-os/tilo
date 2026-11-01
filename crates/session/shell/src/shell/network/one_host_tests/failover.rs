@@ -25,7 +25,9 @@ pub(super) fn hosts_on(device: &Device, room: RoomId) -> usize {
         .ok()
         .and_then(|owner| {
             owner
-                .with_current(room, |view| Ok(view.peer().governance().room_hosts().len()))
+                .with_current(room, |view| {
+                    Ok(view.peer().governance().workspace_hosts().len())
+                })
                 .ok()
         })
         .unwrap_or(0)
@@ -315,7 +317,9 @@ fn held_on(device: &Device, room: RoomId) -> usize {
 
 /// How many writes to `room` the apps in it are told are not yet synced.
 fn unsynced(room: RoomId) -> u32 {
-    tilo_network_actor::workspace_sync::unsynced_writes(crate::shell::network::room_topic_id(room))
+    tilo_network_actor::workspace_sync::unsynced_writes(crate::shell::network::workspace_topic_id(
+        room,
+    ))
 }
 
 #[test]

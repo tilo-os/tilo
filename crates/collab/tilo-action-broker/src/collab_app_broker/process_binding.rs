@@ -158,7 +158,7 @@ mod tests {
         CollabLaunchHandoff {
             protocol: 1,
             app_id: "so.tilo.calculator".into(),
-            workspace_id: "room".into(),
+            workspace_id: "workspace".into(),
             executing_peer: true,
             window_instance: None,
         }

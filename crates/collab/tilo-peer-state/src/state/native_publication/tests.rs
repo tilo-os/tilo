@@ -1,7 +1,7 @@
 use super::*;
 use crate::InputDisposition;
 use crate::SeedState;
-use crate::seed_room;
+use crate::seed_workspace;
 use crate::state::now_ns;
 use automerge::AutoCommit;
 use automerge::ROOT;
@@ -33,7 +33,7 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
     let (mut host, key, _, cert, now) = crate::admission_tests::seeded();
     let later = now + Duration::from_secs(301);
     let mut browser = StatePeer::new(
-        host.room(),
+        host.workspace_id(),
         host.owner_certificates()[0].clone(),
         vec![cert],
         RevocationList::new(),
@@ -164,7 +164,7 @@ fn native_publication_closed_families_do_not_promote_presence_or_requests() {
     for message in [
         NeighbourMsg::SyncReq {
             since: vec![],
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             invite_id: None,
             nonce: 0,
         },
@@ -221,7 +221,7 @@ fn native_publication_current_pinned_governor_expiry_is_mandatory() {
     tilo_user_identity::sign_device_cert(&mut authority, &SigningKey::from_bytes(&[1; 32]))
         .unwrap();
     let mut short = StatePeer::new(
-        peer.room(),
+        peer.workspace_id(),
         authority.clone(),
         vec![other.clone()],
         RevocationList::new(),
@@ -231,8 +231,12 @@ fn native_publication_current_pinned_governor_expiry_is_mandatory() {
     short
         .install_seed(
             SeedState {
-                room_changes: seed_room(peer.room(), &authority, &[authority.clone(), other])
-                    .unwrap(),
+                workspace_changes: seed_workspace(
+                    peer.workspace_id(),
+                    &authority,
+                    &[authority.clone(), other],
+                )
+                .unwrap(),
                 documents: vec![],
             },
             &key,
@@ -240,7 +244,7 @@ fn native_publication_current_pinned_governor_expiry_is_mandatory() {
         )
         .unwrap();
     let origin = native(&short);
-    let message = short.room_message();
+    let message = short.workspace_message();
     assert!(short.receive_from(origin, message.clone(), now).is_ok());
     assert!(
         short
@@ -276,7 +280,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
         if reopen {
             receiver = StatePeer::restore(
                 &receiver.durable().unwrap(),
-                receiver.room(),
+                receiver.workspace_id(),
                 receiver.owner_certificates()[0].clone(),
                 receiver.certificates(),
                 RevocationList::new(),
@@ -396,7 +400,7 @@ fn native_publication_streaming_cut_checks_expiry_at_push_and_finish() {
     tilo_user_identity::sign_device_cert(&mut authority, &SigningKey::from_bytes(&[1; 32]))
         .unwrap();
     let short = StatePeer::new(
-        peer.room(),
+        peer.workspace_id(),
         authority.clone(),
         vec![other.clone()],
         RevocationList::new(),
@@ -527,28 +531,30 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
 }
 
 #[test]
-fn native_publication_streaming_cut_requires_complete_room_history() {
+fn native_publication_streaming_cut_requires_complete_workspace_history() {
     let (receiver, _, _, _, now) = crate::admission_tests::seeded();
     let publisher = receiver.owner_certificates()[0].device_public_key;
     let original = receiver.durable().unwrap();
-    let mut room = receiver.admitted_room().unwrap().clone();
-    let before = room.get_heads();
-    room.put(ROOT, "cut-room-parent", "parent").unwrap();
-    room.commit_edit("fixture", "cut-room-parent");
+    let mut workspace = receiver.admitted_workspace().unwrap().clone();
+    let before = workspace.get_heads();
+    workspace
+        .put(ROOT, "cut-workspace-parent", "parent")
+        .unwrap();
+    workspace.commit_edit("fixture", "cut-workspace-parent");
     let parent = NeighbourMsg::SyncResp {
-        room: receiver.core.room.clone(),
-        changes: room
+        room: receiver.core.workspace.clone(),
+        changes: workspace
             .get_changes(&before)
             .iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
     };
-    let before = room.get_heads();
-    room.put(ROOT, "cut-room-child", "child").unwrap();
-    room.commit_edit("fixture", "cut-room-child");
+    let before = workspace.get_heads();
+    workspace.put(ROOT, "cut-workspace-child", "child").unwrap();
+    workspace.commit_edit("fixture", "cut-workspace-child");
     let child = NeighbourMsg::SyncResp {
-        room: receiver.core.room.clone(),
-        changes: room
+        room: receiver.core.workspace.clone(),
+        changes: workspace
             .get_changes(&before)
             .iter()
             .map(|change| change.raw_bytes().to_vec())
@@ -561,7 +567,7 @@ fn native_publication_streaming_cut_requires_complete_room_history() {
         .unwrap();
     assert!(
         cut.finish(now).is_err(),
-        "native room orphans escaped without publisher provenance"
+        "native workspace orphans escaped without publisher provenance"
     );
     assert_eq!(receiver.durable().unwrap(), original);
     let complete = receiver
@@ -574,7 +580,7 @@ fn native_publication_streaming_cut_requires_complete_room_history() {
         .finish(now)
         .unwrap();
     assert_eq!(
-        complete.admitted_room().unwrap().base_heads(),
-        room.base_heads()
+        complete.admitted_workspace().unwrap().base_heads(),
+        workspace.base_heads()
     );
 }

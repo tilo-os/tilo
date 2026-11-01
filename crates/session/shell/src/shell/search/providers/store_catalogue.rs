@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
@@ -1325,7 +1325,7 @@ mod tests {
     /// Enter shows its App Store page (which says why), and there is nothing
     /// to install.
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
@@ -1509,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]

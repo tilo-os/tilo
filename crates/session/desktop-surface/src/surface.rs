@@ -20,6 +20,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_sort::CompactSort as _;
 
+use shown::ShownTabs;
+
 use tilo_desktop_model::{
     DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, WindowWidth, Workspace,
 };
@@ -61,6 +63,7 @@ pub mod peer_view;
 mod personal_ask;
 mod search;
 mod seed;
+mod shown;
 mod splice;
 mod tab_beside;
 #[cfg(test)]
@@ -187,9 +190,9 @@ struct Shared {
     viewport_width: f64,
     /// The tree was replaced from outside; rows must be reconciled.
     replaced: bool,
-    /// The content bounds of each window's active tab in the shown strip,
-    /// as last laid out.
-    shown_tabs: Vec<(TabId, Rect)>,
+    /// Where each shown window stands and the bounds of the tab it shows, as
+    /// last laid out.
+    shown_tabs: ShownTabs,
     /// The shown strip, the area it is drawn in and how far it is
     /// panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
@@ -309,7 +312,15 @@ impl DesktopHandle {
     /// surface's coordinates, as of the last layout. Hidden tabs and other
     /// strips are absent.
     pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
-        self.shared.borrow().shown_tabs.clone()
+        self.shared.borrow().shown_tabs.content()
+    }
+
+    /// Where the whole window of `tab` stands — its bar, and the tab's
+    /// content in it — in the surface's coordinates, as of the last layout:
+    /// where a menu for it hangs from.
+    #[must_use]
+    pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
+        self.shared.borrow().shown_tabs.window_rect(tab)
     }
 
     /// The shown strip, the area it is drawn in (surface coordinates) and
@@ -832,7 +843,7 @@ impl DesktopSurface {
             minter,
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
-            shown_tabs: Vec::new(),
+            shown_tabs: ShownTabs::default(),
             shown_strip: None,
             hint_places: ui::widget::HintPlaces::default(),
             focused_presence: Vec::new(),
@@ -2544,28 +2555,15 @@ impl Widget for DesktopSurface {
             }
         }
         self.reveal = pending;
-        let shown_tabs: Vec<(TabId, Rect)> = self
+        let shown_tabs = self
             .shown_row()
-            .map(|row| {
-                row.groups
-                    .iter()
-                    .filter_map(|group| {
-                        let tab = group.active_tab_id();
-                        group.content_rect_for_tab(tab).map(|rect| (tab, rect))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_or_else(ShownTabs::default, |row| ShownTabs::of_row(row));
         let shown_strip = self
             .shown
             .zip(self.shown_row_ref())
             .map(|(strip, row)| (strip, row.viewport(), row.drawn_scroll_x()));
-        // Banners start where the windows' content does, below their bars:
-        // pinned under the top bar they covered the windows' own controls.
-        let content_top = shown_tabs
-            .iter()
-            .map(|(_, rect)| rect.y0)
-            .fold(0.0, f64::max);
+        // Banners start where the windows' content does, below their bars.
+        let content_top = shown_tabs.content_top();
         if let Some(layer) = self.notices.as_mut() {
             layer.set_clear_top(content_top);
         }

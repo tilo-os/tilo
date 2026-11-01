@@ -1,6 +1,6 @@
-//! A member's write of the room's shared desktop is decided by what it does
+//! A member's write of the workspace's shared desktop is decided by what it does
 //! to what someone else made: closing, moving or renaming a window another
-//! person opened needs the room's moderation grant.
+//! person opened needs the workspace's moderation grant.
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
@@ -12,9 +12,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use web_time::{Duration, SystemTime};
 
 use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
-use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
 
 fn now() -> SystemTime {
     SystemTime::UNIX_EPOCH
@@ -52,8 +52,8 @@ fn tab(id: u64) -> Tab {
 /// A desktop of one strip holding a window per `(tab, who)`, each in a
 /// group of its own.
 fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-    let mut strip = Strip::new(StripId(10), "Room");
+    let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
+    let mut strip = Strip::new(StripId(10), "Workspace");
     for (id, _) in windows {
         strip.window_groups.push(WindowGroup {
             id: id.wrapping_add(100),
@@ -79,15 +79,15 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
     }
 }
 
-/// A room whose desktop holds the owner's window 1, and a member of another
+/// A workspace whose desktop holds the owner's window 1, and a member of another
 /// person holding `role` in it, with their device key and certificate.
-fn room_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
+fn workspace_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
     let owner_root = SigningKey::from_bytes(&[1; 32]);
     let owner_key = SigningKey::from_bytes(&[2; 32]);
     let owner = certificate(&owner_root, &owner_key, "owner");
     let owner_person = hex::encode(owner.user_public_key);
     let mut peer = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         owner.clone(),
         vec![owner.clone()],
         RevocationList::new(),
@@ -99,7 +99,8 @@ fn room_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
     record.commit();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &owner, std::slice::from_ref(&owner)).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &owner, std::slice::from_ref(&owner))
+                .unwrap(),
             documents: vec![SeedDocument {
                 app_id: DESKTOP_APP.into(),
                 record_id: DESKTOP_RECORD.into(),
@@ -118,7 +119,7 @@ fn room_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: ROOM.into(),
+            room: WORKSPACE.into(),
             issuer: owner,
             role,
             nonce: [43; 16],
@@ -158,7 +159,7 @@ fn room_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
     (peer, owner_person, guest_key, guest)
 }
 
-/// The guest's signed write of the room's desktop as `desktop`.
+/// The guest's signed write of the workspace's desktop as `desktop`.
 fn write(
     peer: &StatePeer,
     key: &SigningKey,
@@ -180,9 +181,9 @@ fn write(
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id(DESKTOP_APP, ROOM, DESKTOP_RECORD),
+        collab_types::document_artifact_id(DESKTOP_APP, WORKSPACE, DESKTOP_RECORD),
         author,
-        collab_types::document_attestation_id(DESKTOP_APP, ROOM, DESKTOP_RECORD),
+        collab_types::document_attestation_id(DESKTOP_APP, WORKSPACE, DESKTOP_RECORD),
         collab_types::OpKind::Change,
         now(),
         sequence,
@@ -191,7 +192,7 @@ fn write(
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(author.as_bytes()),
         app_id: DESKTOP_APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record_id: DESKTOP_RECORD.into(),
         envelope: Box::new(envelope),
     }
@@ -224,7 +225,7 @@ fn windows(peer: &StatePeer) -> Vec<u64> {
 /// owner's.
 #[test]
 fn an_editor_closes_their_own_window_but_not_someone_elses() {
-    let (mut peer, owner, key, guest) = room_with(MemberRole::Editor);
+    let (mut peer, owner, key, guest) = workspace_with(MemberRole::Editor);
     let person = hex::encode(guest.user_public_key);
     let opened = write(&peer, &key, 1, &desktop(&[(1, &owner), (2, &person)]));
     receive(&mut peer, &guest, opened).expect("an editor opens a window");
@@ -243,7 +244,7 @@ fn an_editor_closes_their_own_window_but_not_someone_elses() {
 /// A moderator closes anyone's window.
 #[test]
 fn a_moderator_closes_someone_elses_window() {
-    let (mut peer, _, key, guest) = room_with(MemberRole::Moderator);
+    let (mut peer, _, key, guest) = workspace_with(MemberRole::Moderator);
     let closes_owners = write(&peer, &key, 1, &desktop(&[]));
     receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
     assert!(windows(&peer).is_empty());

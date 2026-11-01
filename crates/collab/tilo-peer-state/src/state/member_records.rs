@@ -1,4 +1,4 @@
-//! A record a member creates: empty, where the room lets its app author
+//! A record a member creates: empty, where the workspace lets its app author
 //! records and the member change the record.
 use super::{AutoCommit, MemberAuthority, Route, StatePeer, SystemTime};
 use tilo_action_policy::ActionKind;
@@ -19,12 +19,12 @@ impl StatePeer {
         }
         let member = self.membership(author, now)?;
         if !self.may_create_record(&member, route, now) {
-            return Err("the room does not let this member create the record".into());
+            return Err("the workspace does not let this member create the record".into());
         }
         Ok(())
     }
 
-    /// Whether `member` may create `route`'s record empty: the room lets
+    /// Whether `member` may create `route`'s record empty: the workspace lets
     /// its app author records and lets them change that record.
     pub(super) fn may_create_record(
         &self,
@@ -36,7 +36,7 @@ impl StatePeer {
             .policy
             .app_authors(&route.app, &tilo_action_policy::Context::at_time(at))
             && member.allows(
-                &collab_types::document_node(&self.core.room, &route.app, &route.record),
+                &collab_types::document_node(&self.core.workspace, &route.app, &route.record),
                 ActionKind::Undoable,
                 at,
             )

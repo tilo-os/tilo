@@ -1,18 +1,18 @@
 //! The session's reader: the state machine that takes inbound frames off the
-//! wire, handles state frames one (checkpoint prefix) at a time, lets private
-//! frames overtake a state frame still in progress, and hands every reply to
-//! the writer.
+//! wire, handles state frames one (checkpoint prefix) at a time, answers
+//! heartbeats that arrive beside a state frame still in progress, and hands
+//! every reply to the writer.
 
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery,
     audit_subscriber_access, buffered_retention_prefix, commit_run_key, eligible_checkpoint_prefix,
-    handle_commit_run, handle_delta_prefix, handle_envelope, handle_private, mpsc, resume_record,
-    send_private_reply, trace_native_publication,
+    handle_commit_run, handle_delta_prefix, handle_envelope, mpsc, resume_record,
+    trace_native_publication, unserved_private,
 };
 use std::collections::VecDeque;
 
-use super::{SessionLoop, inbound_bytes, private_may_overtake};
+use super::{SessionLoop, inbound_bytes};
 
 /// How often a lagging connection checks whether its queues drained.
 const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
@@ -109,16 +109,6 @@ struct Inbound<'s, R> {
 }
 
 impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
-    /// Whether a frame read ahead of the state frame that controls
-    /// `active_control` may be served before it.
-    fn may_overtake(&self, frame: &EnvelopeV2, active_control: Option<u64>) -> bool {
-        private_may_overtake(
-            frame,
-            active_control,
-            self.backlog.iter().map(|(frame, _)| frame),
-        )
-    }
-
     /// Keep a frame that may not overtake, charged to the delivery budget.
     fn defer(&mut self, frame: EnvelopeV2) -> Result<(), PeerError> {
         let bytes = inbound_bytes(&frame);
@@ -151,12 +141,11 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
     }
 
     /// Drive the held state `operation` to its reply, meanwhile reading
-    /// ahead: a private frame that may overtake is served, anything else
-    /// waits in the backlog.
+    /// ahead: a heartbeat is answered at once, a state frame waits in the
+    /// backlog.
     async fn overtake_while<F, T>(
         &mut self,
         mut operation: std::pin::Pin<Box<F>>,
-        blocked_room: Option<u64>,
         cx: SessionLoop<'_, '_>,
     ) -> Result<T, PeerError>
     where
@@ -168,22 +157,18 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 result = &mut operation => break result,
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
-                        cx.heartbeats.owe();
-                    } else if self.may_overtake(&frame, blocked_room) {
-                        if let Some(reply) = serve_private_beside(&mut operation, frame, cx).await? {
-                            break Ok(reply);
-                        }
-                    } else {
-                        self.defer(frame)?;
+                    match frame {
+                        EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
+                        EnvelopeV2::State(_) => self.defer(frame)?,
+                        ref frame => return Err(unserved_private(frame)),
                     }
                 }
             }
         }
     }
 
-    /// Hand `batch` to the writer, serving private frames that may overtake
-    /// while the writer's queue is full.
+    /// Hand `batch` to the writer, reading ahead while the writer's queue
+    /// is full: a heartbeat is answered at once, a state frame waits.
     async fn hand_off_reply(
         &mut self,
         replies: &mpsc::Sender<ReplayWrite>,
@@ -201,67 +186,19 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 }
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
-                        cx.heartbeats.owe();
-                    } else if self.may_overtake(&frame, None) {
-                        if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
-                            send_private_reply(cx.session.private_tx, reply).await?;
-                        }
-                    } else {
-                        self.defer(frame)?;
+                    match frame {
+                        EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
+                        EnvelopeV2::State(_) => self.defer(frame)?,
+                        ref frame => return Err(unserved_private(frame)),
                     }
                     // Give the sole writer a turn even when the
-                    // peer supplies an always-ready control flood.
+                    // peer supplies an always-ready state flood.
                     tokio::task::yield_now().await;
                 }
             }
         }
         Ok(())
     }
-}
-
-/// Serve the private `frame` while still polling the held state
-/// `operation`, which may hold the authorization lane the private request
-/// needs. Returns the operation's reply if it completed meanwhile.
-async fn serve_private_beside<F, T>(
-    operation: &mut std::pin::Pin<Box<F>>,
-    frame: EnvelopeV2,
-    cx: SessionLoop<'_, '_>,
-) -> Result<Option<T>, PeerError>
-where
-    F: std::future::Future<Output = Result<T, PeerError>>,
-{
-    // The state future may hold the authorization lane
-    // needed by this private request. Keep polling it
-    // until it completes, retaining its one reply.
-    let private = handle_private(frame, cx.peer, cx.session);
-    tokio::pin!(private);
-    let mut completed = None;
-    let reply = loop {
-        tokio::select! {
-            biased;
-            result = &mut *operation, if completed.is_none() => {
-                completed = Some(result?);
-            }
-            result = &mut private => break result?,
-        }
-    };
-    if let Some(reply) = reply {
-        // Wait for the writer, still polling the held
-        // state future that it may depend on.
-        let sending = send_private_reply(cx.session.private_tx, reply);
-        tokio::pin!(sending);
-        loop {
-            tokio::select! {
-                biased;
-                result = &mut *operation, if completed.is_none() => {
-                    completed = Some(result?);
-                }
-                result = &mut sending => break result?,
-            }
-        }
-    }
-    Ok(completed)
 }
 
 /// The reader state machine. It borrows the session's reader, its
@@ -361,11 +298,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         );
                     }
                 }
-                frame => {
-                    if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
-                        send_private_reply(cx.session.private_tx, reply).await?;
-                    }
-                }
+                ref frame => return Err(unserved_private(frame)),
             }
         }
     }
@@ -436,19 +369,13 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             env,
             Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
         );
-        let blocked_room = match &env {
-            Envelope::Subscribe { workspace_id }
-            | Envelope::SubscribeFrom { workspace_id, .. }
-            | Envelope::Unsubscribe { workspace_id } => Some(*workspace_id),
-            _ => None,
-        };
-        if let Envelope::Unsubscribe { workspace_id } = &env {
+        if let Envelope::Unsubscribe { .. } = &env {
             // A replay handed to the writer still checks its subscription
             // until its Ready; unsubscribing under it would end the whole
             // connection. The reply to an earlier subscribe (one the device
             // sent, or a lagging room's resume) comes first, then this.
             self.inbound
-                .overtake_while(Box::pin(cx.replays_written()), Some(*workspace_id), cx)
+                .overtake_while(Box::pin(cx.replays_written()), cx)
                 .await?;
         }
         if replaying {
@@ -470,9 +397,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         .await
                 }
             });
-            self.inbound
-                .overtake_while(operation, blocked_room, cx)
-                .await?
+            self.inbound.overtake_while(operation, cx).await?
         };
         trace_buffered_prefix(&self.inbound.backlog);
         if replaying || reply.is_some() || ticket.is_some() {
@@ -524,7 +449,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         }
         let subscribed = &*self.subscribed;
         let operation = Box::pin(handle_commit_run(cx.peer, cx.session, subscribed, commits));
-        let replies = self.inbound.overtake_while(operation, None, cx).await?;
+        let replies = self.inbound.overtake_while(operation, cx).await?;
         drop(budgets);
         for reply in replies.into_iter().flatten() {
             self.inbound

@@ -20,7 +20,7 @@ device-grant-denied = { $device ->
     [camera] { $app } darf die Kamera nicht verwenden
    *[microphone] { $app } darf das Mikrofon nicht verwenden
 }
-device-grant-room = im Arbeitsbereich { $room }
+device-grant-workspace = im Arbeitsbereich { $workspace }
 device-grant-revoke = Widerrufen
 device-grant-revoke-description = Diese Entscheidung vergessen: eine laufende Aufnahme endet, und beim nächsten Mal wird erneut gefragt.
 agent-confirm-question = Darf dein Agent „{ $action }“ in { $app } verwenden?

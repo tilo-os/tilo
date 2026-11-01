@@ -199,6 +199,18 @@ fn super_f10_opens_the_window_in_fronts_menu_at_its_window() {
     // Where the menu stands is the desk's to say: the corner of the window
     // it is for, drawn nothing else having an opinion, or the place the
     // person named.
+    let window = session
+        .handle()
+        .window_rect(20)
+        .expect("the window is drawn");
+    assert_eq!(
+        (
+            reading["anchor"]["x"].as_f64(),
+            reading["anchor"]["y"].as_f64()
+        ),
+        (Some(window.x0), Some(window.y0)),
+        "the menu of the window in front hangs from its corner"
+    );
     session
         .invoke(
             WINDOW_MENU,

@@ -1,7 +1,7 @@
 //! Pictures made small enough to show a planning model, in a confined
 //! worker.
 //!
-//! A picture someone put in the room is untrusted input, and decoding one
+//! A picture someone put in the workspace is untrusted input, and decoding one
 //! runs a large parser over it, so the host never does: a worker started
 //! in [`Mode::Picture`] decodes it under decode limits and a pixel cap,
 //! turns it as its camera meant, shrinks it to fit and writes it out again

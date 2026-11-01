@@ -70,7 +70,7 @@ view main(b: Board) {
 
 const APP: &str = "so.tilo.kanban";
 
-struct Room {
+struct Workspace {
     ada: Replica,
     grace: Replica,
     meta: tilolang_runtime::Meta,
@@ -78,13 +78,13 @@ struct Room {
     lock: String,
 }
 
-fn room() -> Room {
+fn workspace() -> Workspace {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(KANBAN, "")]);
     let package = packages[0].clone();
     let root = ada.host.root_of(APP).unwrap().doc;
     ada.commit();
     let grace = ada.fork("grace", &[(KANBAN, &package.ids)]);
-    Room {
+    Workspace {
         ada,
         grace,
         meta: package.meta,
@@ -93,7 +93,7 @@ fn room() -> Room {
     }
 }
 
-impl Room {
+impl Workspace {
     fn replica(&mut self, who: &str) -> &mut Replica {
         if who == "ada" {
             &mut self.ada
@@ -268,7 +268,7 @@ fn find<'r>(record: &'r DynRecord, id: &str) -> Option<&'r DynRecord> {
 
 #[test]
 fn a_card_moved_to_another_column_is_the_same_card_with_its_history() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let card = r.card("ada", &todo, "Write the notes");
     let other = r.card("ada", &todo, "Ship");
@@ -341,7 +341,7 @@ fn what_is_published_follows_a_card_to_its_new_column() {
     use std::sync::Arc;
     use tilolang_tilo::publish::{ActionTypes, Planner, Publications, publish_tree};
 
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let card = r.card("ada", &todo, "card");
     r.card("ada", &todo, "other");
@@ -366,7 +366,7 @@ fn what_is_published_follows_a_card_to_its_new_column() {
 
 #[test]
 fn a_card_moves_within_its_column_and_into_another_at_a_place() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let first = r.card("ada", &todo, "first");
     let second = r.card("ada", &todo, "second");
@@ -395,7 +395,7 @@ fn a_card_moves_within_its_column_and_into_another_at_a_place() {
 
 #[test]
 fn concurrent_moves_of_a_card_leave_it_where_the_last_put_it() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing, done) = (
         r.column("ada", "To do"),
         r.column("ada", "Doing"),
@@ -419,7 +419,7 @@ fn concurrent_moves_of_a_card_leave_it_where_the_last_put_it() {
 
 #[test]
 fn an_edit_made_while_the_card_moved_is_kept() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let card = r.card("ada", &todo, "draft");
     r.sync();
@@ -441,7 +441,7 @@ fn an_edit_made_while_the_card_moved_is_kept() {
 
 #[test]
 fn removing_a_column_removes_its_cards_and_not_one_moved_out_before() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let stays = r.card("ada", &todo, "stays");
     let leaves = r.card("ada", &todo, "leaves");
@@ -471,7 +471,7 @@ fn removing_a_column_removes_its_cards_and_not_one_moved_out_before() {
 
 #[test]
 fn a_card_moved_out_while_its_column_is_removed_stays_where_it_was_moved() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let rescued = r.card("ada", &todo, "rescued");
     let gone = r.card("ada", &todo, "gone");
@@ -505,7 +505,7 @@ fn a_card_moved_out_while_its_column_is_removed_stays_where_it_was_moved() {
 
 #[test]
 fn a_card_moved_into_a_column_removed_meanwhile_goes_with_the_column() {
-    let mut r = room();
+    let mut r = workspace();
     let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
     let card = r.card("ada", &todo, "card");
     r.sync();
@@ -531,10 +531,10 @@ fn a_card_moved_into_a_column_removed_meanwhile_goes_with_the_column() {
 
 #[test]
 fn concurrent_moves_into_each_other_hold_the_later_back() {
-    let mut r = room();
+    let mut r = workspace();
     let root = r.root.clone();
-    let made = |r: &mut Room, name: &str| {
-        Room::made(&r.act("ada", ("Board", &root), "add_node", json!({ "name": name })))
+    let made = |r: &mut Workspace, name: &str| {
+        Workspace::made(&r.act("ada", ("Board", &root), "add_node", json!({ "name": name })))
     };
     let (one, two) = (made(&mut r, "one"), made(&mut r, "two"));
     r.sync();
@@ -547,7 +547,7 @@ fn concurrent_moves_into_each_other_hold_the_later_back() {
     );
     r.act("grace", ("Node", &one_at), "nest", json!({ "n": two_at }));
     r.sync();
-    let kids = |r: &Room, who: &str, id: &str| r.listed(who, ("Node", "kids"), Some(id));
+    let kids = |r: &Workspace, who: &str, id: &str| r.listed(who, ("Node", "kids"), Some(id));
     for who in ["ada", "grace"] {
         let top = r.listed(who, ("Board", "nodes"), None);
         assert_eq!(top.len(), 1, "{who}: one node holds the other: {top:?}");

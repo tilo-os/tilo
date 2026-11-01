@@ -22,7 +22,7 @@ use media::audio::{AudioDevice, AudioGraph, GraphControl};
 use runtime_collab::{SpeakerCommand, SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec};
 use serde_json::{Map, Value, json};
 use tilo_actions::DoorError;
-use tilo_audio_service::sound::{self, Graph, SoundService};
+use tilo_audio_service::sound::{self, Graph, Read, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
@@ -80,8 +80,11 @@ fn output(id: u32, label: &str, default: bool) -> AudioDevice {
 }
 
 impl Graph for Card {
-    fn read(&self) -> AudioGraph {
-        self.graph.lock().unwrap().clone()
+    fn read(&self) -> Read {
+        Read {
+            graph: self.graph.lock().unwrap().clone(),
+            uses: Vec::new(),
+        }
     }
 
     fn control(&self) -> &dyn GraphControl {

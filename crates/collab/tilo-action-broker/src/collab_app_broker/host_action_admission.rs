@@ -17,7 +17,7 @@ mod tests;
 
 #[derive(Clone, Copy)]
 pub(super) struct HostActionAdmission<'a> {
-    pub room: &'a str,
+    pub workspace: &'a str,
     pub app_id: &'a str,
     pub descriptor: &'a ActionDescriptor,
     pub request: &'a InvokeRequest,
@@ -59,7 +59,7 @@ impl AppBrokerState {
         start: Option<serde_json::Value>,
     ) -> Result<AdmittedHostAction, ActionHostError> {
         let HostActionAdmission {
-            room,
+            workspace,
             descriptor,
             request,
             ..
@@ -75,24 +75,24 @@ impl AppBrokerState {
         {
             return Err(ActionHostError::NotPermitted);
         }
-        if self.durable_owner_required || self.publisher.requires_owner_for(room) {
+        if self.durable_owner_required || self.publisher.requires_owner_for(workspace) {
             self.owner_health().map_err(unavailable)?;
         }
         let actor = BrokerActor::for_caller(caller);
-        let owner = self.host_action_owner(caller, origin, room, request.invocation)?;
+        let owner = self.host_action_owner(caller, origin, workspace, request.invocation)?;
         owner.validate().map_err(unavailable)?;
         self.retain_host_action(&actor, owner, admission, start)
     }
 
     #[expect(
         clippy::too_many_lines,
-        reason = "each origin's owner is revalidated against current policy, certificate and room in one ordered match"
+        reason = "each origin's owner is revalidated against current policy, certificate and workspace in one ordered match"
     )]
     fn host_action_owner(
         &self,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
-        room: &str,
+        workspace: &str,
         invocation: InvocationId,
     ) -> Result<InvocationOwner, ActionHostError> {
         let actor = BrokerActor::for_caller(caller);
@@ -104,7 +104,7 @@ impl AppBrokerState {
                     .map_err(unavailable)?;
                 let current = self.current_action_caller(original).map_err(unavailable)?;
                 let expected = current.broker_actor();
-                if original.room != room
+                if original.workspace != workspace
                     || expected.id != actor.id
                     || expected.is_agent != actor.is_agent
                 {
@@ -119,7 +119,7 @@ impl AppBrokerState {
                     // Only the native facade combines a physical projection
                     // with retained signed admission. Recheck its protected seat
                     // at the effect barrier, not only when it queued the request.
-                    self.current_native_person(room, certificate)
+                    self.current_native_person(workspace, certificate)
                         .map_err(unavailable)?;
                 }
                 original.owner().map_err(unavailable)?
@@ -149,7 +149,7 @@ impl AppBrokerState {
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
-                    if route.cluster_id != room
+                    if route.cluster_id != workspace
                         || expected.id != actor.id
                         || expected.is_agent != actor.is_agent
                     {
@@ -161,7 +161,7 @@ impl AppBrokerState {
                     || principal_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
-                if route.cluster_id != room
+                if route.cluster_id != workspace
                     || expected != actor.id
                     || current.agent_id.is_some() != actor.is_agent
                 {
@@ -175,14 +175,14 @@ impl AppBrokerState {
             }
             Some(InvocationCaller::NativePerson {
                 invocation: original_invocation,
-                room: original_room,
+                workspace: original_workspace,
                 certificate,
                 time,
             }) => {
                 self.checked_policy_time(Some(time)).map_err(unavailable)?;
-                self.current_native_person(room, certificate)
+                self.current_native_person(workspace, certificate)
                     .map_err(unavailable)?;
-                if original_room != room
+                if original_workspace != workspace
                     || *original_invocation != invocation
                     || actor.is_agent
                     || actor.id != principal_id_for_root(certificate.user_public_key)
@@ -225,7 +225,7 @@ impl AppBrokerState {
         start: Option<serde_json::Value>,
     ) -> Result<AdmittedHostAction, ActionHostError> {
         let HostActionAdmission {
-            room,
+            workspace,
             app_id,
             descriptor,
             request,
@@ -251,7 +251,7 @@ impl AppBrokerState {
         let mut admitted = invocation_journal::Durable::settled();
         let key = if let Some(journal) = journal {
             let key = InvocationKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 host: journal.host(),
                 owner: owner.clone(),
                 invocation: request.invocation,
@@ -381,8 +381,8 @@ impl AppBrokerState {
         {
             return Ok(None);
         }
-        let room = caller.room().ok_or(ActionHostError::NotPermitted)?;
-        let owner = self.host_action_owner(caller, Some(origin), room, request.invocation)?;
+        let workspace = caller.room().ok_or(ActionHostError::NotPermitted)?;
+        let owner = self.host_action_owner(caller, Some(origin), workspace, request.invocation)?;
         let record = {
             let guard = self
                 .journal
@@ -392,7 +392,7 @@ impl AppBrokerState {
                 return Ok(None);
             };
             let looked = journal.lookup(&InvocationKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 host: journal.host(),
                 owner,
                 invocation: request.invocation,
@@ -422,9 +422,9 @@ impl AppBrokerState {
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
                 .map_err(|_| unavailable("host invocation contract invalid"))?;
-        let actor = self.host_replay_actor(room, origin)?;
+        let actor = self.host_replay_actor(workspace, origin)?;
         self.authorize_invocation_permission(
-            room,
+            workspace,
             (
                 field("app_id")?,
                 field("resource_kind")?,
@@ -451,7 +451,7 @@ impl AppBrokerState {
 
     fn host_replay_actor(
         &self,
-        room: &str,
+        workspace: &str,
         origin: &InvocationCaller,
     ) -> Result<BrokerActor, ActionHostError> {
         Ok(match origin {
@@ -465,7 +465,7 @@ impl AppBrokerState {
                     .broker_actor();
                 admitted.capped |= super::cap_applies_in(
                     self.certificate_authority.get().map(AsRef::as_ref),
-                    room,
+                    workspace,
                     *foreign_restriction,
                     original
                         .admitted
@@ -487,7 +487,7 @@ impl AppBrokerState {
                     .broker_actor()
             }
             InvocationCaller::NativePerson { certificate, .. } => {
-                self.certified_person(room, certificate)
+                self.certified_person(workspace, certificate)
             }
         })
     }

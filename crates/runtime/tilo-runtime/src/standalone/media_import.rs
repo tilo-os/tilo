@@ -1,6 +1,6 @@
 //! Explicit recovery of this profile's old, unscoped content. Published on
 //! the existing workspace action door, never on the blob socket. An import
-//! creates new room reachability; it does not certify historical ownership.
+//! creates new workspace reachability; it does not certify historical ownership.
 
 use std::sync::Arc;
 
@@ -67,13 +67,14 @@ struct Authority {
 }
 
 fn owner_revision(
-    workspace: &impl tilo_identity_host::broker::WorkspaceMembership,
-    room: &str,
+    membership: &impl tilo_identity_host::broker::WorkspaceMembership,
+    workspace: &str,
     account: &str,
 ) -> anyhow::Result<String> {
-    let room = RoomId::parse(room).ok_or_else(|| anyhow::anyhow!("invalid destination room"))?;
+    let id =
+        RoomId::parse(workspace).ok_or_else(|| anyhow::anyhow!("invalid destination workspace"))?;
     let mut revision = None;
-    workspace.with_workspace(&room, &mut |current| {
+    membership.with_workspace(&id, &mut |current| {
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
             // receipts, layout and delegated grants cannot revoke owner custody.
@@ -99,7 +100,7 @@ impl LegacyImportAuthority for Authority {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace.governs(),
-            "legacy import requires the local room owner"
+            "legacy import requires the local workspace owner"
         );
         anyhow::ensure!(
             self.lease
@@ -114,17 +115,18 @@ impl LegacyImportAuthority for Authority {
         anyhow::ensure!(
             owner_revision(
                 self.workspace.as_ref(),
-                &request.destination_room,
+                &request.destination_workspace,
                 &approval.account
             )? == approval.authority_revision,
             "legacy import destination authority changed"
         );
         // Reads current enrollment and fleet revocations, not startup's snapshot.
         let (_, cert) =
-            tilo_identity_host::broker::trusted_current_device(&request.destination_room)?;
-        let selected =
-            tilo_identity_host::registry::selected_identity_profile(&request.destination_room)?
-                .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
+            tilo_identity_host::broker::trusted_current_device(&request.destination_workspace)?;
+        let selected = tilo_identity_host::registry::selected_identity_profile(
+            &request.destination_workspace,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
         anyhow::ensure!(
             cert.device_public_key == self.device && selected.principal_id() == approval.account,
             "legacy import enrollment changed"
@@ -147,7 +149,7 @@ impl WorkspaceGovernanceServices for MediaImport {
     }
 
     fn descriptors(&self, workspace: &Workspace) -> Vec<ActionDescriptor> {
-        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.room() {
+        if !self.workspace.governs() || workspace.room().to_string() != self.workspace.workspace() {
             return Vec::new();
         }
         vec![ActionDescriptor {
@@ -159,7 +161,7 @@ impl WorkspaceGovernanceServices for MediaImport {
             action_label: "Import selected legacy media".into(),
             keywords: Vec::new(),
             icon: None,
-            description: Some("Owner only. Creates new reachability in this room from exact resident hashes in this profile's content store; no scan or ownership inference. Up to 128 hashes and 256 MiB. Source store: runtime-profile-content; source room: unscoped.".into()),
+            description: Some("Owner only. Creates new reachability in this workspace from exact resident hashes in this profile's content store; no scan or ownership inference. Up to 128 hashes and 256 MiB. Source store: runtime-profile-content; source workspace: unscoped.".into()),
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Effect,
             contract: ActionContract {
@@ -174,8 +176,8 @@ impl WorkspaceGovernanceServices for MediaImport {
             input: tilo_actions::door::InputSpec::None,
             params: vec![
                 ActionParam::required("source_store", ParamType::Text, "Host-configured source: runtime-profile-content").with_choices([SOURCE]),
-                ActionParam::required("source_room", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
-                ActionParam::required("destination_room", ParamType::Text, "This runtime's owned room"),
+                ActionParam::required("source_workspace", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
+                ActionParam::required("destination_workspace", ParamType::Text, "This runtime's owned workspace"),
                 ActionParam::required("hashes", ParamType::Array, "Exact unique lowercase blake3 hashes; 1 to 128")
                     .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})),
                 ActionParam::required("max_bytes", ParamType::Integer, "Total byte ceiling; 1 to 268435456")
@@ -226,7 +228,7 @@ impl MediaImport {
     )> {
         anyhow::ensure!(
             self.workspace.governs(),
-            "legacy import requires the local room owner"
+            "legacy import requires the local workspace owner"
         );
         anyhow::ensure!(
             invocation.local_device
@@ -252,11 +254,12 @@ impl MediaImport {
         anyhow::ensure!(argument.len() <= 32 * 1024, "legacy import argument limit");
         let request: LegacyImportRequest = serde_json::from_str(argument)?;
         anyhow::ensure!(
-            request.destination_room == invocation.room && invocation.room == self.workspace.room(),
-            "legacy import destination is not this runtime's owned room"
+            request.destination_workspace == invocation.workspace
+                && invocation.workspace == self.workspace.workspace(),
+            "legacy import destination is not this runtime's owned workspace"
         );
-        let revision = owner_revision(self.workspace.as_ref(), invocation.room, account)?;
-        let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.room)?;
+        let revision = owner_revision(self.workspace.as_ref(), invocation.workspace, account)?;
+        let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.workspace)?;
         let approval = LegacyImportApproval {
             account: account.into(),
             device: hex::encode(cert.device_public_key),

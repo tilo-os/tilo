@@ -17,12 +17,12 @@ struct NativeEffects {
 }
 impl OwnerCommitService for NativeEffects {
     fn health(&self) -> Result<(), String> {
-        let room =
-            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
-        self.owner.with_current(room, |_| Ok(()))
+        let workspace =
+            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
+        self.owner.with_current(workspace, |_| Ok(()))
     }
-    fn requires_room(&self, room: &str) -> bool {
-        room == tilo_peer_state::owner::testing::ROOM
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        workspace == tilo_peer_state::owner::testing::WORKSPACE
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
@@ -42,14 +42,15 @@ impl OwnerCommitService for NativeEffects {
     }
 }
 struct NativeAuthority(Arc<tilo_peer_state::owner::NativeWorkspaceOwner>);
-impl crate::peer_actions::CertificateAuthority for NativeAuthority {
+impl crate::certificate_authority::CertificateAuthority for NativeAuthority {
     fn authorize(
         &self,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let room = tilo_desktop_model::RoomId::parse(&room.to_string()).ok_or("invalid room")?;
-        self.0.with_current(room, |view| {
+        let workspace =
+            tilo_desktop_model::RoomId::parse(&workspace.to_string()).ok_or("invalid workspace")?;
+        self.0.with_current(workspace, |view| {
             if !view.peer().certificates().contains(certificate) {
                 return Err("native certificate no longer admitted".into());
             }
@@ -82,10 +83,10 @@ fn fixture() -> Fixture {
     );
     tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
         .unwrap();
-    let room = tilo_peer_state::owner::testing::ROOM;
+    let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
     let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(1),
-        uuid::Uuid::parse_str(room).unwrap().into(),
+        uuid::Uuid::parse_str(workspace_id).unwrap().into(),
         "Native recovery",
     );
     workspace.set_owner(principal_id_for_root(certificate.user_public_key));
@@ -103,7 +104,7 @@ fn fixture() -> Fixture {
             submitted: submitted.clone(),
         }),
     );
-    let config = crate::peer_actions::NativePeerBrokerConfig {
+    let config = crate::NativePeerBrokerConfig {
         journal_root: directory.path().join("journal"),
         certificate_authority: Arc::new(NativeAuthority(owner.clone())),
     };
@@ -118,16 +119,20 @@ fn fixture() -> Fixture {
         HostServices::default(),
     );
     let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.into(),
+        workspace_id: workspace_id.into(),
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                workspace_id,
+            ))
             .to_bytes()
             .to_vec(),
     }
     .encode()
     .unwrap();
-    let caller = state.verify_action_caller(room, &presentation).unwrap();
+    let caller = state
+        .verify_action_caller(workspace_id, &presentation)
+        .unwrap();
     Fixture {
         directory,
         owner,
@@ -164,7 +169,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
     );
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {
-        room: key.room.clone(),
+        workspace: key.workspace.clone(),
         operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
             invocation: key.invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),
@@ -230,11 +235,11 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
     );
     let key = terminal.key.clone();
     assert_eq!(restart_journal(&f, &key), terminal);
-    let room = tilo_desktop_model::RoomId::parse(&key.room).unwrap();
+    let workspace = tilo_desktop_model::RoomId::parse(&key.workspace).unwrap();
     f.owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                view.peer().admitted_room().unwrap(),
+                view.peer().admitted_workspace().unwrap(),
             );
             assert_eq!(effects.len(), 1);
             assert_eq!(effects[0].completed_at, 100);

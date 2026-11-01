@@ -25,7 +25,7 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    Caller, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
+    Caller, Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
     SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
     SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
@@ -65,11 +65,20 @@ enum Ask {
     },
 }
 
+/// The readings the services publish to granted callers only, as of the
+/// revision the catalogue was last read at.
+#[derive(Default)]
+struct Declared {
+    revision: Option<u64>,
+    granted: std::collections::HashMap<String, Granted>,
+}
+
 /// The seam between the session's loop and the broker's connections: what an
 /// app asks of the services, and the readings the apps watch.
 pub struct Link {
     asks: Mutex<Vec<Ask>>,
     watches: Mutex<Vec<Watch>>,
+    declared: Mutex<Declared>,
     next_watch: AtomicU64,
     wake: Wake,
 }
@@ -81,6 +90,7 @@ impl Link {
         std::sync::Arc::new(Self {
             asks: Mutex::new(Vec::new()),
             watches: Mutex::new(Vec::new()),
+            declared: Mutex::new(Declared::default()),
             next_watch: AtomicU64::new(1),
             wake,
         })
@@ -95,6 +105,7 @@ impl Link {
     /// watched resource's reading that moved: what the session's loop calls
     /// once per pass, after the services took in what their devices did.
     pub fn serve(&self, services: &mut Services) {
+        self.declare(services);
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
@@ -121,6 +132,42 @@ impl Link {
             }
         }
         self.publish(services);
+    }
+
+    /// Read which readings the services publish to granted callers only, so
+    /// the broker admits every call about one before this loop sees it. The
+    /// catalogue is the declaration's only source; it moves with the
+    /// services' revision like everything else they publish.
+    ///
+    /// The session reads it once its services are all mounted, before the
+    /// broker answers anyone: an app that connects as the session starts is
+    /// decided by the room's grants, not by a declaration not yet read.
+    pub fn declare(&self, services: &Services) {
+        let revision = services.revision();
+        let mut declared = self.declared.lock_recover();
+        if declared.revision == Some(revision) {
+            return;
+        }
+        declared.granted = services
+            .resources()
+            .into_iter()
+            .filter(|resource| resource.readers == tilo_actions::Readers::Granted)
+            .map(|resource| {
+                // The session's own resources name the session's app, as its
+                // actions do: that is whose grants the room says may read them.
+                let publisher = resource
+                    .app_id
+                    .unwrap_or_else(|| tilo_action_policy::roles::SESSION_APP.to_owned());
+                (
+                    resource.id.as_str().to_owned(),
+                    Granted {
+                        publisher,
+                        kind: resource.kind,
+                    },
+                )
+            })
+            .collect();
+        declared.revision = Some(revision);
     }
 
     /// Send the readings of the watched resources that moved.
@@ -152,6 +199,10 @@ impl Link {
 /// The session's services, as the broker's connections read them: a resource
 /// is named by its id, and what an app reaches is what the services publish.
 impl PublishedResources for Link {
+    fn granted(&self, resource: &str) -> Option<Granted> {
+        self.declared.lock_recover().granted.get(resource).cloned()
+    }
+
     fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
         let (reply, answered) = oneshot::channel();
         self.ask(Ask::Snapshot {
@@ -350,7 +401,7 @@ impl ShortcutLibraryServices for ShortcutLibrary {
             let (done, applied) = tokio::sync::oneshot::channel();
             changes
                 .send(StoreRequest {
-                    room: request.room,
+                    room: request.workspace,
                     actor: request.actor,
                     change: request.change,
                     done,
@@ -414,9 +465,9 @@ impl WorkspaceAuthority for DeskAuthority {
     /// joined, or one it left — revokes nothing here: the shortcuts it shows
     /// are proven by what it does hold, and a call it can no longer make is
     /// refused elsewhere.
-    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+    fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::room_in(&tree, room)?;
+        tilo_action_broker::services::workspace_in(&tree, room)?;
         Some((self.revocations)(room).unwrap_or_default())
     }
 }

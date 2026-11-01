@@ -188,7 +188,7 @@ impl JoinedChannel {
                 return Err("unsupported clipboard permission".into());
             }
             membership
-                .decide_in_room(&route.cluster_id, |space| {
+                .decide_in_workspace(&route.cluster_id, |space| {
                     let space = space.ok_or("clipboard workspace ended")?;
                     let node = tilo_actions::action_node(
                         &space.node(),
@@ -636,7 +636,7 @@ impl SelectedOpenCustody {
             ActionKind::Read
         };
         membership
-            .decide_in_room(&self.route.cluster_id, |space| {
+            .decide_in_workspace(&self.route.cluster_id, |space| {
                 let space = space.ok_or("OpenWith workspace ended")?;
                 let node = tilo_actions::action_node(
                     &space.node(),

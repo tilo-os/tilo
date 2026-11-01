@@ -15,7 +15,7 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_delivery_protocol::peer_actions::UnavailableReason;
+use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};

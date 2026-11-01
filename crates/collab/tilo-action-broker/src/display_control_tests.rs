@@ -8,10 +8,11 @@ impl crate::services::DisplayControlServices for DisplayDelegate {
         context: &crate::services::DisplayControlContext,
         _: &[u8],
     ) -> Result<Vec<u8>, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((context.room().into(), context.root(), context.device()));
+        self.calls.lock().unwrap().push((
+            context.workspace().into(),
+            context.root(),
+            context.device(),
+        ));
         Ok(b"{}".to_vec())
     }
 }

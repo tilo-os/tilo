@@ -39,7 +39,7 @@ use tilo_moq::client::{Client, ReceivedPicture};
 use tilo_moq::video::{Codec, Layer, VideoObject};
 
 use super::room_window_views::RoomWindowViewer;
-use super::{ShellNetwork, room_topic_id};
+use super::{ShellNetwork, workspace_topic_id};
 use crate::network::native_media::WindowCarrier;
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::RoomId;
@@ -478,6 +478,7 @@ impl ShellNetwork {
                 });
             }
         }
+        drop(all);
         viewers
     }
 
@@ -517,7 +518,7 @@ impl ShellNetwork {
         let mut all = self.room_window_carriers.rooms.lock_recover();
         let Some((room, state)) = all
             .iter_mut()
-            .find(|(room, state)| state.hosting && room_topic_id(**room) == workspace_topic)
+            .find(|(room, state)| state.hosting && workspace_topic_id(**room) == workspace_topic)
         else {
             return viewers;
         };
@@ -668,7 +669,7 @@ fn end_streams(
     };
     for tab in tabs {
         if let Some(end) = inbound.end(host, source_peer, *tab) {
-            queued.push((room_topic_id(room), *host, end));
+            queued.push((workspace_topic_id(room), *host, end));
         }
     }
 }
@@ -758,7 +759,7 @@ fn receive(
                 .inbound
                 .receive((&host, source_peer), tab, app_id, keys, channel, &picture)
         {
-            queued.push((room_topic_id(room), host, message));
+            queued.push((workspace_topic_id(room), host, message));
         }
     }
 }

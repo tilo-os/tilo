@@ -11,6 +11,8 @@ use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Logical, Point, Transform};
 
+use tilo_color_pipeline::hdr_display::DisplayCapabilities;
+
 use crate::state::State;
 
 /// The refresh interval assumed when a mode reports none (60 Hz).
@@ -35,7 +37,7 @@ pub struct ModeRequest {
 }
 
 /// An output as the session sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OutputInfo {
     /// The connector name (`eDP-1`).
     pub name: String,
@@ -51,6 +53,9 @@ pub struct OutputInfo {
     pub rect: Option<(i32, i32, i32, i32)>,
     /// What the panel calls itself (`Tilo 27"`), when it says.
     pub description: Option<String>,
+    /// The colour it shows: what its sink accepts and what it is being
+    /// driven with, from its EDID and the signal the backend sends.
+    pub colour: DisplayCapabilities,
 }
 
 /// How a configuration (a display tool, Settings) changes one output.
@@ -207,10 +212,13 @@ pub struct OutputConfig {
     pub position: Option<(i32, i32)>,
     /// The refresh rate in millihertz.
     pub refresh_mhz: i32,
+    /// The colour the panel on it shows: what a real sink's EDID and the
+    /// signal it is sent would declare.
+    pub colour: DisplayCapabilities,
 }
 
 impl OutputConfig {
-    /// A 60 Hz output at scale 1 at the origin.
+    /// A 60 Hz output at scale 1 at the origin, showing SDR.
     pub fn new(name: impl Into<String>, width: i32, height: i32) -> Self {
         Self {
             name: name.into(),
@@ -218,6 +226,7 @@ impl OutputConfig {
             scale: 1.0,
             position: None,
             refresh_mhz: 60_000,
+            colour: DisplayCapabilities::sdr_default(),
         }
     }
 
@@ -225,6 +234,14 @@ impl OutputConfig {
     #[must_use]
     pub const fn with_scale(mut self, scale: f64) -> Self {
         self.scale = scale;
+        self
+    }
+
+    /// The same output showing `colour`: a simulated panel that says what
+    /// a real one's EDID and signal would.
+    #[must_use]
+    pub const fn showing(mut self, colour: DisplayCapabilities) -> Self {
+        self.colour = colour;
         self
     }
 

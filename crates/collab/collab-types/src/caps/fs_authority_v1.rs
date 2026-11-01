@@ -168,9 +168,9 @@ mod tests {
         ]"#;
         let FsAuthority {
             capabilities,
-            room_members,
+            workspace_members,
         } = serde_json::from_str(old).unwrap();
-        assert!(room_members.is_empty());
+        assert!(workspace_members.is_empty());
         let got: Vec<_> = capabilities
             .iter()
             .map(|c| (c.id.as_str(), c.scope.clone(), c.effect, c.access))

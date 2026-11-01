@@ -148,7 +148,7 @@ fn assert_receipt_substitution_refused(
     let receipt = evidence.public_receipt();
     for field in [
         "host",
-        "room",
+        "workspace",
         "invocation",
         "actor",
         "app",
@@ -160,7 +160,7 @@ fn assert_receipt_substitution_refused(
         let mut altered = expected.clone();
         match field {
             "host" => altered.host = uuid::Uuid::new_v4(),
-            "room" => altered.room.push('x'),
+            "workspace" => altered.workspace.push('x'),
             "invocation" => altered.invocation = tilo_actions::InvocationId::new(),
             "actor" => {
                 altered.actor = crate::action_evidence::VerifiedActor::AuthenticatedLocal {
@@ -222,7 +222,7 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
             let public = evidence.public_receipt();
             let expected = crate::action_evidence::AdmissionFacts {
                 host: rig.state.invocation_host().unwrap(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
                 invocation: request.invocation,
                 actor: crate::action_evidence::VerifiedActor::AuthenticatedLocal {
                     root: env.cert.user_public_key,

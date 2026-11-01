@@ -3,7 +3,7 @@
 //! A workspace's namespace is one Automerge document, and nothing inside
 //! its bytes says which workspace that is. A device that serves several
 //! workspaces under one key (a home peer replicating for more than one
-//! room) or a peer that simply lies could otherwise hand a requester a
+//! workspace) or a peer that simply lies could otherwise hand a requester a
 //! different workspace's valid tree, which Automerge would merge without a
 //! complaint.
 //!

@@ -188,7 +188,7 @@ step_user() {
 }
 
 # The GNOME settings the host-desktop session imports on its first login
-# (crates/session/shell/src/firstboot.rs, import_host_input_settings). run.py
+# (crates/session/onboarding-host/src/firstboot.rs, import_host_input_settings). run.py
 # then requires the session's settings to carry them.
 gnome_sources="[('xkb', 'de+nodeadkeys')]"
 gnome_xkb_options="['compose:ralt']"

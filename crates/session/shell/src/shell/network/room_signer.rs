@@ -20,7 +20,7 @@ impl ShellNetwork {
         let owner = self.native_owner()?;
         let certificate = owner.with_current(room, |view| {
             identity
-                .current_native_material(view.workspace())
+                .current_native_material(view.workspace_id())
                 .map(|(certificate, _)| certificate)
         })?;
         if certificate.device_public_key != identity.device_signing_key.verifying_key().to_bytes() {

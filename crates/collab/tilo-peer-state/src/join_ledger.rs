@@ -1,17 +1,17 @@
-//! What a room's governor records between the steps of a join, on every
-//! host that governs rooms: a relay, a cloud host or the device that made
-//! the room. One ledger, so a room is joined the same way wherever it is
+//! What a workspace's governor records between the steps of a join, on every
+//! host that governs workspaces: a relay, a cloud host or the device that made
+//! the workspace. One ledger, so a workspace is joined the same way wherever it is
 //! hosted.
 //!
 //! The cryptographic and governed-document contract is [`crate::join`]'s
-//! and [`crate::governance`]'s. The ledger keeps the invitations a room
+//! and [`crate::governance`]'s. The ledger keeps the invitations a workspace
 //! issued, the challenges it handed out, the receipts of completed joins and
 //! of administration requests, with the request idempotency each exchange
-//! needs. It never writes: the host stages a change here, makes the room
+//! needs. It never writes: the host stages a change here, makes the workspace
 //! durable with it, and only then answers.
 //!
 //! Nothing here draws randomness or reads a clock; the host passes nonces
-//! and `now`, so the ledger runs wherever the room engine does.
+//! and `now`, so the ledger runs wherever the workspace engine does.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -33,7 +33,7 @@ use crate::join::{
     issue_invitation, issue_invitation_from, verify_join_proof, verify_membership_proof,
 };
 
-/// Pending challenges of one kind a room keeps at once.
+/// Pending challenges of one kind a workspace keeps at once.
 const MAX_PENDING_CHALLENGES: usize = 4096;
 /// How long a join or membership challenge may be answered.
 pub const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
@@ -51,7 +51,7 @@ pub struct JoinError {
 }
 
 impl From<crate::state::MembershipError> for JoinError {
-    /// A joining device the room does not admit is refused in the words its
+    /// A joining device the workspace does not admit is refused in the words its
     /// membership refusal already has.
     fn from(error: crate::state::MembershipError) -> Self {
         Self::new(error.to_string())
@@ -77,7 +77,7 @@ impl JoinError {
         }
     }
 
-    /// A Complete this host admitted before, whose device takes the room's
+    /// A Complete this host admitted before, whose device takes the workspace's
     /// current state through the membership exchange instead
     /// ([`crate::join::JOIN_COMPLETED_REFRESH`]).
     fn refresh() -> Self {
@@ -110,17 +110,17 @@ impl From<String> for JoinError {
     }
 }
 
-/// The governed room a ledger answers for, as committed now.
+/// The governed workspace a ledger answers for, as committed now.
 #[derive(Clone, Copy)]
 pub struct Governed<'a> {
-    /// The room's admitted state.
+    /// The workspace's admitted state.
     pub peer: &'a StatePeer,
-    /// The device answering the join: a device of the room's owner.
+    /// The device answering the join: a device of the workspace's owner.
     pub host: &'a DeviceCert,
-    /// The room's workspace id on the wire
+    /// The workspace's relay shard on the wire
     /// ([`crate::join::room_workspace_id`]).
     pub workspace_id: u64,
-    /// The room's committed generation.
+    /// The workspace's committed generation.
     pub generation: u64,
     /// The signed governance a joining member admits, oldest first.
     pub governance_messages: &'a dyn GovernanceMessages,
@@ -152,7 +152,7 @@ impl Governed<'_> {
             invite_id,
             device_cert,
             role,
-            room: self.peer.room().to_owned(),
+            room: self.peer.workspace_id().to_owned(),
             workspace_id: self.workspace_id,
             host: self.host.clone(),
             certified_roster: self.peer.certificates(),
@@ -188,14 +188,14 @@ pub struct Redeeming<'a> {
     pub request_id: [u8; 32],
     pub proof_digest: [u8; 32],
     pub redemption: &'a VerifiedRedemption,
-    /// How the person names themself as they join: the name the room
+    /// How the person names themself as they join: the name the workspace
     /// shows for them ([`crate::PeerGovernanceMut::name_person`]).
     /// `None` keeps the name their invitation and certificate give.
     pub name: Option<&'a str>,
 }
 
-/// What a room's governor keeps between the steps of its joins. Its bytes
-/// are part of the host's room record (postcard on a relay): field order is
+/// What a workspace's governor keeps between the steps of its joins. Its bytes
+/// are part of the host's workspace record (postcard on a relay): field order is
 /// the format, append only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinLedger {
@@ -234,7 +234,7 @@ struct JoinCompletionRecord {
     remote_endpoint: [u8; 32],
     request_id: [u8; 32],
     proof_digest: [u8; 32],
-    /// The delivered bootstrap with the room's state it carried left out and
+    /// The delivered bootstrap with the workspace's state it carried left out and
     /// its governance messages replaced by one digest entry (see
     /// [`JoinCompletionRecord::receipt`]).
     bootstrap: JoinBootstrap,
@@ -262,10 +262,10 @@ const JOIN_RECEIPT_TAG: &[u8] = b"tilo.join-receipt.v1\0";
 impl JoinCompletionRecord {
     /// Durable receipt for a delivered join reply: the joiner's own fields
     /// and one digest over the whole reply. The roster, revocations, rows
-    /// and governance messages are the room's state at delivery; a replay
-    /// rebuilds them from the room and answers only while the digest still
-    /// matches. Keeping them here made every receipt as large as the room,
-    /// and the room record grow with the square of its members.
+    /// and governance messages are the workspace's state at delivery; a replay
+    /// rebuilds them from the workspace and answers only while the digest still
+    /// matches. Keeping them here made every receipt as large as the workspace,
+    /// and the workspace record grow with the square of its members.
     fn receipt(
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
@@ -297,18 +297,18 @@ impl JoinCompletionRecord {
         }
     }
 
-    /// The exact reply this completion delivered, rebuilt from the room and
-    /// answered only while it is unchanged. Once the room has moved on, the
+    /// The exact reply this completion delivered, rebuilt from the workspace and
+    /// answered only while it is unchanged. Once the workspace has moved on, the
     /// member refreshes through the membership challenge.
-    fn replay(&self, room: &Governed<'_>) -> Result<JoinBootstrap, JoinError> {
+    fn replay(&self, workspace: &Governed<'_>) -> Result<JoinBootstrap, JoinError> {
         let delivered = self
             .delivered_digest()
             .ok_or_else(|| JoinError::new("join completion receipt is malformed"))?;
         let rebuilt = JoinBootstrap {
-            certified_roster: room.peer.certificates(),
-            revocations: room.peer.revocations(),
-            records: room.peer.rows(),
-            governance_messages: room.governance_messages.governance_messages(),
+            certified_roster: workspace.peer.certificates(),
+            revocations: workspace.peer.revocations(),
+            records: workspace.peer.rows(),
+            governance_messages: workspace.governance_messages.governance_messages(),
             ..self.bootstrap.clone()
         };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
@@ -338,13 +338,13 @@ pub fn request_digest(value: &impl Serialize) -> Result<[u8; 32], JoinError> {
         .map_err(|error| JoinError::new(error.to_string()))
 }
 
-/// The room an invitation names, read without trusting it: the room it
-/// names is then verified against what that room issued.
+/// The workspace an invitation names, read without trusting it: the workspace it
+/// names is then verified against what that workspace issued.
 ///
 /// # Errors
 ///
 /// The invitation does not decode or verify.
-pub fn invitation_room(signed_invitation: &[u8], now_ns: u64) -> Result<String, JoinError> {
+pub fn invitation_workspace(signed_invitation: &[u8], now_ns: u64) -> Result<String, JoinError> {
     let join =
         decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns)?;
     Ok(join.grant().room.clone())
@@ -388,7 +388,7 @@ impl JoinLedger {
             .map(|completion| completion.bootstrap.device_cert.device_public_key)
     }
 
-    /// Drop what the room keeps about how `people` joined: their
+    /// Drop what the workspace keeps about how `people` joined: their
     /// invitations, join receipts and pending membership challenges. An
     /// invitation whose records are gone is refused as not issued here, so
     /// it still cannot be redeemed again.
@@ -399,11 +399,11 @@ impl JoinLedger {
         });
     }
 
-    /// Take back every way in the room handed `people`: the invitations
+    /// Take back every way in the workspace handed `people`: the invitations
     /// they redeemed or that are addressed to them, and their pending
     /// membership challenges. Their join receipts stay, so a removed
     /// person asking after their request hears it declined, and a replay
-    /// of it is still refused by the room's governance.
+    /// of it is still refused by the workspace's governance.
     pub fn withdraw_invitations(&mut self, people: &BTreeSet<[u8; 32]>) {
         let theirs = |device: &DeviceCert| people.contains(&device.user_public_key);
         let redeemed: BTreeSet<[u8; 32]> = self
@@ -423,8 +423,8 @@ impl JoinLedger {
             .retain(|record| !theirs(&record.device_cert));
     }
 
-    /// Record an invitation `request` asks of `room`, signed by `signer` (the
-    /// room's governor) and reached through `transport`.
+    /// Record an invitation `request` asks of `workspace`, signed by `signer` (the
+    /// workspace's governor) and reached through `transport`.
     ///
     /// # Errors
     ///
@@ -432,7 +432,7 @@ impl JoinLedger {
     /// the invitation cannot be signed.
     pub fn issue(
         &mut self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
         transport: Vec<TransportHint>,
@@ -461,9 +461,9 @@ impl JoinLedger {
         }
         validate_issue_request(&request, now)?;
         let grant = InviteGrant {
-            workspace_id: room.workspace_id,
-            room: room.peer.room().to_owned(),
-            issuer: room.host.clone(),
+            workspace_id: workspace.workspace_id,
+            room: workspace.peer.workspace_id().to_owned(),
+            issuer: workspace.host.clone(),
             role: request.role,
             nonce,
             recipient_user_public_key: request.recipient_user_public_key,
@@ -558,15 +558,15 @@ impl JoinLedger {
         invitations
     }
 
-    /// The invitation `signed_invitation`, verified against what this room
+    /// The invitation `signed_invitation`, verified against what this workspace
     /// issued and has not cancelled.
     ///
     /// # Errors
     ///
-    /// The room did not issue it, cancelled it, or it does not verify.
+    /// The workspace did not issue it, cancelled it, or it does not verify.
     pub fn inspect(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         signed_invitation: &[u8],
         now: u64,
     ) -> Result<VerifiedJoin, JoinError> {
@@ -581,7 +581,7 @@ impl JoinLedger {
         Ok(decode_and_verify_invitation(
             signed_invitation,
             None,
-            &room.revocations()?,
+            &workspace.revocations()?,
             now,
         )?)
     }
@@ -591,7 +591,7 @@ impl JoinLedger {
     /// challenge is open answers that challenge.
     pub fn challenge(
         &mut self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: JoinChallengeRequest,
         nonce: [u8; 32],
@@ -613,7 +613,7 @@ impl JoinLedger {
             }
             return Ok(prior.challenge.clone());
         }
-        let verified = self.inspect(room, &request.signed_invitation, now)?;
+        let verified = self.inspect(workspace, &request.signed_invitation, now)?;
         if verified
             .grant()
             .recipient_user_public_key
@@ -649,18 +649,18 @@ impl JoinLedger {
         Ok(challenge)
     }
 
-    /// The answer to a Complete this room admitted before: `None` when it
+    /// The answer to a Complete this workspace admitted before: `None` when it
     /// never completed request `request_id`.
     ///
     /// # Errors
     ///
     /// The request completed with a different proof or from another
-    /// endpoint, its device is no longer a member, or the room moved on
+    /// endpoint, its device is no longer a member, or the workspace moved on
     /// or the certificate it admitted ran out since
     /// ([`crate::join::JOIN_COMPLETED_REFRESH`]).
     pub fn completed(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
@@ -679,21 +679,24 @@ impl JoinLedger {
             ));
         }
         let device = prior.bootstrap.device_cert.device_public_key;
-        if let Err(error) = room.peer.permissions(device, system_time(now)) {
+        if let Err(error) = workspace.peer.permissions(device, system_time(now)) {
             // The certificate this request was admitted with ran out since.
             // The device is the member it admitted, and proves it again
             // with its renewal through the membership exchange, which puts
-            // the renewal in the room. Refused here, a retained proof would
+            // the renewal in the workspace. Refused here, a retained proof would
             // be sent again and refused for good.
-            if room.peer.certificate_expired(&device, system_time(now)) {
+            if workspace
+                .peer
+                .certificate_expired(&device, system_time(now))
+            {
                 return Err(JoinError::refresh());
             }
             return Err(JoinError::new(error.to_string()));
         }
-        prior.replay(room).map(Some)
+        prior.replay(workspace).map(Some)
     }
 
-    /// Verify `proof` against the challenge this room issued to the device
+    /// Verify `proof` against the challenge this workspace issued to the device
     /// at `remote_endpoint`, for an invitation still redeemable.
     ///
     /// # Errors
@@ -703,7 +706,7 @@ impl JoinLedger {
     /// or does not verify, or the invitation is no longer redeemable.
     pub fn redeem(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         proof: &JoinProof,
         now: u64,
@@ -732,7 +735,7 @@ impl JoinLedger {
             proof,
             &challenge.challenge,
             &challenge.device_cert,
-            &room.revocations()?,
+            &workspace.revocations()?,
             now,
         )?;
         self.redeemable(redemption.join().invite_id())?;
@@ -765,7 +768,7 @@ impl JoinLedger {
         Ok(())
     }
 
-    /// Admit the verified `joins` into `candidate`, the room's next state,
+    /// Admit the verified `joins` into `candidate`, the workspace's next state,
     /// signed by the governor's `key`. Each is checked on its own and
     /// refused alone: a refused admission leaves the others' candidate as it
     /// was. Answers each join's refusal, in order.
@@ -804,7 +807,7 @@ impl JoinLedger {
             .collect()
     }
 
-    /// Stage the outcome of [`Self::admit`] once `room` is the committed
+    /// Stage the outcome of [`Self::admit`] once `workspace` is the committed
     /// state that admitted them: the receipt of each admitted join, which
     /// answers for it from now on, with the challenge it proved and the
     /// invitation it spent let go. Answers each join's bootstrap or refusal,
@@ -815,7 +818,7 @@ impl JoinLedger {
     /// A receipt cannot be encoded.
     pub fn complete(
         &mut self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         joins: &[Redeeming<'_>],
         refusals: &[Option<JoinError>],
     ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
@@ -827,7 +830,7 @@ impl JoinLedger {
             }
             // The challenge it proved and the invitation it spent admit
             // nobody else, and keeping them made every later write of the
-            // room carry each past join.
+            // workspace carry each past join.
             let invite_id = join.redemption.join().invite_id();
             self.join_challenges.retain(|record| {
                 record.challenge.request_id != join.request_id
@@ -835,7 +838,7 @@ impl JoinLedger {
             });
             self.invitations
                 .retain(|record| record.issued.invite_id != invite_id);
-            let bootstrap = room.bootstrap(
+            let bootstrap = workspace.bootstrap(
                 invite_id,
                 join.redemption.certificate().clone(),
                 join.redemption.join().grant().role,
@@ -856,14 +859,14 @@ impl JoinLedger {
     /// challenge is open answers that challenge.
     pub fn membership_challenge(
         &mut self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: MembershipChallengeRequest,
         nonce: [u8; 32],
         now: u64,
     ) -> Result<MembershipChallenge, JoinError> {
         if remote_endpoint != request.device_cert.device_public_key
-            || request.workspace_id != room.workspace_id
+            || request.workspace_id != workspace.workspace_id
         {
             return Err(JoinError::new(
                 "membership request does not match authenticated workspace endpoint",
@@ -880,9 +883,9 @@ impl JoinLedger {
             }
             return Ok(prior.challenge.clone());
         }
-        let challenge = room.peer.governance().membership_challenge(
-            room.workspace_id,
-            room.host,
+        let challenge = workspace.peer.governance().membership_challenge(
+            workspace.workspace_id,
+            workspace.host,
             &request.device_cert,
             request.request_id,
             nonce,
@@ -904,24 +907,24 @@ impl JoinLedger {
     }
 
     /// The renewed certificate a member proved its membership with, which
-    /// the governor puts in place of the one the room holds
+    /// the governor puts in place of the one the workspace holds
     /// ([`crate::PeerGovernanceMut::renew_member_certificate`]) before it
-    /// answers [`Self::membership_complete`]. `None` when the room holds the
+    /// answers [`Self::membership_complete`]. `None` when the workspace holds the
     /// certificate the member proved with.
     ///
     /// # Errors
     ///
     /// As [`Self::membership_complete`], or the certificate does not renew
-    /// the one the room holds ([`crate::PeerGovernance::renewal_of`]).
+    /// the one the workspace holds ([`crate::PeerGovernance::renewal_of`]).
     pub fn membership_renewal(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
     ) -> Result<Option<DeviceCert>, JoinError> {
-        let (issued, _) = self.proven_membership(room, remote_endpoint, request, now)?;
-        Ok(room
+        let (issued, _) = self.proven_membership(workspace, remote_endpoint, request, now)?;
+        Ok(workspace
             .peer
             .governance()
             .renewal_of(&issued.device_cert, system_time(now))?
@@ -929,10 +932,10 @@ impl JoinLedger {
     }
 
     /// The challenge `request` proves, checked against the endpoint that
-    /// sent it and the room's revocations.
+    /// sent it and the workspace's revocations.
     fn proven_membership(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
@@ -953,23 +956,24 @@ impl JoinLedger {
             &request.proof,
             &issued.challenge,
             &issued.device_cert,
-            &room.revocations()?,
+            &workspace.revocations()?,
             now,
         )?;
         Ok((issued, membership))
     }
 
-    /// The room's current bootstrap for a member that proved its membership
-    /// against a challenge this room issued.
+    /// The workspace's current bootstrap for a member that proved its membership
+    /// against a challenge this workspace issued.
     pub fn membership_complete(
         &self,
-        room: &Governed<'_>,
+        workspace: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
     ) -> Result<JoinBootstrap, JoinError> {
-        let (issued, membership) = self.proven_membership(room, remote_endpoint, request, now)?;
-        let role = room
+        let (issued, membership) =
+            self.proven_membership(workspace, remote_endpoint, request, now)?;
+        let role = workspace
             .peer
             .governance()
             .verify_member_refresh(&membership, system_time(now))?;
@@ -980,7 +984,7 @@ impl JoinLedger {
                 completion.bootstrap.device_cert.device_public_key == remote_endpoint
             })
             .map_or([0; 32], |completion| completion.bootstrap.invite_id);
-        Ok(room.bootstrap(invite_id, issued.device_cert.clone(), role))
+        Ok(workspace.bootstrap(invite_id, issued.device_cert.clone(), role))
     }
 
     /// Whether administration request `request_id` was committed before.

@@ -1,10 +1,10 @@
-//! App workers: where an app's code runs when the host acts on a room's
+//! App workers: where an app's code runs when the host acts on a workspace's
 //! records, out of the host's trust domain.
 //!
-//! The host holds its device key, every agent's device key and every room
+//! The host holds its device key, every agent's device key and every workspace
 //! it serves. An app's code — its resource kind, its seed, its component —
-//! runs over whatever a room's members put in a record, so it does not run
-//! there. Each record the host's room actions or an agent holds lives in
+//! runs over whatever a workspace's members put in a record, so it does not run
+//! there. Each record the host's workspace actions or an agent holds lives in
 //! its own worker process ([`ConfinedReplica`]); the registered reads of a
 //! record's component (`ConfinedRead`) and the views of an existing
 //! resource (`ConfinedViews`) each run in one too.
@@ -26,7 +26,7 @@
 //!
 //! # Hosting workers
 //!
-//! Every program that runs room actions or agents calls [`dispatch_early`]
+//! Every program that runs workspace actions or agents calls [`dispatch_early`]
 //! first thing in `main`, before it starts threads or a runtime. A test
 //! crate adds [`app_worker!`](crate::app_worker) instead. Without either,
 //! opening a record fails, naming the missing line.

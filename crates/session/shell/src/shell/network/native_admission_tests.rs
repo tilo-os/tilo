@@ -15,7 +15,7 @@ use std::{
 };
 use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
 use tilo_network_actor::{HostIdentity, native_ingress};
-use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture};
+use tilo_peer_state::owner::testing::{APP, WORKSPACE, raw_fixture};
 
 /// One frame at 60 Hz: what a tick of the frame loop may cost its thread.
 const FRAME: Duration = Duration::from_millis(16);
@@ -40,7 +40,7 @@ fn queued_write_then_departure() -> Fixture {
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     let certificate = owner
         .with_current(room, |view| Ok(view.device().clone()))
         .unwrap();
@@ -145,6 +145,10 @@ fn frame_tick_cost(net: &ShellNetwork) -> Duration {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived locks by design"
+)]
 fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     let mut fixture = queued_write_then_departure();
     // The worker stops inside the admission's first data sync until the
@@ -238,7 +242,7 @@ fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     let (certificate, hint, continuity) = owner
         .with_current(room, |view| {
             Ok((

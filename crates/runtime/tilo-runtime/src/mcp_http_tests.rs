@@ -45,7 +45,7 @@ struct StubHost {
     availability: CatalogueAvailability,
     exited: Arc<std::sync::atomic::AtomicBool>,
     record: Option<String>,
-    room: Option<String>,
+    workspace: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -139,7 +139,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: self.room.clone().unwrap_or_else(|| "room".into()),
+            room: self.workspace.clone().unwrap_or_else(|| "workspace".into()),
             record_id: self.record.clone().unwrap_or_default(),
             browsable: true,
         }];
@@ -263,7 +263,7 @@ fn default_activation_rechecks_an_owner_that_exits_during_admission() {
         ..StubHost::default()
     };
     let invoked = host.invoked.clone();
-    let server = McpServer::new(host, "room".into(), "owner".into());
+    let server = McpServer::new(host, "workspace".into(), "owner".into());
     assert_eq!(run(server.activate_existing("so.tilo.test")).unwrap(), None);
     assert!(invoked.lock().unwrap().is_empty());
 }
@@ -275,7 +275,7 @@ fn default_activation_uses_the_existing_permission_checked_view_door() {
         ..StubHost::default()
     };
     let invoked = host.invoked.clone();
-    let server = McpServer::new(host, "room".into(), "owner".into());
+    let server = McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         assert_eq!(
             server.activate_existing("so.tilo.test").await.unwrap(),
@@ -308,7 +308,7 @@ fn default_activation_does_not_confuse_other_records_or_absence_with_a_live_owne
         },
     ] {
         let invoked = host.invoked.clone();
-        let server = McpServer::new(host, "room".into(), "owner".into());
+        let server = McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             assert_eq!(
                 server.activate_existing("so.tilo.test").await.unwrap(),
@@ -329,7 +329,7 @@ fn default_activation_refuses_unready_and_older_owners_without_starting_an_actio
         },
     ] {
         let invoked = host.invoked.clone();
-        let server = McpServer::new(host, "room".into(), "owner".into());
+        let server = McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             assert!(server.activate_existing("so.tilo.test").await.is_err());
         });
@@ -340,7 +340,7 @@ fn default_activation_refuses_unready_and_older_owners_without_starting_an_actio
 fn endpoint(host: StubHost) -> Arc<Endpoint<StubHost>> {
     Endpoint::new(
         host,
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         Some("secret".into()),
         None,
@@ -552,7 +552,8 @@ fn each_stdio_connection_is_its_own_attributed_agent_run() {
     let invoked = Arc::clone(&host.invoked);
     run(async {
         for name in ["Painter", "Critic"] {
-            let server = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+            let server =
+                crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             server
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}))
                 .await
@@ -588,7 +589,7 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
     let invoked = Arc::clone(&host.invoked);
     let endpoint = endpoint(host.clone());
     run(async {
-        let first = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let first = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
         let answer = first
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Painter","version":"1"}}}))
             .await
@@ -606,7 +607,7 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
         .await;
         drop(first);
 
-        let again = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let again = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
         let answer = again
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
             .await
@@ -640,7 +641,7 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
             .to_owned();
         invoke(&endpoint, &session).await;
 
-        let bad = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+        let bad = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
         let refused = bad
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":"two words"}}}}}))
             .await
@@ -704,47 +705,75 @@ fn an_agent_never_confirms_by_its_own_word_and_carries_the_persons_answer() {
 }
 
 #[test]
-fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
+fn explicit_mcp_workspace_is_only_a_canonical_workspace_identifier() {
     let mut config = Config {
         address: "127.0.0.1:7070".parse().unwrap(),
         token: Some("secret".into()),
-        room: None,
+        workspace: None,
     };
     assert!(config.validate().is_ok());
-    for room in [
+    for workspace in [
         "",
         "Writer",
         "00000000-0000-0000-0000-000000000000",
         "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
     ] {
-        config.room = Some(room.into());
+        config.workspace = Some(workspace.into());
         assert!(config.validate().is_err());
     }
-    config.room = Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
+    config.workspace = Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
     assert!(
         config.validate().is_ok(),
         "syntax validation does not grant admission"
     );
 }
 
+/// A service manager's unit written before the rename still sets the
+/// variable's old name; the new one wins when both are set.
+#[test]
+fn the_mcp_workspace_is_read_under_the_name_it_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let token = dir.path().join("token");
+    std::fs::write(&token, "synthetic-token\n").unwrap();
+    let workspace = "0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa";
+    let named = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(ADDRESS_ENV, "127.0.0.1:7391");
+    env.set(TOKEN_FILE_ENV, &token);
+    env.remove(WORKSPACE_ENV);
+    env.remove(LEGACY_WORKSPACE_ENV);
+    env.set(LEGACY_WORKSPACE_ENV, workspace);
+    let config = Config::from_env()
+        .unwrap()
+        .expect("an endpoint is configured");
+    assert_eq!(config.workspace.as_deref(), Some(workspace));
+
+    env.set(WORKSPACE_ENV, named);
+    let config = Config::from_env()
+        .unwrap()
+        .expect("an endpoint is configured");
+    assert_eq!(config.workspace.as_deref(), Some(named));
+}
+
 #[test]
 fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let host = StubHost {
-        room: Some(room.into()),
+        workspace: Some(workspace.into()),
         ..Default::default()
     };
     let endpoint = Endpoint::new(
         host.clone(),
-        room.into(),
+        workspace.into(),
         "profile-actor".into(),
         Some("secret".into()),
         None,
     );
     run(async {
         let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "clientInfo":{"name":"forged-room-name","room":"other"},
-            "room":"other", "actor":"forged", "capabilities":{}
+            "clientInfo":{"name":"forged-workspace-name","workspace":"other"},
+            "workspace":"other", "actor":"forged", "capabilities":{}
         }});
         let response = endpoint
             .dispatch(
@@ -763,7 +792,7 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
         assert_ne!(result["result"]["isError"], true, "{result}");
         let callers = host.callers.lock().unwrap().clone();
         assert_eq!(callers.len(), 1);
-        assert_eq!(callers[0].room(), Some(room));
+        assert_eq!(callers[0].room(), Some(workspace));
         assert!(
             matches!(
                 callers[0].principal(),
@@ -804,7 +833,7 @@ fn watched_endpoint(token: Option<&str>) -> (Arc<Endpoint<StubHost>>, Arc<WatchR
     let lease = WatchLease::new(sink.clone(), WATCH_LEASE);
     let endpoint = Endpoint::build(
         StubHost::default(),
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         token.map(str::to_owned),
         None,
@@ -910,7 +939,7 @@ fn watch_reaches_the_compositor_as_its_control_command() {
     ));
     let endpoint = Endpoint::new(
         StubHost::default(),
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         Some("secret".into()),
         Some(computer),
@@ -971,7 +1000,7 @@ fn the_workspace_itself_is_addressable_for_installed_apps() {
     assert_eq!(both["result"]["isError"], true, "{both}");
     let invoked = invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
-    assert_eq!(invoked[0].target.provider, "workspace:room");
+    assert_eq!(invoked[0].target.provider, "workspace:workspace");
 }
 
 struct IssuingHost;
@@ -1015,7 +1044,7 @@ fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
     .unwrap();
     let served = Endpoint::with_viewer(
         StubHost::default(),
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         Some("secret".into()),
         None,
@@ -1069,7 +1098,7 @@ fn an_invocation_answers_with_its_result_once_it_finishes() {
     let host = StubHost::default();
     let running_for = Arc::clone(&host.running_for);
     let invoked = Arc::clone(&host.invoked);
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         let target = json!({"peer_id":71,"revision":"1","resource":"test.note:1","action":tilo_resource::APPLY});
         running_for.store(3, std::sync::atomic::Ordering::SeqCst);
@@ -1121,7 +1150,7 @@ fn untrusted_content_is_labelled_wherever_it_reaches_the_model() {
     let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
     let label = |reply: &Value| reply["structuredContent"][crate::mcp::UNTRUSTED].clone();
 
-    let plain = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+    let plain = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let reply = tool(&plain, "tilo_invoke", target.clone()).await;
         assert_eq!(
@@ -1142,7 +1171,7 @@ fn untrusted_content_is_labelled_wherever_it_reaches_the_model() {
     tags.lock()
         .unwrap()
         .push(tilo_actions::UNTRUSTED_CONTENT_TAG.into());
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         let listed = tool(&server, "tilo_query", json!({"peer_id":71})).await;
         assert!(
@@ -1241,7 +1270,7 @@ fn an_action_that_produced_an_image_answers_with_it() {
     };
     let running_for = Arc::clone(&host.running_for);
     let output = Arc::clone(&host.output);
-    let server = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+    let server = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
     let images = |reply: &Value| -> Vec<Value> {
@@ -1314,7 +1343,7 @@ fn an_action_that_produced_an_image_answers_with_it() {
             "the second call made the same picture, and says so: {batch}"
         );
     });
-    let blind = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    let blind = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         let reply = tool(&blind, "tilo_invoke", target).await;
         assert!(
@@ -1334,7 +1363,7 @@ fn an_effect_answers_with_its_picture_address_not_the_picture() {
         value: Some(json!({"width":4,"height":3})),
         resources: vec!["tilo.content:look".into()],
     };
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     let images = |reply: &Value| {
         reply["content"]
@@ -1384,7 +1413,7 @@ fn a_read_of_a_bound_resource_shows_its_picture_even_where_the_host_cannot_resol
         value: Some(json!({"url":"https://site.test/","agent":{"kind":"view","action":"outline"}})),
         resources: vec!["tilo.content:look".into()],
     };
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     let images = |reply: &Value| {
         reply["content"]
@@ -1422,7 +1451,7 @@ fn a_bound_resources_effect_still_answers_with_its_picture_address() {
         value: Some(json!({"agent":{"kind":"effect"}})),
         resources: vec!["tilo.content:look".into()],
     };
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     run(async {
         let reply = tool(
@@ -1466,7 +1495,7 @@ fn a_bound_resource_invoked_at_a_revision_shows_its_picture() {
         value: Some(json!({"url":"https://site.test/","message":"Found canvas"})),
         resources: vec!["tilo.content:look".into()],
     };
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
         .with_media(Some(Arc::new(StoredByTestApp)));
     let images = |reply: &Value| {
         reply["content"]
@@ -1511,7 +1540,7 @@ fn a_picture_already_shown_is_named_instead_of_sent_again() {
             .count()
     };
     let session = || {
-        crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+        crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)))
     };
     let server = session();
@@ -1552,7 +1581,7 @@ fn a_picture_already_shown_is_named_instead_of_sent_again() {
 fn an_omitted_revision_acts_on_the_current_directory_but_an_empty_one_is_refused() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         let current = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
         let reply = tool(&server, "tilo_invoke", current.clone()).await;
@@ -1580,7 +1609,8 @@ fn an_omitted_revision_acts_on_the_current_directory_but_an_empty_one_is_refused
 
 #[test]
 fn a_query_answers_compact_by_default_and_matches_every_word_of_a_needle() {
-    let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let server =
+        crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
     run(async {
         let compact = tool(&server, "tilo_query", json!({"peer_id":71})).await;
         let page = &compact["structuredContent"];
@@ -1655,7 +1685,7 @@ fn a_query_answers_compact_by_default_and_matches_every_word_of_a_needle() {
 fn an_app_id_addresses_its_newest_running_instance() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
-    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         let page = tool(
             &server,
@@ -1682,7 +1712,8 @@ fn an_app_id_addresses_its_newest_running_instance() {
 
 #[test]
 fn a_session_can_pin_the_full_rows_it_parses() {
-    let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let server =
+        crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
     run(async {
         let init = |capabilities: Value| json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":capabilities}});
         let reply = server.handle(init(json!({}))).await.unwrap();
@@ -1723,7 +1754,8 @@ fn a_session_can_pin_the_full_rows_it_parses() {
 
 #[test]
 fn opening_a_host_application_answers_without_waiting_for_a_peer() {
-    let server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let server =
+        crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
     // On the paused clock the answer takes no time unless it waits on a
     // timer, as waiting for a peer to start would.
     run_paused(async {
@@ -1752,7 +1784,7 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
         let history = "mcp:11111111-1111-4111-8111-111111111111";
         let mut executions: Vec<String> = Vec::new();
         for _ in 0..2 {
-            let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+            let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let forged_execution = executions
                 .first()
                 .map_or("11111111-1111-4111-8111-111111111111", String::as_str);
@@ -1851,7 +1883,7 @@ fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
 
 #[test]
 fn stdio_server_drop_retires_retained_caller_clones() {
-    let server = McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let server = McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
     let caller = server.execution_caller();
     let identity = caller.clone();
     assert!(caller.execution_is_live());

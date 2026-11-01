@@ -8,7 +8,9 @@ use tilo_actions::{DoorError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 
-use super::{Card, Device, Profile, SOUND, Sound, SoundAction, Stream, VOLUME_STEP, resource};
+use super::{
+    Card, Device, Profile, SOUND, Sound, SoundAction, Stream, Use, UseKind, VOLUME_STEP, resource,
+};
 
 impl From<&AudioDevice> for Device {
     fn from(device: &AudioDevice) -> Self {
@@ -21,6 +23,22 @@ impl From<&AudioDevice> for Device {
             muted: device.muted.unwrap_or(false),
             channels: device.channels,
             codec: device.codec.clone(),
+        }
+    }
+}
+
+impl From<&media::audio::capture::MediaUse> for Use {
+    fn from(use_: &media::audio::capture::MediaUse) -> Self {
+        Self {
+            client_id: use_.client_id,
+            pid: use_.pid,
+            app_id: use_.app_id.clone(),
+            label: use_.label.clone(),
+            binary: use_.binary.to_string_lossy().into_owned(),
+            kind: match use_.kind {
+                media::audio::capture::MediaKind::Microphone => UseKind::Microphone,
+                media::audio::capture::MediaKind::Camera => UseKind::Camera,
+            },
         }
     }
 }
@@ -59,9 +77,10 @@ impl From<&media::audio::AudioHardwareDevice> for Card {
 }
 
 impl Sound {
-    /// The reading of `graph`.
+    /// The reading of `graph`, and of who is using the camera or the
+    /// microphone in it.
     #[must_use]
-    pub fn of(graph: &AudioGraph) -> Self {
+    pub fn of(graph: &AudioGraph, uses: &[media::audio::capture::MediaUse]) -> Self {
         let output = graph.default_sink();
         let input = graph.default_source();
         Self {
@@ -86,6 +105,7 @@ impl Sound {
                 .chain(&graph.record_streams)
                 .map(Stream::from)
                 .collect(),
+            uses: uses.iter().map(Use::from).collect(),
             hardware: graph.hardware.iter().map(Card::from).collect(),
             pending: Vec::new(),
             problem: None,
@@ -93,10 +113,18 @@ impl Sound {
     }
 }
 
+/// One read of the audio graph: the graph, and who is using the camera or
+/// the microphone in it.
+#[derive(Clone, Debug, Default)]
+pub struct Read {
+    pub graph: AudioGraph,
+    pub uses: Vec<media::audio::capture::MediaUse>,
+}
+
 /// The audio graph under the service.
 pub trait Graph: Send + Sync {
     /// Read the graph.
-    fn read(&self) -> AudioGraph;
+    fn read(&self) -> Read;
     /// What changes it.
     fn control(&self) -> &dyn GraphControl;
 }
@@ -111,8 +139,10 @@ impl Default for SystemGraph {
 }
 
 impl Graph for SystemGraph {
-    fn read(&self) -> AudioGraph {
-        media::audio::enumerate()
+    fn read(&self) -> Read {
+        media::audio::try_read()
+            .map(|(graph, uses)| Read { graph, uses })
+            .unwrap_or_default()
     }
 
     fn control(&self) -> &dyn GraphControl {
@@ -293,11 +323,12 @@ impl SoundService {
         let action = action.to_owned();
         self.worker.run(move |graph| {
             let before = graph.read();
-            let result = change.make(&before, graph.control());
+            let result = change.make(&before.graph, graph.control());
+            let after = graph.read();
             Landed::Changed {
                 action,
                 result,
-                sound: Sound::of(&graph.read()),
+                sound: Sound::of(&after.graph, &after.uses),
             }
         });
         Started::Accepted
@@ -310,7 +341,10 @@ impl SoundService {
 }
 
 fn refresh(jobs: &Jobs<dyn Graph, Landed>) {
-    jobs.run(|graph| Landed::Read(Sound::of(&graph.read())));
+    jobs.run(|graph| {
+        let read = graph.read();
+        Landed::Read(Sound::of(&read.graph, &read.uses))
+    });
 }
 
 /// The level a `f64` argument names, from 0 to 1.

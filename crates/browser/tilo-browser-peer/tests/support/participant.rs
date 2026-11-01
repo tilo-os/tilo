@@ -136,7 +136,7 @@ impl Participant {
             publish(
                 &session,
                 &NeighbourMsg::MlsGovernance {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     frame: Box::new(frame),
                     delivery: 1,
                 },
@@ -287,7 +287,7 @@ async fn admit(
         for frame in outgoing {
             delivery = delivery.checked_add(1).unwrap();
             let message = NeighbourMsg::MlsGovernance {
-                room: ROOM.into(),
+                workspace: ROOM.into(),
                 frame: Box::new(frame),
                 delivery,
             };

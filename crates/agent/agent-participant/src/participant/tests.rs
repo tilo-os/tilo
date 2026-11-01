@@ -384,7 +384,7 @@ fn a_plan_that_skipped_the_export_asked_for_is_planned_again_once() {
     assert!(!asks_export("the exported figures") && asks_export("Export it as PNG"));
 }
 
-/// A task that names an app the room has no document of is re-planned
+/// A task that names an app the workspace has no document of is re-planned
 /// with that app named as one whose operations make the document.
 #[test]
 fn the_apps_a_task_names_without_a_document_are_found() {
@@ -649,7 +649,7 @@ fn a_follow_up_names_the_records_its_request_names() {
 fn message_route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
-        cluster_id: "room".into(),
+        cluster_id: "workspace".into(),
         record: record.into(),
     }
 }
@@ -1321,15 +1321,15 @@ fn a_step_brief_leaves_inlined_pictures_out() {
     assert!(brief.contains("(data:image/png,"), "{brief}");
 }
 
-/// A member who lacks content the room's records reference and asks the
-/// room for it is answered from the room's store, where the content an
+/// A member who lacks content the workspace's records reference and asks the
+/// workspace for it is answered from the workspace's store, where the content an
 /// agent's records imported is kept: the pieces make up the bytes asked
-/// for. Content of another room, or none, is word that it is not here.
+/// for. Content of another workspace, or none, is word that it is not here.
 #[test]
-fn a_member_asking_for_room_content_is_answered_from_the_rooms_store() {
+fn a_member_asking_for_workspace_content_is_answered_from_the_workspaces_store() {
     use tilo_browser_peer::content::ContentWants;
 
-    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let (agent, person) = ([7_u8; 32], [9_u8; 32]);
     let store = tilo_content::ContentStore::memory();
     // More than one piece's worth, so the answer is several.
@@ -1339,13 +1339,13 @@ fn a_member_asking_for_room_content_is_answered_from_the_rooms_store() {
     let hash = store.put(&footage).unwrap();
 
     let mut wants = ContentWants::default();
-    let ask = |wants: &mut ContentWants<()>, room: &str, hash: &str| {
+    let ask = |wants: &mut ContentWants<()>, workspace: &str, hash: &str| {
         wants
-            .ask(&person, (), ("so.tilo.video-editor", room), hash, 1)
+            .ask(&person, (), ("so.tilo.video-editor", workspace), hash, 1)
             .unwrap()
     };
-    let request = ask(&mut wants, ROOM, &hash);
-    let frames = room_content::answer(&agent, &person, &request, ROOM, &store);
+    let request = ask(&mut wants, WORKSPACE, &hash);
+    let frames = workspace_content::answer(&agent, &person, &request, WORKSPACE, &store);
     assert!(frames.len() > 1, "the footage comes in pieces");
     let arrived: Vec<_> = frames
         .iter()
@@ -1353,12 +1353,12 @@ fn a_member_asking_for_room_content_is_answered_from_the_rooms_store() {
         .collect();
     assert_eq!(arrived.len(), 1);
     assert_eq!(arrived[0].hash, hash);
-    assert_eq!(arrived[0].bytes, footage, "the bytes the room keeps");
+    assert_eq!(arrived[0].bytes, footage, "the bytes the workspace keeps");
 
-    let other_room = ask(&mut wants, "0b5e3c1a-9f0d-4e2b-8a7c-3d6f1e2a4b5c", &hash);
-    let missing = ask(&mut wants, ROOM, &"ab".repeat(32));
-    for request in [other_room, missing] {
-        let frames = room_content::answer(&agent, &person, &request, ROOM, &store);
+    let other_workspace = ask(&mut wants, "0b5e3c1a-9f0d-4e2b-8a7c-3d6f1e2a4b5c", &hash);
+    let missing = ask(&mut wants, WORKSPACE, &"ab".repeat(32));
+    for request in [other_workspace, missing] {
+        let frames = workspace_content::answer(&agent, &person, &request, WORKSPACE, &store);
         assert_eq!(frames.len(), 1, "one word that it is not here");
         assert!(wants.piece(&person, &frames[0]).is_none());
     }

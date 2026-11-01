@@ -10,7 +10,7 @@ pub(crate) fn fence(
     let same = owner
         .with_current(room, |view| Ok(selected == Some(view.device())))
         .unwrap_or(false);
-    if !same && owner.contains_room(room) {
+    if !same && owner.contains_workspace(room) {
         owner.invalidate_identity(room);
     }
     if let Some(pending) = owner.pending_enrollment(room)? {
@@ -42,7 +42,7 @@ mod tests {
             "same identity must not tear down authority"
         );
         let other = owner
-            .with_current(room, |view| Ok(view.room_host().clone()))
+            .with_current(room, |view| Ok(view.workspace_host().clone()))
             .unwrap();
         assert_ne!(other, current);
         fence(&owner, room, Some(&other)).unwrap();

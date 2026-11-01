@@ -412,6 +412,7 @@ impl ActionTable {
             children: Vec::new(),
             actions: vec![spec],
             views: Vec::new(),
+            readers: published.readers,
         }
     }
 

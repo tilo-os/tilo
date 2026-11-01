@@ -125,6 +125,8 @@ tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true
+# The cluster of a person's own records, which their store's key is.
+collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }

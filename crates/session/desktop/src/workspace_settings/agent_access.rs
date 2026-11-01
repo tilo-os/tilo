@@ -99,7 +99,7 @@ pub fn answer_at(ws: &Workspace, agent: &str, scope: &AnswerScope, kind: ActionK
     let decision = decide(
         ws.policy.grants.iter(),
         &subject,
-        &scope.node(&ws.policy.room),
+        &scope.node(&ws.policy.workspace),
         kind,
         &cx,
     );
@@ -194,7 +194,7 @@ pub fn set_agent_answers(
     agent: &str,
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
 ) -> PolicyEdit {
-    let room = ws.policy.room.clone();
+    let room = ws.policy.workspace.clone();
     let by = Subject::Person(actor.clone());
     let changes: Vec<_> = answers
         .iter()

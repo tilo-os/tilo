@@ -45,7 +45,7 @@ pub(crate) struct LayoutJudge {
     room: String,
     decides: bool,
     /// The room's policy, once its governance is here.
-    policy: Option<tilo_action_policy::RoomPolicy>,
+    policy: Option<tilo_action_policy::WorkspacePolicy>,
     members: Option<BTreeSet<String>>,
     /// The person each device the room knows acts for.
     persons: HashMap<[u8; 32], String>,

@@ -314,14 +314,14 @@ mod tests {
             ),
             (
                 NeighbourMsg::IdentityAnnouncement {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     device_cert: device_cert(),
                 },
                 None,
             ),
             (
                 NeighbourMsg::IdentityAnnouncementV2 {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     device_cert: device_cert(),
                     revocations: Vec::new(),
                 },
@@ -343,7 +343,7 @@ mod tests {
             ),
             (
                 NeighbourMsg::MlsGovernance {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
                         channel,
@@ -365,7 +365,7 @@ mod tests {
             ),
             (
                 NeighbourMsg::MlsAccessRequest {
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,

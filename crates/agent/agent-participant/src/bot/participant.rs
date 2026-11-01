@@ -1,4 +1,4 @@
-//! A bot in the room: a certified participant with its own device key and
+//! A bot in the workspace: a certified participant with its own device key and
 //! delegation, holding confined replicas of the records of the apps its
 //! program names, reading every change to them after its cursors,
 //! committing what its runs do through its session, and showing itself
@@ -45,12 +45,12 @@ impl BotIdentity {
     }
 }
 
-/// One installed bot in one room.
+/// One installed bot in one workspace.
 pub struct BotParticipant {
     identity: BotIdentity,
     peer: PeerHandle,
     events: PeerEvents,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     catalogue: AppCatalogue,
     /// The app ids whose records the bot holds.
@@ -62,12 +62,12 @@ pub struct BotParticipant {
     /// Records of watched apps not held yet, each merged as it changes.
     pending: Unopened,
     live: LiveState,
-    /// The host admitted the room; everything it replayed has arrived.
+    /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
 }
 
 impl BotParticipant {
-    /// Connect as the bot and join `config.room`'s durable and live
+    /// Connect as the bot and join `config.workspace`'s durable and live
     /// planes, holding the records of the `watched` apps as `actor`.
     pub fn start(
         config: ParticipantConfig,
@@ -76,12 +76,12 @@ impl BotParticipant {
         watched: BTreeSet<String>,
         actor: ReplicaActor,
     ) -> Result<Self, String> {
-        let workspace_id = tilo_relay_protocol::room_workspace_id(&config.room)
-            .map_err(|_| "the room is not a uuid".to_string())?;
+        let workspace_id = tilo_relay_protocol::room_workspace_id(&config.workspace)
+            .map_err(|_| "the workspace is not a uuid".to_string())?;
         if identity.delegation.delegate.installation().is_none()
             || !identity.delegation.permits_workspace(workspace_id)
         {
-            return Err("the bot is not delegated this room".into());
+            return Err("the bot is not delegated this workspace".into());
         }
         let peer = PeerHandle::start(
             PeerConfig {
@@ -99,11 +99,11 @@ impl BotParticipant {
         peer.join(workspace_id)?;
         peer.live_join(workspace_id)?;
         Ok(Self {
-            pending: Unopened::new(&config.room),
+            pending: Unopened::new(&config.workspace),
             identity,
             peer,
             events,
-            room: config.room,
+            workspace: config.workspace,
             workspace_id,
             catalogue,
             watched,
@@ -120,7 +120,7 @@ impl BotParticipant {
     }
 
     /// Take in what the session delivered and hold the watched records it
-    /// named. Whether the room has been replayed, so catch-up may begin.
+    /// named. Whether the workspace has been replayed, so catch-up may begin.
     pub fn pump(&mut self) -> bool {
         let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
@@ -140,7 +140,7 @@ impl BotParticipant {
             }
             PeerEvent::Document(document) => {
                 let route = document.route.clone();
-                if route.cluster_id != self.room || !self.watched.contains(&route.app_id) {
+                if route.cluster_id != self.workspace || !self.watched.contains(&route.app_id) {
                     return;
                 }
                 let Some(mutation) = document.mutation() else {
@@ -188,7 +188,7 @@ impl BotParticipant {
             let opened = ConfinedReplica::open(
                 &self.catalogue,
                 &route.app_id,
-                &self.room,
+                &self.workspace,
                 &self.identity.actor(),
                 &self.actor,
                 Seed::Existing {
@@ -208,14 +208,14 @@ impl BotParticipant {
         }
     }
 
-    /// Whether the room has been replayed.
+    /// Whether the workspace has been replayed.
     #[must_use]
     pub const fn ready(&self) -> bool {
         self.ready
     }
 
     /// Act as `actor` from now on: the standing the host rebuilt from the
-    /// room's current policy before a run. Records already held reopen as
+    /// workspace's current policy before a run. Records already held reopen as
     /// it on their next change; a fresh replica is opened per run.
     pub fn set_actor(&mut self, actor: ReplicaActor) {
         if self.actor == actor {
@@ -232,7 +232,7 @@ impl BotParticipant {
                 ConfinedReplica::open(
                     &self.catalogue,
                     &route.app_id,
-                    &self.room,
+                    &self.workspace,
                     &self.identity.actor(),
                     &self.actor,
                     Seed::Existing {
@@ -317,7 +317,7 @@ impl BotParticipant {
         }
     }
 
-    /// Show the bot in the room, at `focus` when it acts there.
+    /// Show the bot in the workspace, at `focus` when it acts there.
     pub fn publish_presence(&mut self, focus: Option<&DocumentRoute>, activity: Option<String>) {
         let now = tilo_clock::unix_now_ms();
         let participant = LiveParticipant {
@@ -347,7 +347,7 @@ impl BotParticipant {
         self.identity.cert.device_public_key
     }
 
-    /// Leave the room and end the session.
+    /// Leave the workspace and end the session.
     pub fn close(mut self) {
         self.publish_presence(None, None);
         self.replicas.clear();
@@ -356,8 +356,8 @@ impl BotParticipant {
 }
 
 impl super::door::DoorParticipant for BotParticipant {
-    fn room(&self) -> &str {
-        &self.room
+    fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)> {

@@ -34,6 +34,7 @@ mod app_sheets;
 pub mod arrangement;
 mod automation;
 mod bars;
+mod call_devices;
 mod calls;
 pub mod capture;
 mod capture_send;
@@ -51,6 +52,7 @@ mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
 mod device_actions;
+mod devices;
 mod dictation;
 mod directory;
 mod display_confirm;
@@ -82,8 +84,8 @@ mod owner_session;
 mod panels;
 mod people;
 mod plane;
-mod press_outside;
 pub mod portal_link;
+mod press_outside;
 mod projection;
 mod projection_video;
 mod questions;
@@ -95,6 +97,8 @@ mod setup;
 mod sheets;
 pub mod shell;
 mod shortcut_guide;
+mod slot_binding;
+mod slot_views;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
@@ -136,6 +140,7 @@ pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
+pub use devices::RESOURCE as DEVICES_RESOURCE;
 pub use engine::Person;
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
@@ -256,6 +261,17 @@ struct Shared {
     devices: mount::devices::Devices,
     /// The session's displays as the panel was last fed them.
     displays: mount::displays::Displays,
+    /// The machine's charge and what holds it awake, as the panel was last fed
+    /// them.
+    panel_power: mount::panel_power::PanelPower,
+    /// The session another of the person's devices handed this one, as the
+    /// now-playing card shows it, until they continue it here.
+    handoff: std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>,
+    /// The services' revision and the speaker group session the panel last
+    /// took what plays from: its reading carries the players' covers, so it
+    /// is read only when one of the services published something or the
+    /// sound moved onto or off a speaker group.
+    media_fed: std::cell::Cell<Option<(u64, Option<[u8; 16]>)>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -312,10 +328,11 @@ struct Shared {
     observed: RefCell<Option<Vec<(usize, u64)>>>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
-    /// The daemon's notifications on the desktop.
-    notifications: RefCell<notifications::SessionNotifications>,
+    /// The daemon's notifications on the desktop, as the session publishes
+    /// the centre they are kept in.
+    notifications: Rc<RefCell<notifications::SessionNotifications>>,
     /// The notification centre as the quick settings panel was last fed it.
-    notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
+    notice_fed: RefCell<Option<tilo_quick_settings::hosted::NotificationCentre>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace's room,
@@ -332,7 +349,10 @@ struct Shared {
     personal: Option<RefCell<workspaces::Personal>>,
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
-    clipboard: mount::clipboard::Clipboard,
+    clipboard: Rc<mount::clipboard::Clipboard>,
+    /// What the panel's Clipboard section was last fed, so what did not
+    /// change is not fed again.
+    clipboard_view: RefCell<Option<tilo_quick_settings::ClipboardView>>,
     /// The person's arrangement, as their own record: what is open where,
     /// with history and undo (shell.md §2). The desk places its windows
     /// from it.
@@ -369,6 +389,9 @@ struct Shared {
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The person's "hide the top bar until the pointer is near it", as the
+    /// settings watch last read it.
+    hide_top_bar: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
     controller: Rc<Cell<Option<ui::ControllerFamily>>>,
@@ -545,14 +568,30 @@ impl Shared {
     }
 
     /// Feed the panel's Clipboard section when it changed: every copy the
-    /// person can paste again, newest first.
+    /// person can paste again, newest first, as the clipboard service
+    /// publishes them.
     fn feed_clipboard(&self) {
         let Some(device) = &self.device else {
             return;
         };
-        let Some(view) = self.clipboard.changed_view(ui::time::unix_now_ms()) else {
+        let Some(state) = self.services.borrow().read(CLIPBOARD_RESOURCE) else {
             return;
         };
+        let copies = match serde_json::from_value::<Vec<tilo_quick_settings::hosted::ClipboardCopy>>(
+            state,
+        ) {
+            Ok(copies) => copies,
+            Err(error) => {
+                tracing::warn!(%error, "the clipboard reading did not parse");
+                return;
+            }
+        };
+        let view = tilo_quick_settings::hosted::clipboard_view(&copies, ui::time::unix_now_ms());
+        let mut fed = self.clipboard_view.borrow_mut();
+        if fed.as_ref() == Some(&view) {
+            return;
+        }
+        *fed = Some(view.clone());
         device.update(|state| state.clipboard = view);
     }
 
@@ -568,17 +607,34 @@ impl Shared {
 
     /// Feed the panel's notification centre when it changed: the retained
     /// notifications, why fresh banners are held and whether a Clear all can
-    /// be undone.
+    /// be undone, as the centre's service publishes them.
     fn feed_notifications(&self) {
         let Some(device) = &self.device else {
             return;
         };
-        let view = self.notifications.borrow().view();
-        if self.notice_view.borrow().as_ref() == Some(&view) {
+        let Some(reading) = self.services.borrow().read(notifications::RESOURCE) else {
+            return;
+        };
+        let centre = match serde_json::from_value::<tilo_quick_settings::hosted::NotificationCentre>(
+            reading,
+        ) {
+            Ok(centre) => centre,
+            Err(error) => {
+                tracing::warn!(%error, "the notification centre's reading did not parse");
+                return;
+            }
+        };
+        let mut fed = self.notice_fed.borrow_mut();
+        if fed.as_ref() == Some(&centre) {
             return;
         }
-        *self.notice_view.borrow_mut() = Some(view.clone());
-        device.update(|state| state.notifications = view);
+        let view = centre.view(ui::time::unix_now_ms());
+        let count = centre.count;
+        *fed = Some(centre);
+        device.update(|state| {
+            state.notifications = view;
+            state.notification_count = count;
+        });
     }
 
     /// Show workspace settings for the workspace in front.
@@ -931,9 +987,12 @@ pub struct Session {
     /// there: the bar and what else the desktop runs as a process of its
     /// own.
     surface_apps: Vec<surfaces::Surface>,
-    /// No program draws the shell's window menu on this machine, so it is
-    /// not looked for again.
-    window_menu_view_absent: bool,
+    /// The views the person bound to the shell's slots, and the one running
+    /// each slot now.
+    slots: mount::slots::Slots,
+    /// The slots whose view is a tilolang package, which the session runs
+    /// itself.
+    slot_views: slot_views::SlotViews,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
@@ -1043,6 +1102,12 @@ impl Session {
         let media = fabric::MediaContinuity::default();
         media.read(&settings_store::load());
         let watched_media = media.clone();
+        // The bar's own setting, read on the same watch: it changes what the
+        // desk's band takes and when the bars show.
+        let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            settings_store::desktop_controls::DesktopControlsConfig::load().hide_top_bar,
+        ));
+        let watched_hide = std::sync::Arc::clone(&hide_top_bar);
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
@@ -1055,6 +1120,11 @@ impl Session {
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
             watched_media.read(&document);
+            watched_hide.store(
+                settings_store::desktop_controls::DesktopControlsConfig::from_document(&document)
+                    .hide_top_bar,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             woken();
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
@@ -1081,15 +1151,22 @@ impl Session {
             options.search.records.as_ref().map(records::Records::root),
             options.search.lists.clone(),
         );
+        // When each display's bar shows over the window covering it: the desk's
+        // band, the chrome and the input that reaches for the bar read the one
+        // model.
+        let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
         let (desktop, mut policy, asks) = desk::desk(
             &options,
             &activity,
             notices.clone(),
             std::sync::Arc::clone(&wallpapers),
-            widget_prefs,
-            fold.clone(),
-            overview.open_flag(),
-            music.clone(),
+            desk::DeskLook {
+                widgets: widget_prefs,
+                fold: fold.clone(),
+                overview: overview.open_flag(),
+                music: music.clone(),
+                reveals: Rc::clone(&reveals),
+            },
         );
         desktop.set_gestures(options.config.gestures);
         // What each open window is told of the desk it stands on, from the
@@ -1276,12 +1353,16 @@ impl Session {
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
         // The windows this session shares with its rooms: a share's encoder
-        // wakes the loop when it has a frame, and the bar reads them.
+        // wakes the loop when it has a frame, and the bar reads them. A
+        // window another device shares is decoded on the same waker, so a
+        // picture that comes out late lands without waiting for the next
+        // frame the desk draws for something else.
         let window_shares = window_share::WindowShares::new(
             options.wake.handle(),
             options.person.clone(),
             options.salt,
         );
+        handle.set_peer_picture_wake(Some(options.wake.handle()));
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
@@ -1303,6 +1384,7 @@ impl Session {
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
+                    reveals: Rc::clone(&reveals),
                 },
             },
             sync.clone(),
@@ -1409,6 +1491,7 @@ impl Session {
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
                 overlays: overlays.clone(),
+                reveals: Rc::clone(&reveals),
             },
             options.scale,
         );
@@ -1626,6 +1709,9 @@ impl Session {
             fabric,
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
+            panel_power: mount::panel_power::PanelPower::default(),
+            handoff: std::cell::RefCell::new(None),
+            media_fed: std::cell::Cell::new(None),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,
@@ -1650,7 +1736,7 @@ impl Session {
             session_actions: options.session_actions,
             observed: RefCell::new(None),
             places_seen: RefCell::default(),
-            notifications: RefCell::new(notifications::SessionNotifications::new(
+            notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
                 options
                     .desktop
                     .as_ref()
@@ -1660,15 +1746,16 @@ impl Session {
                 notification_policy,
                 notice_signals,
                 options.power.clone(),
-            )),
+            ))),
             asker,
             agent_door: RefCell::new(agent_door),
-            notice_view: RefCell::new(None),
+            notice_fed: RefCell::new(None),
             sync,
             engine,
             _channels: channels,
             personal,
-            clipboard: mount::clipboard::Clipboard::new(),
+            clipboard: Rc::new(mount::clipboard::Clipboard::new()),
+            clipboard_view: RefCell::new(None),
             arrangement,
             underway: busy,
             kept_arrangement: RefCell::new(None),
@@ -1681,11 +1768,51 @@ impl Session {
             chrome,
             people,
             fullscreen,
+            hide_top_bar,
             controller,
             controller_keys,
             app_sheets,
         };
         shared.start_search();
+        // What the person copied is personal: the clipboard publishes the
+        // copies itself, as a reading only a caller the room grants reads.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(mount::clipboard::Served::new(
+                Rc::clone(&shared.clipboard),
+                Rc::clone(&shared.commands),
+            )));
+        // What people said to this person is personal too: the centre
+        // publishes its rows itself, as a reading only a granted caller
+        // reads, and the dismiss and act verbs the panel invokes.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(notifications::Served::new(Rc::clone(
+                &shared.notifications,
+            ))));
+        // The person's devices are what their other machines say of
+        // themselves, which is nobody's personal content: their reading is
+        // published for any app that may read the session's resources.
+        if let (Some(fabric), Some(device)) = (shared.fabric.clone(), shared.device.clone()) {
+            shared
+                .services
+                .borrow_mut()
+                .add(Box::new(devices::Served::new(
+                    fabric,
+                    device,
+                    Rc::clone(&shared.devices.chosen),
+                )));
+        }
+        // The broker decides a granted reading when the app asks, which is
+        // before this loop's first pass: what the services declare is read
+        // here, with every service mounted, so a connection that arrives as
+        // the session starts meets the room's grants and not an empty
+        // declaration.
+        if let Some(plane) = &action_plane {
+            plane.link.declare(&shared.services.borrow());
+        }
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
         if let Some(portal) = &options.portal {
@@ -1701,6 +1828,7 @@ impl Session {
             })
         });
         let surface_apps = std::mem::take(&mut options.surfaces);
+        let slot_views = slot_views::SlotViews::new(shared.overlays.clone(), options.scale);
         Ok(Self {
             compositor,
             shared,
@@ -1737,7 +1865,8 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
-            window_menu_view_absent: false,
+            slots: mount::slots::Slots::default(),
+            slot_views,
             displays: display_settings::Displays::default(),
             displays_service,
             confirmation: display_confirm::Confirmation::default(),
@@ -2217,48 +2346,6 @@ impl Session {
     #[must_use]
     pub const fn input_config(&self) -> &tilo_compositor::InputConfig {
         &self.input
-    }
-
-    /// Start the view of the shell's window menu while the reading says one
-    /// is up, and stop it when the reading says none is. Many a machine has
-    /// no such view installed, or another one bound in its place: the menu
-    /// is a reading either way, and this only puts it on the screen.
-    fn follow_window_menu(&mut self) {
-        /// The view's surface name; its program is found by the crate's own
-        /// name.
-        const VIEW: &str = "window-menu";
-        let up = self
-            .read(mount::shell::WINDOW_MENU)
-            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
-        if up == self.surfaces.running(VIEW) || self.window_menu_view_absent {
-            return;
-        }
-        if !up {
-            self.surfaces.stop(VIEW);
-            return;
-        }
-        let program = match surfaces::program_path("tilo-window-menu") {
-            Ok(program) => program,
-            Err(error) => {
-                // Nothing draws the menu here: the reading still offers it,
-                // and whoever is bound to the slot on this machine draws it.
-                tracing::debug!(%error, "no window menu view to start");
-                self.window_menu_view_absent = true;
-                return;
-            }
-        };
-        let surface = surfaces::Surface::new(VIEW, program)
-            .layer(surfaces::Layer::Overlay)
-            .anchor(
-                surfaces::Anchor::TOP
-                    | surfaces::Anchor::BOTTOM
-                    | surfaces::Anchor::LEFT
-                    | surfaces::Anchor::RIGHT,
-            )
-            .keyboard(surfaces::Keyboard::OnDemand);
-        if let Err(error) = self.start_surface(&surface) {
-            tracing::warn!(%error, "the window menu view did not start");
-        }
     }
 
     /// Tell every open app window the temperature of the workspace it is in
@@ -2778,9 +2865,11 @@ impl Session {
         // plane brought, and the frames of the ones on screen.
         {
             let sync = self.shared.sync.clone();
+            let displays = &self.displays_service;
             self.shared.window_shares.borrow_mut().step(
                 &mut self.compositor,
                 &self.shared.handle,
+                displays,
                 sync.as_deref(),
                 std::time::Instant::now(),
             );
@@ -2812,7 +2901,9 @@ impl Session {
             .step(&mut || Some(compositor.activation_token()));
         self.shared.open_notifications();
         self.settle()?;
+        self.follow_bars();
         self.follow_shell()?;
+        self.follow_slot_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
         let now = ui::time::now();
         self.windows.step(&mut self.compositor, now);
@@ -2826,6 +2917,7 @@ impl Session {
         self.projection_video
             .follow(&mut self.compositor, video.as_ref());
         self.follow_shell()?;
+        self.follow_slot_views()?;
         self.settle()?;
         self.shared.observe();
         self.shared.keep_desk();

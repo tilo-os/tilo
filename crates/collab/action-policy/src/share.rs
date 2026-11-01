@@ -30,8 +30,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, KindSet, Level, Role, RoomPolicy, Segment,
-    Subject, TreePath,
+    ActionKind, Answer, Authority, Context, Grant, KindSet, Level, Role, Segment, Subject,
+    TreePath, WorkspacePolicy,
 };
 
 /// What a share lets the room do with the resource.
@@ -202,7 +202,7 @@ pub fn check_held(
 ) -> Result<(), ShareRefusal> {
     grants
         .iter()
-        .try_for_each(|grant| RoomPolicy::check_within(actor, grant, cx))
+        .try_for_each(|grant| WorkspacePolicy::check_within(actor, grant, cx))
         .map_err(ShareRefusal::NotHeld)
 }
 
@@ -225,21 +225,21 @@ mod tests {
     }
 
     /// A room owned by `ada` with `bo` as a Viewer and `cy` as an Editor.
-    fn room() -> RoomPolicy {
-        let mut policy = RoomPolicy::new(ROOM, "ada");
+    fn room() -> WorkspacePolicy {
+        let mut policy = WorkspacePolicy::new(ROOM, "ada");
         policy.members.insert("bo".into(), Role::Viewer);
         policy.members.insert("cy".into(), Role::Editor);
         policy
     }
 
-    fn may(policy: &RoomPolicy, person: &str, node: &TreePath, kind: ActionKind) -> bool {
+    fn may(policy: &WorkspacePolicy, person: &str, node: &TreePath, kind: ActionKind) -> bool {
         Authority::person(policy.party(person))
             .decide(node, kind, &Context::at(0))
             .answer
             == Answer::Allow
     }
 
-    fn shared(access: ShareAccess) -> RoomPolicy {
+    fn shared(access: ShareAccess) -> WorkspacePolicy {
         let mut policy = room();
         let grants = share_grants(ROOM, "ada", "m1", &item("p1"), access).unwrap();
         check_held(

@@ -1,6 +1,6 @@
 //! What a task is planned with ([`PlanContext`]): the records it names,
 //! opened or made before the model is asked; what they hold now; what the
-//! apps can do; and the room's records the planner may search.
+//! apps can do; and the workspace's records the planner may search.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +20,7 @@ use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
 
 impl AgentParticipant {
-    /// The room's records the agent has not opened, those people have open
+    /// The workspace's records the agent has not opened, those people have open
     /// first, each of `apps` named as its app names it (a document's first
     /// heading) when it is among those offered to open, so a task can say
     /// which: read in a confined worker, started only when one changed
@@ -49,8 +49,8 @@ impl AgentParticipant {
     }
 
     /// What `task` is planned with. Before the model is asked, the records
-    /// of the room the task names by their titles are opened; an app it is
-    /// about of which the room has no record yet is previewed; and what the
+    /// of the workspace the task names by their titles are opened; an app it is
+    /// about of which the workspace has no record yet is previewed; and what the
     /// open records it is about hold is read. `request` is the task as it
     /// was given when `task` is the rest of it.
     pub(super) fn plan_context(&mut self, task: &str, request: Option<String>) -> PlanContext {
@@ -101,7 +101,7 @@ impl AgentParticipant {
         };
         let others = self.set_aside_others_documents(&naming, &touched, &mut open, &mut known);
         about.retain(|route| !others.contains(route));
-        // Only an app of which the room has no record yet: where it has
+        // Only an app of which the workspace has no record yet: where it has
         // one, a task about the app may well mean it ("add a sheet"), and
         // is offered to open it rather than to start another. Others'
         // written documents do not count: the task writes its own.
@@ -151,14 +151,14 @@ impl AgentParticipant {
             snapshots,
             request,
             reference,
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             searchable,
             may_plan_nothing: false,
             pictures,
             // Filled where a plan of the running task is asked for.
             read_pictures: Vec::new(),
             rendered,
-            room_pictures: self.room_pictures == crate::vision::RoomPictures::Shown,
+            workspace_pictures: self.workspace_pictures == crate::vision::WorkspacePictures::Shown,
             new_documents: self.new_documents(),
             retries: self.task_retries.clone(),
             obligations: obligations.unwrap_or_default(),
@@ -168,7 +168,7 @@ impl AgentParticipant {
         }
     }
 
-    /// What `apps` can do, the same whatever the room holds
+    /// What `apps` can do, the same whatever the workspace holds
     /// ([`PlanContext::reference`]): every granted app's, or for an agent
     /// granted many, those `in_play` (open, previewed or named) and those
     /// an earlier plan was told, by app id, so the reference only grows.
@@ -204,7 +204,7 @@ impl AgentParticipant {
             .unwrap_or_default()
     }
 
-    /// The room's records of `apps` for the planner's search
+    /// The workspace's records of `apps` for the planner's search
     /// ([`PlanContext::searchable`]): those the agent has open (`listed`
     /// are those whose operations the plan lists), then the others, those
     /// people have open first, then the latest changed, at most
@@ -259,7 +259,7 @@ impl AgentParticipant {
         docs
     }
 
-    /// Make a new record of each of `apps` the task names that the room has
+    /// Make a new record of each of `apps` the task names that the workspace has
     /// none of, before it is planned: its channel's keys are asked for and
     /// granted while the model plans, rather than after, when the plan's
     /// first step would make it. Returns the records made.
@@ -298,7 +298,7 @@ impl AgentParticipant {
         made
     }
 
-    /// Open the room's records of `apps` whose titles `task` names (of
+    /// Open the workspace's records of `apps` whose titles `task` names (of
     /// `known`, each with its title) before it is planned. Opening is
     /// local, and an open record publishes its operations and can be read,
     /// so the task is planned in one go rather than opened, then planned
@@ -328,7 +328,7 @@ impl AgentParticipant {
             seen.push(title);
             named.push(route);
         }
-        // A task about an app the room has one record of means that one,
+        // A task about an app the workspace has one record of means that one,
         // titled or not (a spreadsheet has no title to name it by). A blank
         // record (one another task opened new and has not filled yet) is
         // not counted: it holds nothing the task could mean.
@@ -415,7 +415,7 @@ impl AgentParticipant {
         let record = ConfinedReplica::open(
             &self.catalogue,
             app,
-            &self.room,
+            &self.workspace,
             crate::control::agent_id(&self.identity.delegation),
             &crate::ReplicaActor::Agent,
             Seed::New,

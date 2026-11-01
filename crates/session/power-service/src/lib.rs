@@ -319,7 +319,7 @@ impl PowerLink {
         Battery {
             present: snapshot.present,
             percentage: snapshot.percent,
-            state: state_label(snapshot.state),
+            state: snapshot.state,
             on_battery: snapshot.runs_on_battery(),
             minutes_left,
             charge_limit: self.inner.pack.limit(),
@@ -346,8 +346,8 @@ impl PowerLink {
             lock_minutes: minutes(policy.idle_lock),
             suspend_minutes: minutes(policy.idle_suspend),
             lock_on_sleep: policy.lock_on_sleep,
-            lid_close: policy.lid_close_action.label(),
-            power_key: policy.power_key_action.label(),
+            lid_close: policy.lid_close_action,
+            power_key: policy.power_key_action,
             held_awake: self.suspend_held(),
             holds: self.hold_reasons(),
         }
@@ -357,20 +357,6 @@ impl PowerLink {
 /// `timeout` in whole minutes, rounding up: what a person reads.
 fn minutes(timeout: Option<std::time::Duration>) -> Option<u64> {
     timeout.map(|timeout| timeout.as_secs().div_ceil(60))
-}
-
-/// The battery state as a person reads it.
-fn state_label(state: tilo_power_mgmt::BatteryState) -> &'static str {
-    use tilo_power_mgmt::BatteryState;
-    match state {
-        BatteryState::Charging => "charging",
-        BatteryState::Discharging => "discharging",
-        BatteryState::Empty => "empty",
-        BatteryState::Full => "full",
-        BatteryState::PendingCharge => "pending-charge",
-        BatteryState::PendingDischarge => "pending-discharge",
-        BatteryState::Unknown => "unknown",
-    }
 }
 
 #[cfg(test)]

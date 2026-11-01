@@ -6,7 +6,7 @@ fn delivery_admission_local_snapshot_quota_failure_leaves_governance_unchanged()
     // Populate the real bounded index near its byte ceiling; no mocked admission/store.
     let full = DocumentAdmission {
         key: crate::admission::AdmissionKey {
-            room: String::new(),
+            workspace: String::new(),
             app: String::new(),
             record: "x".repeat(crate::MAX_EXACT_ADMISSION_BYTES - 100),
             author: [0; 32],
@@ -58,7 +58,7 @@ fn delivery_admission_review_quota_rejected_pending_checkpoint_does_not_refresh_
         .exact_admissions
         .insert(&DocumentAdmission {
             key: crate::admission::AdmissionKey {
-                room: String::new(),
+                workspace: String::new(),
                 app: String::new(),
                 record: "x".repeat(crate::MAX_EXACT_ADMISSION_BYTES - 100),
                 author: [0; 32],
@@ -69,7 +69,7 @@ fn delivery_admission_review_quota_rejected_pending_checkpoint_does_not_refresh_
         .unwrap();
     let index = receiver.core.exact_admissions.encode().unwrap();
     let report = receiver
-        .receive_from_report(origin, author.room_message(), later)
+        .receive_from_report(origin, author.workspace_message(), later)
         .unwrap();
     assert_eq!(report.summary().rejected, 1);
     assert!(report.settled().is_empty());
@@ -100,7 +100,7 @@ fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
     assert!(
         StatePeer::restore(
             &bomb,
-            peer.room(),
+            peer.workspace_id(),
             peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -131,7 +131,7 @@ fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
     assert!(
         StatePeer::restore(
             &bytes,
-            peer.room(),
+            peer.workspace_id(),
             peer.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),

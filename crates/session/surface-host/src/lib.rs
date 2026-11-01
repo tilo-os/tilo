@@ -13,10 +13,13 @@ mod desktop;
 mod door;
 mod frames;
 pub mod shell_part;
+pub mod slot_view;
 mod well_policy;
 mod widget;
 
-pub use desktop::{DeskGesture, DesktopHost, StripPolicy, WindowObserver, desktop, desktop_with};
+pub use desktop::{
+    DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
+};
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
 pub use well_policy::{DeskHost, WellPolicy, well_policy};

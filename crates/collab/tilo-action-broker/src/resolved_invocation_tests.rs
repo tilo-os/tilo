@@ -384,10 +384,10 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use runtime_collab::{SHAPE_ID_BYTES, SurfaceDelta, SurfaceResource};
-            use signed_worker::{OriginalRoom, directory_state};
-            let room =
-                OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
-            let (worker, _authorize) = room.join_worker(905).await;
+            use signed_worker::{OriginalWorkspace, directory_state};
+            let workspace =
+                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let (worker, _authorize) = workspace.join_worker(905).await;
             let handle = &worker.handle;
             let mut base = directory_state("original-r1")
                 .borrow()
@@ -415,7 +415,8 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                     template,
                 };
             let surface = || {
-                room.state
+                workspace
+                    .state
                     .surfaces
                     .lock()
                     .unwrap()

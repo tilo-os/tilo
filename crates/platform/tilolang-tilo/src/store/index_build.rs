@@ -224,7 +224,7 @@ impl Inner {
     }
 
     /// The records every index read from holds: what a store without the record knows of
-    /// the room.
+    /// the workspace.
     fn index_docs(&mut self) {
         let mut index = BTreeMap::new();
         for (app, held) in self.apps.iter().filter(|(_, held)| held.ready()) {
@@ -235,7 +235,7 @@ impl Inner {
         self.index = index;
     }
 
-    /// Take the room record: the mirror is a copy of it, and each index catches up with it.
+    /// Take the workspace record: the mirror is a copy of it, and each index catches up with it.
     pub(super) fn attach(&mut self, record: &Doc) {
         self.versions = None;
         self.nested.clear();

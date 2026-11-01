@@ -16,7 +16,9 @@
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
-use tilo_action_policy::{Answer, Change, Grant, KindSet, RoomPolicy, Standing, Subject, TreePath};
+use tilo_action_policy::{
+    Answer, Change, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+};
 use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_relay_session::rooms::RemoveMemberRequest;
@@ -278,8 +280,8 @@ fn bot_replica(
         Answer::Allow,
         Subject::person(installer),
     );
-    let standing =
-        Standing::person(RoomPolicy::new(room, installer), installer).bounded_by(bot, vec![grant]);
+    let standing = Standing::person(WorkspacePolicy::new(room, installer), installer)
+        .bounded_by(bot, vec![grant]);
     let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,

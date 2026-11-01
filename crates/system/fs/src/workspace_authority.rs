@@ -235,9 +235,11 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
-    /// Who may reach each room a relay carries, by its relay room id.
-    #[serde(default)]
-    pub room_members: std::collections::BTreeMap<String, Vec<collab_types::RoomMember>>,
+    /// Who may reach each workspace a relay carries, by its relay workspace
+    /// id. Written under the key it always had: a revision signed and stored
+    /// before the name changed must still read.
+    #[serde(default, rename = "room_members")]
+    pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
     #[serde(with = "serde_bytes")]
@@ -285,13 +287,13 @@ impl WorkspaceAuthorityEnvelope {
     ) -> anyhow::Result<Self> {
         let collab_types::FsAuthority {
             capabilities,
-            room_members,
+            workspace_members,
         } = authority.into();
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
-            room_members,
+            workspace_members,
             tombstoned,
             governor,
             signature: [0; 64],
@@ -318,7 +320,7 @@ impl WorkspaceAuthorityEnvelope {
             self.workspace,
             self.revision,
             &self.capabilities,
-            &self.room_members,
+            &self.workspace_members,
             self.tombstoned,
             self.governor,
         ))?)

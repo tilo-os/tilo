@@ -7,7 +7,7 @@
 
 use tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
 
-use super::{ShellNetwork, room_topic_id};
+use super::{ShellNetwork, workspace_topic_id};
 use crate::shell::state::RoomId;
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ impl ShellNetwork {
                 .map(|workspace| (workspace.room(), workspace.name.clone()))
                 .collect()
         };
-        let Some(host) = self.room_host() else {
+        let Some(host) = self.workspace_host() else {
             return Ok(HomeRelayHosting::default());
         };
         let mut relay = None;
@@ -80,7 +80,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
+        let (certificate, _) = identity.current_native_material(workspace_topic_id(room))?;
         let user = certificate.user_public_key;
         Ok(super::registered_home_peer_addrs(Some(user))?
             .into_iter()

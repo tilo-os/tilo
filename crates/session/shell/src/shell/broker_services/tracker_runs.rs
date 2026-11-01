@@ -439,8 +439,8 @@ impl TrackerRuns for NativeTrackerRuns {
     /// Only the first used to count, so in a sealed room (a fresh person's
     /// own) a task agent's join found "the room's tracker is unavailable"
     /// and no run ever reached its agent.
-    fn requires_room(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::records_effects(&self.owner, room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::records_effects(&self.owner, workspace)
     }
 
     /// A room whose documents this device commits confines its agents to
@@ -450,7 +450,7 @@ impl TrackerRuns for NativeTrackerRuns {
     /// door) is its own decision, not a side effect of reading the tracker:
     /// it stays as it was.
     fn confines_agents_to_tasks(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_workspace(&self.owner, room)
     }
 
     /// Keep the newest snapshot of each run's turn: a later epoch, a later

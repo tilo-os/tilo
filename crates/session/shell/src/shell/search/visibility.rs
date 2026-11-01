@@ -134,7 +134,7 @@ fn authority_of<'w>(workspace: &'w Workspace, actor: &Actor) -> Option<Authority
             Principal::App(app) => Some(Subject::App(app.clone())),
             Principal::Agent(agent) => Some(Subject::Agent(agent.clone())),
             Principal::Token(token) => Some(Subject::Task(token.clone())),
-            Principal::Person(_) | Principal::Room(_) => None,
+            Principal::Person(_) | Principal::Workspace(_) => None,
         });
     match (person, delegate) {
         (Some(person), None) => Some(workspace.person_authority(person)),
@@ -186,7 +186,7 @@ fn is_person_alone(actor: &Actor) -> bool {
         && actor
             .principals
             .iter()
-            .all(|principal| matches!(principal, Principal::Person(_) | Principal::Room(_)))
+            .all(|principal| matches!(principal, Principal::Person(_) | Principal::Workspace(_)))
         && actor.principals.iter().any(Principal::is_person)
 }
 

@@ -1,5 +1,5 @@
 //! Banning: a removal plus the `block:<person>` Deny that keeps the person
-//! out until the room unbans them. Admission refuses a banned person
+//! out until the workspace unbans them. Admission refuses a banned person
 //! ([`crate::governance::admit_invited_member`]).
 
 use super::SystemTime;
@@ -28,7 +28,7 @@ impl PeerGovernanceMut<'_> {
         let removed = candidate
             .governance_mut()
             .remove_member(user_public_key, key, now)?;
-        let block = roles::block_grant(&self.peer.core.room, &person, Subject::person(by));
+        let block = roles::block_grant(&self.peer.core.workspace, &person, Subject::person(by));
         let blocked = candidate
             .governance_mut()
             .put_governed_grants(&[block], key, now)?;

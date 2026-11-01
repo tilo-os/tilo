@@ -17,6 +17,20 @@ pub type LayoutPoint = Point<i32, Logical>;
 /// A rectangle in the layout, such as an output's: whole logical pixels.
 pub type LayoutRect = Rectangle<i32, Logical>;
 
+/// A finger on the screen, as the desktop reads it while it has the
+/// contact ([`WindowPolicy::touch`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TouchSample {
+    /// A finger touched down here.
+    Down { x: f64, y: f64 },
+    /// The finger moved here.
+    Move { x: f64, y: f64 },
+    /// The finger left the screen here.
+    Lift { x: f64, y: f64 },
+    /// The system took the contact (a palm, a cancelled touch).
+    Cancel,
+}
+
 /// What a policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowInfo {
@@ -117,6 +131,19 @@ pub trait WindowPolicy {
     /// The pointer moved to `(x, y)` in the logical layout, wherever it
     /// went: over a window, a hosted surface or nothing.
     fn pointer_moved(&mut self, _x: f64, _y: f64) {}
+
+    /// A pointer button went down at `(x, y)` in the logical layout,
+    /// wherever it went: over a window, a hosted surface or nothing, and
+    /// whether or not one of them takes it.
+    fn pointer_pressed(&mut self, _x: f64, _y: f64) {}
+
+    /// A finger touched down at `(x, y)` in the logical layout, over
+    /// anything. Asked at the touch's begin: return whether the desktop
+    /// takes the contact, so nothing under it does. A taken contact's
+    /// motion and lift come here too, their answer ignored.
+    fn touch(&mut self, _touch: TouchSample) -> bool {
+        false
+    }
 
     /// A window asked its size of ([`Self::initial_size`]) went away before
     /// it showed a buffer, so it never maps: whatever place it was given

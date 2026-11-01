@@ -9,7 +9,7 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
-use tilo_peer_state::join_answer::{JoinRooms, RoomTxn};
+use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::rooms::{
@@ -702,7 +702,7 @@ impl Rooms {
                 Vec::new(),
             ));
         }
-        let before = room.peer().room_heads().unwrap_or_default();
+        let before = room.peer().workspace_heads().unwrap_or_default();
         // A member removed takes every way in the room handed them with
         // them, as when a member's own device sends the removal.
         let removed: std::collections::BTreeSet<_> =
@@ -716,7 +716,7 @@ impl Rooms {
             Ok(state)
         })?;
         self.settle(&mut room).await?;
-        let added = room.peer().room_changes_since(&before);
+        let added = room.peer().workspace_changes_since(&before);
         Ok((GovernanceCompletion { generation }, added))
     }
 
@@ -1099,8 +1099,8 @@ impl<'a> HeldRoom<'a> {
     }
 }
 
-impl RoomTxn for HeldRoom<'_> {
-    fn room(&self) -> &str {
+impl WorkspaceTxn for HeldRoom<'_> {
+    fn workspace(&self) -> &str {
         self.room.room()
     }
 
@@ -1157,7 +1157,7 @@ impl RoomTxn for HeldRoom<'_> {
 /// everyone who staged one meanwhile (`Rooms::written`); a governance
 /// change is committed under the room's lock and published before the
 /// lock is released.
-impl JoinRooms for Rooms {
+impl JoinWorkspaces for Rooms {
     fn key(&self) -> &SigningKey {
         &self.inner.host.key
     }
@@ -1166,10 +1166,10 @@ impl JoinRooms for Rooms {
         random()
     }
 
-    async fn with_room<T: Send>(
+    async fn with_workspace<T: Send>(
         &self,
         room: &str,
-        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, CollaborationError> + Send,
+        decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, CollaborationError> + Send,
     ) -> Result<T, CollaborationError> {
         let held = self.room(room).await?;
         let mut locked = held.lock().await;

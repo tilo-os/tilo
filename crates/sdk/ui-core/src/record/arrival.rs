@@ -1,5 +1,5 @@
 //! Waking the windows that read a store when another replica's change
-//! arrives in it, and what the room said of records it asked for.
+//! arrives in it, and what the workspace said of records it asked for.
 
 use super::{RecordId, RecordStore};
 
@@ -31,7 +31,7 @@ impl RecordStore {
         }
     }
 
-    /// The room's hosts sent everything they hold of `id`, a record this
+    /// The workspace's hosts sent everything they hold of `id`, a record this
     /// store asked them for ([`RecordId::arrives_on_demand`]), or no host is
     /// connected to ask: what of it is here is all there is for now. What
     /// reads it and still lacks it (a part held from its genesis that
@@ -46,7 +46,7 @@ impl RecordStore {
         self.wake_readers();
     }
 
-    /// Whether the room's hosts sent everything they hold of `id`
+    /// Whether the workspace's hosts sent everything they hold of `id`
     /// ([`Self::note_room_answered`]) and nothing of it arrived since.
     #[must_use]
     pub fn room_answered(&self, id: &RecordId) -> bool {

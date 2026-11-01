@@ -4,7 +4,7 @@
 use super::*;
 // The idle-broker test reads its thread's wakeups from /proc, so it and the
 // fixtures only it uses (`RECHECK_INTERVAL`, `Announcing::write`,
-// `CountedRoom`) exist on Linux.
+// `CountedWorkspace`) exist on Linux.
 #[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
@@ -38,27 +38,27 @@ impl Announcing {
     }
 }
 
-/// The native membership owner of one room. Every re-check of the room's
-/// membership surface asks whether it keeps the room, so the questions are
+/// The native membership owner of one workspace. Every re-check of the workspace's
+/// membership surface asks whether it keeps the workspace, so the questions are
 /// the re-checks.
 #[cfg(target_os = "linux")]
-struct CountedRoom {
-    room: String,
+struct CountedWorkspace {
+    workspace: String,
     checks: Mutex<Vec<u64>>,
 }
 
 #[cfg(target_os = "linux")]
-impl CountedRoom {
+impl CountedWorkspace {
     fn checks(&self) -> Vec<u64> {
         self.checks.lock().unwrap().clone()
     }
 }
 
 #[cfg(target_os = "linux")]
-impl crate::services::WorkspaceMemberships for CountedRoom {
-    fn requires_room(&self, room: &str) -> bool {
+impl crate::services::WorkspaceMemberships for CountedWorkspace {
+    fn requires_workspace(&self, workspace: &str) -> bool {
         self.checks.lock().unwrap().push(tilo_clock::unix_now_ns());
-        room == self.room
+        workspace == self.workspace
     }
 
     fn execute(
@@ -69,23 +69,23 @@ impl crate::services::WorkspaceMemberships for CountedRoom {
     }
 }
 
-/// The owner of the rooms these tests admit to.
+/// The owner of the workspaces these tests admit to.
 fn owner_key() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[71; 32])
 }
 
-/// A room of [`owner_key`] whose guest's membership ends at `guest_until`
+/// A workspace of [`owner_key`] whose guest's membership ends at `guest_until`
 /// and whose agent's at `agent_until` (Unix seconds).
-fn expiring_room(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
+fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(71), "Expiring");
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());
     let reads = |id: &str, subject: Subject, until: u64| {
         Grant::new(
             id,
             subject,
-            TreePath::room(&room),
+            TreePath::room(&workspace_id),
             KindSet::READ,
             Answer::Allow,
             Subject::person(owner.clone()),
@@ -96,7 +96,7 @@ fn expiring_room(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) 
     workspace.grant(reads("scribe-reads", Subject::agent("scribe"), agent_until));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
-    (tree, room)
+    (tree, workspace_id)
 }
 
 #[test]
@@ -113,9 +113,9 @@ fn the_turn_parks_without_a_deadline_and_wakes_for_the_earliest() {
 #[test]
 fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
     let now = tilo_clock::unix_now();
-    let (tree, room) = expiring_room(now.saturating_add(30), now.saturating_add(10));
+    let (tree, workspace_id) = expiring_workspace(now.saturating_add(30), now.saturating_add(10));
     let owner = owner_key();
-    let route = CrdtRoute::record("so.tilo.chat", &room, "main");
+    let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
     let mut admitted = admit_verified_join(
         &tree,
         &route,
@@ -125,7 +125,7 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
             capped: false,
         },
     )
-    .expect("the owner's room admits a verified person");
+    .expect("the owner's workspace admits a verified person");
     let authority = Arc::new(Announcing(tree.shared()));
     let (state, _bridge) = AppBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
@@ -215,10 +215,10 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     // real wall clock, never fires during the test.
     let expiry = start.saturating_add(3600);
     let agent_expiry = start.saturating_add(7200);
-    let (tree, room) = expiring_room(expiry, agent_expiry);
+    let (tree, workspace) = expiring_workspace(expiry, agent_expiry);
     let authority = Arc::new(Announcing(tree.shared()));
-    let owner = Arc::new(CountedRoom {
-        room,
+    let owner = Arc::new(CountedWorkspace {
+        workspace,
         checks: Mutex::new(Vec::new()),
     });
     let services = HostServices {

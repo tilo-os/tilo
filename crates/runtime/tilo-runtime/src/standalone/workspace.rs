@@ -61,7 +61,7 @@ impl ProfileWorkspace {
         })
     }
 
-    pub(super) fn room(&self) -> String {
+    pub(super) fn workspace(&self) -> String {
         self.tree
             .read()
             .map(|tree| {
@@ -140,11 +140,11 @@ impl ProfileWorkspace {
         Some(result)
     }
 
-    /// Apply `change` to the workspace of `room` and persist it, refused
+    /// Apply `change` to the workspace of `workspace` and persist it, refused
     /// when this host does not govern the tree.
     fn record(
         &self,
-        room: &str,
+        workspace: &str,
         change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
     ) -> Result<(), String> {
         if !self.governs() {
@@ -154,11 +154,13 @@ impl ProfileWorkspace {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room().to_string() == room)?
+                .find(|held| held.room().to_string() == workspace)?
                 .id;
             change(tree, workspace)
         })
-        .ok_or_else(|| format!("room {room} has no such record target, or it was not saved"))
+        .ok_or_else(|| {
+            format!("workspace {workspace} has no such record target, or it was not saved")
+        })
     }
 }
 
@@ -172,14 +174,14 @@ pub(super) struct ProfileGrants {
 }
 
 impl AppActionGrants for ProfileGrants {
-    fn may_grant(&self, room: &str, person: &str) -> bool {
+    fn may_grant(&self, workspace: &str, person: &str) -> bool {
         self.workspace.governs()
             && self.workspace.tree.read().is_ok_and(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|workspace| workspace.room().to_string() == room)
-                    .is_some_and(|workspace| {
-                        workspace.may_govern_at(
+                    .find(|held| held.room().to_string() == workspace)
+                    .is_some_and(|held| {
+                        held.may_govern_at(
                             person,
                             tilo_action_policy::roles::governance::GRANT,
                             tilo_clock::unix_now(),
@@ -200,8 +202,8 @@ impl AppActionGrants for ProfileGrants {
         Box::pin(std::future::ready(recorded))
     }
 
-    fn revoke(&self, room: &str, grant: &str) {
-        self.revoke_here(room, grant);
+    fn revoke(&self, workspace: &str, grant: &str) {
+        self.revoke_here(workspace, grant);
     }
 }
 
@@ -220,7 +222,7 @@ impl ProfileGrants {
             return None;
         }
         let context = tilo_desktop_model::grants::app_action_grant_context(
-            &request.room,
+            &request.workspace,
             &self.apps.display_name(&request.app_id),
             &self.apps.display_name(&request.target_app),
             &request.action_label,
@@ -231,7 +233,7 @@ impl ProfileGrants {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room().to_string() == request.room)?
+                .find(|held| held.room().to_string() == request.workspace)?
                 .id;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
@@ -251,11 +253,11 @@ impl ProfileGrants {
     }
 
     /// Take `grant` back in this host's own workspace.
-    fn revoke_here(&self, room: &str, grant: &str) {
+    fn revoke_here(&self, workspace: &str, grant: &str) {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room().to_string() == room)?
+                .find(|held| held.room().to_string() == workspace)?
                 .revoke_grant(&tilo_action_policy::GrantId::new(grant))
                 .then_some(())
         });
@@ -268,14 +270,14 @@ impl ProfileGrants {
 impl LegacyWorkspaceProjection for ProfileWorkspace {
     fn record_effect(
         &self,
-        room: &str,
+        workspace: &str,
         invocation: tilo_actions::InvocationId,
         actor: &str,
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {
         let completed_at = tilo_clock::unix_now_i64();
-        self.record(room, |tree, workspace| {
+        self.record(workspace, |tree, workspace| {
             // A retried invocation keeps its first receipt.
             tree.append_workspace_effect_receipt(
                 workspace,
@@ -310,12 +312,12 @@ impl WorkspaceAuthority for ProfileWorkspace {
 }
 
 impl WorkspaceMembership for ProfileWorkspace {
-    fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+    fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
         if let Ok(tree) = self.tree.read()
             && let Some(workspace) = tree
                 .workspaces
                 .iter()
-                .find(|workspace| &workspace.room() == room)
+                .find(|held| &held.room() == workspace)
         {
             read(workspace);
         }

@@ -170,8 +170,8 @@ impl EndedRun {
 
     fn room(&self) -> &str {
         match self {
-            Self::Shortcut(finished) => &finished.room,
-            Self::Task(ended) => &ended.room,
+            Self::Shortcut(finished) => &finished.workspace,
+            Self::Task(ended) => &ended.workspace,
         }
     }
 
@@ -1781,7 +1781,7 @@ mod tests {
         .unwrap();
         let finished = PendingShortcutRun::new(
             crate::shell::automation_host::FinishedShortcutRun {
-                room: room.to_string(),
+                workspace: room.to_string(),
                 shortcut,
                 invoker: "ada".into(),
                 report: tilo_automation::RunReport {
@@ -1853,7 +1853,7 @@ mod tests {
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
-                    room: room.to_string(),
+                    workspace: room.to_string(),
                     group: "task:translate".into(),
                     title: "Translate the paragraph".into(),
                     agent: "agent:scribe".into(),
@@ -1917,7 +1917,7 @@ mod tests {
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
-                    room: room.to_string(),
+                    workspace: room.to_string(),
                     group: "task:translate".into(),
                     title: "Translate".into(),
                     agent: "agent:scribe".into(),
@@ -1985,7 +1985,7 @@ mod tests {
         .unwrap();
         let path = tilo_automation::StepPath::root().child(0);
         FinishedShortcutRun {
-            room: room.to_string(),
+            workspace: room.to_string(),
             shortcut,
             invoker: "ada".into(),
             report: tilo_automation::RunReport {

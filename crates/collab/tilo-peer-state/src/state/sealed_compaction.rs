@@ -16,7 +16,7 @@ pub type SealCheckpoint<'a> =
 /// epoch, with delta retention.
 pub type SealDelta<'a> = SealCheckpoint<'a>;
 
-/// Writes a sealed history must hold before it is compacted to make room in
+/// Writes a sealed history must hold before it is compacted to make workspace in
 /// a full exact admission index: fewer would fold little for the work.
 pub(super) const PRESSED_HISTORY: usize = 64;
 
@@ -33,7 +33,7 @@ impl PeerPublicationMut<'_> {
     /// current epoch with [`ContentRetention::Checkpoint`] retention. The
     /// compaction is signed by `key` and admitted here through the same
     /// checks every keyless replica applies, so `key` must be a device the
-    /// record admits as a writer of it (or the room's governor, compacting
+    /// record admits as a writer of it (or the workspace's governor, compacting
     /// by its `compact` governance action).
     ///
     /// # Errors
@@ -69,7 +69,7 @@ impl PeerPublicationMut<'_> {
         let (metadata, ciphertext) = seal(&snapshot)?;
         if metadata.retention() != Some(ContentRetention::Checkpoint)
             || metadata.channel
-                != collab_types::document_channel_id(app, &self.peer.core.room, record)
+                != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
         {
             return Err("a sealed compaction is a checkpoint for the record's channel".into());
         }
@@ -88,9 +88,9 @@ impl PeerPublicationMut<'_> {
             .ok_or("sequence exhausted")?;
         let mut op = SignedOp::new_unsigned_with_encryption(
             payload,
-            collab_types::document_artifact_id(app, &self.peer.core.room, record),
+            collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
             author,
-            collab_types::document_attestation_id(app, &self.peer.core.room, record),
+            collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
             OpKind::Compaction,
             now,
             seq,
@@ -108,7 +108,7 @@ impl PeerPublicationMut<'_> {
         Ok(NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
-            cluster_id: self.peer.core.room.clone(),
+            cluster_id: self.peer.core.workspace.clone(),
             record_id: record.into(),
             envelope: Box::new(op),
         })
@@ -204,7 +204,7 @@ impl std::fmt::Display for UnmergedWrite {
 
 /// [`merge_sealed`] for reading: every write that opens and merges is in the
 /// record, and the rest are named instead of refusing the whole record. One
-/// write that never arrived (or does not open) must not leave a room unable
+/// write that never arrived (or does not open) must not leave a workspace unable
 /// to read its record, and the writes after it are kept, not dropped.
 pub(super) fn open_sealed(
     document: &super::Document,
@@ -375,7 +375,7 @@ impl PeerPublicationMut<'_> {
         let surface = self.peer.signed_surface(app);
         let claims = self.peer.surfaces.with_footprints(
             &collab_types::Record {
-                room: &self.peer.core.room,
+                room: &self.peer.core.workspace,
                 app,
                 record,
             },
@@ -387,7 +387,7 @@ impl PeerPublicationMut<'_> {
         let (metadata, ciphertext) = seal(&plaintext)?;
         if metadata.retention() != Some(ContentRetention::Delta)
             || metadata.channel
-                != collab_types::document_channel_id(app, &self.peer.core.room, record)
+                != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
         {
             return Err("a sealed write is a delta of the record's channel".into());
         }
@@ -402,9 +402,9 @@ impl PeerPublicationMut<'_> {
             .ok_or("sequence exhausted")?;
         let mut op = SignedOp::new_unsigned_with_encryption(
             ciphertext,
-            collab_types::document_artifact_id(app, &self.peer.core.room, record),
+            collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
             author,
-            collab_types::document_attestation_id(app, &self.peer.core.room, record),
+            collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
             OpKind::Change,
             now,
             seq,
@@ -419,7 +419,7 @@ impl PeerPublicationMut<'_> {
         Ok(NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
-            cluster_id: self.peer.core.room.clone(),
+            cluster_id: self.peer.core.workspace.clone(),
             record_id: record.into(),
             envelope: Box::new(op),
         })
@@ -427,14 +427,14 @@ impl PeerPublicationMut<'_> {
 
     /// [`Self::publish_sealed_incremental`] for `changes` a device this
     /// state's authority signs for made, such as a bot it installed
-    /// (`delegate`): the room decides them as `delegate`'s own sealed write
+    /// (`delegate`): the workspace decides them as `delegate`'s own sealed write
     /// (its grants over the claims they name, and the name they show), and
     /// the authority's `key` publishes them, as the authority's checkpoint
     /// carries such a device's changes to a record written in the clear.
     ///
     /// # Errors
     ///
-    /// As [`Self::publish_sealed_incremental`], and when the room would
+    /// As [`Self::publish_sealed_incremental`], and when the workspace would
     /// refuse `delegate`'s own write of `changes`; this peer is unchanged
     /// then.
     pub fn publish_sealed_incremental_for(
@@ -479,7 +479,7 @@ impl PeerPublication<'_> {
         // Every sealed write leaves exact admission evidence until a
         // compaction folds it into its writer's mark. Many records each
         // short of their own bound (the parts of a chained record) fill the
-        // room's index all the same: once it is half full, the longest
+        // workspace's index all the same: once it is half full, the longest
         // history worth folding is due too, one at a time, so the work each
         // write brings stays that of one record.
         if due.is_empty() && self.peer.core.exact_admissions.pressed() {
@@ -528,7 +528,7 @@ impl StatePeer {
                     messages.push(NeighbourMsg::AppDocument {
                         peer: peer_handle(author.as_bytes()),
                         app_id: route.app.clone(),
-                        cluster_id: self.core.room.clone(),
+                        cluster_id: self.core.workspace.clone(),
                         record_id: route.record.clone(),
                         envelope: Box::new(op.clone()),
                     });

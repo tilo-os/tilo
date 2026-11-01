@@ -1,4 +1,4 @@
-//! `RichText` fields in a room: concurrent edits with references merge as splices and marks,
+//! `RichText` fields in a workspace: concurrent edits with references merge as splices and marks,
 //! and search finds a message by its text and by the titles it refers to.
 
 use automerge::AutoCommit;
@@ -11,20 +11,20 @@ use crate::fixtures::{Replica, field_id};
 const SOURCE: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
 const APP: &str = "so.tilo.lang.richtext";
 
-struct Room {
+struct Workspace {
     ada: Replica,
     grace: Replica,
     meta: tilolang_runtime::Meta,
     root: String,
 }
 
-fn room() -> Room {
+fn workspace() -> Workspace {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SOURCE, "")]);
     let package = packages[0].clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
     let grace = ada.fork("grace", &[(SOURCE, &package.ids)]);
-    Room {
+    Workspace {
         ada,
         grace,
         meta: package.meta,
@@ -85,13 +85,13 @@ fn body(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str, post: &str
 }
 
 #[test]
-fn two_writers_edits_with_references_merge_in_a_room() {
-    let Room {
+fn two_writers_edits_with_references_merge_in_a_workspace() {
+    let Workspace {
         mut ada,
         mut grace,
         meta,
         root,
-    } = room();
+    } = workspace();
     plan(
         &mut ada,
         &meta,
@@ -172,12 +172,12 @@ fn two_writers_edits_with_references_merge_in_a_room() {
 
 #[test]
 fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
-    let Room {
+    let Workspace {
         mut ada,
         mut grace,
         meta,
         root,
-    } = room();
+    } = workspace();
     plan(
         &mut ada,
         &meta,
@@ -220,7 +220,7 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
         "Could @Grace look at Fix the build"
     );
 
-    // The room's record holds the mention as every app's does: the system finds it without
+    // The workspace's record holds the mention as every app's does: the system finds it without
     // the app, and the task reference is a reference, not a person.
     let found = ui::mentions::in_record(&grace.doc);
     let people: Vec<&str> = found.iter().map(|m| m.person.as_str()).collect();
@@ -267,12 +267,12 @@ fn a_reference_reads_as_the_readers_inline_view_under_what_they_hold() {
     use tilo_render_protocol::patch::rich::InlineView;
     use tilolang_runtime::rich::Reference;
     use tilolang_tilo::instance::inline_view;
-    let Room {
+    let Workspace {
         mut ada,
         meta,
         root,
         ..
-    } = room();
+    } = workspace();
     plan(
         &mut ada,
         &meta,
@@ -291,7 +291,7 @@ fn a_reference_reads_as_the_readers_inline_view_under_what_they_hold() {
             identity: "grace".into(),
             name: "Grace Hopper".into()
         },
-        "a person by what the room calls them"
+        "a person by what the workspace calls them"
     );
     assert_eq!(
         inline_view(&ada.host, &Names, &to_task),
@@ -426,15 +426,15 @@ fn plain_paths(
     ]
 }
 
-/// A room where Ada posts to Grace about a task, "Acquisition plan", that only Ada holds:
-/// Grace's store holds the post, never the task. The room, the task's path and the post's.
-fn a_post_about_a_task_only_ada_holds() -> (Room, String, String) {
-    let Room {
+/// A workspace where Ada posts to Grace about a task, "Acquisition plan", that only Ada holds:
+/// Grace's store holds the post, never the task. The workspace, the task's path and the post's.
+fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
+    let Workspace {
         mut ada,
         mut grace,
         meta,
         root,
-    } = room();
+    } = workspace();
     plan(
         &mut ada,
         &meta,
@@ -488,7 +488,7 @@ fn a_post_about_a_task_only_ada_holds() -> (Room, String, String) {
         "@Grace the notes are in Acquisition plan"
     );
     (
-        Room {
+        Workspace {
             ada,
             grace,
             meta,
@@ -502,7 +502,7 @@ fn a_post_about_a_task_only_ada_holds() -> (Room, String, String) {
 #[test]
 fn a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_path() {
     let (
-        Room {
+        Workspace {
             mut ada,
             grace,
             meta,

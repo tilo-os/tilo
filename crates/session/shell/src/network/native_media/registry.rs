@@ -49,17 +49,17 @@ impl Registry {
                 Operation::Heartbeat { ticket } => self
                     .known(&ticket)
                     .and_then(|()| {
-                        let session = sessions(ticket.workspace()).ok_or(NOT_CONNECTED)?;
+                        let session = sessions(ticket.workspace_id()).ok_or(NOT_CONNECTED)?;
                         ticket.heartbeat(&session, |view| check_identity(view, identity))
                     })
                     .map(|()| Reply::Sent)
                     .inspect_err(|_| ticket.stop()),
                 Operation::Show { ticket, showing } => self
                     .known(&ticket)
-                    .and_then(|()| ticket.show(sessions(ticket.workspace()).as_deref(), showing))
+                    .and_then(|()| ticket.show(sessions(ticket.workspace_id()).as_deref(), showing))
                     .map(|()| Reply::Sent),
                 Operation::End { ticket } => self.known_pointer(&ticket).map(|()| {
-                    ticket.leave(sessions(ticket.workspace()).as_deref());
+                    ticket.leave(sessions(ticket.workspace_id()).as_deref());
                     Reply::Left
                 }),
                 Operation::Rosters {
@@ -105,7 +105,7 @@ impl Registry {
             .tickets
             .iter()
             .filter_map(Weak::upgrade)
-            .filter(|ticket| ticket.workspace() == ws)
+            .filter(|ticket| ticket.workspace_id() == ws)
             .collect();
         for ticket in &tickets {
             let claimed = |id: [u8; 32]| {
@@ -126,7 +126,7 @@ impl Registry {
         }
         self.tickets.retain(|ticket| ticket.strong_count() != 0);
         for ticket in self.tickets.iter().filter_map(Weak::upgrade) {
-            if ticket.workspace() == ws
+            if ticket.workspace_id() == ws
                 && let Err(error) = ticket.rejoin(session)
             {
                 tracing::debug!(%error, ws, "native call could not rejoin");
@@ -162,7 +162,7 @@ impl Registry {
         let room = RoomId::parse(&target.workspace).ok_or("invalid native room route")?;
         let workspace = owner.with_current(room, |view| {
             check_identity(view, identity)?;
-            Ok(view.workspace())
+            Ok(view.workspace_id())
         })?;
         let listed = self.listed.entry(workspace).or_default();
         let now = Instant::now();
@@ -193,7 +193,7 @@ impl Registry {
         let room = RoomId::parse(&target.workspace).ok_or("invalid native room route")?;
         let workspace = owner.with_current(room, |view| {
             check_identity(view, identity)?;
-            Ok(view.workspace())
+            Ok(view.workspace_id())
         })?;
         let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
         let ticket = Ticket::open(
@@ -226,7 +226,7 @@ impl Registry {
         }
         let workspace = owner.with_current(room, |view| {
             check_identity(view, identity)?;
-            Ok(view.workspace())
+            Ok(view.workspace_id())
         })?;
         let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
         let ticket =
@@ -238,7 +238,7 @@ impl Registry {
 
 fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result<(), String> {
     let now = tilo_clock::try_unix_now_ns().ok_or("native clock precedes epoch")?;
-    let (cert, entries) = identity.current_native_material(view.workspace())?;
+    let (cert, entries) = identity.current_native_material(view.workspace_id())?;
     if &cert != view.device()
         || identity.device_signing_key.verifying_key().to_bytes() != cert.device_public_key
     {

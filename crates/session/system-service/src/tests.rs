@@ -186,6 +186,25 @@ fn locking_asks_nothing_and_switching_user_needs_a_seat_for_another() {
 fn an_update_reports_what_it_needs() {
     let fake = Fake::new();
     let mut service = service(&fake);
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
+        Value::Null,
+        "no fwupd reading yet"
+    );
+    *fake.update.lock().unwrap() = Update {
+        firmware: Some(2),
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert_eq!(
+        service.read(SYSTEM_UPDATE).unwrap()["firmware"],
+        json!(2),
+        "what fwupd offers is published beside the system update"
+    );
+    *fake.update.lock().unwrap() = Update::default();
+    service.refresh();
+    service.settle();
     assert!(
         matches!(
             service.invoke(SYSTEM_UPDATE, "restart-to-update", &Map::new()),

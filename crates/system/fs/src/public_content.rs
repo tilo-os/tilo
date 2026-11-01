@@ -1,5 +1,5 @@
 //! Public content this device keeps a copy of: small public files that
-//! belong to no room and no app (Project Gutenberg's catalogue, later the
+//! belong to no workspace and no app (Project Gutenberg's catalogue, later the
 //! tiles of a map's offline areas), one copy per device, readable from every
 //! workspace.
 //!

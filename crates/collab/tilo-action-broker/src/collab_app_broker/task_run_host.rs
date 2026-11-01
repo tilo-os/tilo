@@ -113,8 +113,8 @@ impl AppBrokerState {
         let decoded = runtime_collab::TaskAgentJoinIdentity::decode(presentation)
             .map_err(|error| format!("the task agent's presentation is malformed: {error}"))?
             .ok_or("the agent door joins only as a task agent")?;
-        let room = decoded.workspace_id;
-        let route = CrdtRoute::record(TASK_AGENT_APP, room.clone(), "");
+        let workspace = decoded.workspace_id;
+        let route = CrdtRoute::record(TASK_AGENT_APP, workspace.clone(), "");
         let admitted = super::verify_join_identity(
             &route,
             presentation,
@@ -124,7 +124,7 @@ impl AppBrokerState {
         )?;
         let task = admitted.task.as_deref().ok_or("task delegation missing")?;
         let agent = task.agent_id.clone();
-        self.admit_task_join(&room, &agent, &admitted)?;
+        self.admit_task_join(&workspace, &agent, &admitted)?;
         let peer = self.next_peer_id();
         let (tx, mut rx) = mpsc::unbounded_channel();
         self.task_subscribers
@@ -134,12 +134,12 @@ impl AppBrokerState {
                 peer,
                 TaskSubscription {
                     agent_id: agent.clone(),
-                    cluster_id: room.clone(),
+                    cluster_id: workspace.clone(),
                     tx,
                 },
             );
         // Delivery is synchronous: a going run is in the channel now.
-        self.refresh_tracker_runs(&std::iter::once(room).collect());
+        self.refresh_tracker_runs(&std::iter::once(workspace).collect());
         let Ok(run) = rx.try_recv() else {
             self.disconnect_native_task_stream(peer);
             return Err("the task's run is not going, so it was delivered nothing".into());
@@ -298,9 +298,9 @@ impl TaskRunHost {
         &self.0.person
     }
 
-    /// The room the run is in.
+    /// The workspace the run is in.
     #[must_use]
-    pub fn room(&self) -> &str {
+    pub fn workspace(&self) -> &str {
         &self.0.route.cluster_id
     }
 
@@ -316,7 +316,7 @@ impl TaskRunHost {
             .task
             .as_deref()
             .ok_or("task delegation missing")?;
-        self.0.state.task_goes(self.room(), task)
+        self.0.state.task_goes(self.workspace(), task)
     }
 
     /// The run as the broker holds it for this connection, with its lease
@@ -661,7 +661,7 @@ impl TaskRunHost {
         invocation: tilo_actions::InvocationId,
     ) -> Result<(), String> {
         use crate::services::{TRACKER_APP, TRACKER_RESOURCE};
-        let room = self.room().to_owned();
+        let workspace = self.workspace().to_owned();
         let (peer_id, resource) = self
             .0
             .state
@@ -670,7 +670,9 @@ impl TaskRunHost {
             .map_err(|_| "task surface unavailable")?
             .values()
             .filter(|surface| {
-                surface.live && surface.app_id == TRACKER_APP && surface.route.cluster_id == room
+                surface.live
+                    && surface.app_id == TRACKER_APP
+                    && surface.route.cluster_id == workspace
             })
             .find_map(|surface| {
                 surface

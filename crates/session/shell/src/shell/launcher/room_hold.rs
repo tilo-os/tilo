@@ -312,7 +312,7 @@ pub(super) fn committed_device(
                 detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
             }
         })?;
-        if owner.rooms().contains(&room) {
+        if owner.workspaces().contains(&room) {
             return owner
                 .with_current(room, |view| Ok(view.device().clone()))
                 .map_err(|detail| LaunchError::IdentityUnavailable { detail });
@@ -323,7 +323,7 @@ pub(super) fn committed_device(
                     detail: reason.clone(),
                 });
             }
-            RoomStatus::Ready if !owner.contains_room(room) => {
+            RoomStatus::Ready if !owner.contains_workspace(room) => {
                 return Err(LaunchError::DeviceNotAdmitted {
                     detail: crate::shell::i18n::t("launch-error-room-not-enrolled"),
                 });

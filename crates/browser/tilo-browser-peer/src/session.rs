@@ -2977,7 +2977,11 @@ impl Task {
     ) {
         let now = tilo_clock::unix_now_ms();
         match message {
-            neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. } => {
+            neighbour_wire::NeighbourMsg::MlsGovernance {
+                workspace: room,
+                frame,
+                ..
+            } => {
                 let replicas = &self.replicas;
                 let changes = self.channels.receive_frame(
                     &room,
@@ -3747,11 +3751,6 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
         ClientError::Iroh(reason) => LinkError::Unavailable(reason),
         // An iroh dial never produces it; the HTTPS carrier's own reason.
         ClientError::Https(error) => error,
-        // Only the v2 private channel closes this way; a v1 dial never
-        // produces it, and if one did the transport is simply gone.
-        ClientError::PrivateTransportClosed => {
-            LinkError::Unavailable(ClientError::PrivateTransportClosed.to_string())
-        }
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },

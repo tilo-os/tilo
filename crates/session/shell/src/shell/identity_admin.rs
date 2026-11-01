@@ -611,7 +611,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
             .find(|step| request.address.resource == RESOURCE && request.address.action == *step)
             .ok_or("unknown identity step")?;
         let args = bind_slot(params(step), request.argument)?;
-        let identity = authorize(&self.tree, request.room, person)?;
+        let identity = authorize(&self.tree, request.workspace, person)?;
         let store = Store::from_env()?;
         Ok(match self.admin.start(step, &args, &identity, &store)? {
             Started::Answered(value) => {
