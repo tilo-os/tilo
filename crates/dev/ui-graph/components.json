@@ -4857,6 +4857,11 @@
           "name": "focused",
           "doc": "Whether it is the window in front, the one the keyboard goes to.",
           "type": "bool"
+        },
+        {
+          "name": "lists_actions",
+          "doc": "The shell lists this window's actions where the person reaches them (the desktop bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
+          "type": "bool"
         }
       ],
       "slots": [

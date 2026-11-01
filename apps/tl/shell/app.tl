@@ -293,7 +293,7 @@ view desk_view(a: Arrangement) {
             desk_around(root Desk, .some(a), fill)
         } else {
             layers(fill) {
-                traditional_desktop(a, fill)
+                traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
                 desk(root Desk, fill)
             }
         }

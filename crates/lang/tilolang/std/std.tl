@@ -128,11 +128,12 @@ view rows<T>(
 }
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
-/// `extra`, then each action with an icon as an icon button (drawn on while the state it
-/// toggles is), and the primary action last as the labelled Primary button. An action with no
-/// icon has no control here: it stands under the name the app gave it in the top bar's window
-/// menu (the traditional desktop's) and in a row's menu, never in a "More" list made up for the
-/// header.
+/// `extra`, then each action in the app's order — one with an icon as an icon button (drawn on
+/// while the state it toggles is), one without as a button labelled with the name the app gave
+/// it, as a desktop bar's menus name it — and the primary action last as the labelled Primary
+/// button. The window's header lays them out: what does not fit gives way to where the system
+/// lists the window's actions (the desktop bar's window menu), else behind the header's own
+/// door, so every action stays reachable at every width.
 view header<S>(
     offered: List<host.Action>,
     sort: Option<State<S>> = .none,
@@ -152,6 +153,10 @@ view header<S>(
     for a in offered {
         if not a.primary and a.icon != .none {
             ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
+                on press: a.run
+            }
+        } else if not a.primary {
+            ui.Button(a.label, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
             }
         }

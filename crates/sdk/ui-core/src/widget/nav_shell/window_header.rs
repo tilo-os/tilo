@@ -58,14 +58,17 @@ impl WindowHeader for NavShell {
         let controls = bar.map(|bar| bar.controls_width);
         let revealed = bar.is_some_and(|bar| bar.revealed);
         let top = bar.map_or(0.0, |bar| bar.top_inset);
+        let listed = bar.is_some_and(|bar| bar.lists_actions);
         let relayout = {
             let mut inputs = self.inputs.borrow_mut();
             let relayout = inputs.window_controls != controls
+                || inputs.actions_listed != listed
                 || (inputs.header_in_bar
                     && (inputs.bar_revealed != revealed
                         || (inputs.bar_top - top).abs() > f64::EPSILON));
             inputs.window_controls = controls;
             inputs.bar_revealed = revealed;
+            inputs.actions_listed = listed;
             inputs.bar_top = top;
             relayout
         };

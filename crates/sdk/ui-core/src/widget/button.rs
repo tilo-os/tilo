@@ -64,10 +64,11 @@ pub struct Button {
     /// measured, in `adjust_layout_style`.
     count: Option<CountBadge>,
     count_size: vello::kurbo::Size,
-    /// Whether the node's margins hold the count's room, set by `keep_room_for_count`. A
-    /// button with no count leaves its margins to whoever places it (a drop zone centres its
-    /// button by auto margins), so the two never set them back and forth.
-    count_room: bool,
+    /// While the button keeps room for its count: the margins its parent gave the node, and
+    /// the margins the button put there (those plus the count's room). A node's margins are
+    /// its parent's; the button only adds to them, and a button without a count leaves them
+    /// alone.
+    count_margin: Option<(Margin, Margin)>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -157,6 +158,9 @@ fn theme_key(theme: &Theme) -> ThemeKey {
     )
 }
 
+/// A node's margins.
+type Margin = taffy::Rect<taffy::LengthPercentageAuto>;
+
 impl Button {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
@@ -192,7 +196,7 @@ impl Button {
             badge: None,
             count: None,
             count_size: vello::kurbo::Size::ZERO,
-            count_room: false,
+            count_margin: None,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -1853,29 +1857,47 @@ impl Button {
             } else {
                 (0.0, 0.0)
             };
-        let room = past_x > 0.0 || past_y > 0.0;
-        if !room && !self.count_room {
+        let wants = past_x > 0.0 || past_y > 0.0;
+        if !wants && self.count_margin.is_none() {
+            // No count, and none kept room before: the node's margins are not the button's.
             return false;
         }
         let Ok(style) = taffy.style(node) else {
             return false;
         };
-        let length = |v: f64| taffy::LengthPercentageAuto::length(f32_of_f64(v.ceil()));
-        let margin = taffy::Rect {
-            left: length(0.0),
-            right: length(past_x),
-            top: length(past_y),
-            bottom: length(past_y),
+        // What the parent gave the node: what is there, unless it is what this button put
+        // there last.
+        let base = match self.count_margin {
+            Some((base, applied)) if style.margin == applied => base,
+            _ => style.margin,
         };
+        let margin = if wants {
+            let more = |m: taffy::LengthPercentageAuto, v: f64| {
+                let v = f32_of_f64(v.ceil());
+                // A length grows by the room; `auto` or a percentage is the parent's to keep.
+                let raw = m.into_raw();
+                if raw.tag() == taffy::CompactLength::LENGTH_TAG {
+                    taffy::LengthPercentageAuto::length(raw.value() + v)
+                } else {
+                    m
+                }
+            };
+            taffy::Rect {
+                left: base.left,
+                right: more(base.right, past_x),
+                top: more(base.top, past_y),
+                bottom: more(base.bottom, past_y),
+            }
+        } else {
+            base
+        };
+        self.count_margin = wants.then_some((base, margin));
         if style.margin == margin {
-            self.count_room = room;
             return false;
         }
         let mut style = style.clone();
         style.margin = margin;
-        let set = taffy.set_style(node, style).is_ok();
-        self.count_room = room && set;
-        set
+        taffy.set_style(node, style).is_ok()
     }
 
     /// The face's height on the node, as the input asks for it now: a button made before the
@@ -1961,7 +1983,7 @@ impl Widget for Button {
         self.observe_i18n_revision();
         self.measured_width = None;
         // A fresh node holds no margins of the count's.
-        self.count_room = false;
+        self.count_margin = None;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         if let Some((control, side)) = &mut self.transport {
             *side = crate::widget::TransportFace::side(*control, theme);

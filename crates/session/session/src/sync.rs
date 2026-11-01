@@ -531,6 +531,9 @@ pub(crate) enum Outgoing {
     /// something a message let go earlier waited for has arrived, and the
     /// message is decided again when it comes back.
     Replay(WorkspaceId),
+    /// Send this device's owner's outgoing custody of the workspace on `ws`
+    /// to its peers: what the owner just committed leaves this device.
+    PublishCustody(WorkspaceId),
     /// Say which devices workspace `ws` admits, and until when each of their
     /// certificates holds: they alone send and receive its window streams.
     Roster {
@@ -1924,6 +1927,7 @@ async fn carry_out(
             plane.send(command).await.is_ok()
         }
         Outgoing::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Outgoing::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
         Outgoing::OpenRecord { ws, channel } => {
             plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
         }
@@ -2032,3 +2036,6 @@ fn author_of(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod custody_tests;

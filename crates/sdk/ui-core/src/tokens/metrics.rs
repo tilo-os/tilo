@@ -137,6 +137,11 @@ pub struct Metrics {
     /// The width a compact chooser (dropdown, segmented switch, single-line
     /// entry) keeps beside its label in a form row.
     pub chooser_width: f32,
+    /// The narrowest a text field stands where nothing else sets its width:
+    /// a row that wraps or a run that hugs its items lays a field out at its
+    /// own width, which is this, grown with the text. Never zero, so a field
+    /// always has room for a few words of what is typed.
+    pub field_min_width: f32,
     /// How far one notch of a line-stepping wheel scrolls.
     pub wheel_line: f32,
     /// Thickness of a scroll bar's thumb at rest; the bar's gutter is the
@@ -253,6 +258,7 @@ impl Metrics {
         reading_measure: 640.0,
         message_measure: 560.0,
         chooser_width: 224.0,
+        field_min_width: 160.0,
         wheel_line: 60.0,
         scroll_thumb: 8.0,
         swipe_commit: 88.0,
@@ -378,6 +384,7 @@ impl Metrics {
             reading_measure: self.reading_measure * factor,
             message_measure: self.message_measure * factor,
             chooser_width: self.chooser_width * factor,
+            field_min_width: self.field_min_width * factor,
             wheel_line: self.wheel_line * factor,
             scroll_thumb: self.scroll_thumb * factor,
             swipe_commit: self.swipe_commit * factor,
@@ -434,6 +441,7 @@ mod tests {
             (base.reading_measure, scaled.reading_measure),
             (base.message_measure, scaled.message_measure),
             (base.chooser_width, scaled.chooser_width),
+            (base.field_min_width, scaled.field_min_width),
             (base.wheel_line, scaled.wheel_line),
             (base.scroll_thumb, scaled.scroll_thumb),
             (base.swipe_commit, scaled.swipe_commit),

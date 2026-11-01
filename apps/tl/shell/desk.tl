@@ -30,7 +30,7 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                 if let a = front {
                     stack(gap: .tight, fill) {
                         at_rest(d)
-                        front_window(a, fill)
+                        front_window(a, bar_lists_actions(s, d, space.width_class == .expanded or space.width_class == .wide), fill)
                     }
                 } else {
                     at_rest(d)
@@ -116,7 +116,7 @@ view bar_on_edge(s: Shell, d: Desk) {
 /// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
 /// parts the person chose, so a person picks between the two by picking the preset.
 view top_bar(d: Desk) {
-    if shell.based_on == .windows_desktop and shell.preset == .windows_desktop {
+    if bar_is_traditional(shell) {
         traditional_bar(d)
     } else {
         bar(d)

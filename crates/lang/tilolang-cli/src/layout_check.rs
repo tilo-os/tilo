@@ -1206,18 +1206,28 @@ mod traditional_desktop {
         }
     }
 
-    fn desktop_read_out() -> Vec<(bool, String)> {
+    /// What the traditional desktop reads out at `size`, laid out for a finger on a phone's
+    /// width (its controls a finger's target), as the layout check lays a phone out.
+    fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
         tilo_ui_host::i18n::ensure();
         let (app, packages) = packages();
-        let staged = stage::Staged::over(
+        let mut staged = stage::Staged::over(
             &app,
             &packages,
             "the traditional desktop",
-            (1280, 800),
+            size,
             ui::Theme::light(),
             None,
         )
         .expect("the scenario stages");
+        let input = if size.0 < 600 {
+            ui::interaction::InteractionEnvironment::TOUCH
+        } else {
+            ui::interaction::InteractionEnvironment::POINTER
+        };
+        staged
+            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .expect("the desktop lays out");
         let mut said = Vec::new();
         read_out(&staged.harness().inspection().root, false, &mut said);
         said
@@ -1225,20 +1235,82 @@ mod traditional_desktop {
 
     #[test]
     fn a_windows_header_holds_the_apps_own_actions_and_no_generated_menu() {
-        // An action the app gave no icon is in the top bar's window menu, under the name
-        // the app gave it, never in a "More actions" list made up for the window's header.
-        let said = desktop_read_out();
-        let generated: Vec<&String> = said
+        // The desktop's bar lists the window's actions (its window menu), so what does not
+        // fit in a window's header gives way to it: no "More actions" door in a window, on a
+        // desk or on a phone, and never a list made up for the header.
+        for size in [(1280, 800), (320, 568)] {
+            let said = desktop_read_out(size);
+            let generated: Vec<&String> = said
+                .iter()
+                .filter(|(in_window, name)| *in_window && name == "More actions")
+                .map(|(_, name)| name)
+                .collect();
+            assert!(
+                generated.is_empty(),
+                "a window offers {generated:?} at {size:?}"
+            );
+        }
+    }
+
+    /// A control named `name` that stands on the window (a rect with room), by its test id.
+    fn shown_named(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
+        let [_, _, w, h] = node.rect;
+        if w > 0.0
+            && h > 0.0
+            && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
+            && let Some(id) = &node.test_id
+        {
+            return Some(id.clone());
+        }
+        node.children
             .iter()
-            .filter(|(in_window, name)| *in_window && name == "More actions")
-            .map(|(_, name)| name)
-            .collect();
-        assert!(generated.is_empty(), "a window offers {generated:?}");
+            .find_map(|child| shown_named(child, name))
+    }
+
+    #[test]
+    fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
+        // In the strips preset a window is the app's own: nothing lists its actions, so its
+        // header holds the notes app's icon-less Untag as a labelled button, or behind the
+        // header's door when the row has no room for it.
+        tilo_ui_host::i18n::ensure();
+        let (_, packages) = packages();
+        for size in [(1280, 800), (390, 844)] {
+            let mut staged = stage::Staged::over(
+                "so.tilo.lang.notes",
+                &packages,
+                "a week of notes",
+                size,
+                ui::Theme::light(),
+                None,
+            )
+            .expect("the notes stage");
+            let input = if size.0 < 600 {
+                ui::interaction::InteractionEnvironment::TOUCH
+            } else {
+                ui::interaction::InteractionEnvironment::POINTER
+            };
+            staged
+                .lay_out(size, ui::Theme::light(), input, 1.0)
+                .expect("the notes lay out");
+            let root = staged.harness().inspection().root;
+            if shown_named(&root, "Untag…").is_some() {
+                continue;
+            }
+            let door = shown_named(&root, "More actions")
+                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a door at {size:?}"));
+            staged.press(&door, size.0 < 600).expect("the door opens");
+            let mut said = Vec::new();
+            read_out(&staged.harness().inspection().root, false, &mut said);
+            assert!(
+                said.iter().any(|(_, name)| name == "Untag…"),
+                "the door holds Untag… at {size:?}: {said:?}"
+            );
+        }
     }
 
     #[test]
     fn its_people_are_called_by_their_names_never_their_ids() {
-        let said = desktop_read_out();
+        let said = desktop_read_out((1280, 800));
         let ids: Vec<&String> = said
             .iter()
             .map(|(_, name)| name)

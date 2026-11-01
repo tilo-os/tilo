@@ -200,6 +200,13 @@ pub struct WindowBar {
     /// of one covering the other. A row whose header lives in the bar moves
     /// down by it; a permanent row stays put.
     pub top_inset: f64,
+    /// The system already lists the window's actions where the person reaches
+    /// them (the desktop bar's window menu, for the window in front): the row's
+    /// actions that do not fit give way with no door of their own, since every
+    /// one stays reachable there. `false`: nothing lists them, so what does not
+    /// fit goes behind the row's door ([`crate::widget::OverflowDoor`]). Each
+    /// host states it; no row guesses it from what desktop it is on.
+    pub lists_actions: bool,
 }
 
 /// A header row holding the window's bar, after layout.
