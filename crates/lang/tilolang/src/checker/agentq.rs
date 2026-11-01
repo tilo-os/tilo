@@ -9,7 +9,7 @@
 
 use serde_json::json;
 
-use super::{Checker, Ex, conv, load_op};
+use super::{Checker, Ex, Written, conv, load_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind};
 use crate::diag::Span;
@@ -382,7 +382,7 @@ impl Checker<'_> {
     /// In a program, which has no types of its own, the type a bare name (`Note`) names: the
     /// one app's that has it.
     pub(super) fn program_type(&self, e: &ast::Expr) -> Option<Ty> {
-        if !self.st.program {
+        if self.st.written != Written::Program {
             return None;
         }
         let ExprKind::Ident(name) = &e.kind else {
@@ -691,7 +691,7 @@ impl Checker<'_> {
     /// `@chat.Message:...` in a program whose host does not hold chat: a resource read through
     /// the platform, a `host.Resource`.
     pub(super) fn foreign_ref(&self, r: &ast::RefLit) -> Option<Ex> {
-        if !self.st.program {
+        if self.st.written != Written::Program {
             return None;
         }
         let app = self.source_app(&r.app)?;

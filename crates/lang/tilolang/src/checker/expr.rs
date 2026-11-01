@@ -1,6 +1,6 @@
 //! Expressions: literals, operators, fields, strings and coercions.
 
-use super::{Checker, Ctx, Ex, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
@@ -271,7 +271,7 @@ impl Checker<'_> {
             return Ex::error();
         }
         // `me`: the person a program's task acts for (agents.md, "What the agent knows").
-        if name == "me" && self.st.program {
+        if name == "me" && self.st.written == Written::Program {
             return Ex::host(Imp::Me, vec![], Ty::Principal);
         }
         // A named root of this package: `notes`.
