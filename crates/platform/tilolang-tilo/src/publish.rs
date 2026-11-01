@@ -229,6 +229,9 @@ struct TypeActions {
     edits: [Arc<ActionType>; 2],
     /// The actions whose subject is the type.
     actions: Vec<Arc<ActionType>>,
+    /// The views that show a resource of the type, each with the action that opens it through
+    /// that view, when that is not the resource's own `open` ([`views_of`]).
+    views: Vec<(ResourceViewSpec, Option<Arc<ActionType>>)>,
 }
 
 impl ActionTypes {
@@ -257,6 +260,7 @@ impl ActionTypes {
                 TypeActions {
                     edits: edit_types(meta, &declared.name),
                     actions,
+                    views: views_of(meta, &declared.name),
                 },
             );
         }
@@ -290,12 +294,15 @@ impl ActionTypes {
             label,
         )
         .with_action(open_spec(id));
-        for view in views_of(&self.meta, type_name) {
-            resource = resource.with_view(view);
-        }
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
+        for (view, opens) in &of_type.views {
+            if let Some(opens) = opens {
+                resource = resource.with_action(open_with_spec(opens, id, &view.id));
+            }
+            resource = resource.with_view(view.clone());
+        }
         let subject = Target::new(id.to_owned());
         let edits = if edits { &of_type.edits[..] } else { &[] };
         for ty in edits.iter().chain(&of_type.actions) {
@@ -305,11 +312,16 @@ impl ActionTypes {
     }
 }
 
-/// The views a resource of `type_name` is shown through: the package's offered views whose
-/// first parameter is one, each opening through the resource's `open`. The type's default view
-/// is the primary one; a view that shows a resource the same way under a name a person chose is
-/// listed beside it.
-fn views_of(meta: &Meta, type_name: &str) -> Vec<ResourceViewSpec> {
+/// The views a resource of `type_name` is shown through: the package's offered views that take
+/// such a resource and nothing else, so opening one needs only the resource (`open(r, with: v)`).
+///
+/// A view and the action that opens it name each other one to one: the door projects a view
+/// onto its open action's descriptor, and a caller opens the view by invoking that action. The
+/// type's default view is the primary one and opens through the resource's own `open`, which
+/// shows that view; every other view opens through an action of its own (`open-<view id>`, an
+/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) bound to the resource and the
+/// view), answered for each resource by [`open_with_spec`].
+fn views_of(meta: &Meta, type_name: &str) -> Vec<(ResourceViewSpec, Option<Arc<ActionType>>)> {
     let Some(declared) = meta.types.iter().find(|t| t.name == type_name) else {
         return Vec::new();
     };
@@ -322,25 +334,67 @@ fn views_of(meta: &Meta, type_name: &str) -> Vec<ResourceViewSpec> {
         )
     };
     meta.offered_views()
-        .filter(|view| view.params.first().is_some_and(|p| of_type(&p.ty)))
+        .filter(|view| matches!(&view.params[..], [only] if of_type(&only.ty)))
         .map(|view| {
             let label = if view.name.is_empty() {
                 view.id.clone()
             } else {
                 view.name.clone()
             };
-            let mut spec = ResourceViewSpec::new(view.id.clone(), label, "open");
-            if let Some(line) = view
+            let description = view
                 .doc
                 .lines()
                 .map(str::trim)
-                .find(|line| !line.is_empty())
-            {
+                .find(|line| !line.is_empty());
+            let is_primary = primary == Some(view.id.as_str());
+            let opens = (!is_primary).then(|| open_with_type(&view.id, &label, description));
+            let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
+            let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
+            if let Some(line) = description {
                 spec = spec.with_description(line);
             }
-            spec.with_primary(primary == Some(view.id.as_str()))
+            (spec.with_primary(is_primary), opens)
         })
         .collect()
+}
+
+/// The id of the action that opens a resource through the view `view` (an id).
+#[must_use]
+pub fn open_with_id(view: &str) -> String {
+    format!("open-{view}")
+}
+
+/// The action type that opens a resource through the view `view`, labelled as the view is: the
+/// [`OpenEffect::OpenWith`](crate::effects::OpenEffect::OpenWith) effect under an id of the
+/// view's own, so each view's open action is its alone. Built once per type and view; each
+/// resource binds it ([`open_with_spec`]).
+fn open_with_type(view: &str, label: &str, description: Option<&str>) -> Arc<ActionType> {
+    use tilo_resource::Effect as _;
+    let mut spec = crate::effects::OpenEffect::OpenWith {
+        anchor: String::new(),
+        view: view.to_owned(),
+    }
+    .bound();
+    let ty = spec.type_mut();
+    // The payload names the effect by its own id, so the action's id is free to be the view's.
+    ty.id = open_with_id(view);
+    label.clone_into(&mut ty.label);
+    ty.description = description.map(str::to_owned);
+    Arc::clone(spec.action_type())
+}
+
+/// The action that opens the published resource `anchor` through the view `view`, of the type
+/// [`open_with_type`] built for that view: bound as [`tilo_resource::Effect::bound`] binds an
+/// effect to the resource it is offered on.
+fn open_with_spec(ty: &Arc<ActionType>, anchor: &str, view: &str) -> ActionSpec {
+    use tilo_resource::Effect as _;
+    let arguments = crate::effects::OpenEffect::OpenWith {
+        anchor: anchor.to_owned(),
+        view: view.to_owned(),
+    }
+    .arguments();
+    ty.bind(Target::new(arguments.clone()))
+        .with_bound(arguments.into_iter().collect())
 }
 
 /// The resource `id` of the type `type_name`, published with the actions of that type.

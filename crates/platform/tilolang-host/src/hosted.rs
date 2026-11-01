@@ -264,6 +264,8 @@ pub struct Hosted {
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
+    /// Why the surface was last refused instead of published: empty once it publishes.
+    refused: Vec<tilo_actions::ContractViolation>,
     registry: ActionRegistry,
     /// What the instance last published to the session's persistent search index, and what it
     /// published from: it publishes the app's resources' entries when the record's heads move,
@@ -363,6 +365,7 @@ impl Hosted {
             directory: PublishedDirectory::default(),
             directory_behind: false,
             published_from: None,
+            refused: Vec::new(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
             search_index_from: None,
@@ -377,6 +380,13 @@ impl Hosted {
         self.published
             .as_ref()
             .map_or(&[], |(descriptors, _)| descriptors.as_slice())
+    }
+
+    /// Why the instance's surface was last refused rather than published: empty while what it
+    /// offers is a valid resource/action surface.
+    #[must_use]
+    pub fn refused(&self) -> &[tilo_actions::ContractViolation] {
+        &self.refused
     }
 
     /// Keep the identity-service connection the instance's connection signs through for as long
@@ -767,10 +777,9 @@ impl Hosted {
         }
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
             // A search hit, or an agent's `open`: the window shows what it names.
-            let OpenEffect::Open { anchor } =
-                <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                    .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
-            self.instance.open_requests().borrow_mut().push(anchor);
+            let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+            self.instance.open_requests().borrow_mut().push(open);
             return Ok(tilo_actions::ActionOutput::default());
         }
         Err(Refused::new(
@@ -882,8 +891,10 @@ impl Hosted {
                     self.published_from = None;
                 }
             }
+            self.refused = violations;
             return;
         }
+        self.refused.clear();
         let descriptors = tilo_actions::door::survey(&resources);
         self.directory.publish(&resources, &descriptors);
         self.directory_behind = false;

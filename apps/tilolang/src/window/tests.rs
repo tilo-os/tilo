@@ -1311,7 +1311,11 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
         !before.contains("Coffee machine on the third floor is fixed."),
         "the scenario opens another channel"
     );
-    workspace.window.open_requests().borrow_mut().push(anchor);
+    workspace
+        .window
+        .open_requests()
+        .borrow_mut()
+        .push(tilolang_tilo::OpenEffect::Open { anchor });
     workspace.settle();
     // The messages are rows of the transcript: what the app rendered of them.
     let channel = workspace
@@ -1359,7 +1363,11 @@ fn search_entries_find_notes_and_open_the_window_at_the_note() {
     let first = &entries[0];
     assert_eq!(first.group.as_deref(), Some("Notes"), "{first:?}");
     let anchor = first.anchor.clone().expect("a hit names its resource");
-    workspace.window.open_requests().borrow_mut().push(anchor);
+    workspace
+        .window
+        .open_requests()
+        .borrow_mut()
+        .push(tilolang_tilo::OpenEffect::Open { anchor });
     workspace.settle();
     assert!(
         workspace.window.detail_target().is_some(),

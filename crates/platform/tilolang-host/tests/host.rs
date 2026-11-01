@@ -1122,14 +1122,97 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
 
 const NOTES: &str = "so.tilo.lang.notes";
 
+/// Where the shipped tilolang packages are.
+fn shipped_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
+}
+
+/// The shipped package in `dir`, built with the packages it uses, and its app id.
+fn shipped(dir: &std::path::Path) -> (String, Bundle) {
+    let dirs = tilolang::source::dependency_order(dir, &[])
+        .unwrap_or_else(|error| panic!("{}: the packages resolve: {error}", dir.display()));
+    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+        .unwrap_or_else(|error| panic!("{}: the packages compile: {error}", dir.display()));
+    let (package, used) = built.split_last().expect("the package is built last");
+    (
+        package.compiled.meta.app.clone(),
+        Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled)),
+    )
+}
+
 /// The shipped Notes package, built with the packages it uses.
 fn notes() -> Bundle {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/notes");
-    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
-    let (package, used) = built.split_last().expect("the package is built last");
-    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
+    shipped(&shipped_dir().join("notes")).1
+}
+
+/// Every package shipped in `apps/tl` publishes what it offers as a valid resource/action surface:
+/// hosted as a window opens it, the host refuses none of it and the broker holds it. A resource's
+/// views each open through an action of their own, so none shares one.
+#[test]
+fn every_shipped_package_publishes_a_surface_the_host_does_not_refuse() {
+    let mut dirs: Vec<_> = std::fs::read_dir(shipped_dir())
+        .expect("the shipped packages")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|dir| dir.join("app.tl").is_file())
+        .collect();
+    dirs.sort();
+    assert!(dirs.len() >= 2, "{dirs:?}");
+    for dir in dirs {
+        let (app, bundle) = shipped(&dir);
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().expect("the instance runs");
+        assert!(
+            hosted.refused().is_empty(),
+            "{app}: the host refused its surface: {:#?}",
+            hosted.refused()
+        );
+        assert!(
+            !hosted.published().is_empty(),
+            "{app}: the broker holds nothing it offers"
+        );
+    }
+}
+
+/// A view other than its type's default is opened by the action published with it: the
+/// counter's `controls`, invoked as the broker delivers it, shows the counter through that
+/// view, its two buttons without the count.
+#[test]
+fn a_published_view_opens_through_its_own_action() {
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let opens = |label: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| action.view.as_ref().is_some_and(|view| view.label == label))
+            .unwrap_or_else(|| panic!("the view `{label}` is published with its open action"))
+            .clone()
+    };
+    let (counter, controls) = (opens("counter"), opens("controls"));
+    assert!(counter.view.as_ref().unwrap().primary);
+    assert_eq!(counter.address.action, "open");
+    assert_ne!(
+        controls.address.action, counter.address.action,
+        "each view opens through an action of its own"
+    );
+    assert!(window.detail.is_none(), "the window shows its root alone");
+    deliver(&inbox, 41, &controls.address, "ada");
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 41),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "{:?}",
+        answered(&sent, 41)
+    );
+    let shown = format!("{:?}", window.detail.as_ref().expect("the view opened"));
+    assert!(
+        shown.contains("plus") && shown.contains("minus") && !shown.contains("Count"),
+        "the counter, through its controls: {shown}"
+    );
 }
 
 /// The node of `tree` whose prop `name` reads `value`.
