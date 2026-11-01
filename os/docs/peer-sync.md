@@ -78,13 +78,13 @@ A Fedora Desktop may have an enrolled home peer but no local Files daemon or
 namespace. Do not infer a new empty workspace from this, or from an offline
 peer. The saved `home-peers.json` under the host's existing identity root
 (`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
-device, relay service and relay room IDs to probe:
+device, relay service and relay workspace IDs to probe:
 
 ```sh
 tilo-relay-admin home-peer-files-status \
   --identity-root "$HOME/.local/share/tilo" \
   --device ENROLLED_DEVICE_PUBLIC_KEY --service RELAY_SERVICE_PUBLIC_KEY \
-  --workspace-id REGISTERED_RELAY_ROOM_ID
+  --workspace-id REGISTERED_RELAY_WORKSPACE_ID
 ```
 
 This read-only command uses the existing device key, verified certificate and
@@ -96,7 +96,7 @@ create an identity, grant access, or start a Files mount. A timeout or denied
 query leaves the existence of remote data unknown. Probe the saved candidate
 workspaces before deciding whether explicit new initialization is appropriate.
 
-The relay room ID is a routing key, not a Files namespace UUID. A successful
+The relay workspace ID is a routing key, not a Files namespace UUID. A successful
 probe identifies a recovery source; actual namespace recovery must still use
 the existing authenticated Files join path and corresponding authority.
 

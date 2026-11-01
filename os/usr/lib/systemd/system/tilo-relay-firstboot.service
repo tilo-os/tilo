@@ -10,7 +10,7 @@ Before=tilo-relay.service tilo-fs-replica.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/tilo-relay-firstboot
-# Give the LAN mdns handshake generous room but do not block
+# Give the LAN mdns handshake generous time but do not block
 # forever — a headless host may boot at 2AM with no primary device
 # on the LAN. In that case the script prints its pairing token to
 # the console and returns non-zero; systemd will retry on next

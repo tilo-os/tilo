@@ -118,7 +118,7 @@ def fixture_bytes(tokens):
     for i, (name, payload) in enumerate(sections):
         offset = 1024 + i * 2048
         if len(payload) > 2048:
-            raise ValueError("fixture payload exceeds synthetic section room")
+            raise ValueError("fixture payload exceeds synthetic section space")
         struct.pack_into("<8sIIII", data, 392 + i * 40, name, len(payload),
                          (i + 1) * 4096, 2048, offset)
         data[offset:offset + len(payload)] = payload
