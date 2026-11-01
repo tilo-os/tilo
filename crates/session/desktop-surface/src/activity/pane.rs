@@ -2101,7 +2101,7 @@ impl WorkspaceActivityPane {
             .set_authors(self.source.authors().clone());
         let query = tree
             .active_workspace()
-            .map(|w| WorkspaceHistoryQuery::for_workspace(w.room()))
+            .map(|w| WorkspaceHistoryQuery::for_room(w.room()))
             .unwrap_or_default();
         let changed =
             self.history_index
@@ -2173,9 +2173,9 @@ impl WorkspaceActivityPane {
         let query = match self.scope {
             WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
-                .map(|workspace| WorkspaceHistoryQuery::for_workspace(workspace.room()))
+                .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room()))
                 .unwrap_or_default(),
-            WorkspaceScope::AllWorkspaces => WorkspaceHistoryQuery::for_workspaces(
+            WorkspaceScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
                 tree.workspaces
                     .iter()
                     .map(tilo_desktop_model::Workspace::room),

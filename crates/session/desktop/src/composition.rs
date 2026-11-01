@@ -147,7 +147,10 @@ pub fn build_group(
         .iter()
         .map(|tab| {
             let host = resolver
-                .resolve(TileRequest { workspace, tab })
+                .resolve(TileRequest {
+                    room: workspace,
+                    tab,
+                })
                 .mount(failures, wake.clone());
             (
                 TabDescriptor {
@@ -981,7 +984,7 @@ impl DesktopSurface {
                         let replace = tiles.get(&tab.id) != Some(&tab.tile) || arriving;
                         if replace && resolver.ready_to_replace(tab) {
                             let resolution = resolver.resolve(TileRequest {
-                                workspace: workspace.room(),
+                                room: workspace.room(),
                                 tab,
                             });
                             match resolution {
@@ -1041,7 +1044,7 @@ impl DesktopSurface {
                     } else {
                         resolver
                             .resolve(TileRequest {
-                                workspace: workspace.room(),
+                                room: workspace.room(),
                                 tab,
                             })
                             .mount(&mut failures, wake_sink.clone())

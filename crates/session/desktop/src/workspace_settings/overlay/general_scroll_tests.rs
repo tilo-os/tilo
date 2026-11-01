@@ -31,7 +31,7 @@ fn archived() -> Vec<ArchivedWorkspace> {
     ["Old project", "Trip"]
         .iter()
         .map(|name| ArchivedWorkspace {
-            workspace: RoomId::new(),
+            room: RoomId::new(),
             name: (*name).to_owned(),
         })
         .collect()
