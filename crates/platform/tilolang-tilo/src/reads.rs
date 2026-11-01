@@ -664,19 +664,10 @@ pub fn first_text(
     schema: &TypeSchema,
     (path, items): (&str, &RecordItems<'_>),
 ) -> Option<(String, String)> {
-    let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
     // `title`, then `body`, then the rest by id: the roles say which field a person knows the
-    // resource by, so a message's body names it before a sender or a date id happens to.
-    fields.sort_by_key(|field| {
-        (
-            match field.role {
-                crate::schema::FieldRole::Title => 0_u8,
-                crate::schema::FieldRole::Body => 1,
-                crate::schema::FieldRole::Plain => 2,
-            },
-            field.id.as_str(),
-        )
-    });
+    // resource by, so a message's body names it before a sender or a date id happens to
+    // ([`TypeSchema::in_naming_order`], the one order naming uses).
+    let fields = schema.in_naming_order();
     if let Some(own) = own_text(doc, obj, &fields, path) {
         return Some(own);
     }

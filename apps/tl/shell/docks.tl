@@ -23,7 +23,8 @@ view dock(s: Shell, d: Desk) {
 /// what it stands for. A floating dock is one compact group centred on its edge; a dock that
 /// rides the whole edge is the taskbar: the dock's items leading, then the time and the
 /// device's status trailing, in the one bar the theme draws as a bar's. A dock standing up a
-/// leading or trailing edge runs top to bottom.
+/// leading or trailing edge runs top to bottom. A dock along the top or the foot holding more
+/// than its edge has room for scrolls along it, so the dock stays on the output.
 view dock_run(s: Shell, d: Desk) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
@@ -40,29 +41,33 @@ view dock_run(s: Shell, d: Desk) {
             }
         }
     } else if across {
-        ui.DragRun(axis: .horizontal) {
-            trailing: {
-                clock(d)
-                bell(d)
-            }
-            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
-            for item in s.dock_items {
-                if item.pinned or s.dock_running {
-                    ui.DragItem(item, title: item.title) {
-                        on activate: dock_open(s, item)
-                        dock_tile(s, d, item)
+        scroll(axis: .horizontal) {
+            ui.DragRun(axis: .horizontal) {
+                trailing: {
+                    clock(d)
+                    bell(d)
+                }
+                on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+                for item in s.dock_items {
+                    if item.pinned or s.dock_running {
+                        ui.DragItem(item, title: item.title) {
+                            on activate: dock_open(s, item)
+                            dock_tile(s, d, item)
+                        }
                     }
                 }
             }
         }
     } else {
-        ui.DragRun(axis: .horizontal, distribute: .center) {
-            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
-            for item in s.dock_items {
-                if item.pinned or s.dock_running {
-                    ui.DragItem(item, title: item.title) {
-                        on activate: dock_open(s, item)
-                        dock_tile(s, d, item)
+        scroll(axis: .horizontal) {
+            ui.DragRun(axis: .horizontal, distribute: .center) {
+                on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+                for item in s.dock_items {
+                    if item.pinned or s.dock_running {
+                        ui.DragItem(item, title: item.title) {
+                            on activate: dock_open(s, item)
+                            dock_tile(s, d, item)
+                        }
                     }
                 }
             }
