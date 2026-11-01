@@ -1,6 +1,6 @@
 use super::*;
 use crate::offscreen::OffscreenRenderer;
-use vello::kurbo::{RoundedRect, Vec2};
+use vello::kurbo::{Point, RoundedRect, Size, Vec2};
 
 const PANEL: Rect = Rect::new(64.0, 48.0, 192.0, 144.0);
 
@@ -416,6 +416,7 @@ fn cost_at_1080p() {
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
         sampling: Sampling::Smooth,
         cell_px: 0.0,
+        refraction: Refraction::NONE,
         below: stripes(target.0, target.1),
         ground,
     };
@@ -805,6 +806,171 @@ fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
     }
 }
 
+/// The Liquid Glass preset with its floating finish bending `refraction`
+/// across a 22 px band, unblurred and with no rim, so only the bend shows.
+fn liquid_theme(refraction: f32, dispersion: f32) -> Theme {
+    let mut document = crate::theme::Preset::LiquidGlass.document();
+    document.material.floating = crate::tokens::Finish::new(
+        crate::part_paint::builtin::liquid_set().clone(),
+        [
+            ("tint", 0.16),
+            ("refraction", refraction),
+            ("band", 22.0),
+            ("dispersion", dispersion),
+            ("edge_highlight", 0.0),
+        ],
+    )
+    .unwrap();
+    Theme::from_document(&document).unwrap()
+}
+
+/// A lens moves what a pixel shows inward along the outline's normal: by
+/// nearly its whole strength at the rim, easing to nothing at the band's
+/// inner side, and not at all in the flat middle.
+#[test]
+fn a_lens_displaces_at_the_rim_and_leaves_the_middle_straight() {
+    let lens = Refraction {
+        strength: 10.0,
+        band: 20.0,
+        radius: 12.0,
+        dispersion: 0.0,
+    };
+    let size = Size::new(200.0, 100.0);
+    let at = |x: f64, y: f64| lens.displacement(Point::new(x, y), size);
+    let near = |a: Vec2, b: Vec2| (a - b).hypot() < 1e-9;
+    // Half a pixel in from the left rim: 0.975² of the strength, inward.
+    assert!(near(at(0.5, 50.0), Vec2::new(10.0 * 0.975 * 0.975, 0.0)));
+    // From the right and the top, inward from those sides.
+    assert!(near(at(199.5, 50.0), Vec2::new(-10.0 * 0.975 * 0.975, 0.0)));
+    assert!(near(at(100.0, 0.5), Vec2::new(0.0, 10.0 * 0.975 * 0.975)));
+    // Halfway across the band a quarter of it; past the band, nothing.
+    assert!(near(at(10.0, 50.0), Vec2::new(2.5, 0.0)));
+    assert!(near(at(25.0, 50.0), Vec2::ZERO));
+    assert!(near(at(100.0, 50.0), Vec2::ZERO));
+    // Round a corner the bend points at the corner's centre.
+    let corner = at(3.0, 3.0);
+    assert!(
+        corner.x > 0.0 && (corner.x - corner.y).abs() < 1e-9,
+        "{corner:?}"
+    );
+    // No strength, no bend; a lens with no band eases across 2.5 times it.
+    assert!(near(
+        Refraction::NONE.displacement(Point::new(0.5, 50.0), size),
+        Vec2::ZERO
+    ));
+    let lens = Lens {
+        refraction: 8.0,
+        ..Lens::default()
+    };
+    assert!((Refraction::of(lens, 4.0).band - 20.0).abs() < 1e-9);
+    // At twice the pixels the bend is twice as far; dispersion is a ratio.
+    let doubled = Refraction {
+        dispersion: 0.2,
+        ..Refraction::of(lens, 4.0)
+    }
+    .scaled(2.0);
+    assert!((doubled.strength - 16.0).abs() < 1e-9 && (doubled.radius - 8.0).abs() < 1e-9);
+    assert!((doubled.dispersion - 0.2).abs() < 1e-9);
+}
+
+/// A Liquid panel records its lens with the backdrop it samples, in the
+/// recording's pixels, and a frame's region carries it to the pass.
+#[test]
+fn a_liquid_panel_records_its_lens_with_its_backdrop() {
+    let theme = liquid_theme(14.0, 0.1);
+    let mut scene = stripes(256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 1);
+    let refraction = surfaces[0].refraction;
+    assert!(refraction.bends());
+    assert!((refraction.strength - 14.0).abs() < 1e-6, "{refraction:?}");
+    assert!((refraction.band - 22.0).abs() < 1e-6);
+    assert!((refraction.radius - 12.0).abs() < 1e-6);
+    assert!((refraction.dispersion - 0.1).abs() < 1e-6);
+    let region = surfaces
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_region(PANEL, 2.0, |below| below);
+    assert!((region.refraction.strength - 28.0).abs() < 1e-6);
+    assert!((region.refraction.band - 44.0).abs() < 1e-6);
+    // A finish with no lens bends nothing.
+    let mut scene = stripes(256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    crate::surface::panel(
+        &mut scene,
+        Affine::IDENTITY,
+        PANEL,
+        12.0,
+        &liquid_theme(0.0, 0.0),
+    );
+    let surfaces = recording.finish();
+    assert_eq!(
+        surfaces.len(),
+        1,
+        "an unblurred lens of nothing still samples"
+    );
+    assert!(!surfaces[0].refraction.bends());
+}
+
+/// Over the stripes, a Liquid panel's rim shows what lies further in (the
+/// pixel at its right rim shows a stripe from about a lens's strength in),
+/// its middle shows the stripes exactly as an unbent panel does, sharp,
+/// and dispersion sets red and blue apart where the stripes' edges bend.
+#[test]
+fn a_liquid_panel_bends_its_rim_and_leaves_its_middle_sharp() {
+    let width = 256;
+    let flat = render_floating_over_stripes(&liquid_theme(0.0, 0.0));
+    let bent = render_floating_over_stripes(&liquid_theme(14.0, 0.0));
+    let row = 96;
+    // The middle is the same, and the stripes there are sharp: a white
+    // column beside a black one, flat across each column.
+    for x in [120, 124, 128, 132] {
+        assert!(
+            close(pixel(&flat, width, x, row), pixel(&bent, width, x, row), 2),
+            "the lens reached the middle at {x}"
+        );
+    }
+    let (white, black) = (pixel(&bent, width, 124, row), pixel(&bent, width, 132, row));
+    assert!(
+        brightness(white) > brightness(black) + 60,
+        "the stripes are blurred away: {white:?} {black:?}"
+    );
+    assert!(close(pixel(&bent, width, 121, row), white, 2));
+    assert!(close(pixel(&bent, width, 134, row), black, 2));
+    // At the right rim (x = 192) the stripes are bent: the pixel just
+    // inside shows what the unbent panel shows about twelve pixels in.
+    let rim = pixel(&bent, width, 190, row);
+    assert!(
+        !close(rim, pixel(&flat, width, 190, row), 6),
+        "the rim shows the backdrop where it was: {rim:?}"
+    );
+    assert!(
+        (176..=181).any(|x| close(rim, pixel(&flat, width, x, row), 8)),
+        "the rim shows {rim:?}, nothing from a lens's strength in"
+    );
+    // Dispersion sets red and blue apart where a stripe's edge is bent.
+    let split = render_floating_over_stripes(&liquid_theme(14.0, 0.4));
+    // The ground's own hue tints both alike, so the fringe is red against
+    // blue beyond what the undispersed lens shows.
+    let warmth = |seen: &[u8], x: u32| {
+        let [r, _, b, _] = pixel(seen, width, x, row);
+        i16::from(r) - i16::from(b)
+    };
+    let fringe = (166..192).any(|x| (warmth(&split, x) - warmth(&bent, x)).abs() > 12);
+    assert!(fringe, "no colour fringe at the rim");
+    for x in [120, 124, 128, 132] {
+        assert!(
+            close(pixel(&split, width, x, row), pixel(&bent, width, x, row), 2),
+            "the middle is fringed at {x}"
+        );
+    }
+}
+
 /// Block's floating panel is its opaque ground with the strong border: no
 /// blur, no hairline, no shadow.
 #[test]
@@ -833,28 +999,6 @@ fn a_block_panel_is_flat_and_bordered() {
             1
         ));
     }
-}
-
-/// A glass body's refraction rings are clipped only to an outline that is
-/// not its body. A painter draws its body at the origin, and the body
-/// rebuilt from that path's bounds lands a hair off it (the arcs' ends sit
-/// at -4e-31): compared exactly, every glass body took a clip it did not
-/// need and had its edges antialiased twice.
-#[test]
-fn a_body_rebuilt_from_its_path_is_the_same_outline() {
-    let body = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 14.0);
-    let path = body.to_path(0.1);
-    let rebuilt = RoundedRect::from_rect(path.bounding_box(), 14.0).to_path(0.1);
-    assert!(rebuilt != path, "the premise: not bit-identical");
-    assert!(same_outline(&rebuilt, &path));
-    let mut triangle = vello::kurbo::BezPath::new();
-    triangle.move_to((0.0, 98.0));
-    triangle.line_to((199.75, 0.0));
-    triangle.line_to((399.5, 98.0));
-    triangle.close_path();
-    assert!(!same_outline(&rebuilt, &triangle));
-    let smaller = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 13.0).to_path(0.1);
-    assert!(!same_outline(&rebuilt, &smaller));
 }
 
 /// Pixelated's floating panel shows what lies below it as cells: one colour

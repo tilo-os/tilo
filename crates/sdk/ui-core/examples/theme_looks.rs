@@ -5,15 +5,20 @@
 //!
 //! `cargo run -p tilo-ui --example theme-looks -- OUT_DIR [THEME.json ...]`
 //!
-//! Without theme files it shoots the shipped Block, Glass and Pixelated
-//! presets; each file given is a theme document shot under its own id. Run
-//! it on a software adapter (lavapipe) where the GPU is not to be touched.
+//! Without theme files it shoots the shipped Block, Glass, Pixelated and
+//! Liquid Glass presets; each file given is a theme document shot under its
+//! own id. Run it on a software adapter (lavapipe) where the GPU is not to
+//! be touched.
+//!
+//! The desk's wallpaper carries a page of text under the floating panel
+//! and a line of it under the bar, so a lens's bend shows as bent lines.
 
 use std::path::{Path, PathBuf};
 
 use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene};
 use tilo_ui::chrome::{SelectionState, selection_tier_on};
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::{Preset, Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;
 use tilo_ui::widget::{Button, ButtonRole, Column, Row, Toggle};
@@ -31,7 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut themes: Vec<(String, Theme)> = Vec::new();
     let files: Vec<PathBuf> = args.map(PathBuf::from).collect();
     if files.is_empty() {
-        for preset in [Preset::Block, Preset::Glass, Preset::Pixelated] {
+        for preset in [
+            Preset::Block,
+            Preset::Glass,
+            Preset::Pixelated,
+            Preset::LiquidGlass,
+        ] {
             themes.push((preset.id().to_owned(), Theme::preset(preset)));
         }
     }
@@ -187,5 +197,40 @@ fn wallpaper(width: u32, height: u32) -> Scene {
             &Circle::new(centre, 46.0),
         );
     }
+    page(&mut scene);
     scene
+}
+
+/// A page of text where the floating panel lands, its edges and lines
+/// crossing the panel's rim, and a line of text under the bar.
+fn page(scene: &mut Scene) {
+    let mut text = TextRenderer::new();
+    let sheet = Rect::new(250.0, 136.0, 700.0, 404.0);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::from_rgb8(244, 240, 228),
+        None,
+        &sheet,
+    );
+    let line = "The lens bends what lies below along its rim and leaves the middle straight.";
+    for row in 0..12_u32 {
+        let y = f64::from(row).mul_add(22.0, sheet.y0 + 6.0);
+        text.draw_text(
+            scene,
+            line,
+            15.0,
+            Color::from_rgb8(20, 20, 24),
+            Affine::translate((sheet.x0 + 10.0, y)),
+            Some(430.0),
+        );
+    }
+    text.draw_text(
+        scene,
+        "Bar over text: every glyph under the rim moves toward the middle of the bar.",
+        16.0,
+        Color::WHITE,
+        Affine::translate((16.0, 6.0)),
+        Some(688.0),
+    );
 }
