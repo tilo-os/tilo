@@ -40,7 +40,7 @@ pub struct SessionHealth {
     pub generation: String,
     /// Relay session.
     pub transport: TransportHealth,
-    /// Room admission.
+    /// Workspace admission.
     pub admission: AdmissionHealth,
     /// One entry per document route this session touched.
     pub records: Vec<RecordHealth>,

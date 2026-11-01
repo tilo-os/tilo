@@ -139,7 +139,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     }
     assert!(
         refused.is_empty(),
-        "a visitor refused documents of the room: {refused:?}"
+        "a visitor refused documents of the workspace: {refused:?}"
     );
 
     for page in pages {

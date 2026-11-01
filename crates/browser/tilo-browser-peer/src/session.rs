@@ -3092,7 +3092,7 @@ impl Task {
         }
     }
 
-    /// Whether the host answered `Ready` for `route`'s room: it sent the
+    /// Whether the host answered `Ready` for `route`'s workspace: it sent the
     /// governance it holds first, so the page's mirror of its channels is
     /// what the workspace decided.
     fn governance_known(&self, route: &DocumentRoute) -> bool {
@@ -3354,7 +3354,7 @@ impl Task {
                 let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
                 if lock(&self.shared).status.rooms.get(workspace_id) != Some(&true) {
                     // The host takes a workspace's governance only from a session
-                    // it admitted to the room: this is asked again the
+                    // it admitted to the workspace: this is asked again the
                     // moment it does (`admitted`).
                     continue;
                 }
