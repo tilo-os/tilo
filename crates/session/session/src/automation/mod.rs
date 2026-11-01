@@ -10,7 +10,7 @@
 //!
 //! What it follows, each from where the session already reads it:
 //!
-//! - a record change, from the record documents of this device's rooms,
+//! - a record change, from the record documents of this device's workspaces,
 //!   read on a worker that a tree watch wakes ([`records`]);
 //! - the passing of time, a workspace being joined and an application
 //!   starting, from the desk the session shows and the launches it made;
@@ -20,11 +20,11 @@
 //!   same file watch the session's folders use ([`folders`]);
 //! - a keyboard chord, once a press reaches the automation host rather than
 //!   a chord of the desktop's own table ([`Automation::press`]);
-//! - the revoked devices of a room a shortcut is saved in, from the room's
+//! - the revoked devices of a workspace a shortcut is saved in, from its
 //!   governance as this device holds it.
 //!
-//! Only shortcuts saved by the person this device acts for in their room
-//! are armed ([`triggers::armed`]), so a collaborator's shortcut never fires
+//! Only shortcuts saved by the person this device acts for in their
+//! workspace are armed ([`triggers::armed`]), so a collaborator's shortcut never fires
 //! on someone else's behalf.
 
 pub(crate) mod folders;
@@ -87,8 +87,8 @@ pub struct Automation {
     feed: records::RecordFeed,
     /// What a person saves through the action door, applied on the loop.
     saved: tokio::sync::mpsc::UnboundedReceiver<crate::plane::StoreRequest>,
-    /// The rooms whose records are followed now, so the worker is told only
-    /// when that changed.
+    /// The workspaces whose records are followed now, so the worker is told
+    /// only when that changed.
     followed: BTreeSet<String>,
     /// The apps' broker, while the session serves one: every firing starts
     /// through it.
@@ -106,7 +106,7 @@ pub struct Automation {
     /// The person's notification policy, as the session keeps it current:
     /// the focus modes a shortcut can answer.
     policy: Arc<std::sync::Mutex<NotificationPolicy>>,
-    /// What each of this device's rooms revokes, as the room's governance
+    /// What each of this device's workspaces revokes, as its governance
     /// records it.
     revocations: crate::engine::Revocations,
     handle: DesktopHandle,
@@ -120,7 +120,7 @@ pub struct Automation {
     published: Option<u64>,
     /// The desk revision whose shortcuts were last armed: a desk that moved
     /// arms again on the next pass, so a shortcut a person just saved
-    /// follows its room's records from the moment it is shown rather than
+    /// follows its workspace's records from the moment it is shown rather than
     /// from the next tick.
     armed_at: Option<u64>,
     /// When the passing of time was last shown to the schedules.
@@ -133,8 +133,8 @@ pub struct Automation {
 }
 
 /// What the session shows the trigger host besides its desk: the apps it
-/// starts, the person's notification policy, what each of its rooms revokes,
-/// and which of the person's devices are online to run a schedule.
+/// starts, the person's notification policy, what each of its workspaces
+/// revokes, and which of the person's devices are online to run a schedule.
 pub struct Feeds {
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
@@ -225,7 +225,7 @@ impl Automation {
         self.apply_saved();
         // What fired while the broker was starting starts now that it serves.
         // What it fired was decided against a desk this loop had already
-        // published, so the broker knows the room the run belongs to.
+        // published, so the broker knows the workspace the run belongs to.
         if self.broker.is_some() {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
@@ -280,7 +280,7 @@ impl Automation {
                     };
                     Some(ActionChord {
                         chord: KeyChord::parse(chord).ok()?,
-                        target: chord_target(&armed.room, &armed.shortcut.id),
+                        target: chord_target(&armed.workspace, &armed.shortcut.id),
                         label: format!("Run {}", armed.shortcut.name),
                     })
                 })
@@ -376,29 +376,30 @@ impl Automation {
     }
 
     /// The shortcuts this device may start: those the person it acts for in
-    /// their room saved with a device of theirs, with the fire times of that
-    /// room's schedules already claimed.
+    /// their workspace saved with a device of theirs, with the fire times of
+    /// that workspace's schedules already claimed.
     fn armed(&self, now_ns: u64) -> Vec<Armed> {
         let revocations = &self.revocations;
         self.handle.read(|tree| {
             armed(
                 &tree.workspaces,
                 |workspace| self.person_in(&workspace.room().to_string()),
-                // A room this device holds arms against what its governance
-                // revokes. One it does not hold is a workspace on the desk
-                // whose room lives elsewhere: nothing of it is known here,
+                // A workspace this device holds arms against what its
+                // governance revokes. One it does not hold is a workspace on
+                // the desk whose records live elsewhere: nothing of it is
+                // known here,
                 // and the run it starts is refused by the broker unless the
-                // room it holds says otherwise.
+                // workspace it holds says otherwise.
                 |workspace| Some(revocations(&workspace.room().to_string()).unwrap_or_default()),
                 now_ns,
             )
         })
     }
 
-    /// The rooms where an armed shortcut watches record changes or incoming
-    /// messages: only their records are read.
+    /// The workspaces where an armed shortcut watches record changes or
+    /// incoming messages: only their records are read.
     fn follow_records(&mut self, armed: &[Armed]) {
-        let rooms: BTreeSet<String> = armed
+        let workspaces: BTreeSet<String> = armed
             .iter()
             .filter(|armed| {
                 armed.shortcut.triggers.iter().any(|trigger| {
@@ -408,23 +409,23 @@ impl Automation {
                     )
                 })
             })
-            .map(|armed| armed.room.clone())
+            .map(|armed| armed.workspace.clone())
             .collect();
-        if rooms != self.followed {
-            self.feed.follow(rooms.clone());
-            self.followed = rooms;
+        if workspaces != self.followed {
+            self.feed.follow(workspaces.clone());
+            self.followed = workspaces;
         }
     }
 
-    /// Who this device acts for in `room`: the identity the registry
+    /// Who this device acts for in `workspace`: the identity the registry
     /// presents there, else the session's own person.
-    fn person_in(&self, room: &str) -> String {
-        crate::identity::person_in(room, &self.person)
+    fn person_in(&self, workspace: &str) -> String {
+        crate::identity::person_in(workspace, &self.person)
     }
 
-    /// Start every firing as the person this device acts for in its room,
-    /// claiming a schedule's fire time first so the person's other devices
-    /// leave it alone.
+    /// Start every firing as the person this device acts for in its
+    /// workspace, claiming a schedule's fire time first so the person's other
+    /// devices leave it alone.
     fn start(&self, firings: Vec<Firing>) {
         let Some(broker) = self.broker.clone() else {
             // The broker may still be starting: what fired waits for it, and
@@ -434,13 +435,13 @@ impl Automation {
         };
         for firing in firings {
             if let Some(claim) = &firing.claim {
-                self.claim(&firing.room, claim);
+                self.claim(&firing.workspace, claim);
             }
-            let caller =
-                Caller::local_person(self.person_in(&firing.room)).in_workspace(&firing.room);
+            let caller = Caller::local_person(self.person_in(&firing.workspace))
+                .in_workspace(&firing.workspace);
             if let Err(error) = broker.start_triggered_shortcut_run(
                 &caller,
-                &firing.room,
+                &firing.workspace,
                 &firing.shortcut,
                 &firing.trigger,
                 firing.run,
@@ -480,16 +481,16 @@ impl Automation {
         }
     }
 
-    /// `change` stored in the workspace of `room`, as `actor` asked: a saved
-    /// shortcut carries this device's proof of who saved it, which is what
-    /// arms its triggers on the saver's devices.
+    /// `change` stored in `workspace`, as `actor` asked: a saved shortcut
+    /// carries this device's proof of who saved it, which is what arms its
+    /// triggers on the saver's devices.
     fn save(
         &self,
-        room: &str,
+        workspace: &str,
         actor: &str,
         change: &tilo_automation::ShortcutChange,
     ) -> Result<(), String> {
-        let (key, device) = tilo_identity_host::broker::trusted_current_device(room)
+        let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace)
             .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
         if actor != hex::encode(device.user_public_key) {
             return Err("a shortcut is saved from its saver's own device".into());
@@ -503,7 +504,7 @@ impl Automation {
                     triggers::validate_trigger(trigger)?;
                 }
                 tilo_peer_state::workspace::sign_saved_shortcut(
-                    room,
+                    workspace,
                     &mut shortcut,
                     &device,
                     &key,
@@ -516,7 +517,7 @@ impl Automation {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|held| held.room().to_string() == workspace)
             .ok_or("this device holds no such workspace")?;
         match change {
             tilo_automation::ShortcutChange::Save(shortcut) => {
@@ -545,17 +546,17 @@ impl Automation {
         Ok(())
     }
 
-    /// Record `claim` in the workspace of `room`: the fire time this device
-    /// took, which its other devices read back and leave alone.
-    fn claim(&self, room: &str, claim: &ScheduleClaim) {
-        let Some(room) = RoomId::parse(room) else {
+    /// Record `claim` in `workspace`: the fire time this device took, which
+    /// its other devices read back and leave alone.
+    fn claim(&self, workspace: &str, claim: &ScheduleClaim) {
+        let Some(workspace_id) = RoomId::parse(workspace) else {
             return;
         };
         let mut tree = self.handle.read(Clone::clone);
         let Some(workspace) = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room() == room)
+            .find(|held| held.room() == workspace_id)
         else {
             return;
         };

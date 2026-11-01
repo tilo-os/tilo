@@ -1,6 +1,6 @@
 //! A person's record changes as trigger events.
 //!
-//! Each look reads, per record in a room a shortcut of this device may
+//! Each look reads, per record in a workspace a shortcut of this device may
 //! watch, the changes after the heads it last saw, and turns each one that
 //! carries a history entry into a [`RecordEvent`]. The first look at a
 //! record only learns its heads: a shortcut saved today never fires on last
@@ -8,14 +8,15 @@
 //!
 //! The documents belong to the apps that write them, and this process reads
 //! them the way search does: a tree watch over the device's data home, and a
-//! worker that reads again whenever a record or a room index below it
+//! worker that reads again whenever a record or a workspace index below it
 //! changes. The session's loop only takes what the worker found
 //! ([`RecordFeed::take`]); it never opens, lists or stats a path, and there
 //! is no second store: the record documents read here are the ones the apps
 //! wrote.
 //!
-//! A room a shortcut starts watching is read on the loop's pass that armed
-//! it ([`RecordFeed::follow`]), so the heads it learns as its baseline are
+//! A workspace a shortcut starts watching is read on the loop's pass that
+//! armed it ([`RecordFeed::follow`]), so the heads it learns as its baseline
+//! are
 //! the heads at that moment: a change made after the shortcut is shown is one
 //! it fires on, never one swallowed by a baseline read that happened later.
 
@@ -36,7 +37,7 @@ const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
 /// One record's document as last read, and where it was.
 #[derive(Clone, Debug)]
 struct Seen {
-    /// The room's name for the record, and its kind.
+    /// The workspace's name for the record, and its kind.
     kind: String,
     /// When the file was last written and how large it was: a document whose
     /// stamp did not move has no change to turn into an event.
@@ -46,9 +47,9 @@ struct Seen {
 /// What the worker keeps between reads.
 #[derive(Default)]
 struct Worker {
-    /// The rooms a shortcut watches, by room id: only their records are read.
-    rooms: BTreeSet<String>,
-    /// Every record read so far, by (room, record): its kind and stamp.
+    /// The workspaces a shortcut watches, by id: only their records are read.
+    workspaces: BTreeSet<String>,
+    /// Every record read so far, by (workspace, record): its kind and stamp.
     seen: BTreeMap<(String, String), Seen>,
     /// The heads each record was last read at.
     cursors: BTreeMap<(String, String), Vec<ChangeHash>>,
@@ -58,9 +59,9 @@ struct Worker {
 pub struct RecordFeed {
     /// What the worker found and the loop has not taken yet.
     found: Arc<Mutex<Vec<RecordEvent>>>,
-    /// What the worker keeps between reads: the rooms it watches, the heads
-    /// each record was read at. Shared with the loop, which reads a room's
-    /// records once when it starts watching them.
+    /// What the worker keeps between reads: the workspaces it watches, the
+    /// heads each record was read at. Shared with the loop, which reads a
+    /// workspace's records once when it starts watching them.
     reading: Arc<Mutex<Worker>>,
     /// The data home the worker reads, as [`RecordFeed::follow`] reads it.
     root: PathBuf,
@@ -71,16 +72,20 @@ pub struct RecordFeed {
 
 impl RecordFeed {
     /// Follow the records under `root`, the data home this device's apps
-    /// write: the rooms `rooms` names are read, and the rest are left alone
-    /// until a shortcut watches one of them.
+    /// write: the workspaces `workspaces` names are read, and the rest are
+    /// left alone until a shortcut watches one of them.
     ///
     /// The first read happens on this thread, before the watch's worker
     /// starts, so the heads it learns are the heads on disk before any change
     /// it reports.
-    pub fn start(root: PathBuf, rooms: BTreeSet<String>, wake: crate::automation::Wake) -> Self {
+    pub fn start(
+        root: PathBuf,
+        workspaces: BTreeSet<String>,
+        wake: crate::automation::Wake,
+    ) -> Self {
         let found = Arc::new(Mutex::new(Vec::new()));
         let worker = Arc::new(Mutex::new(Worker {
-            rooms,
+            workspaces,
             ..Worker::default()
         }));
         {
@@ -100,9 +105,9 @@ impl RecordFeed {
                     return false;
                 };
                 let parts: Vec<&std::ffi::OsStr> = inside.iter().collect();
-                // A record or a room index: the documents this feed reads,
-                // and the directory a record of a room not read yet appears
-                // in.
+                // A record or a workspace index: the documents this feed
+                // reads, and the directory a record of a workspace not read
+                // yet appears in.
                 parts.get(1) == Some(&std::ffi::OsStr::new(WORKSPACES_DIR))
             },
             move || {
@@ -132,17 +137,17 @@ impl RecordFeed {
         }
     }
 
-    /// Read the records of exactly `rooms` from now on: the rooms where an
-    /// armed shortcut watches record changes. The room that starts being
-    /// watched is read here, before this returns, so the heads learned as the
-    /// baseline are the heads the person's shortcut was shown at, and every
-    /// change written after it is one the worker reports.
-    pub fn follow(&self, rooms: BTreeSet<String>) {
+    /// Read the records of exactly `workspaces` from now on: the workspaces
+    /// where an armed shortcut watches record changes. The workspace that
+    /// starts being watched is read here, before this returns, so the heads
+    /// learned as the baseline are the heads the person's shortcut was shown
+    /// at, and every change written after it is one the worker reports.
+    pub fn follow(&self, workspaces: BTreeSet<String>) {
         let mut worker = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
-        if worker.rooms == rooms {
+        if worker.workspaces == workspaces {
             return;
         }
-        worker.rooms = rooms;
+        worker.workspaces = workspaces;
         worker.read(&self.root, &self.found);
     }
 
@@ -164,15 +169,15 @@ impl Drop for RecordFeed {
 }
 
 impl Worker {
-    /// Read every record of the rooms this worker watches, turn what changed
-    /// since the last read into events, and keep the heads.
+    /// Read every record of the workspaces this worker watches, turn what
+    /// changed since the last read into events, and keep the heads.
     fn read(&mut self, root: &Path, found: &Mutex<Vec<RecordEvent>>) {
         let mut events = Vec::new();
         let held = self.held(root);
         let mut cursors = BTreeMap::new();
-        for (package, room, record, kind) in held {
-            let key = (room.clone(), record.clone());
-            let path = record_document(root, &package, &room, &record);
+        for (package, workspace, record, kind) in held {
+            let key = (workspace.clone(), record.clone());
+            let path = record_document(root, &package, &workspace, &record);
             let stamp = path.as_deref().and_then(stamp_of);
             let unchanged = match (&stamp, self.seen.get(&key)) {
                 (Some(stamp), Some(seen)) => {
@@ -187,7 +192,7 @@ impl Worker {
                 && let Some(doc) = load(&path)
             {
                 if let Some(since) = &heads {
-                    events.extend(record_events(&room, &record, &kind, &doc, since));
+                    events.extend(record_events(&workspace, &record, &kind, &doc, since));
                 }
                 // A record looked at for the first time only has its heads
                 // learned: a shortcut saved today never fires on last year's
@@ -201,7 +206,7 @@ impl Worker {
             }
             self.seen.insert(key, Seen { kind, stamp });
         }
-        // Records a room no longer holds are forgotten: a record written
+        // Records a workspace no longer holds are forgotten: a record written
         // again from nothing is not the old one.
         self.seen.retain(|key, _| cursors.contains_key(key));
         self.cursors = cursors;
@@ -213,9 +218,9 @@ impl Worker {
         }
     }
 
-    /// Every record the watched rooms hold, by the room indexes the apps of
-    /// this device write: the app that named it, its room, its name, and its
-    /// kind.
+    /// Every record the watched workspaces hold, by the workspace indexes the
+    /// apps of this device write: the app that named it, its workspace, its
+    /// name, and its kind.
     fn held(&self, data_home: &Path) -> Vec<(String, String, String, String)> {
         let mut held = Vec::new();
         let mut packages = Vec::new();
@@ -224,16 +229,16 @@ impl Worker {
         for package in packages {
             if let Ok(entries) = std::fs::read_dir(data_home.join(&package).join(WORKSPACES_DIR)) {
                 for entry in entries.flatten() {
-                    let room = entry.file_name().to_string_lossy().into_owned();
-                    if self.rooms.contains(&room) {
-                        indexes.push((package.clone(), room));
+                    let workspace = entry.file_name().to_string_lossy().into_owned();
+                    if self.workspaces.contains(&workspace) {
+                        indexes.push((package.clone(), workspace));
                     }
                 }
             }
         }
-        for (package, room) in indexes {
-            for (record, kind) in named_in(data_home, &package, &room) {
-                held.push((package.clone(), room.clone(), record, kind));
+        for (package, workspace) in indexes {
+            for (record, kind) in named_in(data_home, &package, &workspace) {
+                held.push((package.clone(), workspace.clone(), record, kind));
             }
         }
         held
@@ -254,10 +259,15 @@ fn collect(packages: &mut Vec<String>, root: &Path) {
     packages.sort();
 }
 
-/// Where record `record` of `package` in `room` keeps its document.
-fn record_document(data_home: &Path, package: &str, room: &str, record: &str) -> Option<PathBuf> {
+/// Where record `record` of `package` in `workspace` keeps its document.
+fn record_document(
+    data_home: &Path,
+    package: &str,
+    workspace: &str,
+    record: &str,
+) -> Option<PathBuf> {
     let directory =
-        app_state::DocStore::workspace_record_dir_at(data_home, package, room, record).ok()?;
+        app_state::DocStore::workspace_record_dir_at(data_home, package, workspace, record).ok()?;
     Some(directory.join(DOCUMENT_FILE))
 }
 
@@ -285,12 +295,12 @@ fn load(path: &Path) -> Option<AutoCommit> {
     AutoCommit::load_with_options(&bytes, options).ok()
 }
 
-/// The records `package`'s index for `room` names, by record id and kind.
-fn named_in(data_home: &Path, package: &str, room: &str) -> Vec<(String, String)> {
-    let directory = match app_state::workspace_index_directory(data_home, package, room) {
+/// The records `package`'s index for `workspace` names, by record id and kind.
+fn named_in(data_home: &Path, package: &str, workspace: &str) -> Vec<(String, String)> {
+    let directory = match app_state::workspace_index_directory(data_home, package, workspace) {
         Ok(directory) => directory,
         Err(error) => {
-            tracing::warn!(%error, package, room, "a room's index is not read");
+            tracing::warn!(%error, package, %workspace, "a workspace's index is not read");
             return Vec::new();
         }
     };
@@ -311,7 +321,7 @@ fn named_in(data_home: &Path, package: &str, room: &str) -> Vec<(String, String)
 /// The changes of `doc` after `since`, in causal order, as events.
 #[must_use]
 pub fn record_events(
-    room: &str,
+    workspace: &str,
     record: &str,
     kind: &str,
     doc: &AutoCommit,
@@ -327,7 +337,7 @@ pub fn record_events(
         .filter_map(|change| {
             let context = ActionContext::from_change_message(change.message()?)?;
             Some(event_of(
-                room,
+                workspace,
                 record,
                 kind,
                 &change.hash().to_string(),
@@ -361,7 +371,7 @@ mod tests {
         let hash = doc
             .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
             .unwrap();
-        let events = record_events("room-1", "rec-1", "chat.workspace", &doc, &before);
+        let events = record_events("workspace-1", "rec-1", "chat.workspace", &doc, &before);
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.change, hash.to_string());
@@ -374,7 +384,7 @@ mod tests {
         // Nothing new after the last look.
         assert!(
             record_events(
-                "room-1",
+                "workspace-1",
                 "rec-1",
                 "chat.workspace",
                 &doc,
