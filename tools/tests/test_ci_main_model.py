@@ -68,13 +68,13 @@ class MainIsNotGated(unittest.TestCase):
 
     def test_lint_keeps_only_the_newest_commit_of_a_ref(self):
         # Lint checks the whole tree, so an older run's result says nothing a
-        # newer one will not say again: the newer push cancels it. A dispatch is
-        # never cancelled.
+        # newer one will not say again: a newer push replaces a waiting run,
+        # and the running one is left to finish — cancelling it meant that
+        # while pushes came faster than a lint run, main got no verdict at all.
         concurrency = block(workflow("lint.yml"), "concurrency")
         self.assertIn("group: lint-${{ github.event_name }}-${{ github.ref }}",
                       concurrency)
-        self.assertIn("cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}",
-                      concurrency)
+        self.assertIn("cancel-in-progress: false", concurrency)
 
     def test_a_newer_push_skips_an_older_waiting_run(self):
         # A run that never reached a runner is superseded by skipping its jobs:
