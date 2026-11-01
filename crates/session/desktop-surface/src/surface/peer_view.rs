@@ -1357,7 +1357,27 @@ impl Widget for PeerView {
         };
         let _ = taffy.set_style(child, style);
         self.child_node = Some(child);
-        taffy.widget_node(Style::default(), &[child], node_map, self)
+        // The tile's own box is the window's. With the picture absolute it
+        // sets no size of its own, so the box it fills has to say it fills;
+        // its floor is zero so a stream never pushes the window's bar out
+        // of the strip.
+        let fill = Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        };
+        taffy.widget_node(
+            Style {
+                size: fill,
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::length(0.0),
+                },
+                ..Style::default()
+            },
+            &[child],
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

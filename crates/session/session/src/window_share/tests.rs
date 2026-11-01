@@ -30,7 +30,7 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
 use tilo_action_policy::{Role, share::is_of_share};
 use tilo_actions::ResourceSpec;
-use tilo_compositor::{Compositor, OutputConfig};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desktop_actions::WINDOW_KIND;
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
@@ -245,7 +245,9 @@ fn until(
     b: &mut Member,
     mut done: impl FnMut(&Member, &Member, &Option<TestClient>) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // A window is captured, encoded and decoded here: on a machine busy with
+    // the rest of the suite that takes far longer than it does alone.
+    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         if let Some(client) = client.as_mut() {
             client.exchange();
@@ -707,9 +709,9 @@ fn until_window(
     }
 }
 
-/// One session shares a window of its desk and the other shows it: what the
-/// viewing member reads is the stream itself, from a keyframe on, and the
-/// sharing device's bar names the member watching it.
+/// One session shares a window of its desk and the other shows it: the
+/// viewing member's tab holds the picture its sender streams, and the sharing
+/// device's bar names the member watching it.
 #[test]
 fn a_shared_window_reaches_the_member_showing_it() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -739,10 +741,11 @@ fn a_shared_window_reaches_the_member_showing_it() {
         !rows(&shares(&host.session), "sharing").is_empty()
     });
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
-        rows(&shares(&viewer.session), "received")
-            .first()
-            .and_then(|stream| stream["units"].as_array())
-            .is_some_and(|units| !units.is_empty())
+        viewer
+            .session
+            .handle()
+            .peer_surface_read(tab)
+            .is_some_and(|read| read.pictured())
     });
 
     let reading = shares(&viewer.session);
@@ -767,8 +770,8 @@ fn a_shared_window_reaches_the_member_showing_it() {
         "the stream says how it is encoded: {reading}"
     );
     assert!(
-        stream["keyframe"].as_u64().is_some(),
-        "the stream starts from a keyframe a decoder can begin at: {reading}"
+        stream["pictured"].as_bool() == Some(true),
+        "the tab shows the picture it decoded: {reading}"
     );
     assert!(
         stream["width"].as_u64().unwrap_or(0) > 0 && stream["height"].as_u64().unwrap_or(0) > 0,
@@ -810,6 +813,105 @@ fn a_shared_window_reaches_the_member_showing_it() {
     );
 }
 
+/// A window one device shares is decoded into the tab showing it on another
+/// device, and the person's pointer over that picture reaches the window
+/// while its owner lets it in.
+#[test]
+fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let mut host = member(0x41, own_desk());
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    share(&mut host, APP, tab);
+    let mut viewer = member(0x42, showing(host.sync.publisher(), APP, tab));
+    watch(&mut viewer, tab);
+
+    // The tile of the tab the window stands in decodes what its sender
+    // streams, so the window shows there as a picture.
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        viewer
+            .session
+            .handle()
+            .peer_surface_read(tab)
+            .is_some_and(|read| read.pictured())
+    });
+    let read = viewer
+        .session
+        .handle()
+        .peer_surface_read(tab)
+        .expect("the shared window has a tile");
+    assert_eq!(read.tab, tab, "the tab it stands in");
+    assert_eq!(read.surface, tab, "the surface its sender names");
+    assert_eq!(read.app_id, APP, "the window it shows");
+    assert_eq!(
+        read.peer,
+        neighbour_wire::peer_handle(host.sync.publisher().as_bytes()),
+        "the device sharing it"
+    );
+    assert_eq!(
+        read.standing,
+        tilo_desktop_surface::Standing::Pictured,
+        "the tile reads as a picture of the window"
+    );
+    let (width, height, bytes) = read.picture.expect("the picture the tile decoded");
+    assert!(
+        width > 0 && height > 0,
+        "the picture keeps the sender's size"
+    );
+    assert_eq!(
+        bytes,
+        usize::try_from(width).unwrap() * usize::try_from(height).unwrap() * 4,
+        "the picture is RGBA at that size"
+    );
+
+    // The person's pointer over the picture is this device's input for the
+    // window: it leaves the tile and goes back to the device hosting it.
+    let (x, y) = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 2.0);
+    viewer
+        .session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .expect("the pointer moves over the picture");
+    settle(&mut host, &mut window, &mut viewer);
+    assert!(
+        window
+            .as_ref()
+            .is_some_and(|window| !window.seen.pointer_inside && window.seen.motions.is_empty()),
+        "a member the person did not let in moves nothing"
+    );
+
+    allow_input(&mut host, tab, true);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| {
+                viewers
+                    .iter()
+                    .any(|viewer| viewer["can_control"].as_bool() == Some(true))
+            })
+    });
+    viewer
+        .session
+        .compositor()
+        .input(InputEvent::PointerMotion {
+            x: x + 20.0,
+            y: y + 20.0,
+        })
+        .expect("the pointer moves over the picture");
+    until(&mut host, &mut window, &mut viewer, |_, _, client| {
+        client
+            .as_ref()
+            .is_some_and(|client| client.seen.pointer_inside)
+    });
+    assert!(
+        window
+            .as_ref()
+            .is_some_and(|window| window.seen.pointer_inside),
+        "the person's pointer reached the window"
+    );
+}
+
 /// A member's view of a shared window ends when the window closes.
 #[test]
 fn closing_the_shared_window_ends_its_stream() {
@@ -821,7 +923,11 @@ fn closing_the_shared_window_ends_its_stream() {
     let mut viewer = member(0xd0, showing(host.sync.publisher(), APP, tab));
     watch(&mut viewer, tab);
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
-        !rows(&shares(&viewer.session), "received").is_empty()
+        viewer
+            .session
+            .handle()
+            .peer_surface_read(tab)
+            .is_some_and(|read| read.pictured())
     });
 
     window.as_mut().expect("client").close_window();
@@ -837,6 +943,10 @@ fn closing_the_shared_window_ends_its_stream() {
             .exposures()
             .is_empty(),
         "the bar says nothing is shared any more"
+    );
+    assert!(
+        viewer.session.handle().peer_surface_read(tab).is_none(),
+        "the tab holds no picture of a window that is gone"
     );
 }
 
@@ -1080,20 +1190,24 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     watch(&mut member, tab);
     viewing(&mut host, &mut window, &mut member, tab);
 
-    // Its own stream reaches the host's desk: the window it shares arrives
-    // with its frames.
+    // Its own stream reaches the host's desk: the window it shares is
+    // recorded there, waiting for the tab the sender names. The host's desk
+    // shows no tab 4, so nothing decodes it here.
     tell(&host, &member, stream_start(&member, 991, 4));
     tell(&host, &member, stream_frame(&member, 991, 1));
     until(&mut host, &mut window, &mut member, |host, _, _| {
         rows(&shares(&host.session), "received")
             .first()
-            .is_some_and(|stream| {
-                stream["surface"].as_u64() == Some(991)
-                    && stream["units"]
-                        .as_array()
-                        .is_some_and(|units| !units.is_empty())
-            })
+            .is_some_and(|stream| stream["surface"].as_u64() == Some(991))
     });
+    assert_eq!(
+        rows(&shares(&host.session), "received")
+            .first()
+            .and_then(|stream| stream["pictured"].as_bool()),
+        Some(false),
+        "a desk with no tab for the window shows no picture of it: {}",
+        shares(&host.session)
+    );
     assert_eq!(
         rows(&shares(&host.session), "received")
             .first()

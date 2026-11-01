@@ -1228,12 +1228,16 @@ impl Session {
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
         // The windows this session shares with its rooms: a share's encoder
-        // wakes the loop when it has a frame, and the bar reads them.
+        // wakes the loop when it has a frame, and the bar reads them. A
+        // window another device shares is decoded on the same waker, so a
+        // picture that comes out late lands without waiting for the next
+        // frame the desk draws for something else.
         let window_shares = window_share::WindowShares::new(
             options.wake.handle(),
             options.person.clone(),
             options.salt,
         );
+        handle.set_peer_picture_wake(Some(options.wake.handle()));
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
