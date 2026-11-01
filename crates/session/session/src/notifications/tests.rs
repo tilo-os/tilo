@@ -247,7 +247,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
     assert_eq!(plain.actions[0].1, notifications::open_action_label());
     assert_eq!(plain.actions[1].1, "zzz", "only an alarm's are relabelled");
     alarm.scheduled = Some(Occurrence {
-        room: "local".into(),
+        workspace: "local".into(),
         token: "t1".into(),
         occurrence_ms: 1_000,
         calendar_alarm: true,
@@ -792,7 +792,7 @@ fn choosing_a_scheduled_notification_names_the_target_it_rings_for() {
     let id = rig.daemon.alloc_id();
     let mut ringing = sent(id);
     ringing.scheduled = Some(Occurrence {
-        room: "local".into(),
+        workspace: "local".into(),
         token: "0123456789abcdef0123456789abcdef".into(),
         occurrence_ms: 1_000,
         calendar_alarm: true,
