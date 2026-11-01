@@ -402,7 +402,7 @@ impl Session {
         let hosted = Hosted::with_record(
             Spec {
                 app: app.to_owned(),
-                room: route.cluster_id.to_string(),
+                workspace: route.cluster_id.to_string(),
                 instance: 1,
                 person: person.to_owned(),
             },

@@ -102,7 +102,7 @@ fn kept(app: &str, doc: AutoCommit, scratch: &Scratch) -> RecordStore {
     drop(host);
     drop(earlier);
     let file = tilolang_tilo::index::file_of(
-        &tilolang_tilo::index::room_dir(&scratch.indexes(), KEPT_WORKSPACE),
+        &tilolang_tilo::index::workspace_dir(&scratch.indexes(), KEPT_WORKSPACE),
         &app_id,
     );
     match tilolang_tilo::index::Index::open(&file, &app_id, &schema) {
