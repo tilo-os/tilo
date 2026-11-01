@@ -250,7 +250,7 @@ pub fn receipt_from_record(
     }
     store
         .read(record, |doc| {
-            let scope = ui::record::room_scope(doc);
+            let scope = ui::record::workspace_scope(doc);
             if scope
                 .as_deref()
                 .is_some_and(|workspace| workspace != actual_destination.room)
@@ -572,7 +572,8 @@ mod tests {
         store.try_flush().unwrap();
         assert!(
             store
-                .read(&primary.id, |doc| ui::record::room_scope(doc).is_none())
+                .read(&primary.id, |doc| ui::record::workspace_scope(doc)
+                    .is_none())
                 .unwrap()
         );
         assert!(

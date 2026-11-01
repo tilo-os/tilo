@@ -13,7 +13,7 @@ use typed_peer::TypedPeer;
 fn hello(handle: &str) -> CollabRequest {
     CollabRequest::Hello {
         app_id: "so.tilo.word-processor".into(),
-        cluster_id: typed_peer::room(),
+        cluster_id: typed_peer::workspace(),
         record: None,
         record_kind: None,
         handle: Some(handle.into()),

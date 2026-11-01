@@ -1,6 +1,6 @@
 # E-Book Reader — Tilo application manifest.
 #
-# The shelf is the room's, and a new room starts with an empty one.
+# The shelf is the workspace's, and a new workspace starts with an empty one.
 # Reading progress and annotations are the app's own state.
 #
 # Beyond the system read profile it needs, as consented capabilities:

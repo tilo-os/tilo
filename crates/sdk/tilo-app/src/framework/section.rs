@@ -125,16 +125,20 @@ impl SectionKind {
 
     /// Take back (`undo`) or bring back the last step `by` took on the
     /// section, reading the settings document's history: their changes
-    /// through the section's actions. Whether there was one.
-    fn step(&self, undo: bool, by: &str) -> Result<bool, String> {
+    /// through the section's actions, or ones under an `alias` of theirs
+    /// (an id they went by before this device had an identity). Whether
+    /// there was one.
+    fn step(&self, undo: bool, by: &str, aliases: &[String]) -> Result<bool, String> {
         let verb = if undo { "undo" } else { "redo" };
         let origin = ChangeOrigin::action(format!("{}/{verb}", self.kind)).by(by.to_owned());
         let actions = format!("{}/", self.kind);
         let owns = |version: &tilo_resource::history::Version| {
-            version
-                .message
-                .as_deref()
-                .is_some_and(|message| ui_core::storage::made_by(message, &actions, by))
+            version.message.as_deref().is_some_and(|message| {
+                ui_core::storage::made_by(message, &actions, by)
+                    || aliases
+                        .iter()
+                        .any(|alias| ui_core::storage::made_by(message, &actions, alias))
+            })
         };
         let mut stepped = false;
         self.document
@@ -198,6 +202,11 @@ where
 pub(crate) struct SectionDoor {
     id: String,
     kind: Rc<SectionKind>,
+    /// The person whose steps the section's undo and redo take back, and
+    /// the ids they went by before this device had an identity: changes
+    /// made under any of them are theirs.
+    me: String,
+    earlier: Vec<String>,
     /// The settings document's version the door last read.
     seen: Cell<Option<SettingsRevision>>,
     /// Increases whenever what the section holds may have changed.
@@ -208,10 +217,12 @@ pub(crate) struct SectionDoor {
 }
 
 impl SectionDoor {
-    pub(crate) fn new(kind: Rc<SectionKind>) -> Self {
+    pub(crate) fn new(kind: Rc<SectionKind>, me: String, earlier: Vec<String>) -> Self {
         Self {
             id: format!("settings:{}", kind.kind),
             kind,
+            me,
+            earlier,
             seen: Cell::new(None),
             revision: Cell::new(0),
             published: RefCell::new(None),
@@ -256,7 +267,10 @@ impl SectionDoor {
     /// Take back (`undo`) or redo the last step `by` took on the section.
     /// Whether there was one.
     pub(crate) fn step(&self, undo: bool, by: &str) -> bool {
-        match self.kind.step(undo, by) {
+        // What an id they went by made is theirs to take back; what an agent
+        // acting for them made is the agent's own.
+        let aliases: &[String] = if by == self.me { &self.earlier } else { &[] };
+        match self.kind.step(undo, by, aliases) {
             Ok(stepped) => {
                 self.notice();
                 stepped
@@ -429,14 +443,17 @@ impl SettingsRecords {
     /// The settings sections `declares` declare, of the app `app_id` (titled
     /// `app_title`), changed by `person`: each change is stored in the
     /// session's settings document with what made it and who, and is a step
-    /// of its invoker's, undone and redone like any of theirs. The
-    /// sections' history is the settings document's, so the host holds no
-    /// person records beside them.
+    /// of its invoker's, undone and redone like any of theirs. `earlier`
+    /// are the ids they went by before this device had an identity: what
+    /// was changed under one is theirs to take back. The sections' history
+    /// is the settings document's, so the host holds no person records
+    /// beside them.
     #[must_use]
     pub fn of_person_named(
         app_id: &'static str,
         app_title: &'static str,
         person: &str,
+        earlier: &[String],
         declares: &[super::Declare],
     ) -> Self {
         Self::declared(
@@ -445,6 +462,7 @@ impl SettingsRecords {
                 document: SettingsDocument::Session,
                 person: Some(Rc::new(super::person::PersonState::without_records(
                     person.to_owned(),
+                    earlier.to_vec(),
                     app_id,
                     app_title,
                 ))),

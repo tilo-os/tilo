@@ -557,7 +557,11 @@ impl<'a> Records<'a> {
             let kind = super::section::SectionKind::of(&settings);
             sections.doors.push(match &sections.person {
                 Some(person) => person.open_section(kind),
-                None => Rc::new(super::section::SectionDoor::new(kind)),
+                None => Rc::new(super::section::SectionDoor::new(
+                    kind,
+                    String::new(),
+                    Vec::new(),
+                )),
             });
         }
         let Some(storage) = self.storage else {

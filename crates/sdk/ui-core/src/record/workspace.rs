@@ -94,7 +94,15 @@ impl WorkspaceRecords {
         let id = RecordId::parse(&id).ok_or(RecordOpenError::IdentityMismatch)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
         super::person::open_in(&store, &checkout, initialize)?;
-        Ok(StoredRecord::new(store, checkout, self.author.clone()))
+        // Every app of the room publishes the record, whichever app wrote
+        // it first: the room's grants on the owner's resource decide each
+        // change.
+        Ok(StoredRecord::new(
+            store,
+            checkout,
+            self.author.clone(),
+            true,
+        ))
     }
 }
 

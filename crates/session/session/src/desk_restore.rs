@@ -30,7 +30,7 @@ use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
 use tilo_surface_host::DesktopHost;
 
 use crate::i18n::t_args;
-use crate::mount::apps::Apps;
+use crate::mount::apps::{self, Apps};
 
 /// How long a saved window may take to show itself before its tab says it
 /// did not open: an app that started and never mapped is not coming.
@@ -87,7 +87,7 @@ impl Restore {
                         } else {
                             label.clone()
                         };
-                        let launch = launched(app_id);
+                        let launch = apps::launch_of(app_id);
                         saved.push((
                             workspace.id,
                             Saved {
@@ -210,51 +210,6 @@ fn room_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
                 .map(|workspace| workspace.room().to_string())
         })
     })
-}
-
-/// How `app` starts again here: an installed Tilo package through the
-/// launcher, or one of the machine's own applications through the entry whose
-/// identities hold the name its window announced. `None` when this machine
-/// has neither.
-fn launched(app: &str) -> Option<Launch> {
-    if let Some(package) = installed_package(app) {
-        return Some(Launch::Package {
-            app: package,
-            open: None,
-        });
-    }
-    let scan = desktop_entry::cache::cached_scan();
-    let entry = scan.entries.iter().find(|entry| {
-        entry.id.eq_ignore_ascii_case(app)
-            || entry
-                .window_identities()
-                .iter()
-                .any(|identity| identity.eq_ignore_ascii_case(app))
-    })?;
-    Some(Launch::Host {
-        desktop_id: entry.id.clone(),
-        open: None,
-    })
-}
-
-/// The package id `app` is installed under: the id itself, or the package
-/// whose short name it is.
-fn installed_package(app: &str) -> Option<String> {
-    if let Ok(Some(installed)) = tilo_installed_apps::read_one_from_env(app) {
-        return Some(installed.package_id);
-    }
-    if app.contains('.') {
-        return None;
-    }
-    let installed = tilo_installed_apps::read_from_env().ok()?;
-    installed
-        .into_iter()
-        .find(|package| {
-            tilo_app_launch::package_identities(&package.package_id)
-                .iter()
-                .any(|identity| identity.eq_ignore_ascii_case(app))
-        })
-        .map(|package| package.package_id)
 }
 
 /// What a tab says when the app it holds is not on this machine.

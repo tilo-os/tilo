@@ -13,7 +13,9 @@
 //! Nothing here changes a device. Mounting, formatting and powering off stay
 //! `UDisks2` calls behind polkit.
 
-use crate::protocol::{DriveHealth, Refusal, Storage, StorageDevice};
+#[cfg(target_os = "linux")]
+use crate::protocol::StorageDevice;
+use crate::protocol::{DriveHealth, Refusal, Storage};
 
 /// Where the session's storage answers come from.
 pub trait StorageSource: Send + Sync {

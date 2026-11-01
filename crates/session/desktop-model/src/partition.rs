@@ -5,7 +5,7 @@
 //! display, is laid out and panned there only, and never appears on another.
 //! Which display that is depends on the monitors this device happens to
 //! have, so the partition is per-device layout state. It is persisted with
-//! the device's own desktop and is never projected into a room document or
+//! the device's own desktop and is never projected into a workspace document or
 //! the device's whole-desktop document: a collaborator has their own
 //! monitors and their own partition of the same strip.
 //!

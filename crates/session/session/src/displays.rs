@@ -1,9 +1,36 @@
-//! How the displays are used together: side by side, showing the same, or
-//! only the built-in or only the other ones. The display key steps through
-//! them ([`DisplayMode::Next`]); Settings and a script set one by name.
+//! The session's displays, published: how they are used together — side by
+//! side, showing the same, only the built-in or only the other ones — and how
+//! bright each one is.
+//!
+//! The display key steps through the arrangements ([`DisplayMode::Next`]);
+//! Settings, the display sheet and a script set one by name. Every display the
+//! session shows is a row of the reading, with how bright it is when this
+//! machine can set that, and the reading names the display the person works
+//! on. The brightness keys, the Quick Settings sliders and the panel's readout
+//! all read that one reading and invoke these one actions, so what a person
+//! sees of their displays and what changes them are one thing.
+//!
+//! What the arrangements are carried out with is the compositor, which only
+//! the session's loop reaches: those verbs queue a [`SessionCommand`] the loop
+//! takes up on the same pass. Brightness needs no compositor — it is the
+//! machine's own hardware, reached through [`Backlights`] — so it is set here
+//! at once, and the reading says so.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use os_actions::brightness::{BrightnessService, MonitorLevel, SessionDisplays};
+use os_actions::{BrightnessKind, step_together};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_compositor::{OutputChange, OutputInfo};
+use tilo_desktop_surface::DesktopHandle;
+use tilo_resource::Effect;
+use tilo_service::{Service, Started, decode, offer, reading};
+
+use crate::controls::SessionCommand;
+use crate::i18n::t;
 
 /// A way of using the displays together, or the next one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +176,462 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
     }
 }
 
+/// The resource the session publishes of its displays.
+pub const RESOURCE: &str = "session:displays";
+
+/// What kind of resource [`RESOURCE`] is.
+pub const KIND: &str = "session.displays";
+
+/// How far a brightness key moves a display, as a share of full brightness.
+pub const BRIGHTNESS_STEP: f32 = 0.1;
+
+/// What the displays resource offers: the arrangements, the display sheet,
+/// and every display's brightness.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.displays")]
+pub enum DisplaysAction {
+    /// Use the displays together in the next arrangement
+    #[effect(own_device, icon = "monitor")]
+    NextMode,
+    /// Use the displays together this way
+    #[effect(own_device, icon = "monitor")]
+    SetMode {
+        /// One of [`NAMES`].
+        #[param("How: extend, mirror, built-in or external", choices = NAMES)]
+        mode: String,
+    },
+    /// Bring up the display sheet
+    ///
+    /// Where the layouts and the wireless displays are chosen.
+    #[effect(own_device, icon = "monitor")]
+    OpenSheet,
+    /// Take the display sheet down
+    #[effect(own_device, idempotent)]
+    CloseSheet,
+    /// Make the display brighter
+    ///
+    /// The display the person works on, or with `all` every display that can
+    /// be dimmed, each keeping its share of the brightest one.
+    #[effect(own_device, icon = "sun")]
+    BrightnessUp {
+        /// Whether every display moves together, as Shift does on the key.
+        #[param("Whether every display moves together")]
+        all: Option<bool>,
+    },
+    /// Make the display dimmer
+    ///
+    /// The display the person works on, or with `all` every display that can
+    /// be dimmed, each keeping its share of the brightest one.
+    #[effect(own_device, icon = "sun")]
+    BrightnessDown { all: Option<bool> },
+    /// Set the brightness
+    ///
+    /// The display the person works on, or the first one that can be dimmed.
+    #[effect(own_device, idempotent, icon = "sun")]
+    SetBrightness {
+        #[param("Brightness from 0 to 1")]
+        level: f64,
+    },
+    /// Set one display's brightness
+    #[effect(own_device, idempotent, icon = "sun")]
+    SetDisplayBrightness {
+        /// The display's connector, as the reading lists it.
+        #[param("The display's connector")]
+        display: String,
+        #[param("Brightness from 0 to 1")]
+        level: f64,
+    },
+}
+
+/// The machine's brightness controls, as this service reaches them: the OS
+/// brightness service in a session on a machine, a stand-in in a test.
+pub trait Backlights {
+    /// Every display whose brightness this machine can set, built-in first,
+    /// and how bright it is now (`0.0..=1.0`).
+    fn levels(&self) -> Vec<MonitorLevel>;
+
+    /// Set `connector` to `percent` (`0..=100`). Whether this machine has such
+    /// a display to set.
+    fn set(&self, connector: &str, percent: f32) -> bool;
+
+    /// The displays the session shows: one it shows nothing on gets no
+    /// brightness control.
+    fn show_only(&self, connectors: &[String]);
+}
+
+/// The screens of this machine, as the OS brightness service reaches them: the
+/// panel's backlight and every external monitor that speaks DDC/CI.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Screens;
+
+impl Backlights for Screens {
+    fn levels(&self) -> Vec<MonitorLevel> {
+        BrightnessService::global().levels()
+    }
+
+    fn set(&self, connector: &str, percent: f32) -> bool {
+        BrightnessService::global().set(connector, percent)
+    }
+
+    fn show_only(&self, connectors: &[String]) {
+        BrightnessService::global().show_only(SessionDisplays {
+            connectors: connectors.to_vec(),
+            // This compositor dims nothing in software: a display with neither
+            // a backlight nor DDC/CI has no brightness control here.
+            software_dim: false,
+        });
+    }
+}
+
+/// The displays as one reads them now: which ones the session shows, how
+/// bright each is, and which one the person works on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reading {
+    /// Every display the session shows, the built-in one first.
+    pub displays: Vec<Display>,
+    /// The connector of the display the person works on, when the desk names
+    /// one of the displays shown.
+    pub focused: Option<String>,
+}
+
+impl Reading {
+    /// How bright the display the person works on is, when it can be dimmed,
+    /// else the first display that can: the level a brightness key is about.
+    #[must_use]
+    pub fn brightness(&self) -> Option<f32> {
+        self.focused
+            .as_deref()
+            .and_then(|focused| {
+                self.displays
+                    .iter()
+                    .find(|display| display.connector == focused)
+            })
+            .and_then(|display| display.brightness)
+            .or_else(|| self.displays.iter().find_map(|display| display.brightness))
+    }
+}
+
+/// One display the session shows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Display {
+    /// Its DRM connector (`eDP-1`, `DP-2`), which its brightness is set by.
+    pub connector: String,
+    /// What a person knows it by: the panel, its own name, else its connector.
+    pub name: String,
+    /// How bright it is, `0.0..=1.0`, when this machine can set it.
+    pub brightness: Option<f32>,
+    /// Whether its brightness is its own hardware — a backlight or DDC/CI —
+    /// rather than the compositor darkening what it shows.
+    pub backlight: bool,
+}
+
+/// The session's displays, as the session holds them.
+pub struct Displays {
+    inner: Rc<RefCell<Inner>>,
+}
+
+impl Clone for Displays {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+/// What the session knows of its displays between passes.
+#[derive(Default)]
+struct Inner {
+    /// The machine's brightness controls; `None` in a session that dims
+    /// nothing (a test, a window inside another desktop).
+    backlights: Option<Box<dyn Backlights>>,
+    /// Where the arrangements land, for the loop to carry out.
+    commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// The displays the compositor shows, as its outputs say now.
+    shown: Vec<Shown>,
+    /// The connector the person works on, when the desk names one.
+    focused: Option<String>,
+    /// The connectors the brightness controls were last told of.
+    told: Vec<String>,
+}
+
+/// One display the compositor shows.
+struct Shown {
+    connector: String,
+    /// The monitor on it, as the desk follows it between ports.
+    monitor: String,
+    name: String,
+}
+
+impl Inner {
+    /// The reading as it stands now: every display shown, with how bright it
+    /// is when this machine can set that.
+    fn reading(&self) -> Reading {
+        let levels = self.levels();
+        Reading {
+            displays: self
+                .shown
+                .iter()
+                .map(|shown| {
+                    let level = levels
+                        .iter()
+                        .find(|level| level.connector == shown.connector);
+                    Display {
+                        connector: shown.connector.clone(),
+                        name: shown.name.clone(),
+                        brightness: level.map(|level| level.level),
+                        backlight: level
+                            .is_some_and(|level| level.kind != BrightnessKind::Software),
+                    }
+                })
+                .collect(),
+            focused: self.focused.clone(),
+        }
+    }
+
+    /// The displays that can be dimmed now: the machine's, of those the
+    /// session shows.
+    fn levels(&self) -> Vec<MonitorLevel> {
+        let Some(backlights) = &self.backlights else {
+            return Vec::new();
+        };
+        let mut levels = backlights.levels();
+        levels.retain(|level| {
+            self.shown
+                .iter()
+                .any(|shown| shown.connector == level.connector)
+        });
+        levels
+    }
+}
+
+impl Displays {
+    /// The displays over `backlights`, whose arrangements land as `commands`
+    /// the loop carries out.
+    #[must_use]
+    pub fn new(
+        backlights: Option<Box<dyn Backlights>>,
+        commands: Rc<RefCell<Vec<SessionCommand>>>,
+    ) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(Inner {
+                backlights,
+                commands,
+                ..Inner::default()
+            })),
+        }
+    }
+
+    /// Mount it as one of the session's services, and hand back the handle the
+    /// loop tells which displays it shows.
+    pub fn mount(
+        services: &Rc<RefCell<tilo_service::Services>>,
+        backlights: Option<Box<dyn Backlights>>,
+        commands: Rc<RefCell<Vec<SessionCommand>>>,
+    ) -> Self {
+        let displays = Self::new(backlights, commands);
+        services.borrow_mut().add(Box::new(displays.clone()));
+        displays
+    }
+
+    /// The compositor shows `outputs` now, and the person works on the display
+    /// `handle` names: take them in, and tell the brightness controls which
+    /// displays are shown, so a monitor nothing is shown on has no control.
+    pub fn land(&self, handle: &DesktopHandle, outputs: &[OutputInfo]) {
+        let shown: Vec<Shown> = outputs
+            .iter()
+            .filter(|output| output.enabled)
+            .map(|output| Shown {
+                connector: output.name.clone(),
+                monitor: output.monitor.clone(),
+                name: if built_in(&output.name) {
+                    t("session-display-builtin")
+                } else {
+                    output.label.clone()
+                },
+            })
+            .collect();
+        let focused = handle
+            .focused_display()
+            .and_then(|display| {
+                handle.read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))
+            })
+            .and_then(|monitor| {
+                shown
+                    .iter()
+                    .find(|shown| shown.monitor == monitor)
+                    .map(|shown| shown.connector.clone())
+            });
+        let connectors: Vec<String> = shown.iter().map(|shown| shown.connector.clone()).collect();
+        let mut inner = self.inner.borrow_mut();
+        if inner.told != connectors {
+            if let Some(backlights) = &inner.backlights {
+                backlights.show_only(&connectors);
+            }
+            inner.told = connectors;
+        }
+        inner.shown = shown;
+        inner.focused = focused;
+    }
+
+    /// The display a level or step without one named is about: the one the
+    /// person works on when it can be dimmed, else the first that can.
+    fn target(&self) -> Result<String, DoorError> {
+        let inner = self.inner.borrow();
+        let levels = inner.levels();
+        inner
+            .focused
+            .as_ref()
+            .and_then(|focused| levels.iter().find(|level| &level.connector == focused))
+            .or_else(|| levels.first())
+            .map(|level| level.connector.clone())
+            .ok_or_else(nothing_dimmable)
+    }
+
+    /// Move the display the person works on by `delta`, or with `all` every
+    /// display that can be dimmed, each keeping its share of the brightest
+    /// one's level.
+    fn step(&self, delta: f32, all: bool) -> Result<(), DoorError> {
+        let inner = self.inner.borrow();
+        let levels = inner.levels();
+        let Some(backlights) = &inner.backlights else {
+            return Err(nothing_dimmable());
+        };
+        if levels.is_empty() {
+            return Err(nothing_dimmable());
+        }
+        if all && levels.len() > 1 {
+            let shares: Vec<f32> = levels.iter().map(|level| level.level).collect();
+            for (level, next) in levels.iter().zip(step_together(&shares, delta)) {
+                backlights.set(&level.connector, next * 100.0);
+            }
+            return Ok(());
+        }
+        let target = inner
+            .focused
+            .as_ref()
+            .and_then(|focused| levels.iter().find(|level| &level.connector == focused))
+            .or_else(|| levels.first())
+            .ok_or_else(nothing_dimmable)?;
+        let next = (target.level + delta).clamp(0.0, 1.0);
+        if backlights.set(&target.connector, next * 100.0) {
+            Ok(())
+        } else {
+            Err(nothing_dimmable())
+        }
+    }
+
+    /// Set `connector` to `level` (`0.0..=1.0`).
+    fn set(&self, connector: &str, level: f32) -> Result<(), DoorError> {
+        let inner = self.inner.borrow();
+        let Some(backlights) = &inner.backlights else {
+            return Err(nothing_dimmable());
+        };
+        if backlights.set(connector, level.clamp(0.0, 1.0) * 100.0) {
+            Ok(())
+        } else {
+            Err(DoorError::Unavailable {
+                code: "unknown-display".into(),
+                reason: format!("{connector} cannot be dimmed here"),
+            })
+        }
+    }
+}
+
+/// The refusal of a brightness key on a machine with nothing to dim.
+fn nothing_dimmable() -> DoorError {
+    DoorError::Unavailable {
+        code: "no-backlight".into(),
+        reason: "No display here can be dimmed".into(),
+    }
+}
+
+/// `level` as a brightness, from 0 to 1.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a level from 0 to 1 fits an f32"
+)]
+fn level_of(level: f64) -> Result<f32, DoorError> {
+    if level.is_finite() && (0.0..=1.0).contains(&level) {
+        Ok(level as f32)
+    } else {
+        Err(DoorError::InvalidArguments(format!(
+            "a brightness is from 0 to 1, not {level}"
+        )))
+    }
+}
+
+impl Service for Displays {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut resource =
+            offer::<DisplaysAction>(ResourceSpec::new(RESOURCE, KIND, t("session-displays")));
+        // The arrangements and the sheet keep the words the rest of the
+        // desktop names them by.
+        for spec in &mut resource.actions {
+            let label = match spec.id.as_str() {
+                "next-mode" => t("session-displays-next"),
+                "set-mode" => t("session-displays-set"),
+                "open-sheet" => t("session-displays-open-sheet"),
+                "close-sheet" => t("session-displays-close-sheet"),
+                _ => continue,
+            };
+            spec.type_mut().label = label;
+        }
+        vec![resource]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| reading(&self.inner.borrow().reading()))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        if resource != RESOURCE {
+            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        }
+        match decode::<DisplaysAction>(&self.resources(), resource, action, arguments)? {
+            DisplaysAction::NextMode => self.command(SessionCommand::Displays {
+                mode: DisplayMode::Next,
+            }),
+            DisplaysAction::SetMode { mode } => {
+                let mode = DisplayMode::named(&mode).ok_or_else(|| {
+                    DoorError::InvalidArguments(format!("`{mode}` is not an arrangement"))
+                })?;
+                self.command(SessionCommand::Displays { mode });
+            }
+            DisplaysAction::OpenSheet => self.command(SessionCommand::OpenDisplaySheet),
+            DisplaysAction::CloseSheet => self.command(SessionCommand::CloseDisplaySheet),
+            DisplaysAction::BrightnessUp { all } => {
+                self.step(BRIGHTNESS_STEP, all.unwrap_or(false))?;
+            }
+            DisplaysAction::BrightnessDown { all } => {
+                self.step(-BRIGHTNESS_STEP, all.unwrap_or(false))?;
+            }
+            DisplaysAction::SetBrightness { level } => {
+                let level = level_of(level)?;
+                let display = self.target()?;
+                self.set(&display, level)?;
+            }
+            DisplaysAction::SetDisplayBrightness { display, level } => {
+                let level = level_of(level)?;
+                self.set(&display, level)?;
+            }
+        }
+        Ok(Started::Done(ActionOutput::default()))
+    }
+}
+
+impl Displays {
+    /// Queue `command` for the loop, which is the only one reaching the
+    /// compositor.
+    fn command(&self, command: SessionCommand) {
+        self.inner.borrow().commands.borrow_mut().push(command);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +670,215 @@ mod tests {
         assert!(!arrange(DisplayMode::Next, &outputs)[1].enabled);
         assert!(arrange(DisplayMode::Next, &outputs[1..]).is_empty());
         assert_eq!(DisplayMode::named("built-in"), Some(DisplayMode::BuiltIn));
+    }
+
+    /// The machine's brightness controls as a test lights them.
+    #[derive(Clone, Default)]
+    struct Dials(Rc<RefCell<DialsInner>>);
+
+    #[derive(Default)]
+    struct DialsInner {
+        levels: Vec<MonitorLevel>,
+        /// The connectors the service last said it shows.
+        shown: Vec<String>,
+        /// Every connector set, and to what, in order.
+        set: Vec<(String, f32)>,
+    }
+
+    impl Dials {
+        fn with(levels: &[(&str, f32)]) -> Self {
+            let dials = Self::default();
+            dials.0.borrow_mut().levels = levels
+                .iter()
+                .map(|(connector, level)| MonitorLevel {
+                    connector: (*connector).into(),
+                    level: *level,
+                    kind: BrightnessKind::Backlight,
+                })
+                .collect();
+            dials
+        }
+
+        /// What each display is at now, by connector.
+        fn at(&self, connector: &str) -> Option<f32> {
+            self.0
+                .borrow()
+                .levels
+                .iter()
+                .find(|level| level.connector == connector)
+                .map(|level| level.level)
+        }
+    }
+
+    impl Backlights for Dials {
+        fn levels(&self) -> Vec<MonitorLevel> {
+            self.0.borrow().levels.clone()
+        }
+
+        fn set(&self, connector: &str, percent: f32) -> bool {
+            let mut inner = self.0.borrow_mut();
+            let Some(level) = inner
+                .levels
+                .iter_mut()
+                .find(|level| level.connector == connector)
+            else {
+                return false;
+            };
+            level.level = percent / 100.0;
+            inner.set.push((connector.to_owned(), percent));
+            true
+        }
+
+        fn show_only(&self, connectors: &[String]) {
+            self.0.borrow_mut().shown = connectors.to_vec();
+        }
+    }
+
+    /// A session showing `shown` (connector, name), over `backlights`.
+    fn showing(backlights: Option<Dials>, shown: &[(&str, &str)]) -> Displays {
+        let displays = Displays::new(
+            backlights.map(|dials| Box::new(dials) as Box<dyn Backlights>),
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        let mut inner = displays.inner.borrow_mut();
+        inner.shown = shown
+            .iter()
+            .map(|(connector, name)| Shown {
+                connector: (*connector).into(),
+                monitor: (*connector).into(),
+                name: (*name).into(),
+            })
+            .collect();
+        inner.told = shown
+            .iter()
+            .map(|(connector, _)| (*connector).to_owned())
+            .collect();
+        drop(inner);
+        displays
+    }
+
+    /// What the resource publishes now.
+    fn reading(displays: &Displays) -> Reading {
+        let published = displays.read(RESOURCE).expect("the displays publish");
+        serde_json::from_value(published).expect("the reading reads back")
+    }
+
+    /// `actual` is `expected`, within the precision a percentage is set at.
+    #[track_caller]
+    fn close(actual: Option<f32>, expected: f32) -> bool {
+        actual.is_some_and(|actual| (actual - expected).abs() < 0.001)
+    }
+
+    fn invoke(
+        displays: &mut Displays,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<(), DoorError> {
+        displays.invoke(RESOURCE, action, arguments).map(drop)
+    }
+
+    #[test]
+    fn the_reading_follows_a_brightness_change() {
+        let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25), ("DP-9", 0.7)]);
+        // The last display is one this session shows nothing on: no control.
+        let displays = showing(
+            Some(dials),
+            &[("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")],
+        );
+        let mut service = displays.clone();
+        let before = reading(&displays);
+        assert_eq!(
+            before
+                .displays
+                .iter()
+                .map(|display| (display.connector.as_str(), display.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("eDP-1", "Built-in display"), ("HDMI-A-1", "HDMI-A-1")]
+        );
+        assert_eq!(before.displays[0].brightness, Some(0.5));
+        assert!(before.displays[0].backlight);
+        assert!(
+            before
+                .displays
+                .iter()
+                .all(|display| display.connector != "DP-9"),
+            "a display nothing is shown on has no control"
+        );
+
+        // A display the session shows, by its connector: the slider's way.
+        invoke(
+            &mut service,
+            "set-display-brightness",
+            &Map::from_iter([
+                ("display".to_owned(), Value::from("HDMI-A-1")),
+                ("level".to_owned(), Value::from(0.9)),
+            ]),
+        )
+        .expect("one display dims");
+        let after = reading(&displays);
+        assert!(close(after.displays[1].brightness, 0.9));
+        assert_eq!(
+            after.displays[0].brightness, before.displays[0].brightness,
+            "the other display is untouched"
+        );
+    }
+
+    #[test]
+    fn shift_moves_every_dimmable_display_together() {
+        let dials = Dials::with(&[("eDP-1", 0.5), ("HDMI-A-1", 0.25)]);
+        let mut service = showing(
+            Some(dials.clone()),
+            &[("eDP-1", "Built-in"), ("HDMI-A-1", "Dell")],
+        );
+        invoke(
+            &mut service,
+            "brightness-up",
+            &Map::from_iter([("all".to_owned(), Value::from(true))]),
+        )
+        .expect("every display moves");
+        // The brightest steps 0.1 up; the dimmer keeps its share of it.
+        assert!(close(dials.at("eDP-1"), 0.6));
+        assert!(close(dials.at("HDMI-A-1"), 0.3));
+
+        // Without `all`, only the display the person works on moves.
+        let mut inner = service.inner.borrow_mut();
+        inner.focused = Some("HDMI-A-1".into());
+        drop(inner);
+        invoke(&mut service, "brightness-down", &Map::new()).expect("the focused display dims");
+        assert!(close(dials.at("HDMI-A-1"), 0.2));
+        assert!(
+            close(dials.at("eDP-1"), 0.6),
+            "the display the person does not work on stays put"
+        );
+        assert_eq!(reading(&service).brightness(), dials.at("HDMI-A-1"));
+    }
+
+    #[test]
+    fn a_key_on_a_machine_that_dims_nothing_says_so() {
+        let mut service = showing(None, &[("HDMI-A-1", "HDMI-A-1")]);
+        let error = invoke(&mut service, "brightness-down", &Map::new()).expect_err("nothing dims");
+        assert!(
+            matches!(&error, DoorError::Unavailable { code, .. } if code == "no-backlight"),
+            "{error:?}"
+        );
+        assert_eq!(reading(&service).brightness(), None);
+        assert!(!reading(&service).displays[0].backlight);
+    }
+
+    #[test]
+    fn a_level_outside_zero_to_one_is_refused() {
+        let mut service = showing(
+            Some(Dials::with(&[("eDP-1", 0.5)])),
+            &[("eDP-1", "Built-in")],
+        );
+        for level in [-0.1, 1.5, f64::NAN] {
+            let error = invoke(
+                &mut service,
+                "set-brightness",
+                &Map::from_iter([("level".to_owned(), Value::from(level))]),
+            )
+            .expect_err("not a level");
+            assert!(matches!(error, DoorError::InvalidArguments(_)), "{error:?}");
+        }
     }
 }

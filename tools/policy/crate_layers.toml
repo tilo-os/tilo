@@ -67,6 +67,10 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the session runs the person's local engine: its network host, broker services and native workspace owner hold the workspace and publish actions into it"
 
   [[rule.allow]]
+  package = "tilo-session"
+  why = "the session is the person's local host and runs the engine beside the desk: it keeps the room of each workspace, takes in what a join brings here and publishes actions into it"
+
+  [[rule.allow]]
   package = "tilo-runtime"
   why = "the shared runtime runs the engine for the apps attached to a participant"
 

@@ -89,6 +89,7 @@ fn validate_enrollment(
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Rewrite every stored enrollment intent a build wrote before the join
 /// version bump in this build's form. The signed Complete stays exactly as
 /// the device signed it - nothing here can sign for it again - and the

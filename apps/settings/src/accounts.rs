@@ -351,6 +351,51 @@ impl AccountRoot {
             .map_err(|error| error.to_string())
     }
 
+    /// Add or replace the email account `config` in the person's accounts,
+    /// keyed by its address, and keep this device's file their projection.
+    /// Its secret is sealed apart ([`Self::seal_password`] or the session's
+    /// custody), never here.
+    ///
+    /// # Errors
+    /// Returns why the record refused it or the file could not be written.
+    pub fn save_email_account(
+        &self,
+        config: &accounts::email::AccountConfig,
+    ) -> Result<(), String> {
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from(config.email.clone()),
+            accounts::email::TYPE_ID,
+        );
+        config.label().clone_into(&mut account.display_name);
+        account.config = config.to_value().map_err(|error| error.to_string())?;
+        let mut store = self.store();
+        store.upsert(account);
+        self.save_store(&store).map_err(|error| error.to_string())
+    }
+
+    /// Seal `password` as account `id`'s secret in an explicit root's own
+    /// vault (a test or `--data-dir` profile). The person's own root is
+    /// sealed by the session's custody, which a sandboxed Settings cannot
+    /// reach the key of: it is refused here.
+    ///
+    /// # Errors
+    /// Refuses the person's root, an unreadable vault or a failed save.
+    pub fn seal_password(&self, id: &accounts::AccountId, password: &str) -> Result<(), String> {
+        let Some(root) = &self.explicit else {
+            return Err("This device's account custody is unavailable".into());
+        };
+        let mut credentials = accounts::AccountCredentials::open_in(root)?;
+        let token = credentials.get(id).and_then(|secret| secret.token);
+        credentials.put(
+            id,
+            &accounts::Secret {
+                password: password.to_owned(),
+                token,
+            },
+        );
+        credentials.try_save()
+    }
+
     /// Keep this device's account file the projection of the person's
     /// accounts, for the services outside any app that read it. Nothing to
     /// do outside a host, where the file is the store.

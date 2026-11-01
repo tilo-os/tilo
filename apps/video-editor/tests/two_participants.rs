@@ -22,7 +22,7 @@
 //! presence and reads it back out of the same context proves the two ends of
 //! one function agree with themselves. The failure that actually happens is
 //! that the publisher keys a frame one way and the renderer looks for it
-//! another way — and then everything passes, nothing is drawn, and the room
+//! another way — and then everything passes, nothing is drawn, and the ctx
 //! looks empty. So nothing below ever names a key: the driver's own output is
 //! relayed verbatim, and what the other participant renders has to be a
 //! consequence of it.
@@ -88,8 +88,8 @@ impl Participant {
     /// so the editor has a real rect and real geometry behind it.
     fn frame(&mut self, presence: &PresenceCtx) -> Scene {
         let harness = self.app.harness();
-        harness.update_presence(|room| {
-            *room = presence.clone();
+        harness.update_presence(|ctx| {
+            *ctx = presence.clone();
             true
         });
         harness
@@ -145,12 +145,12 @@ fn duration(p: &Participant) -> f64 {
 
 /// The colour a participant is drawn in: their identity colour, on the
 /// theme's presence palette (what every peer overlay paints with).
-fn drawn_colour(room: &PresenceCtx, who: &str) -> (u8, u8, u8) {
+fn drawn_colour(ctx: &PresenceCtx, who: &str) -> (u8, u8, u8) {
     let colour = Theme::dark()
         .tokens
         .colors
         .presence
-        .of_rgb(room.color_for(&UserId(who.to_string())))
+        .of_rgb(ctx.color_for(&UserId(who.to_string())))
         .to_rgba8();
     (colour.r, colour.g, colour.b)
 }
@@ -191,14 +191,14 @@ fn participants_locate_and_track_each_other() {
         ada.press("End");
         ada.frame(&PresenceCtx::empty());
 
-        let mut room = PresenceCtx::empty();
-        let sent = ada.relay(&mut room, "ada");
+        let mut ctx = PresenceCtx::empty();
+        let sent = ada.relay(&mut ctx, "ada");
         assert!(
             sent >= 2,
             "Ada had both a playhead and a selection to send, sent {sent}"
         );
 
-        let heads = vp::peer_playheads(&room);
+        let heads = vp::peer_playheads(&ctx);
         assert_eq!(heads.len(), 1, "exactly one other participant: {heads:?}");
         assert_eq!(heads[0].user, UserId("ada".to_string()));
         let end = duration(&ada);
@@ -208,7 +208,7 @@ fn participants_locate_and_track_each_other() {
             heads[0].at,
         );
 
-        let held = vp::peer_clips(&room);
+        let held = vp::peer_clips(&ctx);
         assert_eq!(held.len(), 1, "Ada has one clip selected: {held:?}");
         assert!(
             shared.contains(&held[0].clip),
@@ -225,15 +225,15 @@ fn participants_locate_and_track_each_other() {
     // it each time, with no trail of the instants she passed through.
     {
         let mut ada = Participant::opening();
-        let mut room = PresenceCtx::empty();
+        let mut ctx = PresenceCtx::empty();
 
         // Arrows nudge a selected clip and step the playhead only when nothing is
         // selected, so Ada lets go of her clip before scrubbing.
         ada.press("Escape");
         ada.press("Home");
         ada.frame(&PresenceCtx::empty());
-        ada.relay(&mut room, "ada");
-        let at_start = vp::peer_playheads(&room);
+        ada.relay(&mut ctx, "ada");
+        let at_start = vp::peer_playheads(&ctx);
         assert_eq!(at_start.len(), 1);
         assert!(
             at_start[0].at.abs() < 0.01,
@@ -245,8 +245,8 @@ fn participants_locate_and_track_each_other() {
         for _ in 0..4 {
             ada.press("ArrowRight");
             ada.frame(&PresenceCtx::empty());
-            ada.relay(&mut room, "ada");
-            let now = vp::peer_playheads(&room);
+            ada.relay(&mut ctx, "ada");
+            let now = vp::peer_playheads(&ctx);
             assert_eq!(now.len(), 1, "one participant keeps one playhead: {now:?}");
             seen.push(now[0].at);
         }
@@ -260,25 +260,25 @@ fn participants_locate_and_track_each_other() {
     // must not be merged into one, and they must not be drawn in one colour.
     {
         let mut ada = Participant::opening();
-        let mut room = PresenceCtx::empty();
+        let mut ctx = PresenceCtx::empty();
 
         ada.press("Home");
         ada.frame(&PresenceCtx::empty());
-        ada.relay(&mut room, "ada");
+        ada.relay(&mut ctx, "ada");
 
         ada.press("End");
         ada.frame(&PresenceCtx::empty());
-        ada.relay(&mut room, "cass");
+        ada.relay(&mut ctx, "cass");
 
-        let heads = vp::peer_playheads(&room);
+        let heads = vp::peer_playheads(&ctx);
         assert_eq!(heads.len(), 2, "two participants, two playheads: {heads:?}");
         assert!(
             (heads[0].at - heads[1].at).abs() > 0.5,
             "they are in different places: {heads:?}",
         );
         assert_ne!(
-            room.color_for(&UserId("ada".to_string())),
-            room.color_for(&UserId("cass".to_string())),
+            ctx.color_for(&UserId("ada".to_string())),
+            ctx.color_for(&UserId("cass".to_string())),
             "two people must not be drawn in one colour",
         );
     }
@@ -288,15 +288,15 @@ fn participants_locate_and_track_each_other() {
     //
     // What matters on the wire is that the caret is keyed to something the other
     // participant can resolve. A field caret keyed to a local-only handle would
-    // publish perfectly and land nowhere, and the room would look as though
+    // publish perfectly and land nowhere, and the workspace would look as though
     // nobody was typing.
     {
         let mut ada = Participant::opening();
 
-        let mut room = PresenceCtx::empty();
-        ada.relay(&mut room, "ada");
+        let mut ctx = PresenceCtx::empty();
+        ada.relay(&mut ctx, "ada");
         assert_eq!(
-            vp::peer_playheads(&room).len(),
+            vp::peer_playheads(&ctx).len(),
             1,
             "before typing, Ada's point is her playhead",
         );
@@ -304,7 +304,7 @@ fn participants_locate_and_track_each_other() {
         // "T" adds a title and opens its words for editing.
         ada.press("t");
         ada.frame(&PresenceCtx::empty());
-        ada.relay(&mut room, "ada");
+        ada.relay(&mut ctx, "ada");
 
         // The title she just made, as the *document* holds it — which is what a
         // second participant would receive.
@@ -316,7 +316,7 @@ fn participants_locate_and_track_each_other() {
             .map(|m| m.id)
             .expect("pressing T added a title to the document");
 
-        let carets = vp::peer_field_carets(&room, vp::FIELD_TITLE_WORDS, title);
+        let carets = vp::peer_field_carets(&ctx, vp::FIELD_TITLE_WORDS, title);
         assert_eq!(
             carets.len(),
             1,
@@ -325,7 +325,7 @@ fn participants_locate_and_track_each_other() {
         );
         assert_eq!(carets[0].0, UserId("ada".to_string()));
         assert!(
-            vp::peer_playheads(&room).is_empty(),
+            vp::peer_playheads(&ctx).is_empty(),
             "and her ghost playhead steps aside while she types -- a person has \
          one point, not two",
         );
@@ -344,7 +344,7 @@ fn participants_presence_reaches_the_other_screen() {
     // Case `a_participant_is_visible_on_the_other_persons_screen`:
     // The half that makes it a feature: it has to reach the screen.
     //
-    // Bo draws the same frame twice — once with Ada in the room and once
+    // Bo draws the same frame twice — once with Ada in the ctx and once
     // without — and the only difference between the two runs is Ada. So a
     // difference in the pixels *is* Ada, and her own colour appearing in the
     // first and not the second is her, specifically, rather than a stray
@@ -355,19 +355,19 @@ fn participants_presence_reaches_the_other_screen() {
 
         ada.press("Home");
         ada.frame(&PresenceCtx::empty());
-        let mut room = PresenceCtx::empty();
-        room.names
+        let mut ctx = PresenceCtx::empty();
+        ctx.names
             .insert(UserId("ada".to_string()), "Ada".to_string());
-        ada.relay(&mut room, "ada");
-        assert_eq!(vp::peer_playheads(&room).len(), 1, "Ada is in the room");
+        ada.relay(&mut ctx, "ada");
+        assert_eq!(vp::peer_playheads(&ctx).len(), 1, "Ada is in the workspace");
 
         let alone = bo.frame(&PresenceCtx::empty());
-        let together = bo.frame(&room);
+        let together = bo.frame(&ctx);
 
         assert_ne!(
             shot::fingerprint(&alone),
             shot::fingerprint(&together),
-            "drawing the room with Ada in it produced the identical scene to \
+            "drawing the workspace with Ada in it produced the identical scene to \
          drawing it without her -- she reached the model and not the screen",
         );
 
@@ -375,7 +375,7 @@ fn participants_presence_reaches_the_other_screen() {
         let empty_px = r.render(&alone, Color::BLACK);
         let peopled_px = r.render(&together, Color::BLACK);
 
-        let ada_colour = drawn_colour(&room, "ada");
+        let ada_colour = drawn_colour(&ctx, "ada");
         let with = pixels_of_colour(&peopled_px, ada_colour);
         let without = pixels_of_colour(&empty_px, ada_colour);
         assert!(
@@ -399,14 +399,14 @@ fn participants_presence_reaches_the_other_screen() {
         // Nothing selected, so the only thing Ada has to show is her playhead.
         ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
-        let mut room = PresenceCtx::empty();
-        room.names
+        let mut ctx = PresenceCtx::empty();
+        ctx.names
             .insert(UserId("ada".to_string()), "Ada".to_string());
-        ada.relay(&mut room, "ada");
-        assert_eq!(vp::peer_playheads(&room).len(), 1, "she has a playhead");
-        assert!(vp::peer_clips(&room).is_empty(), "and nothing selected");
+        ada.relay(&mut ctx, "ada");
+        assert_eq!(vp::peer_playheads(&ctx).len(), 1, "she has a playhead");
+        assert!(vp::peer_clips(&ctx).is_empty(), "and nothing selected");
 
-        let (with, without) = colour_on_screen(&mut bo, &room, "ada");
+        let (with, without) = colour_on_screen(&mut bo, &ctx, "ada");
         assert!(
             with > without + 100,
             "Ada's playhead put only {} more pixels of her colour on screen than \
@@ -431,15 +431,15 @@ fn participants_presence_reaches_the_other_screen() {
             .min_by(|a, b| a.start.partial_cmp(&b.start).unwrap())
             .expect("the shared project has clips");
 
-        let mut room = PresenceCtx::empty();
-        room.names
+        let mut ctx = PresenceCtx::empty();
+        ctx.names
             .insert(UserId("ada".to_string()), "Ada".to_string());
         let (key, payload) = vp::range_frame(Some((clip.id, clip.start, clip.end())));
-        room.apply_remote_presence("ada".to_string(), key, payload);
-        assert_eq!(vp::peer_clips(&room).len(), 1, "she is holding a clip");
-        assert!(vp::peer_playheads(&room).is_empty(), "and nothing else");
+        ctx.apply_remote_presence("ada".to_string(), key, payload);
+        assert_eq!(vp::peer_clips(&ctx).len(), 1, "she is holding a clip");
+        assert!(vp::peer_playheads(&ctx).is_empty(), "and nothing else");
 
-        let (with, without) = colour_on_screen(&mut bo, &room, "ada");
+        let (with, without) = colour_on_screen(&mut bo, &ctx, "ada");
         assert!(
             with > without + 100,
             "Ada's held clip put only {} more pixels of her colour on screen than \
@@ -454,22 +454,22 @@ fn participants_presence_reaches_the_other_screen() {
     // retract one.
     {
         let mut ada = Participant::opening();
-        let mut room = PresenceCtx::empty();
-        ada.relay(&mut room, "ada");
-        assert_eq!(vp::peer_clips(&room).len(), 1, "Ada starts with a clip");
+        let mut ctx = PresenceCtx::empty();
+        ada.relay(&mut ctx, "ada");
+        assert_eq!(vp::peer_clips(&ctx).len(), 1, "Ada starts with a clip");
 
         ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
-        ada.relay(&mut room, "ada");
+        ada.relay(&mut ctx, "ada");
 
         assert!(
-            vp::peer_clips(&room).is_empty(),
+            vp::peer_clips(&ctx).is_empty(),
             "Ada let go of the clip and Bo is still drawing her on it",
         );
         assert_eq!(
-            vp::peer_playheads(&room).len(),
+            vp::peer_playheads(&ctx).len(),
             1,
-            "she is still in the room though -- deselecting is not leaving",
+            "she is still in the workspace though -- deselecting is not leaving",
         );
     }
 }
@@ -477,17 +477,17 @@ fn participants_presence_reaches_the_other_screen() {
 /// The two things a participant shows up as are drawn by two different calls,
 /// and the test above is satisfied by either one of them: with a selection on
 /// screen, a peer's colour is plentiful whether or not their playhead is drawn.
-/// So each render is proved on its own, by a room in which the peer has only
+/// So each render is proved on its own, by a workspace in which the peer has only
 /// that one thing.
 ///
-/// Both rooms are built from the very functions the editor publishes itself
+/// Both workspaces are built from the very functions the editor publishes itself
 /// with, so a key that stopped matching would empty them.
-fn colour_on_screen(bo: &mut Participant, room: &PresenceCtx, who: &str) -> (usize, usize) {
-    let with = bo.frame(room);
+fn colour_on_screen(bo: &mut Participant, ctx: &PresenceCtx, who: &str) -> (usize, usize) {
+    let with = bo.frame(ctx);
     let without = bo.frame(&PresenceCtx::empty());
     let mut r = OffscreenRenderer::new(W, H);
     let a = r.render(&with, Color::BLACK);
     let b = r.render(&without, Color::BLACK);
-    let colour = drawn_colour(room, who);
+    let colour = drawn_colour(ctx, who);
     (pixels_of_colour(&a, colour), pixels_of_colour(&b, colour))
 }

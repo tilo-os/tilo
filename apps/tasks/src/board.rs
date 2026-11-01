@@ -80,8 +80,8 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
     Box::new(board)
 }
 
-/// What the room calls the agent `agent` (`agent:<id>`), whichever way its
-/// roster spells the id; the bare id where the room names it not.
+/// What the workspace calls the agent `agent` (`agent:<id>`), whichever way
+/// its roster spells the id; the bare id where the workspace names it not.
 fn agent_name(people: &ui::framework::People, agent: &str) -> String {
     let bare = agent.trim_start_matches("agent:");
     [agent, bare]

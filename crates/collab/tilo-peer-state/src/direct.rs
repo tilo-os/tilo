@@ -37,6 +37,39 @@ const OUTGOING: usize = 1024;
 /// Application close code of a refused connection.
 const REFUSED: u32 = 1;
 
+/// One workspace's replica, held by the device whose key signs its changes.
+///
+/// Every part of the engine that decides something about the workspace reads
+/// the same replica: the direct sync admits frames into it, and the action
+/// plane authorizes the devices asking for its actions against its roster.
+#[derive(Clone)]
+pub struct Replica(Arc<Mutex<StatePeer>>);
+
+impl Replica {
+    /// Hold `peer` as a replica.
+    #[must_use]
+    pub fn new(peer: StatePeer) -> Self {
+        Self(Arc::new(Mutex::new(peer)))
+    }
+
+    /// Read the replica.
+    pub fn read<R>(&self, read: impl FnOnce(&StatePeer) -> R) -> R {
+        read(&self.0.lock_recover())
+    }
+
+    /// Change the replica: a governance change, or anything else the plane's
+    /// authorization has to see at once.
+    pub fn write<R>(&self, write: impl FnOnce(&mut StatePeer) -> R) -> R {
+        write(&mut self.0.lock_recover())
+    }
+
+    /// The workspace this replica is, as its room id.
+    #[must_use]
+    pub fn room(&self) -> String {
+        self.read(|peer| peer.room().to_owned())
+    }
+}
+
 /// A device's replica, shared by the device's engine and its direct links.
 ///
 /// Clone it to hand it to an [`iroh::protocol::Router`] under
@@ -46,7 +79,7 @@ const REFUSED: u32 = 1;
 pub struct DirectSync(Arc<Inner>);
 
 struct Inner {
-    replica: Mutex<StatePeer>,
+    replica: Replica,
     key: SigningKey,
     outgoing: broadcast::Sender<NeighbourMsg>,
     changed: watch::Sender<u64>,
@@ -68,17 +101,30 @@ impl DirectSync {
     /// (and whose iroh endpoint's secret key it is).
     #[must_use]
     pub fn new(replica: StatePeer, key: SigningKey) -> Self {
+        Self::over(Replica::new(replica), key)
+    }
+
+    /// Sync `replica`, which other parts of the engine read as well: the
+    /// action plane authorizes against the state this link admits into.
+    #[must_use]
+    pub fn over(replica: Replica, key: SigningKey) -> Self {
         Self(Arc::new(Inner {
-            replica: Mutex::new(replica),
+            replica,
             key,
             outgoing: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
         }))
     }
 
+    /// The replica this link syncs.
+    #[must_use]
+    pub fn replica(&self) -> Replica {
+        self.0.replica.clone()
+    }
+
     /// Read the replica.
     pub fn read<R>(&self, read: impl FnOnce(&StatePeer) -> R) -> R {
-        read(&self.0.replica.lock_recover())
+        self.0.replica.read(read)
     }
 
     /// Make a local change with the device's key, e.g.
@@ -90,7 +136,7 @@ impl DirectSync {
         write: impl FnOnce(&mut StatePeer, &SigningKey, SystemTime) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
         let message = write(
-            &mut self.0.replica.lock_recover(),
+            &mut self.0.replica.0.lock_recover(),
             &self.0.key,
             SystemTime::now(),
         )?;
@@ -108,7 +154,7 @@ impl DirectSync {
     /// The replica refuses the frame; the caller keeps the session and
     /// carries on with the frames after it.
     pub fn admit_retained(&self, author: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
-        let outcome = self.0.replica.lock_recover().receive_from(
+        let outcome = self.0.replica.0.lock_recover().receive_from(
             TransportOrigin::RetainedRelayDelta(author),
             message,
             SystemTime::now(),
@@ -170,7 +216,7 @@ impl DirectSync {
     /// Whether `device` may sync with this replica: a certified device of
     /// its roster, unrevoked and unexpired.
     fn admits(&self, device: [u8; 32]) -> Result<(), String> {
-        let replica = self.0.replica.lock_recover();
+        let replica = self.0.replica.0.lock_recover();
         if replica
             .revocations()
             .iter()
@@ -201,7 +247,7 @@ impl DirectSync {
     /// depend on; its own writes reach the other device live.
     fn catch_up(&self) -> Result<Vec<NeighbourMsg>, String> {
         let device = self.0.key.verifying_key().to_bytes();
-        let mut replica = self.0.replica.lock_recover();
+        let mut replica = self.0.replica.0.lock_recover();
         let cert = replica
             .certificates()
             .into_iter()
@@ -237,7 +283,7 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
         while let Some(message) = read_frame(&mut recv).await? {
-            let admitted = self.0.replica.lock_recover().receive_from(
+            let admitted = self.0.replica.0.lock_recover().receive_from(
                 TransportOrigin::RelayDelta(remote),
                 message,
                 SystemTime::now(),

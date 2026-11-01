@@ -941,7 +941,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
     }
 }
 
-/// A room bridged to a Discord server, its host answering at once.
+/// A workspace bridged to a Discord server, its host answering at once.
 struct Bridged(std::cell::RefCell<ui::linked_accounts::LinkState>);
 
 fn ada() -> ui::linked_accounts::AccountName {

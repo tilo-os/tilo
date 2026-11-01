@@ -1,9 +1,9 @@
 //! Devices & Sync's home relay section: per workspace this device hosts, a
 //! switch for whether the person's home relay hosts it too.
 //!
-//! What each switch shows is the room's own list of hosts, as the host
+//! What each switch shows is the workspace's own list of hosts, as the host
 //! answers it through its `tilo.hosting` actions; flipping one asks the host
-//! to add the relay as a host of that room or take it off. Nothing is kept
+//! to add the relay as a host of that workspace or take it off. Nothing is kept
 //! here but the host's last answer.
 //!
 //! Each workspace is a live row offering the switch's effect, so the
@@ -60,7 +60,7 @@ impl DeviceMeshModel {
         }
     }
 
-    /// Ask the host to have the home relay host `room` as well, or no
+    /// Ask the host to have the home relay host `workspace` as well, or no
     /// longer. The switch shows the choice at once; the host's answer
     /// confirms it or puts it back, and is `reply`'s.
     pub(super) fn choose_home_relay(
@@ -134,7 +134,7 @@ impl DeviceMeshModel {
             if let Some(reply) = reply {
                 reply.finish(answer);
             }
-            // What the room's hosts are now, either way.
+            // What the workspace's hosts are now, either way.
             self.refresh_home_relay();
             self.changed = true;
         }

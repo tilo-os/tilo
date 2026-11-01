@@ -15,12 +15,16 @@ mod receipt_tests;
 mod shared_desktop_tests;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
+/// Actions between the devices of a workspace, with no host in between.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod actions;
 mod cached_document;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod direct;
 pub mod document;
 pub mod document_frame;
 pub mod installation;
+pub mod placement;
 mod postcard_sink;
 pub mod room;
 mod shared;

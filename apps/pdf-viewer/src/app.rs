@@ -1156,7 +1156,7 @@ impl PdfApp {
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
             // Empty until the person types one: the name shown and signed is
-            // then the one the room knows them by (`Self::signer`).
+            // then the one the workspace knows them by (`Self::signer`).
             signer_name: String::new(),
             author,
             sig_mode: SigMode::Type,
@@ -1340,7 +1340,7 @@ impl PdfApp {
         if let Some(name) = self.known_name(id) {
             return name;
         }
-        // Never a raw participant id: before the room names someone, say who
+        // Never a raw participant id: before the workspace names someone, say who
         // they are to the reader as plainly as the reader can tell.
         if self
             .people
@@ -1365,7 +1365,7 @@ impl PdfApp {
     }
 
     /// The name a signature is signed with: the one the person typed, else
-    /// the one the room knows them by, else none yet (the composer then asks
+    /// the one the workspace knows them by, else none yet (the composer then asks
     /// for it rather than signing with an id or "You").
     pub(crate) fn signer(&self) -> String {
         if self.signer_name.is_empty() {
@@ -3113,7 +3113,7 @@ impl PdfApp {
                 }
             }
             EditTarget::Signer => {
-                // An emptied name goes back to the one the room knows.
+                // An emptied name goes back to the one the workspace knows.
                 text.trim().clone_into(&mut self.signer_name);
                 let invoke =
                     crate::signature::SignatureProfile::SET_SIGNER.with(self.signer_name.clone());
@@ -4113,7 +4113,7 @@ impl PdfApp {
         } else {
             source.name.clone()
         };
-        // A document shared in the room is fetched from a device that has
+        // A document shared in the workspace is fetched from a device that has
         // it: reading it asks for it, and it opens once it is here.
         let Some(bytes) = self.content.read(&source.hash) else {
             let state = self.content.state(&source.hash);
@@ -4151,7 +4151,7 @@ impl PdfApp {
             ),
             ContentState::Pending | ContentState::Resolved => (
                 "Getting the document…",
-                format!("{name} is coming from a device in this room that has it."),
+                format!("{name} is coming from a device in this workspace that has it."),
                 false,
             ),
         })
@@ -6200,7 +6200,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A visitor's window of a record shared in the room shows its document
+    /// A visitor's window of a record shared in the workspace shows its document
     /// once the bytes come from a device that has them: it asks for them,
     /// says where they stand while they travel, and opens them on arrival,
     /// never failing for good because they were not here at first.
@@ -6225,7 +6225,7 @@ pub(crate) mod tests {
         assert_eq!(
             lane.take_requests().wants,
             vec![hash.clone()],
-            "the document is asked of the room"
+            "the document is asked of the workspace"
         );
 
         lane.stands(hash.clone(), ContentState::Waiting);
@@ -8637,7 +8637,7 @@ pub(crate) mod tests {
             app.place_signature(&mut Edits::lend(&mut st.doc), 1, (200.0, 300.0));
             assert_eq!(app.signatures.len(), signed, "no nameless signature");
             assert!(app.is_editing(&EditTarget::Signer), "the name field opens");
-            // Once the room names them, the name is theirs.
+            // Once the workspace names them, the name is theirs.
             app.attach_people(ui::framework::People::named(
                 Some(me),
                 &[(me, "Ada Lovelace")],

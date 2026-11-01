@@ -81,7 +81,7 @@ pub struct RemoteNotificationRoute {
 }
 
 /// A durable target issued by the host scheduler, not by a notification sender.
-/// The room and occurrence remain meaningful after the sender or host restarts.
+/// The workspace and occurrence remain meaningful after the sender or host restarts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub struct ScheduledNotificationTarget {

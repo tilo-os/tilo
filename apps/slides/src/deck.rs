@@ -256,7 +256,7 @@ impl NewElement {
     }
 }
 
-/// The picture id a deck stores for `src`: content the room holds
+/// The picture id a deck stores for `src`: content the workspace holds
 /// (`tilo.content:<hash>`) is the same bytes under the deck's own prefix, so
 /// a picture another app kept or an agent was handed goes straight onto a
 /// slide.
@@ -681,7 +681,7 @@ impl Deck {
 
     /// The deck every new record begins with, under fixed ids: the genesis
     /// is the same change on every device, so two people creating the
-    /// room's deck before they sync converge on one first slide.
+    /// workspace's deck before they sync converge on one first slide.
     #[must_use]
     pub fn starter() -> Self {
         let deck = crate::model::starter_deck();

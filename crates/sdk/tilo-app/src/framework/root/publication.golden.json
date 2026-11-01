@@ -491,6 +491,12 @@
           "ty": "text",
           "description": "A change id from history, or a checkpoint name",
           "nullable": true
+        },
+        {
+          "name": "step",
+          "ty": "text",
+          "description": "A change id from history: undo only the step it is part of",
+          "nullable": true
         }
       ]
     },

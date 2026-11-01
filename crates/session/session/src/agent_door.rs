@@ -627,7 +627,7 @@ fn bind_private(path: &Path) -> io::Result<UnixListener> {
                 format!("{} exists and is not a socket", path.display()),
             ));
         }
-        Ok(_) if UnixStream::connect(path).is_ok() => {
+        Ok(_) if tilo_files::native::socket::connect(path).is_ok() => {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
                 format!("{} already has a live listener", path.display()),
@@ -640,7 +640,7 @@ fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let staging = parent.join(format!(".t{:08x}", uuid::Uuid::new_v4().as_fields().0));
     std::fs::DirBuilder::new().mode(0o700).create(&staging)?;
     let staged = staging.join("s");
-    let bound = UnixListener::bind(&staged).and_then(|listener| {
+    let bound = tilo_files::native::socket::bind(&staged).and_then(|listener| {
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
         std::fs::rename(&staged, path)?;
         Ok(listener)

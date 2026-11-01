@@ -8,14 +8,14 @@ use super::*;
 #[derive(Clone, Debug)]
 pub struct AgentRow {
     pub agent: String,
-    /// The kinds of action its room grants allow.
+    /// The kinds of action its workspace grants allow.
     pub kinds: tilo_action_policy::KindSet,
     pub grant_count: usize,
     /// A human-readable summary of the *scoped* authority, not a role.
     /// Agents never inherit their admission capability as ambient access.
     pub preset: AgentPreset,
     /// Set when the agent is a service member: a cloud or relay identity
-    /// admitted to the room's encrypted channels with a stated purpose.
+    /// admitted to the workspace's encrypted channels with a stated purpose.
     pub service: Option<ServiceMember>,
     pub row_rect: Rect,
     pub role_rect: Rect,
@@ -23,7 +23,7 @@ pub struct AgentRow {
     pub remove_rect: Rect,
 }
 
-/// A named starting point for an agent in the room: the grants it receives
+/// A named starting point for an agent in the workspace: the grants it receives
 /// when admitted. Deliberately not a person's role.
 pub use tilo_action_policy::roles::AgentPreset;
 
@@ -37,8 +37,8 @@ pub fn agent_preset_label(preset: AgentPreset) -> String {
     })
 }
 
-/// The preset `agent` was admitted with, from the ids of its room grants.
-/// Anything broad or sensitive it holds beside them (the whole room, an
+/// The preset `agent` was admitted with, from the ids of its workspace grants.
+/// Anything broad or sensitive it holds beside them (the whole workspace, an
 /// outside effect, a device, the network) makes it custom: that needs a
 /// conscious review, never a reassuring preset.
 pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
@@ -74,10 +74,10 @@ pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
 }
 
 /// Admit `device` as a service member of this workspace: a cloud or relay
-/// identity that reads and acts in the room only through `kinds`, with the
+/// identity that reads and acts in the workspace only through `kinds`, with the
 /// purpose `purpose` and, if it has one, the deadline `expires_at` (Unix
 /// seconds). Returns the grant to revoke it by when the job ends, or `None`
-/// when `actor` may not admit in this room.
+/// when `actor` may not admit in this workspace.
 pub fn admit_service_member(
     ws: &mut Workspace,
     actor: &UserId,

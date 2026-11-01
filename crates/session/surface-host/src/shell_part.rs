@@ -393,9 +393,6 @@ pub struct DeskReading {
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
     pub tasks: Vec<TaskReading>,
-    /// What the bar names the desk: the workspace in front, and the strip after it.
-    #[serde(default)]
-    pub title: String,
     /// The surface the desk shows over its windows: `none`, `desk`, `overview`, `switcher`,
     /// `launcher`, `centre`, `workspaces` or `composer`.
     #[serde(default)]
@@ -1028,7 +1025,6 @@ impl SessionOrigin {
             Value::Bool(reading.dock_covered),
             reading.dock_covered != was.dock_covered,
         );
-        set("title", text(&reading.title), reading.title != was.title);
         set("here", text(&reading.here), reading.here != was.here);
         set(
             "spotlight",

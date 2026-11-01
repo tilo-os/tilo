@@ -331,7 +331,9 @@ pub fn answer(
             guild,
             server,
         } => {
-            let workspace = cx.document().and_then(|doc| ui::record::room_scope(&doc));
+            let workspace = cx
+                .document()
+                .and_then(|doc| ui::record::workspace_scope(&doc));
             let Some(workspace) = workspace else {
                 let why = CATALOG.t("discord-setup-no-workspace");
                 setup.step.set(Step::Failed(why.clone()));

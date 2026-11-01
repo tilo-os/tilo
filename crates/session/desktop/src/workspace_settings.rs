@@ -4,7 +4,7 @@
 //!
 //! Members and Permissions are both views of [`Workspace::policy`]
 //! — the single list `decide_capability` consults, the sandbox turns
-//! into bwrap/Landlock rules, and the room replicates. A member's role
+//! into bwrap/Landlock rules, and the workspace replicates. A member's role
 //! *is* the verb on their membership capability
 //! ([`Workspace::role_of`]); nothing here keeps a parallel vocabulary
 //! that could drift from what is enforced.
@@ -115,15 +115,15 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
 pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
 pub const GOVERNANCE_ACTION_TYPE: &str = "tilo.room.governance.v1";
 
-/// One of the room's governance actions, as its published door builds it.
-/// Every one is decided at the room's own resource
+/// One of the workspace's governance actions, as its published door builds it.
+/// Every one is decided at the workspace's own resource
 /// ([`tilo_desktop_model::governance_of`]) and rechecked by the host that
-/// governs the room before it writes anything.
+/// governs the workspace before it writes anything.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum GovernanceOperation {
     /// Give `subject` `answer` for actions of `kinds` at `node`, a path below
-    /// the room, for `lifetime` (until revoked when absent).
+    /// the workspace, for `lifetime` (until revoked when absent).
     Grant {
         subject: tilo_action_policy::Subject,
         node: tilo_action_policy::TreePath,
@@ -134,7 +134,7 @@ pub enum GovernanceOperation {
     },
     /// Take back the grant `grant`.
     Revoke { grant: String },
-    /// Save a named grant set: rules over paths below the room.
+    /// Save a named grant set: rules over paths below the workspace.
     SavePreset {
         name: String,
         description: String,
@@ -187,7 +187,7 @@ impl GovernanceOperation {
 }
 
 /// What applying a [`GovernanceOperation`] wrote, for the host to mirror into
-/// the room document.
+/// the workspace document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GovernanceApplied {
     pub edit: tilo_desktop_model::grants::PolicyEdit,
@@ -212,7 +212,7 @@ pub fn app_action_node(
         .action(action)
 }
 
-/// Apply `operation` to `ws` as `actor` at `now` (Unix seconds). The room's
+/// Apply `operation` to `ws` as `actor` at `now` (Unix seconds). The workspace's
 /// policy decides: the actor must hold the governance action and may hand
 /// out no more than they hold.
 ///
@@ -317,7 +317,7 @@ fn app_action_changes(
                 "always" => Lifetime::UntilRevoked,
                 _ => return Err("lifetime must be session or always".into()),
             };
-            // Enough for any action that at most changes the room undoably:
+            // Enough for any action that at most changes the workspace undoably:
             // an outside effect still asks.
             vec![Change::Grant(
                 Grant::new(
@@ -384,7 +384,7 @@ fn app_action_target<'a>(
     Ok(named)
 }
 
-/// Whether `action` is one of the room's governance actions, which the
+/// Whether `action` is one of the workspace's governance actions, which the
 /// workspace itself runs rather than an application.
 #[must_use]
 pub fn is_governance_action(action: &str) -> bool {
@@ -542,8 +542,8 @@ pub fn picks(
     }
 }
 
-/// The room's governance surface: granting, revoking, named grant sets and
-/// letting one app use another's action, published on the room's own
+/// The workspace's governance surface: granting, revoking, named grant sets and
+/// letting one app use another's action, published on the workspace's own
 /// resource so searches, agents and scripts reach them like any action.
 pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::ResourceSpec {
     governance_resource_with_access(
@@ -2042,7 +2042,7 @@ fn kinds_phrase(kinds: tilo_action_policy::KindSet) -> String {
     words.join(", ")
 }
 
-/// Where a grant applies, named the way people know the room's parts: the
+/// Where a grant applies, named the way people know the workspace's parts: the
 /// app by its name, a resource or item by its own, then the rest of the
 /// path.
 pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
@@ -2152,7 +2152,7 @@ pub enum SubjectKind {
     Member,
     Agent,
     Role,
-    /// Bearer token, room, or the work on a resource (an issue's runs, a
+    /// Bearer token, workspace, or the work on a resource (an issue's runs, a
     /// shortcut) — surfaced so no live capability is invisible in the
     /// panel, even though the composer can't mint one.
     Other,
@@ -2190,7 +2190,7 @@ impl GrantSubject {
         }
     }
 
-    /// Who a grant of the room's tree for this subject names.
+    /// Who a grant of the workspace's tree for this subject names.
     pub fn to_grantee(&self) -> Option<tilo_action_policy::Subject> {
         use tilo_action_policy::Subject as Who;
         match self.kind {
@@ -2498,7 +2498,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
 }
 
 /// What the composer's draft writes: a sandbox capability (files, devices,
-/// the network) or a grant of the room's tree (its governance actions).
+/// the network) or a grant of the workspace's tree (its governance actions).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DraftGrant {
     Sandbox(CapOverride),
@@ -2568,12 +2568,12 @@ pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject>
 // Authority-checked mutations
 
 /// What a panel mutation changed, so the caller can mirror it into the
-/// room document and to disk. Empty means either the actor lacked
+/// workspace document and to disk. Empty means either the actor lacked
 /// authority, or there was nothing to change.
 pub use tilo_desktop_model::grants::PolicyEdit;
 
-/// Grant what `draft` names, as `actor`, through the room's governance:
-/// the same check every door and the room's host make.
+/// Grant what `draft` names, as `actor`, through the workspace's governance:
+/// the same check every door and the workspace's host make.
 pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> PolicyEdit {
     let now = tilo_clock::unix_now();
     match draft_capability(ws, draft) {
@@ -2618,7 +2618,7 @@ pub fn next_role(role: CapRole) -> CapRole {
     ROLE_CYCLE.get(next).copied().unwrap_or(CapRole::Viewer)
 }
 
-/// Move `member` to `role`, as `actor`, through the room's governance. The
+/// Move `member` to `role`, as `actor`, through the workspace's governance. The
 /// owner's role is structural and nobody changes their own.
 pub fn set_member_role(
     ws: &mut Workspace,
@@ -2646,8 +2646,8 @@ pub fn set_member_role(
 
 /// Remove `member` and every grant naming them, as `actor`.
 pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> PolicyEdit {
-    // The owner is the room's root of trust; removing them would leave a
-    // room nobody governs.
+    // The owner is the workspace's root of trust; removing them would leave a
+    // workspace nobody governs.
     if ws.is_owner(member) || actor == member {
         return PolicyEdit::default();
     }
@@ -2719,14 +2719,14 @@ pub struct MemberRow {
     pub remove_rect: Rect,
 }
 
-/// One of the room's bots in the Agents pane: a participant like an agent,
+/// One of the workspace's bots in the Agents pane: a participant like an agent,
 /// listed apart and tagged as a bot.
 #[derive(Clone, Debug)]
 pub struct BotRow {
-    pub bot: tilo_desktop_model::RoomBot,
+    pub bot: tilo_desktop_model::WorkspaceBot,
     pub row_rect: Rect,
-    /// Remove, for a bot a member asked the room's host for; otherwise
-    /// zero (the room's operator runs it).
+    /// Remove, for a bot a member asked the workspace's host for; otherwise
+    /// zero (the workspace's operator runs it).
     pub remove_rect: Rect,
 }
 
@@ -2762,7 +2762,7 @@ pub fn bots_add_rect(ws: &Workspace, pane_rect: Rect) -> Rect {
     }
 }
 
-/// Rows of the room's bots, under the Bots header; as many as fit.
+/// Rows of the workspace's bots, under the Bots header; as many as fit.
 pub fn bots_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<BotRow> {
     let mut cursor_y = bots_section_top(ws, pane_rect) + SECTION_HEADER_HEIGHT + ROW_GAP;
     let mut rows = Vec::new();
@@ -2798,7 +2798,7 @@ pub fn bots_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<BotRow> {
 
 /// What a bot row says under its name: whether it runs yet, and from which
 /// version. One fact per row, never joined.
-pub fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
+pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
     if bot.installation.is_none() {
         t("workspace-settings-bot-starting")
     } else if bot.paused {
@@ -2813,7 +2813,7 @@ pub fn bot_detail(bot: &tilo_desktop_model::RoomBot) -> String {
     }
 }
 
-/// The room's bots: a header with Add a bot, then a row for each.
+/// The workspace's bots: a header with Add a bot, then a row for each.
 fn draw_bots_section(ctx: &mut PaintCtx<'_>, pane_rect: Rect, ws: &Workspace, is_owner: bool) {
     let PaintCtx {
         scene,
@@ -3220,7 +3220,7 @@ pub fn draw_agents_pane(
     }
 }
 
-/// One line on what a service member may do in the room and for how long.
+/// One line on what a service member may do in the workspace and for how long.
 fn service_member_detail(service: &ServiceMember) -> String {
     use tilo_action_policy::ActionKind;
     let access = if service.kinds.contains(ActionKind::Outside) {
@@ -3689,7 +3689,7 @@ pub struct PermissionsPaneLayout {
 }
 
 /// One entry the Permissions pane lists: a sandbox capability an app holds,
-/// or a grant of the room's tree.
+/// or a grant of the workspace's tree.
 #[derive(Clone, Copy, Debug)]
 enum Listed<'a> {
     Sandbox(&'a CapOverride),
@@ -4794,7 +4794,7 @@ mod members_pane_tests {
         ws
     }
 
-    /// Whether `who` may change the room's content now.
+    /// Whether `who` may change the workspace's content now.
     fn may_write(ws: &Workspace, who: &str) -> bool {
         ws.answer_at(
             who,
@@ -5380,7 +5380,7 @@ mod agents_pane_tests {
 
     /// A service member is a cloud or relay identity an administrator
     /// admits: it joins with the purpose and the grants stated here, it is
-    /// listed with the room's agents under that purpose, and it holds
+    /// listed with the workspace's agents under that purpose, and it holds
     /// nothing else.
     #[test]
     fn a_service_member_is_admitted_with_only_the_grants_it_is_given() {
@@ -5422,7 +5422,7 @@ mod agents_pane_tests {
         assert_eq!(summaries[0].badge, t("workspace-settings-badge-service"));
         assert_eq!(summaries[0].detail, service_member_detail(&service));
 
-        // Only the granted kinds: it reads the room, it changes nothing in
+        // Only the granted kinds: it reads the workspace, it changes nothing in
         // it, and it holds no governance of it.
         let now = tilo_clock::unix_now();
         let context = tilo_desktop_model::context_at(now);
@@ -5486,10 +5486,10 @@ mod agents_pane_tests {
 #[cfg(test)]
 mod bots_pane_tests {
     use super::*;
-    use tilo_desktop_model::{RoomBot, WorkspaceId};
+    use tilo_desktop_model::{WorkspaceBot, WorkspaceId};
 
-    fn bot(name: &str, entry: Option<&str>, requested: bool) -> RoomBot {
-        RoomBot {
+    fn bot(name: &str, entry: Option<&str>, requested: bool) -> WorkspaceBot {
+        WorkspaceBot {
             name: name.into(),
             installation: Some(format!("{name}-installation")),
             device: Some("cd".repeat(32)),

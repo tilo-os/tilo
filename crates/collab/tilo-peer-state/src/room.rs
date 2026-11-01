@@ -172,9 +172,9 @@ pub(crate) fn invitation_receipts(
 /// requested, so taking the request back is how it is removed. Rows that do
 /// not decode are skipped.
 #[must_use]
-pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::RoomBot> {
+pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceBot> {
     let requests = crate::state::bot_requests_in(doc);
-    let mut bots: Vec<tilo_desktop_model::RoomBot> = governance_of(Some(doc))
+    let mut bots: Vec<tilo_desktop_model::WorkspaceBot> = governance_of(Some(doc))
         .identities
         .values()
         .filter_map(|bytes| serde_json::from_slice::<crate::state::GovernedIdentity>(bytes).ok())
@@ -193,7 +193,7 @@ pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::RoomBot> {
                     .iter()
                     .any(|request| &request.request.entry == entry)
             });
-            Some(tilo_desktop_model::RoomBot {
+            Some(tilo_desktop_model::WorkspaceBot {
                 name: installation.name,
                 installation: Some(installation.id.as_str().to_owned()),
                 device: Some(hex::encode(identity.device_cert.device_public_key)),
@@ -212,7 +212,7 @@ pub fn room_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::RoomBot> {
         {
             continue;
         }
-        bots.push(tilo_desktop_model::RoomBot {
+        bots.push(tilo_desktop_model::WorkspaceBot {
             name: request.request.entry.clone(),
             installation: None,
             device: None,

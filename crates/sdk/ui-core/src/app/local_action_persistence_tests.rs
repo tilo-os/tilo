@@ -20,6 +20,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
                 owners: vec![crate::history_mode::HistoryOwner::component(
                     binding.clone(),
                 )],
+                publishes: true,
                 sent_heads: Vec::new(),
                 needs_snapshot: true,
                 pending: Default::default(),

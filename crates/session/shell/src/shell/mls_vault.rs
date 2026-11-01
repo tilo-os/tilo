@@ -305,7 +305,7 @@ mod tests {
     fn registry_before_til_182() -> Vec<u8> {
         let text = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/mls_registry_before_til_182.postcard.hex"
+            "/../fixtures/registry_with_retired_records.postcard.hex"
         ));
         hex::decode(text.trim()).unwrap()
     }

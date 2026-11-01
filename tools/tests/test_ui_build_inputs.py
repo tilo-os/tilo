@@ -28,10 +28,8 @@ class UiBuildInputs(unittest.TestCase):
             '[package]\nname = "ui-build-inputs"\nversion = "0.0.0"\n'
             'edition = "2024"\nautotests = false\n[workspace]\n'
         )
-        shutil.copyfile(SOURCE / "build.rs", self.package / "build.rs")
-        # The build script includes the component scanner by `#[path]`; the
-        # temporary crate needs it as the real one has.
-        shutil.copyfile(SOURCE / "component_scan.rs", self.package / "component_scan.rs")
+        for name in ("build.rs", "component_scan.rs"):
+            shutil.copyfile(SOURCE / name, self.package / name)
         self.original = {}
         for source, filename in FIXTURES.items():
             destination = self.package / source

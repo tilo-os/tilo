@@ -1068,14 +1068,10 @@ impl BrowserShell {
             }
             ChromeIntent::ShowPerson(id) => {
                 // Their card, under their face.
-                let anchor = self
-                    .top
-                    .bar()
-                    .and_then(|bar| {
-                        bar.face_rect(&id)
-                            .or_else(|| Some(bar.collaborators_rect()))
-                    })
-                    .unwrap_or(Rect::ZERO);
+                let bar = self.top.bar();
+                let anchor = bar
+                    .face_rect(&id)
+                    .unwrap_or_else(|| bar.collaborators_rect());
                 self.show_person(&id, None, anchor);
             }
             ChromeIntent::OpenAvatarAsk => {
@@ -1122,11 +1118,12 @@ impl BrowserShell {
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }
-                // The page's own keys reach the browser's shortcuts; the
-                // rest belong to a native session.
-                DesktopAsk::Shortcut(_) => {}
+                // The page's own keys reach the browser's shortcuts.
                 // Leaving a workspace is a session's to carry out and say.
-                DesktopAsk::LeftWorkspace(_) => {}
+                // It places no desk widget, so no music control of one is
+                // here to press: steering a player is the session's, on the
+                // machine that runs it.
+                DesktopAsk::Shortcut(_) | DesktopAsk::LeftWorkspace(_) | DesktopAsk::Music(_) => {}
             }
         }
         changed
@@ -1424,13 +1421,8 @@ impl BrowserShell {
             let _ = self.profile.take_choice();
         }
         let model = self.profile_model();
-        self.profile.toggle(
-            &model,
-            self.top
-                .bar()
-                .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
-            self.rect,
-        );
+        self.profile
+            .toggle(&model, self.top.bar().own_avatar_rect(), self.rect);
     }
 
     /// The page arrived with an account to link (`#?link=`): once the bar
@@ -1441,9 +1433,7 @@ impl BrowserShell {
         // drew it, and asks in the person's name, once the room knows it.
         if !link_offer_ready(
             self.rect,
-            self.top
-                .bar()
-                .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
+            self.top.bar().own_avatar_rect(),
             self.chrome.here.borrow().own_label(),
         ) {
             return false;
@@ -1493,12 +1483,9 @@ impl BrowserShell {
         // A waiting offer draws again until the bar is there to open it.
         let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
         if self.profile_of.is_none() {
-            offered |= self.profile.follow_anchor(
-                self.top
-                    .bar()
-                    .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
-                self.rect,
-            );
+            offered |= self
+                .profile
+                .follow_anchor(self.top.bar().own_avatar_rect(), self.rect);
         }
         // Before the requests are taken, so the asks it makes go out now.
         // Only the person's own card shows their linked accounts.

@@ -1527,7 +1527,7 @@ impl WorkspaceSettingsOverlay {
         active_name
     }
 
-    /// The identity card's background, room-icon mark and close button —
+    /// The identity card's background, workspace-icon mark and close button —
     /// the purely-geometric chrome of [`Self::draw_ws_settings_header_text`],
     /// split out to keep that under `too_many_lines`. Returns the
     /// identity card rect and the close-button rect, since the caller's

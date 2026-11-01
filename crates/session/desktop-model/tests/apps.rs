@@ -1,4 +1,4 @@
-//! Tiles name their app; tabs in a room document can name their record.
+//! Tiles name their app; tabs in a workspace document can name their record.
 
 use automerge::AutoCommit;
 use tilo_desktop_model::apps::{canonical_app_id, record_routes};

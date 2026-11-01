@@ -256,10 +256,10 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    /// Add a directory bot to a room.
+    /// Add a directory bot to a workspace.
     ///
-    /// Bots run in rooms, not on this device; this stays unavailable until a
-    /// room offers its install-bot action to you.
+    /// Bots run in workspaces, not on this device; this stays unavailable
+    /// until a workspace offers its install-bot action to you.
     #[effect(job)]
     AddBot {
         #[param("Bot identity")]

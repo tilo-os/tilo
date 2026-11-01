@@ -82,7 +82,7 @@ pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
         .selected(selected)
         .checked(selected)
         .with_enabled(!unavailable(disk))
-        .on_activate(move || fire.fire());
+        .on_effect(move || fire.fire());
     Bound::new(Box::new(row), [(control.effect().console_id(), control)]).activated_by_keys(control)
 }
 
@@ -169,12 +169,7 @@ mod tests {
             let mut row = disk_row(&disk(), &control, false);
             let mut doc = AutoCommit::new();
 
-            assert!(row.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
+            crate::setup::destination::press(&mut row, &ui::a11y::Action::Activate, &mut doc);
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SelectDisk {

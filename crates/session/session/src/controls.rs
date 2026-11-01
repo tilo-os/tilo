@@ -12,10 +12,10 @@ use tilo_actions::{
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
-use tilo_desktop_surface::i18n::t;
 use tilo_surface_host::Published;
 
-use crate::displays::{self, DisplayMode};
+use crate::displays::DisplayMode;
+use crate::i18n::t;
 use ui::host_operation::ResourceOperationStart;
 
 /// The operation type the session's own actions carry.
@@ -28,8 +28,6 @@ pub const MAGNIFIER_RESOURCE: &str = "session:magnifier";
 pub const SESSION_RESOURCE: &str = "session:screen";
 /// The resource of the night light.
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
-/// The resource of how the displays are used together.
-pub const DISPLAYS_RESOURCE: &str = "session:displays";
 /// The resource of this device's clipboard.
 pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
@@ -126,7 +124,6 @@ fn resources() -> Vec<ResourceSpec> {
         screen_resource(),
         night_light_resource(),
         magnifier_resource(),
-        displays_resource(),
         clipboard_resource(),
         apps_resource(),
     ]
@@ -204,49 +201,6 @@ fn magnifier_resource() -> ResourceSpec {
             t("session-magnifier-zoom-out"),
             Vec::new(),
             |_| SessionCommand::Magnifier(Magnify::ZoomOut),
-        ))
-}
-
-/// The displays' mode.
-fn displays_resource() -> ResourceSpec {
-    ResourceSpec::new(DISPLAYS_RESOURCE, "session", t("session-displays"))
-        .with_action(action(
-            "next-mode",
-            t("session-displays-next"),
-            Vec::new(),
-            |_| SessionCommand::Displays {
-                mode: DisplayMode::Next,
-            },
-        ))
-        .with_action(action(
-            "open-sheet",
-            t("session-displays-open-sheet"),
-            Vec::new(),
-            |_| SessionCommand::OpenDisplaySheet,
-        ))
-        .with_action(action(
-            "close-sheet",
-            t("session-displays-close-sheet"),
-            Vec::new(),
-            |_| SessionCommand::CloseDisplaySheet,
-        ))
-        .with_action(action(
-            "set-mode",
-            t("session-displays-set"),
-            vec![
-                ActionParam::required_owned(
-                    "mode",
-                    ParamType::Text,
-                    t("session-param-displays-mode"),
-                )
-                .with_choices(displays::NAMES),
-            ],
-            |args| SessionCommand::Displays {
-                mode: args
-                    .text("mode")
-                    .and_then(DisplayMode::named)
-                    .unwrap_or(DisplayMode::Extend),
-            },
         ))
 }
 

@@ -210,6 +210,13 @@ fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
 }
 
 impl Input {
+    /// Whether one of the attached devices is a touchscreen.
+    fn has_touchscreen(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| device.has_capability(DeviceCapability::Touch))
+    }
+
     /// A new pad: clients are told about it, attached to the pen tablet of
     /// its device group (the pad itself when that tablet is not known).
     fn add_pad(&mut self, device: &Device) -> Vec<InputEvent> {
@@ -293,10 +300,15 @@ pub(super) fn dispatch(
                     Vec::new()
                 };
                 this.devices.push(device);
+                // The on-screen keyboard runs wherever the machine can be
+                // typed on by touching it, so a tap into a field never waits
+                // for a keyboard process to start.
+                state.note_touchscreen(this.has_touchscreen());
                 pad
             }
             DeviceEvent::DeviceRemoved { device } => {
                 this.devices.retain(|known| known != &device);
+                state.note_touchscreen(this.has_touchscreen());
                 this.remove_pad(&device)
             }
             DeviceEvent::TabletToolAxis { event } => {

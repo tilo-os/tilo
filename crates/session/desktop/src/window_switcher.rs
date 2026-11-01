@@ -340,7 +340,7 @@ fn focused_tab(desktop: &DesktopTree) -> Option<(WorkspaceId, u64)> {
 }
 
 /// Which windows were focused most recently, per workspace. Each workspace
-/// is its own room with its own windows, so its recency is its own too.
+/// is its own workspace with its own windows, so its recency is its own too.
 #[derive(Default)]
 pub struct FocusHistory {
     recent: HashMap<WorkspaceId, Vec<u64>>,
@@ -1173,7 +1173,10 @@ impl WindowSwitcher {
             .enumerate()
             .map(|(index, window)| {
                 serde_json::json!({
-                    "tab": window.address.tab,
+                    // A tab's id carries the salt of the device that minted
+                    // it, which a JSON integer does not always hold: it
+                    // travels as text, as every reading of a tab names it.
+                    "tab": window.address.tab.to_string(),
                     "title": window.title,
                     "selected": index == session.selected,
                     "preview": Self::preview_state(window, previews).as_str(),

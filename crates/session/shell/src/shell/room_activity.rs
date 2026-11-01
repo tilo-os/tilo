@@ -1,6 +1,6 @@
 //! Native services for the shared workspace activity pane.
 //!
-//! The pane itself is [`tilo_desktop::activity::RoomActivityPane`]; this
+//! The pane itself is [`tilo_desktop::activity::WorkspaceActivityPane`]; this
 //! module gives it the device's identity, its private seen frontiers and
 //! departures (kept in the user's state directory), live agent dispatch through the session's
 //! action broker, managed agent launches, and the native workspace tree as
@@ -21,7 +21,7 @@ use tilo_action_broker::task_runs::EndedTaskRun;
 use tilo_desktop::activity::{
     ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier,
 };
-pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
+pub use tilo_desktop::activity::{ActivityView, Period, WorkspaceActivityOutcome, WorkspaceScope};
 use ui::record::{RecordId, RecordStore};
 
 /// History derivation owns its document cursor, not the live workspace lock.
@@ -134,7 +134,7 @@ pub(crate) struct NativeActivityHost {
     morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
     /// Agent task runs being undone, and how each ended.
     undos: super::task_undo::TaskUndos,
-    /// The session's identity, as chrome holds it ([`RoomActivityPane::set_session_user`]).
+    /// The session's identity, as chrome holds it ([`WorkspaceActivityPane::set_session_user`]).
     session_user: SessionUser,
 }
 
@@ -1137,38 +1137,38 @@ impl ActivityTree for WorkspaceTree {
 }
 
 /// The shared pane with the native services installed.
-pub struct RoomActivityPane(
-    tilo_desktop::activity::RoomActivityPane,
+pub struct WorkspaceActivityPane(
+    tilo_desktop::activity::WorkspaceActivityPane,
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
     ColdRecordReads,
     SessionUser,
 );
 
-impl std::ops::Deref for RoomActivityPane {
-    type Target = tilo_desktop::activity::RoomActivityPane;
+impl std::ops::Deref for WorkspaceActivityPane {
+    type Target = tilo_desktop::activity::WorkspaceActivityPane;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl std::ops::DerefMut for RoomActivityPane {
+impl std::ops::DerefMut for WorkspaceActivityPane {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
-impl Default for RoomActivityPane {
+impl Default for WorkspaceActivityPane {
     fn default() -> Self {
         Self::new()
     }
 }
-impl Drop for RoomActivityPane {
+impl Drop for WorkspaceActivityPane {
     /// The session is ending: the departure it saved last is on disk before
     /// the compositor goes.
     fn drop(&mut self) {
         settle_history_writes();
     }
 }
-impl RoomActivityPane {
+impl WorkspaceActivityPane {
     /// Derive history and load referenced records after releasing the shared
     /// workspace lock. Admission and output may read the current tree while
     /// expensive history reconstruction uses this coherent observation.
@@ -1223,7 +1223,7 @@ impl RoomActivityPane {
     }
 
     pub fn new() -> Self {
-        let mut pane = tilo_desktop::activity::RoomActivityPane::new();
+        let mut pane = tilo_desktop::activity::WorkspaceActivityPane::new();
         let session_user = SessionUser::default();
         pane.set_host(Rc::new(NativeActivityHost {
             session_user: Rc::clone(&session_user),
@@ -1245,7 +1245,7 @@ impl RoomActivityPane {
         pane
     }
     pub(crate) fn with_local_user(user: String) -> Self {
-        let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
+        let mut pane = tilo_desktop::activity::WorkspaceActivityPane::with_local_user(user);
         let session_user = SessionUser::default();
         pane.set_host(Rc::new(NativeActivityHost {
             session_user: Rc::clone(&session_user),
@@ -1331,7 +1331,7 @@ pub(crate) fn refreshes() -> usize {
 /// after the workspace lock is released, with persisted records from
 /// `local`.
 fn refresh_pane(
-    pane: &mut tilo_desktop::activity::RoomActivityPane,
+    pane: &mut tilo_desktop::activity::WorkspaceActivityPane,
     tree: &WorkspaceTreeHandle,
     records: &RecordStore,
     local: &dyn tilo_desktop::activity::PersistedRecordHistory,
@@ -1402,7 +1402,7 @@ mod tests {
             document,
             loads: std::cell::Cell::new(0),
         };
-        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let mut pane = WorkspaceActivityPane::with_local_user("local".into());
         let records = RecordStore::in_memory();
         pane.refresh_observed(&handle, &records, &local);
         assert!(
@@ -1465,7 +1465,7 @@ mod tests {
         local.scan_now_for_test(data.path());
 
         let records = RecordStore::in_memory();
-        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let mut pane = WorkspaceActivityPane::with_local_user("local".into());
         let interval = std::time::Duration::from_secs(1);
         let mut at = Instant::now();
         let release = crate::shell::cold_record_reads::held::hold_record(record.clone());
@@ -1533,7 +1533,7 @@ mod tests {
 
     /// Take the persisted reads in once the worker has them. Polls: tests
     /// only.
-    fn wait_for_reads(pane: &mut RoomActivityPane) {
+    fn wait_for_reads(pane: &mut WorkspaceActivityPane) {
         tilo_test_env::wait_until("the persisted reads", || pane.take_persisted_reads());
     }
 
@@ -1798,7 +1798,7 @@ mod tests {
             },
             Instant::now(),
         );
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.shortcut_run_recorder_mut().push(finished);
         let local = RoomRecords::in_memory();
 
@@ -1849,7 +1849,7 @@ mod tests {
                 );
             }
         });
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
@@ -1913,7 +1913,7 @@ mod tests {
         local.scan_now_for_test(data.path());
         let records = RecordStore::in_memory();
 
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
@@ -2041,7 +2041,7 @@ mod tests {
             "the record is not open on this desktop"
         );
 
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         let finished_at = Instant::now();
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::new(
@@ -2132,7 +2132,7 @@ mod tests {
         let mut local = RoomRecords::in_memory();
         local.scan_now_for_test(data.path());
 
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         let finished_at = Instant::now();
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::new(
@@ -2173,7 +2173,7 @@ mod tests {
         let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let local = RoomRecords::in_memory();
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         let finished_at = Instant::now();
         pane.shortcut_run_recorder_mut()
             .push(PendingShortcutRun::new(

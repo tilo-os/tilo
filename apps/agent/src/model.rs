@@ -1,7 +1,7 @@
 //! Talking to the model: which published operations answer a request.
 //!
 //! The agent never composes a document mutation of its own. It is shown the
-//! live, permission-filtered catalogue of operations the room's applications
+//! live, permission-filtered catalogue of operations the workspace's applications
 //! publish — the same catalogue a person reaches from the palette — and it
 //! discovers, invokes and observes through a small set of generic tools
 //! ([`crate::tools`]). Every operation id it names is checked against what a

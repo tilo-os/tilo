@@ -1,5 +1,5 @@
-//! An agent is admitted to a room the same way anybody is given authority —
-//! by a grant naming it on the room. Asserts on the production readers,
+//! An agent is admitted to a workspace the same way anybody is given authority —
+//! by a grant naming it on the workspace. Asserts on the production readers,
 //! because the failure worth catching is a roster showing or hiding the
 //! wrong people.
 
@@ -32,7 +32,7 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
 #[test]
 fn only_a_live_room_grant_makes_an_agent_a_member() {
     // Phase `a_room_with_no_grant_has_no_agents`.
-    // The floor, and the one that matters most: a room nobody has
+    // The floor, and the one that matters most: a workspace nobody has
     // admitted an agent to has no agents in it.
     {
         assert!(room().agent_members_at(NOW).is_empty());

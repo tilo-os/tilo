@@ -14,11 +14,12 @@
 //!   into the open record (`RecordStore::merge_replica`, Automerge
 //!   semantics, local undo untouched) or, when no mount has it open, into
 //!   the record's stored document so opening it later shows them.
-//! - **The desktop** is the room's shared desktop record
-//!   ([`tilo_desktop_model::shared_record`]) on the route native peers and
-//!   the room host use for it: every strip, group and window is its own
-//!   entry, so concurrent changes to different entries all land. The page
-//!   writes only the entries that differ from what the record holds, and an
+//! - **The desktop** is the desk's own document
+//!   ([`tilo_desktop_model::desktop_doc`]) on the route native peers and the
+//!   room host use for it, the one the native desk keeps: every workspace,
+//!   strip, group and window its own entry, so concurrent changes to
+//!   different ones all land. The page writes only what differs from what
+//!   the document holds, one change naming the person who made it, and an
 //!   inbound change reaches the surface through `replace_shared_tree`.
 //!
 //! Nothing is published before the host answered `Ready` for the room, so a
@@ -356,6 +357,14 @@ pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
     let room = room.borrow();
     let doc = room.desktop.document();
     (!doc.base_heads().is_empty()).then(|| doc.clone())
+}
+
+/// The room's desk document, for the profile's copy of it: what the person's
+/// desk is once the room has answered.
+pub(crate) fn desk_bytes(id: u32) -> Option<Vec<u8>> {
+    let room = room(id)?;
+    let bytes = room.borrow_mut().desktop.document_mut().save();
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 /// Read the retained desktop's frontier without cloning its whole history.
@@ -1571,7 +1580,7 @@ impl Room {
         if self.desktop_sending == DesktopSending::KeptOwn {
             return;
         }
-        let Some((value, author)) = self.mounts.values().find_map(|mounted| {
+        let Some((desktop, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (
                     crate::desktop::shared_value(handle, shared),
@@ -1581,6 +1590,9 @@ impl Room {
         }) else {
             return;
         };
+        // The desk as it reads to a peer: what it says moved is what the
+        // room decides on, and an unchanged desk writes nothing.
+        let value = serde_json::to_value(&desktop).unwrap_or(serde_json::Value::Null);
         if self.local_value.as_ref() == Some(&value) {
             return;
         }
@@ -1605,14 +1617,18 @@ impl Room {
         // The desktop this page joined with is not something the person did.
         let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
-        // Only the entries that differ are written, stamped with the time
-        // and who made the change, as the history pane tells it.
-        let wrote = tilo_desktop_surface::history_log::record(
+        // What differs is written into the desk's own document, as one change
+        // stamped with the time and who made it, which the history pane tells
+        // by and every peer reads back as the desk.
+        let wrote = tilo_desktop_model::desktop_doc::write_shared(
             doc,
-            &value,
-            &author,
-            ui::time::unix_now_i64(),
+            &desktop.tree,
+            &desktop.records,
+            &desktop.authors,
         );
+        if wrote {
+            tilo_desktop_surface::history_log::commit(doc, &author, ui::time::unix_now_i64());
+        }
         if wrote && joined {
             // Windows opened, closed, moved or renamed: the person's own
             // work on the desktop.
@@ -1668,7 +1684,7 @@ fn outbound(
 }
 
 /// Who wrote the newest change of the room's desktop, as its message names
-/// them (`history_log::record`).
+/// them (`history_log::commit`).
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())

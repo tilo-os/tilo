@@ -1,11 +1,19 @@
 # Was das Studio über ein Bildschirmfoto sagt, das an eines der anderen
-# Geräte der Person unterwegs ist.
+# Geräte der Person unterwegs ist oder in die Dateien dieses Arbeitsbereichs
+# geschrieben wird.
+screenshot-send-saving = Wird in die Dateien dieses Arbeitsbereichs gespeichert…
 screenshot-send-sending = Wird an { $device } gesendet…
 screenshot-send-offered = { $device } angeboten; nimm es dort an, um es zu speichern
+screenshot-send-saved = In den Dateien dieses Arbeitsbereichs als { $name } gespeichert
 screenshot-send-sync-off = Die Gerätesynchronisierung läuft nicht
 screenshot-send-offline = Dieses Gerät ist nicht mehr online
 screenshot-send-gone = Das Bildschirmfoto { $path } ist nicht mehr da
 screenshot-send-not-kept = Es gibt kein Bildschirmfoto zum Senden
 screenshot-send-no-folder = { $path } liegt in keinem Ordner
+screenshot-send-no-workspace = In dieser Sitzung ist kein Arbeitsbereich geöffnet
+screenshot-send-no-file-name = { $path } hat keinen Dateinamen
+screenshot-send-create-failed = { $path } kann nicht erstellt werden: { $error }
+screenshot-send-save-failed = Speichern in den Dateien dieses Arbeitsbereichs nicht möglich: { $error }
+screenshot-send-too-many = In { $path } ist jeder Name vergeben
 screenshot-send-too-large = Ein Nearby-Versand trägt bis zu { $limit }; dieses Bildschirmfoto ist { $size } groß
 screenshot-send-refused = Das Bildschirmfoto wurde nicht angeboten: { $reason }

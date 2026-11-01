@@ -48,9 +48,9 @@ pub use widgets::DeskWidgets;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId};
+use ui::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect};
 
 /// Whether a desk card is open, and the keys asking it to fold.

@@ -11,13 +11,22 @@
 //! window commits a new one. It is the texture the surface itself holds,
 //! so nothing is copied, and one frame's worth of buffer stays alive per
 //! window until the desktop lets the window go.
+//!
+//! A window whose surface carries an HDR signal is drawn as the
+//! tone-mapped rendition of its content, not as its own buffer, so its
+//! close animates that rendition: the same bytes on screen, kept by the
+//! HDR path ([`crate::hdr`]) rather than imported from the surface.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::PoisonError;
 
+use smithay::backend::renderer::ImportMem;
 use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
 use smithay::backend::renderer::element::texture::{TextureRenderBuffer, TextureRenderElement};
 use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
 use smithay::backend::renderer::{ErasedContextId, Renderer};
@@ -33,6 +42,9 @@ pub(crate) struct Snapshot {
     size: Size<i32, Logical>,
     /// The frame itself, one per renderer.
     frames: HashMap<ErasedContextId, Frame>,
+    /// The frame of a surface that carries an HDR signal: its rendition,
+    /// which is what the desktop drew.
+    rendition: Option<MemoryRenderBuffer>,
 }
 
 /// A texture a window drew, and the commit it drew.
@@ -76,6 +88,7 @@ impl Snapshot {
                 return false;
             };
             self.size = state.surface_size().unwrap_or_default();
+            self.rendition = None;
             self.frames.insert(
                 erased,
                 Frame {
@@ -91,6 +104,18 @@ impl Snapshot {
             );
             true
         })
+    }
+
+    /// Keep the rendition `buffer` of a surface that carries an HDR signal
+    /// as the window's last frame: its logical size is `size`.
+    pub(crate) fn record_rendition(
+        &mut self,
+        buffer: MemoryRenderBuffer,
+        size: Size<i32, Logical>,
+    ) {
+        self.size = size;
+        self.frames.clear();
+        self.rendition = Some(buffer);
     }
 
     /// The kept frame as an element at `location` (physical), for a
@@ -118,6 +143,30 @@ impl Snapshot {
             Kind::Unspecified,
         ))
     }
+
+    /// The kept rendition at `location` (physical), when the window's
+    /// surface carried an HDR signal.
+    pub(crate) fn rendition<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<f64, Physical>,
+        alpha: f32,
+    ) -> Option<MemoryRenderBufferRenderElement<R>>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            self.rendition.as_ref()?,
+            Some(alpha),
+            None,
+            Some(self.size),
+            Kind::Unspecified,
+        )
+        .ok()
+    }
 }
 
 /// The frames the windows last drew, by window id.
@@ -136,6 +185,40 @@ impl Snapshots {
             .entry(id)
             .or_default()
             .record(renderer, window);
+    }
+
+    /// Keep what the window `id` of `window` drew this frame: the texture of
+    /// its surface, or, when its surface carries an HDR signal, the rendition
+    /// the desktop drew it as.
+    pub(crate) fn record_shown<R>(
+        &self,
+        id: u64,
+        hdr: &crate::hdr::HdrSurfaces,
+        renderer: &R,
+        window: &Window,
+    ) where
+        R: Renderer,
+        R::TextureId: Clone + 'static,
+    {
+        match hdr.shown(id) {
+            Some((rendition, size)) => self.record_rendition(id, rendition, size),
+            None => self.record(id, renderer, window),
+        }
+    }
+
+    /// Keep the rendition `buffer` as the frame of the window `id`, of
+    /// logical size `size`.
+    pub(crate) fn record_rendition(
+        &self,
+        id: u64,
+        buffer: MemoryRenderBuffer,
+        size: Size<i32, Logical>,
+    ) {
+        self.0
+            .borrow_mut()
+            .entry(id)
+            .or_default()
+            .record_rendition(buffer, size);
     }
 
     /// Take the frame kept for `id`, if there is one.

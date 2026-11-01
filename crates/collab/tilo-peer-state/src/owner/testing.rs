@@ -40,14 +40,29 @@ pub fn enroll_interactive_governor_in(
     certificate: &DeviceCert,
     room: &str,
 ) -> Result<governor::TestGovernor, String> {
-    let mut governor =
-        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), room).unwrap();
+    let governor =
+        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), room)?;
+    enroll_into(governor, owner, key, certificate)
+}
+
+/// Enroll `certificate`'s device into the room `governor` already holds, as
+/// the room's devices [`enroll_interactive_governor`] make one for: what a
+/// room whose other devices are already in it admits this one into.
+pub fn enroll_into(
+    mut governor: governor::TestGovernor,
+    owner: &NativeWorkspaceOwner,
+    key: &SigningKey,
+    certificate: &DeviceCert,
+) -> Result<governor::TestGovernor, String> {
     let endpoint = iroh_base::EndpointAddr::new(
         iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
     );
     let hint = governor.hint(endpoint);
     let now = SystemTime::now();
     let now_ns = ns(now).unwrap();
+    // One room admits more than one device: each asks with an id of its own.
+    let mut request_id = [0_u8; 32];
+    request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
     let invitation = governor.issue(
         vec![hint.clone()],
         join::MemberRole::Editor,
@@ -67,7 +82,7 @@ pub fn enroll_interactive_governor_in(
         join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
             signed_invitation: invitation,
             device_cert: certificate.clone(),
-            request_id: [95; 32],
+            request_id,
         }),
     );
     let join::JoinTransportResponse::Challenge(response) = response else {

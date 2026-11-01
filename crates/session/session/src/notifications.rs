@@ -33,6 +33,33 @@ use crate::app_icons;
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
+/// Mount the banners app on the desk: what it shows of the desktop's
+/// notifications, and its own link to them.
+pub(crate) fn mount_banners(
+    compositor: &mut tilo_compositor::Compositor,
+    doors: &mut tilo_surface_host::Doors,
+    notices: &DesktopNotifications,
+    options: &crate::Options,
+) -> Link {
+    let banners = Link::new();
+    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
+                app,
+                banners.clone(),
+                options.scale,
+            )));
+            compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));
+            doors.add(surface);
+            notices.show_banners_elsewhere();
+        }
+        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+    }
+    banners
+}
+
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 
@@ -408,11 +435,14 @@ impl SessionNotifications {
 
     /// Turn Do Not Disturb on or off, as the person asked from quick
     /// settings or the desktop's own menu: the one persisted switch, which
-    /// the session's settings watch reloads into every later arrival.
+    /// the session's settings watch reloads into every later arrival, and
+    /// which this session applies at once so the switch the person just
+    /// flipped is the state everything else here reads.
     ///
     /// # Errors
     /// The settings document could not be written.
-    pub(crate) fn set_do_not_disturb(on: bool) -> std::io::Result<()> {
+    pub(crate) fn set_do_not_disturb(&self, on: bool) -> std::io::Result<()> {
+        self.policy.lock_recover().do_not_disturb = on;
         NotificationPolicy::save_do_not_disturb(on)
     }
 

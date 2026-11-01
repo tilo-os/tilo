@@ -10,7 +10,7 @@ use settings_store::hardware::{
     AccelProfile, KeyboardInputSource, RichInputConfig, ShortcutConfig,
 };
 use settings_store::sign_in_comforts::SignInComforts;
-use tilo_accessibility_settings::AccessibilitySettings;
+use tilo_accessibility_settings::{AccessibilitySettings, OnScreenKeyboard};
 use tilo_compositor::InputConfig;
 use tilo_compositor::a11y::A11y;
 use tilo_compositor::backend::drm::input_config::{TouchpadClickMethod, TouchpadScrollMethod};
@@ -45,6 +45,9 @@ pub struct SessionConfig {
     /// The person's accessibility settings: the assists, the pointer's size
     /// and shape, the colour filter, the magnifier and visual alerts.
     pub a11y: A11y,
+    /// When the on-screen keyboard runs: never, over a field the person
+    /// touches, or always.
+    pub on_screen_keyboard: OnScreenKeyboard,
     /// The comforts the login screens start with: the device's copy, which
     /// the session keeps equal to these (`docs/security/sign-in.md` §3.4).
     pub comforts: SignInComforts,
@@ -77,6 +80,7 @@ impl SessionConfig {
             idle: idle_config(&power),
             power,
             a11y: crate::a11y_settings::a11y(&accessibility),
+            on_screen_keyboard: accessibility.on_screen_keyboard,
             comforts: sign_in_comforts(&accessibility, &input, true),
             apply_comforts_to_sign_in: settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.get(),
             ..Self::from_settings(&input, ShortcutConfig::load())
@@ -119,6 +123,7 @@ impl SessionConfig {
             idle: IdleConfig::never(),
             power,
             a11y: crate::a11y_settings::a11y(&assists),
+            on_screen_keyboard: assists.on_screen_keyboard,
             comforts: sign_in_comforts(&assists, input, false),
             apply_comforts_to_sign_in: true,
             night_light: false,

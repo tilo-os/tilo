@@ -3,7 +3,7 @@
 //! a native session serves its own ([`crate::session::ActivityRequests`]).
 //!
 //! The model only reads the history: it works on an [`ActivitySnapshot`]
-//! the host built from its admitted room document, and on detached copies
+//! the host built from its admitted workspace document, and on detached copies
 //! of the records the workspace's windows show. What it keeps of its own is
 //! what this device has seen, through the host ([`HistorySource::host`]).
 //!
@@ -19,7 +19,7 @@ use tilo_desktop_model::{DesktopTree, TabId, WorkspaceId};
 
 use crate::activity::{
     ActivityHost, ActivitySnapshot, ActivityView as PaneView, DetachedRecordHistory,
-    RoomActivityPane,
+    WorkspaceActivityPane,
 };
 use crate::navigation::ActivityView;
 use crate::session::ActivityReads;
@@ -27,7 +27,7 @@ use crate::session::ActivityReads;
 /// Where a surface's workspace history comes from. Without one, Catch up,
 /// Explore and Replay stay unavailable.
 pub trait HistorySource {
-    /// `workspace`'s admitted history: the desktop together with the room
+    /// `workspace`'s admitted history: the desktop together with the workspace
     /// document whose changes are its history. `None` when the host retains
     /// none for it.
     fn workspace_history(
@@ -148,7 +148,7 @@ fn pane_view(view: ActivityView) -> PaneView {
 
 /// The activity model and the history it reads.
 struct WorkspaceActivity {
-    pane: RoomActivityPane,
+    pane: WorkspaceActivityPane,
     snapshot: ActivitySnapshot,
     workspace: WorkspaceId,
     /// The tree and source revisions the model last read.
@@ -163,7 +163,7 @@ impl WorkspaceActivity {
         workspace: WorkspaceId,
     ) -> Option<Self> {
         let snapshot = source.workspace_history(tree, workspace)?;
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.set_host(source.host());
         pane.load_frontiers();
         let mut model = Self {

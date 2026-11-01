@@ -100,7 +100,10 @@ fn the_device_is_read_off_the_ui_thread_and_lands_in_the_panel() {
     });
     let state = desk.host.state();
     assert!(state.wifi && state.bluetooth && state.bluetooth_available);
-    assert_eq!(state.brightness, 0.7);
+    assert_eq!(
+        state.brightness, 0.6,
+        "the machine's own brightness is not read here: the session's displays are"
+    );
     assert_eq!(state.power_profile, PowerProfile::Performance);
     assert_eq!(state.vpns.len(), 1);
     assert!(state.status.link.is_some(), "the top bar's link too");

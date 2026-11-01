@@ -80,9 +80,10 @@ pub(crate) struct Run {
     /// ([`Capture::driven`](ui_core::application::Capture::driven)): the
     /// effects it is asked for run, though it starts no work on its own.
     pub(crate) driven: bool,
-    /// What the room holds, when the record the window opened was not on
-    /// this device: the view shows once it arrived.
-    pub(crate) room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
+    /// What the workspace holds, when the record the window opened was not
+    /// on this device: the view shows once it arrived.
+    pub(crate) workspace:
+        Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -142,7 +143,7 @@ impl Run {
             people: super::People::new(None),
             opener: None,
             driven: false,
-            room: None,
+            workspace: None,
         }
     }
 
@@ -171,7 +172,7 @@ impl Run {
             people: super::People::new(None),
             opener: None,
             driven: false,
-            room: None,
+            workspace: None,
         }
     }
 
@@ -182,13 +183,15 @@ impl Run {
         self
     }
 
-    /// The same run, its view waiting for what the room holds (`room`)
-    /// when its record was not on this device.
-    pub(crate) fn awaiting_room(
+    /// The same run, its view waiting for what the workspace holds
+    /// (`workspace`) when its record was not on this device.
+    pub(crate) fn awaiting_workspace(
         mut self,
-        room: Option<ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>>,
+        workspace: Option<
+            ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
+        >,
     ) -> Self {
-        self.room = room;
+        self.workspace = workspace;
         self
     }
 
@@ -477,7 +480,7 @@ fn capture_run(fixtures: Fixtures) -> Run {
         people: super::People::new(None),
         opener: None,
         driven: false,
-        room: None,
+        workspace: None,
     }
 }
 

@@ -1,9 +1,9 @@
 # Mail — Tilo application manifest.
 #
 # IMAP/SMTP against user-configured servers (feature `live`), so the
-# host set is user data — `mode = "host"`. Shares the account store
-# and credential vault with Settings; those two are the only apps that
-# get the vault. Links open through the host opener.
+# host set is user data — `mode = "host"`. Reads the person's accounts
+# record; the session's account custody releases it each email account's
+# secret, and it never opens the vault. Links open through the host opener.
 #
 
 

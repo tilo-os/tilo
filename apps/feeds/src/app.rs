@@ -724,8 +724,8 @@ impl Core {
     }
 
     /// Say `text` of a library change just submitted once it is kept: at
-    /// once in a library nobody else decides, once the room accepts it in a
-    /// shared one, and never when the room refuses it
+    /// once in a library nobody else decides, once the workspace accepts it in
+    /// a shared one, and never when the workspace refuses it
     /// ([`Self::announce_answers`]).
     pub(crate) fn say_when_kept(&mut self, text: impl Into<String>) {
         match &self.dispatcher {
@@ -734,7 +734,7 @@ impl Core {
         }
     }
 
-    /// Show what the room answered of this window's changes: one it kept
+    /// Show what the workspace answered of this window's changes: one it kept
     /// is said done ("Article starred"), and one it refused, which the
     /// record withdrew, says why instead.
     pub(crate) fn announce_answers(&mut self) {

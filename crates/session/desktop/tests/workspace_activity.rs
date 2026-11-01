@@ -1,9 +1,9 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use tilo_desktop::activity::{ActivitySnapshot, ActivityView, RoomActivityPane};
+use tilo_desktop::activity::{ActivitySnapshot, ActivityView, WorkspaceActivityPane};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 
 // Removing causal replay or writing to the admitted document while reviewing
-// must fail this regression. The root schema is a real admitted room document.
+// must fail this regression. The root schema is a real admitted workspace document.
 #[test]
 fn workspace_activity_review_keeps_live_heads() {
     let workspace = Workspace::new(WorkspaceId(1), "Design");
@@ -23,7 +23,7 @@ fn workspace_activity_review_keeps_live_heads() {
     )
     .unwrap();
     let before = tree.doc.get_heads();
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
     pane.refresh(&mut tree);
     pane.set_view(ActivityView::Replay);
@@ -35,7 +35,7 @@ fn workspace_activity_review_keeps_live_heads() {
     assert_eq!(tree.doc.get_heads(), before);
 }
 
-// A local desktop's room document, in the `contents` schema: its bookkeeping
+// A local desktop's workspace document, in the `contents` schema: its bookkeeping
 // (the id counter, the record index) listed as a change, a window opened
 // left out of History, or any storage key shown as a row's words, must fail
 // this regression.
@@ -105,7 +105,7 @@ fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
     )
     .unwrap();
 
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.refresh(&mut tree);
     let mut rows = pane
         .entries()
@@ -225,7 +225,7 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
             document: None,
         },
     ];
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.refresh(&mut tree);
     pane.refresh_detached_records(&mut tree, inputs);
     assert_eq!(pane.feed_coverage().referenced_records, 3);
@@ -305,7 +305,7 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     record.put(ROOT, "message", "hi").unwrap();
     commit(&mut record, &posted, 1_800_000_002);
 
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.authors_mut().register(
         &ada.to_hex_string(),
         ui::widget::HistoryAuthor::new("Ada", 120.0, "ada"),
@@ -363,7 +363,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
         checkout: RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("test")),
         document: Some(record),
     };
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.refresh(&mut tree);
     pane.refresh_detached_records(&mut tree, vec![input.clone()]);
     let settled = pane.entries().to_vec();
@@ -384,7 +384,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     );
 }
 
-// Replay serving the room's first changes, made before the workspace stood
+// Replay serving the workspace's first changes, made before the workspace stood
 // in it, as checkpoints with nothing to show must fail this regression.
 #[test]
 fn workspace_activity_replay_starts_where_the_workspace_does() {
@@ -448,7 +448,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
         doc,
     )
     .unwrap();
-    let mut pane = RoomActivityPane::new();
+    let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
     pane.refresh(&mut tree);
     pane.set_view(ActivityView::Replay);

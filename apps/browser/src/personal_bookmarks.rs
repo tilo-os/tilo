@@ -1,4 +1,4 @@
-//! The person's own bookmark library. Importing it never edits the room's Browser record.
+//! The person's own bookmark library. Importing it never edits the workspace's Browser record.
 //!
 //! A bookmark is an add under the tag minted when it was made; removing it
 //! tombstones the adds of it that were seen, so an add made concurrently on

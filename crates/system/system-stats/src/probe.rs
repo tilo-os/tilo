@@ -270,7 +270,13 @@ impl KernelProbe {
         Some((total, total.saturating_sub(free)))
     }
 
+    /// Nothing reads a mount's space here: the probe has no file system to
+    /// stat, so every disk keeps the totals its device reports.
     #[cfg(not(unix))]
+    #[expect(
+        clippy::unused_self,
+        reason = "shares the signature of the Unix probe, which reads through its own root"
+    )]
     fn space(&self, _mount: &str) -> Option<(u64, u64)> {
         None
     }

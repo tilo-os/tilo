@@ -299,6 +299,12 @@ impl SettingsApp {
         self.account_root.remove_browser_identity(account)
     }
 
+    /// Where the person's accounts and their secrets are kept for this
+    /// window.
+    pub(crate) fn account_root(&self) -> &crate::accounts::AccountRoot {
+        &self.account_root
+    }
+
     pub fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
             ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;

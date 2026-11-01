@@ -102,6 +102,15 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         let back = read_back(&doc);
         assert_eq!(back.active, tree.active);
         assert_eq!(layout(&back), layout(&tree));
+        assert_eq!(
+            back.workspaces[0]
+                .strips
+                .iter()
+                .map(|strip| strip.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+            "each strip by the name it was given"
+        );
         let ws = &back.workspaces[0];
         assert_eq!(ws.room(), tree.workspaces[0].room());
         assert_eq!(ws.owner().map(String::as_str), Some("ada"));
@@ -112,7 +121,9 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
             policy
         };
         assert_eq!(sorted(&ws.policy), sorted(&tree.workspaces[0].policy));
-        // Presentation state is this device's and is not in the document.
+        // How this device shows the desk is in the document too, but a
+        // rebuild leaves the view of the tree it is given alone: a fresh one
+        // keeps the defaults it started with.
         assert!(!ws.strips[0].window_groups[0].maximized);
         assert_eq!(ws.strips[0].window_groups[0].width, WindowWidth::Normal);
     }
@@ -150,6 +161,91 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         );
         assert!(!desktop_doc::set_owner(&mut doc, WorkspaceId(9), "eve"));
     }
+}
+
+/// How this device shows the desk is in the document too: which strip and
+/// group are in front, how wide each group is, whether it is maximized,
+/// which of its tabs is in front, and which display each group is on. A
+/// reader with no view of its own takes the desk back exactly as it was left.
+#[test]
+fn the_view_of_the_desk_round_trips_with_it() {
+    let mut tree = tree();
+    tree.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.set_active_group(StripId(2), 20);
+    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(480);
+    tree.workspaces[0].strips[0].window_groups[0].active_tab = 101;
+    tree.workspaces[0].strips[0].window_groups[1].maximized = false;
+    assert!(tree.set_fullscreen(StripId(2), 20, true));
+    tree.outputs.home.insert(20, "edid:Dell|U2720Q|CN0".into());
+    tree.outputs.displays = vec![tilo_desktop_model::Display {
+        id: 0,
+        monitor: "edid:Dell|U2720Q|CN0".into(),
+        x: 0.0,
+        y: 0.0,
+        width: 2560.0,
+        height: 1440.0,
+        primary: true,
+    }];
+
+    let mut doc = AutoCommit::new();
+    desktop_doc::seed(&mut doc, &tree);
+    let mut back = DesktopTree::default();
+    desktop_doc::rebuild(&doc, &mut back);
+    desktop_doc::rebuild_view(&doc, &mut back);
+    assert_eq!(back.active_strip, tree.active_strip, "the strip in front");
+    assert_eq!(back.active_group, tree.active_group, "the group in front");
+    assert_eq!(
+        (back.outputs.home.clone(), back.outputs.origin.clone()),
+        (tree.outputs.home.clone(), tree.outputs.origin.clone()),
+        "the display each group is on"
+    );
+    // Whether a display is the primary one is told again with every
+    // reconciliation, so it is the one thing the view does not keep.
+    let (kept, given) = (&back.outputs.displays, &tree.outputs.displays);
+    assert_eq!(
+        kept.iter()
+            .map(|display| (display.monitor.as_str(), display.x, display.y))
+            .collect::<Vec<_>>(),
+        given
+            .iter()
+            .map(|display| (display.monitor.as_str(), display.x, display.y))
+            .collect::<Vec<_>>(),
+        "the displays it was shown on"
+    );
+    assert_eq!(back.fullscreen, tree.fullscreen, "the fullscreen window");
+    let groups = &back.workspaces[0].strips[0].window_groups;
+    assert_eq!(
+        (groups[0].width.permille(), groups[1].width.permille()),
+        (480, 1000),
+        "each group's own width"
+    );
+    assert!(!groups[1].maximized, "and whether it is maximized");
+    assert_eq!(groups[0].active_tab, 101, "the tab in front of a group");
+
+    // Moving the view is all a view change does: the focus moving, a window
+    // resized, a workspace switched.
+    let before = doc.get_heads();
+    tree.active_strip.insert(WorkspaceId(1), StripId(1));
+    tree.workspaces[0].strips[0].window_groups[1].maximized = true;
+    tree.active = WorkspaceId(1);
+    desktop_doc::seed(&mut doc, &tree);
+    let written = doc.get_changes(&before);
+    assert_eq!(written.len(), 1, "one change of the view");
+    assert!(
+        written.iter().all(desktop_doc::only_moves_the_view),
+        "a change of the view is not a change of the desk"
+    );
+
+    // Anything else is a change of the desk.
+    let before = doc.get_heads();
+    tree.workspaces[0].name = "Lab".into();
+    desktop_doc::seed(&mut doc, &tree);
+    assert!(
+        !doc.get_changes(&before)
+            .iter()
+            .all(desktop_doc::only_moves_the_view),
+        "a rename is what happened, not where the person is looking"
+    );
 }
 
 #[test]
@@ -304,10 +400,14 @@ fn topology_edits_are_mirrored_into_the_document() {
             "new".into(),
             Vec::new(),
         ));
-        // A fresh reader learns strips through their groups, so the emptied
-        // strip 2 does not appear.
-        let back = layout(&read_back(&doc));
-        assert_eq!(back, vec![(1, vec![(11, vec![110, 300]), (10, vec![100])])]);
+        // The emptied strip is still the desk's: only its windows went.
+        assert_eq!(
+            layout(&read_back(&doc)),
+            vec![
+                (1, vec![(11, vec![110, 300]), (10, vec![100])]),
+                (2, vec![])
+            ]
+        );
     }
 }
 

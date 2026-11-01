@@ -167,13 +167,6 @@ pub trait SurfaceHost {
         false
     }
 
-    /// Whether this surface is the lock screen: while the session is
-    /// locked only it (and a lock client's surfaces) is drawn and given
-    /// the pointer and the keyboard; until then it is never drawn.
-    fn lock_screen(&self) -> bool {
-        false
-    }
-
     /// Whether a capture may not show what this surface draws now: it shows
     /// a secret, such as what the person typed into a password field. Every
     /// copy of the desktop's pixels — a screenshot, a recording, a share
@@ -197,9 +190,14 @@ pub trait SurfaceHost {
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
-    /// A pointer button was pressed somewhere other than this surface (a
-    /// window, the desk, another surface): an open popover closes.
-    fn pressed_elsewhere(&mut self) {}
+    /// A pointer button was pressed at this logical point, somewhere other
+    /// than this surface (a window, the desk, another surface): an open
+    /// popover closes.
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
+
+    /// The pointer button that press came from is up again, at this logical
+    /// point: the press is over, and so is everything it was still doing.
+    fn press_ended(&mut self, _x: f64, _y: f64) {}
 
     /// Scroll over the surface, in logical pixels.
     fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}

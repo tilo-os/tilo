@@ -281,6 +281,29 @@ pub(crate) fn flash_all(state: &State, now: Instant) {
     }
 }
 
+/// Put the visual alert away on every output whose run is over, and draw the
+/// frame that shows the scene without it: an alert whose last frame came late
+/// is put away by the next one, rather than left on screen.
+pub(crate) fn finish_flash(state: &mut State, now: Instant) {
+    let ended: Vec<Output> = state
+        .space
+        .outputs()
+        .filter(|output| {
+            visual(output)
+                .flash
+                .is_some_and(|(started, length)| now.saturating_duration_since(started) >= length)
+        })
+        .cloned()
+        .collect();
+    if ended.is_empty() {
+        return;
+    }
+    for output in &ended {
+        change(output, |visual| visual.flash = None);
+    }
+    state.mark_redraw_all();
+}
+
 /// Whether any output is showing the visual alert at `now`.
 pub(crate) fn flashing(state: &State, now: Instant) -> bool {
     state

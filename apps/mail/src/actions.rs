@@ -217,7 +217,7 @@ pub enum MailEffect {
     Content { message: String, index: usize },
     /// Export content
     ///
-    /// Keeps held mail as a file in the room's content and answers its
+    /// Keeps held mail as a file in the workspace's content and answers its
     /// content address: one message as Markdown, JSON or .eml, or a
     /// folder's or every message as Markdown or JSON. No file is written
     /// and nothing is sent.

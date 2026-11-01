@@ -18,8 +18,12 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
+        // A surface's actions are the desktop's, which placed its window:
+        // its records stay in its process, so it has no document route for
+        // them to wait on.
         if !self.collaboration.manager.is_connected()
-            || !self.published_action_history_ready_after_refresh()
+            || !(self.collaboration.manager.hosts_surface()
+                || self.published_action_history_ready_after_refresh())
         {
             return false;
         }

@@ -1,5 +1,5 @@
 use super::ActivityTree;
-use super::pane::{RoomActivityPane, RoomScope};
+use super::pane::{WorkspaceActivityPane, WorkspaceScope};
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 use ui::time::SystemTime;
@@ -46,13 +46,13 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// The most recent entries replay shows; a room with years of edits still
+/// The most recent entries replay shows; a workspace with years of edits still
 /// opens immediately.
 const REPLAY_FRAMES: usize = 120;
 
-impl RoomActivityPane {
+impl WorkspaceActivityPane {
     /// Build each replay checkpoint from the real causal document state.
-    /// Recent frames are bounded so a room with years of edits still opens
+    /// Recent frames are bounded so a workspace with years of edits still opens
     /// immediately; every retained frame remains an exact Automerge fork.
     ///
     /// Forking the document is O(history) and runs on the compositor thread
@@ -81,7 +81,7 @@ impl RoomActivityPane {
         for entry in ordered.into_iter().skip(skip) {
             // The entry's heads come from the history log, which read them
             // with the change: looking them up in the document lists every
-            // change of the room again.
+            // change of the workspace again.
             let checkpoint = checkpoints.entry(entry.id).or_insert_with(|| {
                 replay_checkpoint(
                     baseline.get_or_insert_with(|| tree.clone()),
@@ -94,7 +94,9 @@ impl RoomActivityPane {
             };
             let workspaces = snapshot
                 .iter()
-                .filter(|(id, _)| self.scope != RoomScope::ThisRoom || *id == active_workspace)
+                .filter(|(id, _)| {
+                    self.scope != WorkspaceScope::ThisWorkspace || *id == active_workspace
+                })
                 .map(|(_, workspace)| workspace.clone())
                 .collect();
             frames.push(WorkspaceReplayFrame {

@@ -171,7 +171,7 @@ impl SealedOutbox {
 ///
 /// An entry the disk does not take (it is full, say) waits, with every
 /// later one, and the room says this device cannot keep its writes now
-/// ([`crate::room_sync::cannot_keep`]); the writes stay held in
+/// ([`crate::workspace_sync::cannot_keep`]); the writes stay held in
 /// memory meanwhile. The log takes them, in order, at the next entry or the
 /// next heartbeat's [`Self::retry`].
 pub(super) struct RecordKeeper {
@@ -329,7 +329,7 @@ impl Waiting {
         }
         let mut changed = false;
         for ws in before.symmetric_difference(&self.stalled) {
-            changed |= crate::room_sync::cannot_keep(*ws, self.stalled.contains(ws));
+            changed |= crate::workspace_sync::cannot_keep(*ws, self.stalled.contains(ws));
         }
         changed
     }
@@ -482,13 +482,13 @@ mod tests {
         waiting.add(Keep::Hold(WS, room, write(1)));
         waiting.add(Keep::Hold(WS, room, write(2)));
         assert!(waiting.keep(&log), "the room's word changed");
-        assert!(crate::room_sync::cannot_keep_writes(WS));
+        assert!(crate::workspace_sync::cannot_keep_writes(WS));
         assert_eq!(waiting.entries.len(), 2, "both wait, in order");
         // The disk takes writes again: the next try keeps both.
         std::fs::remove_file(&logs).unwrap();
         waiting.add(Keep::Retry);
         assert!(waiting.keep(&log));
-        assert!(!crate::room_sync::cannot_keep_writes(WS));
+        assert!(!crate::workspace_sync::cannot_keep_writes(WS));
         assert!(waiting.entries.is_empty());
         assert_eq!(log.read(room).unwrap(), [write(1), write(2)]);
     }

@@ -11,7 +11,6 @@ use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use tilo_compositor::HostKey;
@@ -38,7 +37,7 @@ pub struct WidgetHost {
     below: bool,
     /// Set by the tree while keys should come to it rather than to the
     /// focused window (an open menu or field).
-    keyboard: Option<Rc<Cell<bool>>>,
+    keyboard: Option<Rc<dyn Fn() -> bool>>,
     /// The modifiers the tree last heard of.
     modifiers: ModifiersState,
     /// The tree covers the outputs' bounding box, following them.
@@ -145,7 +144,7 @@ impl WidgetHost {
     /// Take keys from the focused window while `wants` holds: the tree
     /// sets it while a menu or field of its own is open.
     #[must_use]
-    pub fn with_keyboard(mut self, wants: Rc<Cell<bool>>) -> Self {
+    pub fn with_keyboard(mut self, wants: Rc<dyn Fn() -> bool>) -> Self {
         self.keyboard = Some(wants);
         self
     }
@@ -410,7 +409,7 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.keyboard.as_ref().is_some_and(|wants| wants.get())
+        self.keyboard.as_ref().is_some_and(|wants| wants())
     }
 
     fn key(&mut self, key: &HostKey) {

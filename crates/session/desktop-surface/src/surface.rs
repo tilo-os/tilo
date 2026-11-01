@@ -56,6 +56,8 @@ mod notices;
 #[cfg(test)]
 mod open_motion_tests;
 mod paging;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod peer_view;
 mod personal_ask;
 mod search;
 mod seed;
@@ -111,6 +113,11 @@ pub trait TileSource {
     fn launch(&mut self, _workspace: &Workspace, _id: TabId, _app: &str) -> Option<Tab> {
         None
     }
+
+    /// The person reopened `tab` where they closed it, and its window is
+    /// gone: the tab holds the app that opens it again, and waits for that
+    /// app's window to take it. What the source needs to ask for the app.
+    fn reopened(&mut self, _workspace: &Workspace, _tab: &Tab) {}
 
     /// The applications desktop search offers to open, each an id
     /// [`Self::launch`] accepts, followed by those this desktop cannot run
@@ -228,8 +235,15 @@ struct Shared {
     /// The artwork each window brought of its own, by the compositor's id
     /// for it ([`DesktopHandle::set_window_artwork`]).
     artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
+    /// The apps whose windows keep what they show to themselves
+    /// ([`DesktopHandle::set_withheld_apps`]).
+    withheld: std::collections::BTreeSet<String>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
+    /// The windows other devices share with this one, each decoded into its
+    /// tile as it arrives.
+    #[cfg(not(target_arch = "wasm32"))]
+    peers: Rc<RefCell<peer_view::PeerSurfaces>>,
 }
 
 impl Shared {
@@ -273,6 +287,22 @@ impl DesktopHandle {
 
     pub fn read<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.shared.borrow().tree)
+    }
+
+    /// The apps whose windows keep what they show to themselves: a password
+    /// manager's, an app that asked for the same while it shows a secret.
+    /// The host names them — it is the one that knows what a window may not
+    /// be shown to — and from then on nothing makes a picture of their
+    /// windows; a window is named by the app it belongs to.
+    pub fn set_withheld_apps(&self, apps: Vec<String>) {
+        self.shared.borrow_mut().withheld = apps.into_iter().collect();
+    }
+
+    /// Whether windows of `app_id` keep what they show to themselves, as the
+    /// host last named them.
+    #[must_use]
+    pub fn withholds(&self, app_id: &str) -> bool {
+        self.shared.borrow().withheld.contains(app_id)
     }
 
     /// Where each window of the shown strip draws its active tab, in the
@@ -385,7 +415,7 @@ impl DesktopHandle {
     /// in the next update pass, and to every window built after. Whether
     /// that changed anything.
     /// Whether this desktop's person opens windows and tabs here: someone
-    /// the room lets only look (a spectator) is offered no new tab. Whether
+    /// the workspace lets only look (a spectator) is offered no new tab. Whether
     /// that changed anything.
     pub fn set_opens(&self, opens: bool) -> bool {
         let mut shared = self.shared.borrow_mut();
@@ -435,13 +465,13 @@ impl DesktopHandle {
         shared.changed();
     }
 
-    /// The room snapshot, excluding process-local stream proxies and
+    /// The workspace snapshot, excluding process-local stream proxies and
     /// device presentation. Durable profile saves still use the full tree.
     pub fn shared_tree(&self) -> DesktopTree {
         self.read(|tree| crate::shared_tree::projection(tree.clone()))
     }
 
-    /// Apply room topology without replacing this device's stream bindings
+    /// Apply workspace topology without replacing this device's stream bindings
     /// or focus. Only `local_tabs` survive omission from the shared snapshot;
     /// removed workspaces and strips still retire their contents.
     pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
@@ -474,7 +504,7 @@ impl DesktopHandle {
     /// ([`tilo_desktop_model::commands::apply_command`]), with ids from the
     /// tree's id space. A strip it creates is shown; when the strip shown is
     /// removed, the workspace's first one is. The caller has asked the
-    /// room's policy ([`tilo_desktop_model::commands::may_command`]) first.
+    /// workspace's policy ([`tilo_desktop_model::commands::may_command`]) first.
     /// Returns the strip a `CreateStrip` made.
     ///
     /// # Errors
@@ -824,9 +854,17 @@ impl DesktopSurface {
             presentation: Presentation::default(),
             presented: 0,
             artwork: std::collections::BTreeMap::new(),
+            withheld: std::collections::BTreeSet::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let tiles = Box::new(peer_view::PeerTiles::new(
+            tiles,
+            Rc::clone(&shared.borrow().peers),
+        )) as Box<dyn TileSource>;
         let mut surface = Self {
             shared: Rc::clone(&shared),
             tiles,
@@ -1202,7 +1240,7 @@ impl DesktopSurface {
     /// ([`splice::splice_row`]): its pan stays where the person left it, and
     /// windows removed, added or moved elsewhere slide as they do when the
     /// person closes, opens or moves one here. Rebuilding the row instead
-    /// threw its pan away, so each peer's edit, or the room's echo of a
+    /// threw its pan away, so each peer's edit, or the workspace's echo of a
     /// close, flew the strip home and cut every window to its new place.
     fn reconcile(&mut self) {
         if !std::mem::take(&mut self.shared.borrow_mut().replaced) {
@@ -1540,9 +1578,18 @@ impl DesktopSurface {
                     // it takes a window a peer added, and the strip comes to
                     // it as it does to a launched one.
                     Admitted::Reopen(workspace) => {
-                        if let Some(reopened) = shared.tree.reopen_closed(workspace) {
-                            self.reveal = Some((reopened.strip, reopened.group));
-                            shared.replaced = true;
+                        let Some(reopened) = shared.tree.reopen_closed(workspace) else {
+                            continue;
+                        };
+                        self.reveal = Some((reopened.strip, reopened.group));
+                        shared.replaced = true;
+                        // The window that closed is gone for good, so the tab
+                        // comes back as the app that opens it again: the app is
+                        // asked for, and the window that comes takes this tab.
+                        if let Some((workspace, tab)) =
+                            find_tab(&shared.tree, reopened.strip, reopened.tab)
+                        {
+                            self.tiles.reopened(workspace, tab);
                         }
                     }
                     Admitted::Strip(workspace, strip) => {
@@ -2363,12 +2410,16 @@ impl Widget for DesktopSurface {
             self.apply_commands(doc, root);
         }
         self.show_active_strip();
+        #[cfg(not(target_arch = "wasm32"))]
+        let peers_changed = self.follow_peer_streams();
         self.build_deferred();
         self.present();
         let held = self.apply_holders();
         let changed = self.shared.borrow().revision != before
             || search_was_open != self.search.is_open()
             || held;
+        #[cfg(not(target_arch = "wasm32"))]
+        let changed = changed || peers_changed;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
         self.offer_window_shares();
         let bars_changed = self.sync_window_bars();

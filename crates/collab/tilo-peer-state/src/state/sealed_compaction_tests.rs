@@ -250,6 +250,31 @@ fn write(
     ))
 }
 
+/// `key`'s sealed checkpoint of `peer`'s record: the whole record as the key
+/// holder saved it, the first thing a host keeps at the head of a sealed
+/// channel and replays to a device joining the room.
+fn checkpoint(
+    peer: &StatePeer,
+    keys: &ChannelContentKeys,
+    key: &SigningKey,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let snapshot = DocumentMutation::Snapshot(peer.document(APP, RECORD).unwrap())
+        .encode()
+        .unwrap();
+    let (metadata, ciphertext) = keys
+        .seal_content(artifact(), ContentRetention::Checkpoint, &snapshot)
+        .unwrap();
+    message(signed(
+        key,
+        next_seq(peer, key),
+        OpKind::Change,
+        ciphertext,
+        Some(metadata),
+        now,
+    ))
+}
+
 fn admit(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: SystemTime) {
     let report = peer.receive_from_report(origin(key), message, now).unwrap();
     assert!(
@@ -919,6 +944,53 @@ fn a_compaction_founds_a_route_a_replica_holds_none_of() {
     );
     admit(&mut fresh, &f.owner, compaction.clone(), now);
     assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
+}
+
+#[test]
+fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+    admit(&mut f.host, &f.other, first, now);
+    let later = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+    admit(&mut f.host, &f.other, later.clone(), now);
+    let saved = checkpoint(&f.host, &keys, &f.owner, now);
+
+    let mut fresh = StatePeer::new(
+        ROOM,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.room_message(), now)
+        .unwrap();
+    // A change whose checkpoint this replica never saw waits for one.
+    let waited = fresh
+        .receive_from_report(origin(&f.other), later.clone(), now)
+        .unwrap();
+    assert!(
+        matches!(
+            waited.primary(),
+            InputDisposition::RetryLater(MissingPrerequisite::RecordCheckpoint)
+        ),
+        "waited for the record's checkpoint: {:?}",
+        waited.primary()
+    );
+    assert!(
+        fresh.document(APP, RECORD).is_none(),
+        "the replica holds no history of the record"
+    );
+    // The checkpoint is the whole record as its writer saved it, so it founds
+    // the route for a replica holding none of it, and the change that waited
+    // is decided again behind it.
+    admit(&mut fresh, &f.owner, saved.clone(), now);
+    assert_eq!(held(&fresh), vec![envelope_of(&saved), envelope_of(&later)]);
 }
 
 #[test]

@@ -142,9 +142,9 @@ impl SurfaceHost for People {
         self.host.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
         self.dismiss();
-        self.host.borrow_mut().pressed_elsewhere();
+        self.host.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -200,11 +200,16 @@ impl Published for People {
             pending.extend(node.children);
         }
         // Where everyone else is working: their pointer over a window of
-        // this desk says so, beside their name.
+        // this desk says so, beside their name. A pointer the roster cannot
+        // put a name to is drawn all the same, but says nothing here: "is in
+        // Notes" names nobody.
         for (who, title) in &shown.pointers {
-            labels.push(format!(
-                "{who} — {}",
-                tilo_desktop::collaborators::in_app(title)
+            if who.trim().is_empty() {
+                continue;
+            }
+            labels.push(crate::i18n::t_args(
+                "people-pointer-where",
+                &[("who", who.clone().into()), ("where", title.clone().into())],
             ));
         }
         labels.retain(|label| !label.trim().is_empty());
@@ -235,7 +240,10 @@ pub(crate) fn mount(
     };
     let mut host = WidgetHost::new(Box::new(panel), placement, false);
     host.set_theme((options.presentation)().theme);
-    let host = host.covering_outputs().with_keyboard(Rc::clone(&open));
+    let wants = Rc::clone(&open);
+    let host = host
+        .covering_outputs()
+        .with_keyboard(Rc::new(move || wants.get()));
     let people = Rc::new(RefCell::new(People {
         host: RefCell::new(host),
         shown,
@@ -279,8 +287,8 @@ impl SurfaceHost for Host {
         self.0.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
-        self.0.borrow_mut().pressed_elsewhere();
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        self.0.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -610,10 +618,10 @@ fn peer_cursors(
     let mut cursors = Vec::new();
     let mut places = Vec::new();
     for (tab, publisher, x, y) in over {
-        let (label, colour) = who.get(publisher.as_str()).copied().unwrap_or_else(|| {
-            let (r, g, b) = ui::presence::user_color(publisher);
-            ("", Color::from_rgb8(r, g, b))
-        });
+        let (label, colour) = who
+            .get(publisher.as_str())
+            .copied()
+            .unwrap_or_else(|| ("", ui::presence::identity_colour(publisher)));
         if let Some(title) = titles.get(tab) {
             places.push((label.to_owned(), title.clone()));
         }
