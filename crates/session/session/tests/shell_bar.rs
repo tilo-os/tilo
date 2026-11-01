@@ -23,7 +23,7 @@ use std::io::BufRead as _;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Session};
 use tilo_surface_host::DeskReading;
@@ -44,8 +44,16 @@ fn options() -> Options {
 }
 
 fn session() -> Session {
-    Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-        .expect("session")
+    let mut session =
+        Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
+            .expect("session");
+    // A tap here is a press and a release a frame apart, and a frame on a loaded machine can
+    // outlast the repeat delay: held keys would repeat ("stuuudio"). No test here holds one.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    session
 }
 
 /// The desk as the session publishes it on its door: what an agent reads.
