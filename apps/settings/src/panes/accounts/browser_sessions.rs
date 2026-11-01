@@ -47,21 +47,21 @@ impl Removal {
                 Arrival::Pending { .. } => return None,
                 Arrival::Failed(error) => return self.finish(Err(format!("{error:?}"))),
                 Arrival::Ready(page) => {
-                    let mut rooms = page
+                    let mut workspaces = page
                         .providers
                         .iter()
                         .filter(|provider| provider.app_id == "so.tilo.settings")
                         .map(|provider| provider.workspace.as_str())
                         .collect::<Vec<_>>();
-                    rooms.sort_unstable();
-                    rooms.dedup();
-                    let [room] = rooms.as_slice() else {
+                    workspaces.sort_unstable();
+                    workspaces.dedup();
+                    let [workspace] = workspaces.as_slice() else {
                         return self.finish(Err(
                             "The account's workspace is unavailable or ambiguous".into(),
                         ));
                     };
                     let target = application_action_target(
-                        room,
+                        workspace,
                         "so.tilo.browser",
                         format!("browser.service.{}", self.id),
                         ACTION,

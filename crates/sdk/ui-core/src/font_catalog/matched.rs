@@ -154,9 +154,9 @@ pub(crate) fn plan<'t, 'a>(
 }
 
 /// [`plan`] for runs that may say their own kind (a mention or a link in
-/// rich text). In `Prose`, the links, email addresses, mentions and room
-/// aliases [`crate::text_detect`] finds across the runs are set as what
-/// they are; a run with its own kind keeps it.
+/// rich text). In `Prose`, the links, email addresses, mentions and
+/// workspace aliases [`crate::text_detect`] finds across the runs are set
+/// as what they are; a run with its own kind keeps it.
 pub(crate) fn plan_runs<'t, 'a>(
     db: &fontdb::Database,
     runs: impl IntoIterator<Item = (&'t str, Attrs<'a>, Option<TextKind>)>,
