@@ -82,6 +82,23 @@ python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # match.
 staged_names=$(git diff --cached --name-only)
 
+# The code map is generated from the crates' manifests and crate docs. A change
+# to one, or a merge whose driver took one side of the map
+# (.githooks/merge-generated), leaves it stale; regenerating it is not a
+# judgement call, so do it here, into the whole index even in a merge. A map
+# with unstaged edits is left alone: staging it would stage those too.
+if grep -qE '(^|/)(Cargo\.toml|lib\.rs|main\.rs)$|^docs/codemap\.md$' <<< "$lock_staged_names" \
+   && ! python3 "$root/tools/docs/codemap.py" --check 2>/dev/null; then
+  if GIT_INDEX_FILE="$full_index" git diff --quiet -- docs/codemap.md \
+     && python3 "$root/tools/docs/codemap.py" >/dev/null \
+     && GIT_INDEX_FILE="$full_index" git add -- docs/codemap.md; then
+    note "docs/codemap.md: regenerated and staged"
+  else
+    note "docs/codemap.md is stale: run python3 tools/docs/codemap.py and stage it"
+    fail=1
+  fi
+fi
+
 # A vendored crate under vendor/ is upstream's code, carried as it ships: the
 # added-code policy (ignore reasons, allow placement, dbg!) and rustfmt skip it.
 own_rs=('*.rs' ':!vendor/')
