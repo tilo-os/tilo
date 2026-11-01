@@ -790,6 +790,10 @@ impl SessionLink {
 
 /// The ask an outside effect of `capability` with `payload` is, or why it is none.
 fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
+    // `session.run` and `session.notify` carry a tuple; every other effect a text.
+    if matches!(capability, CAP_RUN | CAP_NOTIFY) {
+        return run_ask(payload, capability);
+    }
     let Json::String(word) = payload else {
         return Err(format!("{capability} takes a text, not {payload}"));
     };
@@ -817,7 +821,6 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
                 arguments: BTreeMap::new(),
             })
         }
-        CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
         CAP_ARRANGE => {
             // `<action id> {json arguments}`, or just the id for an action that takes none.
             let (action, rest) = word
@@ -2654,10 +2657,16 @@ impl ShellPart {
         });
     }
 
-    /// Draw a frame of the part's widget tree when it owes one, and say
-    /// whether it drew or changed what it shows.
+    /// Draw a frame of the part's widget tree when it owes one, and say whether it drew or
+    /// changed what it shows. What it owes a frame for is what the views said (a turn that was
+    /// shown lays the tree out), input, a motion or a deadline. A field on screen reports
+    /// itself dirty every frame, so that alone draws nothing: with the centre or the launcher
+    /// up and nothing changing, the part draws no frame.
     #[allow(dead_code, reason = "a test draws a frame between presses")]
     fn draw(&mut self) -> bool {
+        if !self.widgets.wants_frame() {
+            return false;
+        }
         let before = crate::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
         let drew = self.widgets.prepare_frame();

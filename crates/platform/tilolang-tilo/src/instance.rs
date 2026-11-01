@@ -1446,8 +1446,13 @@ impl Instance {
         };
         let first = host.next_ticket();
         match host.settle_outbox() {
-            Ok(0) => false,
-            Ok(_) => {
+            Ok(settled) => {
+                // What was marked as being handed over is handed over by the next settle,
+                // which nothing else would ask for.
+                self.settle_due |= settled.owes_settle;
+                if settled.written == 0 {
+                    return false;
+                }
                 queue_commits(&host, &self.outgoing, first, None);
                 true
             }

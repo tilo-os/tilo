@@ -118,7 +118,9 @@ impl SessionConfig {
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
             keyboard_active: sources.active,
-            idle: idle_config(&power),
+            // Settings not loaded from a person (a test, a screenshot) have no one to walk
+            // away: nothing blanks, locks or sleeps on a wall clock. Locking on request works.
+            idle: IdleConfig::never(),
             power,
             a11y: crate::a11y_settings::a11y(&assists),
             on_screen_keyboard: assists.on_screen_keyboard,
