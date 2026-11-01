@@ -31,9 +31,9 @@
 //            WebDriver: macOS, a logged-in user, `safaridriver --enable`
 //            once, and a person to accept the dev host's certificate)
 //
-// It is a workspace the host governs, as a shared workspace is: the page
-// creates it and enters it as its owner's device, and the session enters it
-// as another, so its roles decide who drives the window.
+// The workspace is one the host governs: the page creates it and enters it as
+// its owner's device, and the session enters it as another, so its roles
+// decide who drives the window.
 //
 // The run, in order:
 //   reopen    with --reopen, a first window streams 4 s and closes before
@@ -321,20 +321,20 @@ try {
     peer = await joinWorkspace({origin, invitation: q.get('invite'), identity, runtime: wasm, profile,
       displayName: label, label, pollMs: 250, onProgress: progress => stage('joining: ' + progress.phase)});
   } else {
-    // A device of the host's person, in a workspace the host governs (as a
-    // shared one in Tilo Cloud is): it creates it when none is named,
-    // and enters it as its owner's device before working in it.
+    // A device of the host's person, in a workspace the host governs: it
+    // creates the workspace when none is named, and enters it as its owner's
+    // device before working in it.
     const person = {origin, userPublicKey: q.get('user'), label, displayName: label, runtime: wasm, profile};
-    let room = q.get('room');
+    let workspace = q.get('workspace');
     stage('certifying');
     const door = await connectPeer({...person, live: false});
     try {
       stage('entering the workspace');
-      room ||= (await door.workspaces.create('Stream qualification')).room;
-      await door.workspaces.enter(room);
+      workspace ||= (await door.workspaces.create('Stream qualification')).room;
+      await door.workspaces.enter(workspace);
     } finally { await door.dispose(); }
     stage('connecting to the workspace');
-    peer = await connectPeer({...person, room});
+    peer = await connectPeer({...person, workspace});
   }
   globalThis.peer = peer;
   stage('mounting the desktop');
@@ -819,7 +819,7 @@ async function until(page, expression, ms, what) {
 // members.
 const LIVE = `JSON.stringify({phase: globalThis.peer?.getSnapshot?.()?.phase ?? null,
   live: globalThis.peer?.live?.stats?.() ?? null, members: globalThis.peer?.live?.members?.() ?? null,
-  room: JSON.stringify({...(globalThis.peer?.getSnapshot?.() ?? {}), records: undefined}).slice(0, 1500)})`;
+  workspace: JSON.stringify({...(globalThis.peer?.getSnapshot?.() ?? {}), records: undefined}).slice(0, 1500)})`;
 
 const WINDOW = `(() => { const c = document.querySelector('canvas.tilo-legacy-window');
   if (!c || c.style.display !== 'block') return null; const r = c.getBoundingClientRect();
@@ -879,7 +879,7 @@ async function main() {
     // the legacy-window layer on it, so startup is the stream's own. The page
     // creates the workspace, which the host governs.
     const page = await open('first', {});
-    const room = await page.evaluate('globalThis.peer.room');
+    const workspace = await page.evaluate('globalThis.peer.workspace');
     const decodable = await page.evaluate(`(async () => (await VideoDecoder.isConfigSupported({codec: ${JSON.stringify(VIDEO_DECODER_CONFIGS[options.codec])}, optimizeForLatency: true})).supported)()`);
     if (!decodable) throw new Invalid(`${version.product} decodes no ${options.codec} with WebCodecs`);
     const adapter = await page.evaluate(`(async () => { const a = await navigator.gpu?.requestAdapter();
@@ -895,14 +895,14 @@ async function main() {
     const startSession = async (name, {surface, seconds, width = options.window.width, height = options.window.height, fps = options.fps, extra = []}) => {
       const log = join(scratch, `${name}.jsonl`);
       const process_ = child(name, options.source, ['--dev-state', join(scratch, 'host'), '--host', host.irohAddr,
-        '--room', room, '--out', log, '--width', String(width), '--height', String(height),
+        '--room', workspace, '--out', log, '--width', String(width), '--height', String(height),
         '--seconds', String(seconds), '--surface', String(surface), '--codec', options.codec,
         ...(fps ? ['--fps', String(fps)] : []), ...extra],
       {RUST_LOG: process.env.STREAM_SOURCE_LOG ?? 'warn'});
       children.push(process_);
       const ready = JSON.parse(await process_.line(event('ready'), 120_000, 'its subscription'));
-      // Every acceptance case is in a workspace the host governs, as a shared one
-      // a person shares is: its roles decide who drives a window.
+      // Every acceptance case is in a workspace the host governs: its roles
+      // decide who drives a window.
       if (!ready.enteredRoom) throw new Invalid(`the ${name} could not enter the workspace as its owner's device: the host does not govern it`);
       const exited = () => within(new Promise(done => { if (process_.exited()) done(); else process_.process.on('exit', done); }),
         15_000, `the ${name}'s exit`);
@@ -1002,7 +1002,7 @@ async function main() {
     // host, workspace and desktop, after the timed run so they cost it nothing.
     console.error('timed run done; acceptance cases');
     const acceptance = await runAcceptance({
-      browser, main: page, w1: {source, session, stop, log: framesLog}, pagesOrigin: pages.origin, viewport: options.viewport, room, live: LIVE,
+      browser, main: page, w1: {source, session, stop, log: framesLog}, pagesOrigin: pages.origin, viewport: options.viewport, workspace, live: LIVE,
       openPage: (name, params, {block = false, context = false} = {}) => (async () => open(name, params,
         {viewport: {width: 640, height: 400, deviceScaleFactor: 1}, window: true, block, context: context ? await browser.context() : undefined,
           mountMs: 600_000}))(),

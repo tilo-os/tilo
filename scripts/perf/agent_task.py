@@ -95,7 +95,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
     MCP_PROTOCOL, BenchError, Connection, answer_of, receipt_state, request, spawned)
-from scratch_notes import NOTES_APP, ScratchRoomError, open_scratch_notes  # noqa: E402
+from scratch_notes import NOTES_APP, ScratchWorkspaceError, open_scratch_notes  # noqa: E402
 
 # Generous: each answer leaves as soon as its invocation settles.
 WAIT_MS = 5000
@@ -750,7 +750,7 @@ def open_own_notebook(conn: Connection, name: str, timeout: float) -> None:
 
     try:
         open_scratch_notes(state, invoke, rows, name, timeout)
-    except ScratchRoomError as error:
+    except ScratchWorkspaceError as error:
         raise BenchError(str(error)) from error
 
 

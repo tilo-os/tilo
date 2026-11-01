@@ -252,11 +252,11 @@ def public_action_observation(row):
     return {key: row.get(key) for key in fields}
 
 
-def offered_chat_view(socket, room, operation):
+def offered_chat_view(socket, workspace_id, operation):
     """Retain exactly one published primary Chat operation in this workspace."""
     matches = [row for row in actions(socket)
                if row.get("application") == "so.tilo.chat"
-               and row.get("room") == room and row.get("record") == ""
+               and row.get("room") == workspace_id and row.get("record") == ""
                and row.get("operation") == operation]
     if len(matches) > 1:
         raise RuntimeError("ambiguous canonical Chat operation")
@@ -349,17 +349,17 @@ def visible_category():
             "private_content_recorded": False} if matches else None
 
 
-def inspect_owner(binaries, env, room, record="", *, enrollment=False, record_status=False):
+def inspect_owner(binaries, env, workspace_id, record="", *, enrollment=False, record_status=False):
     mode = ("--check-native-chat-record" if record_status else
             "--check-native-enrollment" if enrollment else "--check-native-document")
     result = subprocess.run([str(binaries / "examples/packaged_native_bootstrap"),
-                             mode, env["TILO_STATE_PATH"], room, record],
+                             mode, env["TILO_STATE_PATH"], workspace_id, record],
                             env=env, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=5)
     if result.returncode:
         return None
     observed = json.loads(result.stdout)
-    if observed.get("room") != room or type(observed.get("generation")) is not int:
+    if observed.get("room") != workspace_id or type(observed.get("generation")) is not int:
         raise RuntimeError("exact normal owner observation is malformed")
     return observed
 
@@ -571,7 +571,7 @@ def proof(binaries, output, size):
                         else "owner_inspection_refused")
             (output / "failed-membership-inspector.json").write_text(json.dumps({
                 "failure_category": category, "owner_observed": False,
-                "room": enrollment["room"], "agent": "bootstrap-proof",
+                "workspace": enrollment["room"], "agent": "bootstrap-proof",
             }, indent=2))
             raise RuntimeError(f"native membership inspection failed: {category}")
         member_observation = json.loads(member_read.stdout)
@@ -587,7 +587,7 @@ def proof(binaries, output, size):
         time.sleep(0.5)
         require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-category-{size}.png")}))
         (output / "proof.json").write_text(json.dumps({
-            "launch_path": "normal-published-Applications-Open", "room": enrollment["room"],
+            "launch_path": "normal-published-Applications-Open", "workspace": enrollment["room"],
             "chat_frame_seq": frame["frame_seq"], "category_durable": True,
             "category_visible": True,
             "membership_durable": True,

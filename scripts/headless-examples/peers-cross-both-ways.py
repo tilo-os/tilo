@@ -3,8 +3,8 @@
 
 The one-way rig checks that a guest can see the host. This covers only one
 direction: a host and a guest are not symmetric. The guest joined the
-host's workspace, so the host's pointer goes out under one the guest is a
-member of. The reverse only holds if joining also moved the guest *into*
+host's workspace, so the host's pointer goes out under the workspace the
+guest is a member of. The reverse only holds if joining also moved the guest *into*
 that workspace as the one it is looking at — and if it did not, the
 guest's pointer is published under a workspace the host has never heard of,
 dropped on arrival, and the host watches an empty desktop while the
@@ -156,10 +156,10 @@ class Session:
     def tree(self) -> dict:
         return self.state()["workspace_tree"]
 
-    def rooms(self) -> list:
+    def workspaces(self) -> list:
         return [w.get("room") for w in (self.tree().get("workspaces") or [])]
 
-    def active_room(self):
+    def active_workspace(self):
         tree = self.tree()
         for w in tree.get("workspaces") or []:
             if w.get("id") == tree.get("active"):
@@ -355,22 +355,22 @@ def main() -> int:
         if not check("bob joined the workspace", join(bob, token)):
             return 1
 
-        host_room = ada.active_room()
-        guest_room = bob.active_room()
-        print(f"        ada is looking at workspace {host_room}")
-        print(f"        bob   is looking at workspace {guest_room}")
-        print(f"        ada holds workspaces {ada.rooms()}")
-        print(f"        bob   holds workspaces {bob.rooms()}")
+        host_workspace = ada.active_workspace()
+        guest_workspace = bob.active_workspace()
+        print(f"        ada is looking at workspace {host_workspace}")
+        print(f"        bob   is looking at workspace {guest_workspace}")
+        print(f"        ada holds workspaces {ada.workspaces()}")
+        print(f"        bob   holds workspaces {bob.workspaces()}")
         # The asymmetry that makes the reverse direction a separate
-        # question. A session publishes its pointer under the workspace it is
-        # *looking at*, and folds in only workspaces it is a member of, so if
-        # the guest is still looking at a private workspace of its own its
+        # question. A session publishes its pointer under the workspace it
+        # is *looking at*, and folds in only workspaces it is a member of, so
+        # if the guest is still looking at a private workspace of its own its
         # cursor is addressed to a workspace the host has never heard of.
         # Asserted on a workspace that was actually read, or "both are
         # looking at None" would pass while nothing was being compared.
         check("both are looking at one real workspace",
-              bool(host_room) and host_room == guest_room,
-              f"{host_room} vs {guest_room}")
+              bool(host_workspace) and host_workspace == guest_workspace,
+              f"{host_workspace} vs {guest_workspace}")
 
         print("\n[3] both move, on an empty desktop")
         WHERE_Q = (880.0, 520.0)

@@ -68,9 +68,9 @@ def install(binaries, profile, env):
             "signed_runtime_manifest": shared.digest_file(profile / "runtimes" / version / "bundle.toml")}
 
 
-def door(socket, room, record, operation):
+def door(socket, workspace_id, record, operation):
     rows = [row for row in shared.actions(socket) if row.get("application") == APP
-            and row.get("room") == room and row.get("record") == record
+            and row.get("room") == workspace_id and row.get("record") == record
             and row.get("semantic_identity") == {"kind": "files.folder", "key": "files.folder"}
             and row.get("operation") == operation]
     if len(rows) > 1:
@@ -78,11 +78,11 @@ def door(socket, room, record, operation):
     return rows[0] if rows else None
 
 
-def entry_keys(socket, room, record):
+def entry_keys(socket, workspace_id, record):
     # Publication can be gated during capture. None is not an empty folder;
     # callers must observe this exact folder before testing its entry set.
     rows = [row for row in shared.actions(socket) if row.get("application") == APP
-            and row.get("room") == room and row.get("record") == record]
+            and row.get("room") == workspace_id and row.get("record") == record]
     if not any(row.get("semantic_identity") == {"kind": "files.folder", "key": "files.folder"}
                and row.get("operation") == "go-to" for row in rows):
         return None
@@ -91,8 +91,8 @@ def entry_keys(socket, room, record):
             and row["semantic_identity"].get("kind") == "files.entry"}
 
 
-def execute(socket, room, record, operation, shell, output, args=None):
-    action = shared.wait_for(f"published Files {operation}", lambda: door(socket, room, record, operation), shell)
+def execute(socket, workspace_id, record, operation, shell, output, args=None):
+    action = shared.wait_for(f"published Files {operation}", lambda: door(socket, workspace_id, record, operation), shell)
     acknowledgement = call(socket, {"op": "actions_invoke", "provider": action["provider"],
                                     "id": action["id"], "args": args or {}})
     (output / f"acknowledged-{operation}.json").write_text(json.dumps(acknowledgement, indent=2))
@@ -104,9 +104,9 @@ def execute(socket, room, record, operation, shell, output, args=None):
     return receipt
 
 
-def observe_grants(socket, room, output, phase):
+def observe_grants(socket, workspace_id, output, phase):
     tree = call(socket, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-    rows = [row for row in tree.get("workspaces", []) if row.get("room") == room]
+    rows = [row for row in tree.get("workspaces", []) if row.get("room") == workspace_id]
     if len(rows) != 1 or not isinstance(rows[0].get("capabilities"), list):
         raise RuntimeError("exact Files workspace grants are unobservable")
     (output / f"grants-{phase}.json").write_text(json.dumps(rows[0]["capabilities"], indent=2))
@@ -204,13 +204,13 @@ def proof(binaries, output, trash_restore=False, theme=None):
         if not call(socket, {"op": "provision_test_identity"}).get("answer", {}).get("throwaway"):
             raise RuntimeError("isolated identity provisioning failed")
         enrollment = shared.enroll_native(socket, invitation, shell, binaries, env)
-        room = enrollment["room"]
+        workspace_id = enrollment["room"]
         (output / "native-enrollment.json").write_text(json.dumps(enrollment, indent=2))
 
         def authorship_surface():
             rows = [row for row in shared.actions(socket)
                     if row.get("application") == "so.tilo.desktop"
-                    and row.get("room") == room
+                    and row.get("room") == workspace_id
                     and row.get("operation") == "grant-app-authorship"]
             if len(rows) > 1:
                 raise RuntimeError("ambiguous native app authorship surface")
@@ -223,18 +223,18 @@ def proof(binaries, output, trash_restore=False, theme=None):
             shared.public_action_observation(ready), indent=2))
         application = shared.wait_for("signed Files application", lambda: next((row for row in shared.actions(socket, "Files")
             if row.get("provider") == "applications" and row.get("id") == APP), None), shell)
-        observe_grants(socket, room, output, "before-open")
+        observe_grants(socket, workspace_id, output, "before-open")
         acknowledgement = shared.invoke(socket, application)
-        observe_grants(socket, room, output, "open-acknowledged")
+        observe_grants(socket, workspace_id, output, "open-acknowledged")
         shared.wait_terminal(socket, acknowledgement, shell,
                              public_failure_path=output / "failed-open.json")
         frame = shared.wait_for("actual signed Files presentation", lambda: shared.presented_primary_frame(
             call(socket, {"op": "foreign_frames"}), APP), shell)
         (output / "presented-files.json").write_text(json.dumps(frame, indent=2))
-        observe_grants(socket, room, output, "presented")
+        observe_grants(socket, workspace_id, output, "presented")
         def files_record():
             rows = [row for row in shared.actions(socket) if row.get("application") == APP
-                    and row.get("room") == room and row.get("operation") == "go-to"
+                    and row.get("room") == workspace_id and row.get("operation") == "go-to"
                     and row.get("semantic_identity") == {"kind": "files.folder", "key": "files.folder"}]
             if len(rows) > 1:
                 raise RuntimeError("ambiguous presented Files record")
@@ -246,16 +246,16 @@ def proof(binaries, output, trash_restore=False, theme=None):
         record = folder["record"]
         (output / "files-record.json").write_text(json.dumps(
             shared.public_action_observation(folder), indent=2))
-        execute(socket, room, record, "go-to", shell, output, {"path": str(source)})
-        execute(socket, room, record, "select-all", shell, output)
-        execute(socket, room, record, "copy-selection", shell, output)
-        execute(socket, room, record, "go-to", shell, output, {"path": str(receiving)})
+        execute(socket, workspace_id, record, "go-to", shell, output, {"path": str(source)})
+        execute(socket, workspace_id, record, "select-all", shell, output)
+        execute(socket, workspace_id, record, "copy-selection", shell, output)
+        execute(socket, workspace_id, record, "go-to", shell, output, {"path": str(receiving)})
         capture(socket, output, "before-paste")
-        execute(socket, room, record, "paste", shell, output)
+        execute(socket, workspace_id, record, "paste", shell, output)
         destination = receiving / "report.txt"
         shared.wait_for("actual pasted bytes", lambda: destination.is_file() and destination.read_bytes() == original, shell)
         def pasted_entry():
-            keys = entry_keys(socket, room, record)
+            keys = entry_keys(socket, workspace_id, record)
             return next(iter(keys)) if keys is not None and len(keys) == 1 else None
         entry = shared.wait_for("actual pasted entry resource", pasted_entry, shell)
         (output / "pasted-entry-resource.json").write_text(json.dumps({"key": entry}, indent=2))
@@ -270,36 +270,36 @@ def proof(binaries, output, trash_restore=False, theme=None):
             raise RuntimeError("edited native Copy must be recoverable in standard Trash")
         # Observe the committed publication prefix before asserting its surface.
         # The physical host operation precedes document reconciliation.
-        undo_history = execute(socket, room, record, "history", shell, output)
+        undo_history = execute(socket, workspace_id, record, "history", shell, output)
         undo_output = undo_history.get("update", {}).get("output", {}).get("value", {})
         if not undo_output.get("versions") or not undo_output.get("now"):
             raise RuntimeError("post-Undo history did not observe the actual document")
         (output / "completed-post-undo-history.json").write_text(json.dumps(undo_history, indent=2))
         shared.wait_for("Undo withdraws the receiving entry resource", lambda:
-                        (keys := entry_keys(socket, room, record)) is not None and entry not in keys, shell)
+                        (keys := entry_keys(socket, workspace_id, record)) is not None and entry not in keys, shell)
         capture(socket, output, "after-undo")
         key(socket, "z", shift=True)
         shared.wait_for("native Redo restores later edited bytes", lambda: destination.is_file() and destination.read_bytes() == edited, shell)
         # A successful read-only history receipt follows the same document
         # publication prefix. Physical compensation alone cannot pass this.
-        history = execute(socket, room, record, "history", shell, output)
+        history = execute(socket, workspace_id, record, "history", shell, output)
         history_output = history.get("update", {}).get("output", {}).get("value", {})
         if not history_output.get("versions") or not history_output.get("now"):
             raise RuntimeError("post-Redo history did not observe the actual document")
         shared.wait_for("Redo republishes the exact receiving entry resource", lambda:
-                        (keys := entry_keys(socket, room, record)) is not None and entry in keys, shell)
+                        (keys := entry_keys(socket, workspace_id, record)) is not None and entry in keys, shell)
         capture(socket, output, "after-redo")
         if trash_restore:
             key(socket, "z")
             shared.wait_for("second Undo retains edited bytes for Trash Restore", lambda:
                             not destination.exists(), shell)
-            execute(socket, room, record, "history", shell, output)
-            execute(socket, room, record, "open-trash", shell, output)
+            execute(socket, workspace_id, record, "history", shell, output)
+            execute(socket, workspace_id, record, "open-trash", shell, output)
             capture(socket, output, "trash-before-restore")
 
             def restore_action():
                 rows = [row for row in shared.actions(socket) if row.get("application") == APP
-                        and row.get("room") == room and row.get("record") == record
+                        and row.get("room") == workspace_id and row.get("record") == record
                         and row.get("operation") == "restore"
                         and isinstance(row.get("semantic_identity"), dict)
                         and row["semantic_identity"].get("kind") == "files.entry"]
@@ -314,7 +314,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
             (output / "completed-trash-restore.json").write_text(json.dumps(restored, indent=2))
             shared.wait_for("Trash Restore returns the later edited bytes", lambda:
                             destination.is_file() and destination.read_bytes() == edited, shell)
-            execute(socket, room, record, "go-to", shell, output, {"path": str(receiving)})
+            execute(socket, workspace_id, record, "go-to", shell, output, {"path": str(receiving)})
             capture(socket, output, "after-trash-restore")
         if (source / "report.txt").read_bytes() != original or protected.read_bytes() != b"ungranted host control":
             raise RuntimeError("source or ungranted control changed")

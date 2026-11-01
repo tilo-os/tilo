@@ -194,7 +194,7 @@ def capture(device, options):
         private_write(options.out / "states.json", json.dumps(states, indent=2))
         private_write(options.out / "capture.json", json.dumps({
             "device": options.device, "slot": options.slot,
-            "scratch_workspace": notes.workspace, "scratch_room": notes.room,
+            "scratch_workspace": notes.workspace, "scratch_workspace_id": notes.workspace_id,
             "scratch_record": notes.record, "scratch_page": page, "samples_requested": options.samples,
             "samples_adopted": len(states), "log_path": log_path,
         }, indent=2))

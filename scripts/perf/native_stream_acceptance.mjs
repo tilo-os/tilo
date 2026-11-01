@@ -316,7 +316,7 @@ async function admitWhile(owner, done) {
 /**
  * The cases, in order. `ctx`: `main` the timed run's page (its window W1
  * focused by the run's clicks), `w1` its session (`{source, session, stop, log}`),
- * `browser`, `pagesOrigin`, `viewport`, `room`, `live` (the page's live state
+ * `browser`, `pagesOrigin`, `viewport`, `workspace`, `live` (the page's live state
  * expression), `openPage(name, params, {block, context})`, `startSession(name,
  * options)` and `readSent(log)`. Resolves to `{cases, children}`: each case's
  * findings and `failures`, and the extra sessions to stop.
@@ -461,7 +461,7 @@ export async function runAcceptance(ctx) {
     const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
     // One after the other: a desktop gives its GPU device a minute to present
     // its first frame, and two mounting at once on SwiftShader miss it.
-    const other = await ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
+    const other = await ctx.openPage('fallback', {workspace: ctx.workspace, label: 'Owner on HTTPS'}, {block: true});
     const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
     const admitted = admitWhile(main, viewerPage);
     const watcher = await viewerPage;
