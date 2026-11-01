@@ -146,6 +146,8 @@ view surface(d: Desk) {
         launcher(d, fill)
     } else if d.here == "centre" {
         notices(d, fill)
+    } else if d.here == "quick-settings" {
+        quick_settings(d, fill)
     } else if d.here == "workspaces" {
         workspaces(d, fill)
     } else if d.here == "composer" {
