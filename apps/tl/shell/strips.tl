@@ -168,15 +168,15 @@ view place_content(a: Arrangement, p: ArrangementPlace) {
 /// conversation over it (shell.md §8.1), drawn here as any other view of the shell is.
 view place_view(p: ArrangementPlace) {
     if let r = placed_run(p.record) {
-        conversation(r)
+        conversation(r, fill)
     } else if let r = placed_resource(p.record) {
         if p.shown_as != "" or meta(r).opens {
-            show(r, view: p.shown_as)
+            show(r, view: p.shown_as, fill)
         } else {
-            ui.WindowWell(place: p.key, min: 12rem)
+            ui.WindowWell(place: p.key, min: 12rem, fill)
         }
     } else {
-        ui.WindowWell(place: p.key, min: 12rem)
+        ui.WindowWell(place: p.key, min: 12rem, fill)
     }
 }
 
