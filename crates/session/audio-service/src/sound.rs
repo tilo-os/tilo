@@ -59,6 +59,9 @@ pub struct Sound {
     pub inputs: Vec<Device>,
     /// Every application's stream, playing or recording.
     pub streams: Vec<Stream>,
+    /// The applications using the camera or the microphone right now, named
+    /// as the bar names them.
+    pub uses: Vec<Use>,
     /// The sound cards, and the profiles each offers.
     pub hardware: Vec<Card>,
     /// Actions taken and not yet answered by the device, by id.
@@ -85,6 +88,34 @@ pub struct Device {
     pub channels: usize,
     /// The Bluetooth codec it is on, when it advertises one.
     pub codec: Option<String>,
+}
+
+/// What an application is using the camera or the microphone for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UseKind {
+    #[default]
+    Microphone,
+    Camera,
+}
+
+/// One application using the camera or the microphone right now: the stream
+/// `PipeWire` names, the process and executable behind it, what the bar
+/// calls the application, and what it uses.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Use {
+    /// The `PipeWire` client id.
+    pub client_id: u32,
+    /// The process `PipeWire`'s server attests behind the client.
+    pub pid: u32,
+    /// The application's id, from its executable's desktop entry.
+    pub app_id: String,
+    /// The application, as its executable names it.
+    pub label: String,
+    /// The executable behind it.
+    pub binary: String,
+    pub kind: UseKind,
 }
 
 /// One application's stream: what it plays or records, how loud, and where.
@@ -384,4 +415,4 @@ pub fn publish(readings: &BTreeMap<String, Value>) -> Vec<ResourceSpec> {
 #[cfg(feature = "service")]
 mod service;
 #[cfg(feature = "service")]
-pub use service::{Graph, SoundService, SystemGraph};
+pub use service::{Graph, Read, SoundService, SystemGraph};

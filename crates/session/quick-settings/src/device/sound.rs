@@ -17,7 +17,8 @@ use crate::{MediaOutput, QuickSettingsState, SoundInput, SoundOutput, SoundStrea
 
 /// Land `sound` in the panel's readings: how loud the sound is, whether it
 /// is muted, which outputs there are and which one plays, the microphone
-/// that records, and every application's stream.
+/// that records, every application's stream, and who is using the camera or
+/// the microphone.
 pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
     qs.volume_available = sound.output.is_some();
     qs.status.volume = sound
@@ -49,6 +50,21 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
         level: sound.input_volume.unwrap_or(0.0),
         muted: sound.input_muted,
     });
+    qs.status.media = sound
+        .uses
+        .iter()
+        .map(|use_| os_actions::ActiveMediaUse {
+            client_id: use_.client_id,
+            pid: use_.pid,
+            app_id: use_.app_id.clone(),
+            label: use_.label.clone(),
+            binary: std::path::PathBuf::from(&use_.binary),
+            kind: match use_.kind {
+                audio::sound::UseKind::Microphone => os_actions::MediaKind::Microphone,
+                audio::sound::UseKind::Camera => os_actions::MediaKind::Camera,
+            },
+        })
+        .collect();
     qs.sound_streams = sound
         .streams
         .iter()
@@ -124,6 +140,14 @@ mod tests {
                 channels: 1,
                 codec: None,
             }],
+            uses: vec![audio::sound::Use {
+                client_id: 61,
+                pid: 6100,
+                app_id: "so.tilo.meet".into(),
+                label: "Meet".into(),
+                binary: "/usr/bin/meet".into(),
+                kind: audio::sound::UseKind::Microphone,
+            }],
             streams: vec![audio::sound::Stream {
                 node: 60,
                 app: "Music".into(),
@@ -190,6 +214,18 @@ mod tests {
             }],
             "the application's stream, and what it plays as its own fact"
         );
+        assert_eq!(
+            qs.status.media,
+            [os_actions::ActiveMediaUse {
+                client_id: 61,
+                pid: 6100,
+                app_id: "so.tilo.meet".into(),
+                label: "Meet".into(),
+                binary: "/usr/bin/meet".into(),
+                kind: os_actions::MediaKind::Microphone,
+            }],
+            "who is recording, named as the service attributes it"
+        );
     }
 
     #[test]
@@ -201,6 +237,7 @@ mod tests {
         assert!(qs.sound_outputs.is_empty());
         assert_eq!(qs.microphone, None, "nothing records");
         assert!(qs.sound_streams.is_empty(), "nothing plays");
+        assert!(qs.status.media.is_empty(), "and nothing uses the camera");
     }
 
     #[test]

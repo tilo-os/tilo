@@ -27,7 +27,6 @@ pub trait DeviceReads: Send + Sync {
     fn wired(&self) -> Option<qs::WiredInfo>;
     /// One snapshot of every radio; Wi-Fi on or off is taken from it.
     fn radios(&self) -> Option<qs::RadioState>;
-    fn privacy(&self) -> qs::PrivacyStatus;
     fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>>;
     /// The link the machine is online through, as the top bar names it.
     fn link(&self) -> Option<qs::LinkStatus>;
@@ -84,10 +83,6 @@ impl DeviceReads for OsReads {
 
     fn radios(&self) -> Option<qs::RadioState> {
         qs::log_get("get_radio_state", qs::get_radio_state())
-    }
-
-    fn privacy(&self) -> qs::PrivacyStatus {
-        qs::get_privacy_status()
     }
 
     fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>> {
@@ -151,7 +146,6 @@ pub(crate) struct FastReading {
     pub(crate) power_profiles: Option<Vec<qs::PowerProfile>>,
     pub(crate) wired: Option<qs::WiredInfo>,
     pub(crate) radios: Option<qs::RadioState>,
-    pub(crate) privacy: qs::PrivacyStatus,
     pub(crate) vpns: Option<Vec<qs::VpnConnectionInfo>>,
     pub(crate) link: Option<qs::LinkStatus>,
     pub(crate) available: QsActionAvailability,
@@ -168,7 +162,6 @@ impl FastReading {
             power_profiles: reads.power_profiles(),
             wired: reads.wired(),
             radios: reads.radios(),
-            privacy: reads.privacy(),
             vpns: reads.vpns(),
             link: reads.link(),
             available: reads.availability(),
@@ -198,7 +191,6 @@ impl FastReading {
             power_profiles: None,
             wired: None,
             radios: None,
-            privacy: qs::PrivacyStatus::default(),
             vpns: None,
             link: None,
             available: QsActionAvailability::default(),

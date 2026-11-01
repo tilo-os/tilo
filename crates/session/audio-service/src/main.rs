@@ -74,6 +74,7 @@ fn main() {
                 connected: event == DeviceEvent::Connected,
             });
         },
+        || {},
         move || mpris.pause_playing(),
         events,
         &received,
@@ -119,9 +120,9 @@ fn serve() {
         .spawn(move || {
             policy::serve(
                 move |event| {
-                    refresh();
                     heard.device(event);
                 },
+                refresh,
                 move || pause_playing(mpris.as_ref()),
                 events,
                 &received,

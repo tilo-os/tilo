@@ -35,7 +35,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
         power_profiles,
         wired,
         radios,
-        privacy,
         vpns,
         link,
         available,
@@ -63,7 +62,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     if let Some(link) = link {
         qs.status.link = Some(link);
     }
-    qs.privacy = privacy;
 }
 
 /// The read-back of the one control the panel just wrote.

@@ -164,9 +164,6 @@ impl DeviceReads for Machine {
     fn radios(&self) -> Option<os_actions::RadioState> {
         Some(self.0.lock().unwrap().radios.clone())
     }
-    fn privacy(&self) -> os_actions::PrivacyStatus {
-        os_actions::PrivacyStatus::default()
-    }
     fn vpns(&self) -> Option<Vec<os_actions::VpnConnectionInfo>> {
         Some(self.0.lock().unwrap().vpns.clone())
     }

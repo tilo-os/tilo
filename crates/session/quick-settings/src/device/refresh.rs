@@ -375,9 +375,6 @@ pub(crate) mod tests {
         fn radios(&self) -> Option<qs::RadioState> {
             None
         }
-        fn privacy(&self) -> qs::PrivacyStatus {
-            qs::PrivacyStatus::default()
-        }
         fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>> {
             None
         }
@@ -653,10 +650,6 @@ pub(crate) mod tests {
                 wifi_enabled: true,
                 ..qs::RadioState::default()
             })
-        }
-        fn privacy(&self) -> qs::PrivacyStatus {
-            self.hit("privacy");
-            qs::PrivacyStatus::default()
         }
         fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>> {
             self.hit("vpns");
