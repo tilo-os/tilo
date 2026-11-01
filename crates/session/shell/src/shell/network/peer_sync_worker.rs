@@ -18,7 +18,7 @@
 use super::ShellNetwork;
 use crate::shell::{
     peer_sync_overlay::{PeerSyncRequest, PeerSyncResponse, PendingInvitationSummary},
-    state::WorkspaceId,
+    state::{WorkspaceId, WorkspaceTreeHandle},
 };
 use std::sync::{
     Arc, OnceLock,
@@ -118,8 +118,11 @@ impl ShellNetwork {
                     //   or waits again; their gates only make the loop ask
                     //   for less, and what a governor applies arrives as an
                     //   event of its own.
-                    // Any change to the tree wakes it too, and a panic does.
-                    let before = network.tree.generation();
+                    // Any change the request made to the tree wakes it too,
+                    // and a panic does. Only the request's own writes: the
+                    // loop's writes in the meantime are the loop's, and
+                    // waking it for them had it echo every turn it took.
+                    let before = WorkspaceTreeHandle::writes_on_this_thread();
                     // A panicking request must not take later ones with it.
                     // Each says whether the loop has anything to take from it.
                     let what = item.label();
@@ -184,7 +187,7 @@ impl ShellNetwork {
                             "the peer-sync worker was held; joins queued behind it waited"
                         );
                     }
-                    let changed = network.tree.generation() != before;
+                    let changed = WorkspaceTreeHandle::writes_on_this_thread() != before;
                     drop(network);
                     // The loop applies what the request answered or changed.
                     if (ran.unwrap_or(true) || changed)

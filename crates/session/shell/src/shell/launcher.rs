@@ -1633,6 +1633,7 @@ impl LaunchSession {
             super::doc_open::forget_unpresented_documents(self, &event.package_id);
         }
         lock(&self.0.events).push(event);
+        wake_loop();
     }
 
     fn take(&self) -> Vec<LaunchEvent> {
@@ -2073,7 +2074,7 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         detail: e.to_string(),
     });
     // What the catalogue says of renamed apps reaches every decision in this process.
-    let _ = installed_earlier_ids();
+    let _ = crate::shell::installed_registry::read_earlier_ids();
     apps
 }
 
@@ -5623,6 +5624,76 @@ fn start_launch(
 /// Report `event` to the calling thread's [`LaunchSession`].
 pub(crate) fn push_event(event: LaunchEvent) {
     LaunchSession::current().push(event);
+}
+
+/// Wakes the compositor's loop when a launch worker has something for it.
+static LOOP_WAKE: std::sync::OnceLock<crate::session_runtime::Wake> = std::sync::OnceLock::new();
+
+/// Wake the loop with `wake` whenever a launch worker reports to it: a
+/// launch event, or a launch it queued that was refused
+/// ([`queue_launch_in_workspace_or`]).
+pub(crate) fn wake_with(wake: crate::session_runtime::Wake) {
+    let _ = LOOP_WAKE.set(wake);
+}
+
+/// Wake the loop for what a launch worker just reported, if a loop is
+/// listening ([`wake_with`]).
+fn wake_loop() {
+    if let Some(wake) = LOOP_WAKE.get() {
+        wake();
+    }
+}
+
+/// Launch the installed package `package_id` into `workspace` as
+/// [`launch_in_workspace`] does, but on the launch preflight worker: the
+/// compositor's loop never reads the registries, and the worker resolves the
+/// package from them as they are now, so a launch right after an install
+/// starts the installed package ([`installed_apps`]). The workspace's
+/// capabilities are published now, as [`launch_in_workspace`] publishes them,
+/// and the launch takes the same snapshot. A launch that cannot start is
+/// handed to `refused` on the worker, and the loop is woken for it.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started.
+pub(crate) fn queue_launch_in_workspace_or(
+    package_id: String,
+    workspace: &Workspace,
+    refused: impl FnOnce(LaunchError) + Send + 'static,
+) -> Result<(), LaunchError> {
+    let grants = workspace.launch_grants(tilo_clock::unix_now());
+    set_workspace_capabilities(grants.clone());
+    let room = workspace.room();
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps()
+                .and_then(|apps| {
+                    find_installed(&apps, &package_id).ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: package_id.clone(),
+                    })
+                })
+                .and_then(|app| {
+                    if app.has_gui {
+                        Ok(app)
+                    } else {
+                        Err(LaunchError::NotAGuiApp {
+                            package_id: package_id.clone(),
+                        })
+                    }
+                })
+                .and_then(|app| execute_installed(app, room, None, None, None, None, Some(grants)));
+            if let Err(error) = outcome {
+                refused(error);
+                wake_loop();
+            }
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })
 }
 
 fn launch_exit_status(status: &std::io::Result<std::process::ExitStatus>) -> launch_history::Exit {

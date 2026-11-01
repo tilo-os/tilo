@@ -433,22 +433,22 @@ fn mint_serial(state: &mut State) -> Serial {
 /// The input event with `serial` went to the client of `surface_id`: what its process's
 /// window bar does next comes after it ([`crate::compositor::input_order`]).
 fn note_input_sent(state: &mut State, serial: Serial, surface_id: u64) {
-    let pid = state
+    // The launch was attributed when the client was admitted, off the loop: its process
+    // ancestry is never walked here, on every input event.
+    let launch = state
         .client_input
         .surfaces
         .get(&surface_id)
         .and_then(WlSurface::client)
         .and_then(|client| {
+            let client = client.get_data::<crate::compositor::state::ClientState>()?;
             client
-                .get_data::<crate::compositor::state::ClientState>()
-                .and_then(|client| client.pid)
+                .launch_custody
+                .map(|custody| custody.supervisor_pid)
+                .or(client.pid)
         });
-    if let Some(pid) = pid {
-        state.input_order.sent(
-            pid,
-            u32::from(serial),
-            crate::compositor::input_order::launch_of,
-        );
+    if let Some(launch) = launch {
+        state.input_order.sent(launch, u32::from(serial));
     }
 }
 

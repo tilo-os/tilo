@@ -51,12 +51,49 @@ struct CommunityToml {
 }
 
 /// The community site configured for this computer, if any.
+///
+/// Asked from the compositor's loop (the actions it publishes name the
+/// site), so the session reads it once at startup and a worker reads it
+/// again whenever a configuration directory changes ([`watch_configured_site`]);
+/// the loop only takes the last value. A process that did not start the
+/// watch (a test) reads the files here.
 pub(crate) fn configured_site() -> Option<url::Url> {
-    let paths: Vec<PathBuf> = match std::env::var_os(CONFIG_ENV) {
+    CONFIGURED_SITE
+        .get()
+        .map_or_else(read_configured_site, |site| (*site.get()).clone())
+}
+
+/// [`configured_site`], kept current by a worker once the session started it.
+static CONFIGURED_SITE: std::sync::OnceLock<tilo_files::native::Watched<Option<url::Url>>> =
+    std::sync::OnceLock::new();
+
+/// Read the community site now, before the loop runs, and keep it current
+/// from then on. A configuration that cannot be watched is read where it is
+/// asked for, as before.
+pub fn watch_configured_site() {
+    let directories = config_paths()
+        .iter()
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect();
+    match tilo_files::native::Watched::start("community-site", directories, read_configured_site) {
+        Ok(watched) => {
+            let _ = CONFIGURED_SITE.set(watched);
+        }
+        Err(error) => tracing::warn!(%error, "cannot watch the community configuration"),
+    }
+}
+
+/// The files the community site is configured in, the one that wins first.
+fn config_paths() -> Vec<PathBuf> {
+    match std::env::var_os(CONFIG_ENV) {
         Some(path) => vec![PathBuf::from(path)],
         None => vec![PathBuf::from(SYSTEM_CONFIG), PathBuf::from(VENDOR_CONFIG)],
-    };
-    site_from(paths.iter().map(PathBuf::as_path))
+    }
+}
+
+/// [`configured_site`] read from the disk.
+fn read_configured_site() -> Option<url::Url> {
+    site_from(config_paths().iter().map(PathBuf::as_path))
 }
 
 /// The site the first readable file of `paths` names. A file that does not
