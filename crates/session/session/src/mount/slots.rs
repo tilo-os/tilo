@@ -17,12 +17,13 @@
 //! are not here: the settings resource refuses to bind them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use settings_store::device_class::DeviceClass;
+use tilo_surface_host::slot_view::SlotSurface;
 
-use crate::surfaces;
+use crate::{mount, surfaces};
 
 /// The resource that binds a slot to a view.
 pub const BINDINGS: &str = "settings:shell-views";
@@ -54,13 +55,32 @@ impl Binding {
     }
 }
 
+/// What draws a slot: a program the session runs as a process of its own, or a
+/// view written in tilolang, which it runs in its own process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum View {
+    /// A surface app: started with the slot's name, drawing the slot from its
+    /// own process.
+    Program(PathBuf),
+    /// A tilolang package's view, run by the session over the slot's reading.
+    Package {
+        /// The package's payload: `app.wasm`, `app.ids` and the modules it
+        /// uses (`tilolang_tilo::bundle`).
+        dir: PathBuf,
+        /// The app the person bound, as the settings reading names it.
+        app: String,
+        /// The view it publishes that draws the slot.
+        view: String,
+    },
+}
+
 /// What the session is to do with a slot this pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mount {
     /// Nothing: the view bound to it is the one it runs, or the part is not up.
     Nothing,
-    /// Start `program` for the slot, after stopping what ran it (`restart`).
-    Start { program: PathBuf, restart: bool },
+    /// Start `view` for the slot, after stopping what ran it (`restart`).
+    Start { view: View, restart: bool },
     /// Stop what runs for the slot: the part is not up any more.
     Stop,
 }
@@ -120,17 +140,17 @@ impl Slots {
         // A view bound now that is not the one that drew the slot takes its
         // place, over the reading the slot already shows.
         let restart = self.running.remove(slot).is_some();
-        let started = match self.program(slot, view) {
-            Some(program) => Some((program, view.clone())),
+        let started = match self.view_of(slot, view) {
+            Some(started) => Some((started, view.clone())),
             None if view != &shipped => self
-                .program(slot, &shipped)
-                .map(|program| (program, shipped.clone())),
+                .view_of(slot, &shipped)
+                .map(|started| (started, shipped.clone())),
             None => None,
         };
         match started {
-            Some((program, started)) => {
+            Some((view, started)) => {
                 self.running.insert(slot.to_owned(), started);
-                Mount::Start { program, restart }
+                Mount::Start { view, restart }
             }
             None => {
                 if restart {
@@ -142,15 +162,21 @@ impl Slots {
         }
     }
 
-    /// The program that runs `binding` where the session puts it up, or `None`
+    /// The view that draws `binding` where the session puts it up, or `None`
     /// when this machine has none: a binding that does not run is not looked
     /// for again, so a slot nobody draws costs one look.
-    fn program(&mut self, slot: &str, binding: &Binding) -> Option<PathBuf> {
+    fn view_of(&mut self, slot: &str, binding: &Binding) -> Option<View> {
         if self.absent.contains(binding) {
             return None;
         }
+        // An app this machine installed as a tilolang package is run here,
+        // over the reading of the slot; anything else the binding names is a
+        // program of its own.
+        if let Some(package) = installed(binding) {
+            return Some(package);
+        }
         match surfaces::program_path(&binding.program()) {
-            Ok(program) => Some(program),
+            Ok(path) => Some(package_at(&path, binding).unwrap_or(View::Program(path))),
             Err(error) => {
                 tracing::debug!(
                     slot,
@@ -178,6 +204,45 @@ impl Slots {
     }
 }
 
+/// The tilolang package `binding` names, when this machine installed it as
+/// an app: its payload holds the compiled module.
+fn installed(binding: &Binding) -> Option<View> {
+    let app = tilo_installed_apps::read_one_from_env(&binding.app)
+        .ok()
+        .flatten()?;
+    package_at(&app.payload_root, binding)
+}
+
+/// The package in `dir`, when `dir` holds a compiled tilolang module: a view
+/// of a slot written in tilolang. `None` for a directory of anything else, and
+/// for a surface app, which the session runs as a program.
+fn package_at(dir: &Path, binding: &Binding) -> Option<View> {
+    dir.join(tilolang_tilo::bundle::WASM_FILE)
+        .is_file()
+        .then(|| View::Package {
+            dir: dir.to_path_buf(),
+            app: binding.app.clone(),
+            view: binding.view.clone(),
+        })
+}
+
+/// The state `slot` publishes, as a view of it written in tilolang reads it:
+/// the resource, and the surface a package drawing the slot is compiled
+/// against. `None` for a slot whose state a view does not read.
+#[must_use]
+pub fn surface(slot: &str) -> Option<SlotSurface> {
+    match slot {
+        mount::shell::WINDOW_MENU_SLOT => Some(SlotSurface {
+            id: mount::shell::WINDOW_MENU.to_owned(),
+            kind: mount::shell::WINDOW_MENU_KIND.to_owned(),
+            app: mount::shell::WINDOW_MENU_APP.to_owned(),
+            title: "Window menu".to_owned(),
+            text: mount::shell::WINDOW_MENU_SURFACE.to_owned(),
+        }),
+        _ => None,
+    }
+}
+
 /// The view `reading` binds to `slot` on `device`: the one bound for that kind
 /// of device, else the one bound everywhere.
 #[must_use]
@@ -201,7 +266,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{Binding, Mount, Slots, bound_to};
+    use super::{Binding, Mount, Slots, View, bound_to};
 
     #[test]
     fn a_binding_for_this_kind_of_device_is_the_one_that_draws_it() {
@@ -243,7 +308,7 @@ mod tests {
         assert_eq!(
             slots.follow("menu", shipped, true, Some(&settings)),
             Mount::Start {
-                program: PathBuf::from("/bin/sh"),
+                view: View::Program(PathBuf::from("/bin/sh")),
                 restart: false,
             }
         );

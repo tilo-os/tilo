@@ -83,6 +83,89 @@ the binding names the view too, so the person and their tools can tell which
 one was meant. If your app is not installed on the machine, the slot stays
 with the shell's own view rather than going blank.
 
+## Draw it in tilolang
+
+A view can be a tilolang package, which the session runs in its own process
+rather than starting as a program. A binding whose app this machine installed
+as a package — its payload holds `app.wasm` — is run here, and so is one whose
+program path is a directory holding `app.wasm`, which is how an app you are
+still building is pointed at. Anything else is an app of its own, started by
+its program name as above.
+
+The package is compiled against the surface the session publishes for the slot
+— for the window menu, the resource `desktop:window-menu` of kind
+`desktop.window-menu`, which a package reads as `desktop.WindowMenu`:
+
+```toml
+[[resources]]
+kind = "desktop.window-menu"
+label = "Window menu"
+fields = [
+  { path = "tab", type = { option = "text" } },
+  { path = "anchor", type = { option = { named = "Anchor" } } },
+  { path = "rows", type = { collection = { named = "Row" } } },
+]
+
+[[resources.verbs]]
+id = "open"
+kind = "outside"
+params = [
+  { name = "tab", required = false, type = { option = "text" } },
+  { name = "anchor", required = false, type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "close"
+kind = "outside"
+
+[[resources.verbs]]
+id = "choose"
+kind = "outside"
+params = [{ name = "row", required = true, type = "text" }]
+```
+
+A row is what the menu shows: its id, its label, whether the window can choose
+it, and the reason beside it when it cannot. The view takes the slot's type as
+its reading, and every field of it is what the session publishes:
+
+```tilo
+app so.tilo.mymenu "A menu of mine"
+
+use desktop as desktop
+
+view menu(m: desktop.WindowMenu) {
+  column {
+    for row in m.rows {
+      button(row.label, on: desktop.choose(m, row: row.id))
+    }
+    button("Close", on: desktop.close(m))
+  }
+}
+```
+
+Reading the slot changes nothing; when the session publishes a new reading the
+view runs again over it, so a menu left open while its window changes offers
+what that window offers now. What the view invokes names an app and an action
+of its own, but the view itself changes nothing: the session hands the call to
+the same door every other caller goes through — the address is the slot's
+resource and the verb, the arguments are converted to the shapes the verb's
+parameters declare — so the checks the door makes of any caller (grants,
+consent, destructive actions) are the checks it makes of the view's press.
+Every parameter the verb declares is passed at the call site, `.none` where the
+view means none. A verb that takes a place takes it as the reading gives it
+back (`desktop.open(m, tab: .none, anchor: .some("40,50"))`).
+
+A view of a slot opens nothing and places nothing: the session puts it where
+the reading says the part stands, the overlay stack says when it holds the
+pointer and the keys, and a press away from what it drew closes the slot, as a
+press outside a menu does. A package that does not load, that declares no view
+by the name the binding names, or whose view does not run is no view for the
+slot: the session draws the view it ships with again rather than leaving the
+slot blank.
+
+The window menu is the slot with a tilolang host today
+([`mount::slots::surface`](../../crates/session/session/src/mount/slots.rs)).
+
 ## What you cannot bind
 
 The lock screen, a workspace's consent, a portal's request, a sign-in and a

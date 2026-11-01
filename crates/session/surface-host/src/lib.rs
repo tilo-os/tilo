@@ -13,6 +13,7 @@ mod desktop;
 mod door;
 mod frames;
 pub mod shell_part;
+pub mod slot_view;
 mod widget;
 
 pub use desktop::{

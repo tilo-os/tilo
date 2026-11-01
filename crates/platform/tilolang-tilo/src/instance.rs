@@ -292,6 +292,9 @@ pub struct Instance {
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     started: bool,
+    /// The package has no root of its own to open: everything it shows is opened by its
+    /// embedder ([`Instance::without_root`]).
+    rootless: bool,
     loading: bool,
     moved: bool,
     /// Whether the package's migrations ran over the workspace record since the window opened.
@@ -370,6 +373,7 @@ impl Instance {
             history: Vec::new(),
             staged: None,
             started: false,
+            rootless: false,
             loading: false,
             moved: false,
             migrated: false,
@@ -395,6 +399,13 @@ impl Instance {
     /// Keep the workspace's indexes in `dir` (`None` keeps them in memory). Before the host starts.
     pub fn set_index_dir(&mut self, dir: Option<std::path::PathBuf>) {
         self.index_dir = dir;
+    }
+
+    /// Run a package that has no root view of its own: what it shows is opened in a lane by its
+    /// embedder ([`Self::open_with`]), as a view of another app's state is. Before the host
+    /// starts.
+    pub fn without_root(&mut self) {
+        self.rootless = true;
     }
 
     /// Open over the workspace's indexes before its record, which `loader` reads: a write, or a
@@ -2052,7 +2063,9 @@ impl Instance {
             if host.index_ready() {
                 self.started = true;
                 self.loading = false;
-                self.open_root(&host);
+                if !self.rootless {
+                    self.open_root(&host);
+                }
             } else if !self.loading {
                 self.loading = true;
                 self.out.push(ToUi::Loading);
