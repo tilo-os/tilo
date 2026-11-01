@@ -19,7 +19,7 @@ use collab_types::presence::{PointerSpace, PresenceKey};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,

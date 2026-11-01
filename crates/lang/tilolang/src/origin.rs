@@ -81,9 +81,9 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     (
         "session.act",
         "Asks the session for one of the desktop's own actions that take nothing (the \
-         `desktop:chrome` resource's: `toggle-tilo-menu`, `toggle-quick-settings`, \
-         `show-strips`, `toggle-overview`, `new-workspace`, `join-workspace`, \
-         `workspace-settings`), by its id.",
+         `desktop:chrome` resource's: `tilo-menu`, `quick-settings`, `show-strips`, \
+         `overview`, `new-workspace`, `join-workspace`, `workspace-settings`; the \
+         `session:desk` resource's: `answer-ask`, `put-off-ask`), by its id.",
     ),
     (
         "session.arrange",

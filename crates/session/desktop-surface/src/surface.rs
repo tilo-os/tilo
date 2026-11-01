@@ -40,8 +40,9 @@ use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}
 use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
-    self, ActivityView, Admitted, Application, Command, DesktopPan, HistoryDirection, HistoryState,
-    NotificationsState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
+    self, ActivityView, Admitted, Application, ChromeEffect, DesktopPan, HistoryDirection,
+    HistoryState, NotificationsState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
+    Verb,
 };
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
@@ -365,12 +366,13 @@ impl DesktopHandle {
     /// # Errors
     /// As [`navigation::admit`], and refuses a pan, scroll or history move
     /// the presented desktop cannot make.
-    pub fn dispatch(&self, command: &Command, generation: &str) -> Result<(), String> {
+    pub fn dispatch(&self, verb: impl Into<Verb>) -> Result<(), String> {
+        let verb = verb.into();
         let mut shared = self.shared.borrow_mut();
         let capabilities = shared.presentation.capabilities();
-        let admitted = navigation::admit_with(command, generation, &shared.tree, &capabilities)?;
+        let admitted = navigation::admit_with(&verb, &shared.tree, &capabilities)?;
         let presentation = &shared.presentation;
-        match (&admitted, command) {
+        match (&admitted, &verb) {
             (Admitted::Pan(strip, _), _)
                 if presentation
                     .pan
@@ -379,7 +381,7 @@ impl DesktopHandle {
             {
                 return Err("Desktop pan unavailable".into());
             }
-            (Admitted::Scroll(..), Command::Scroll { region, .. })
+            (Admitted::Scroll(..), Verb::Chrome(ChromeEffect::Scroll { region, .. }))
                 if presentation
                     .scroll
                     .as_ref()

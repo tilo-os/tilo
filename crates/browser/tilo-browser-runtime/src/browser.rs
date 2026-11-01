@@ -541,10 +541,9 @@ impl Desktop {
         self.ask_host_of_nodes();
         self.ask_app_actions();
         let permissions = self.permissions.borrow();
-        self.openings
-            .open(&self.handle, &self.generation, |app, existing| {
-                crate::desktop::may_open(&permissions, app, existing)
-            })
+        self.openings.open(&self.handle, |app, existing| {
+            crate::desktop::may_open(&permissions, app, existing)
+        })
     }
 
     /// Ask the session, as this person, for the app actions they chose in

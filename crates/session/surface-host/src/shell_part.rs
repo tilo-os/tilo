@@ -259,9 +259,9 @@ const CAP_TRAY: &str = "session.tray";
 
 /// The bar's own `session.act` ids that are the desk's resource's, not the chrome's: the
 /// question on the person's avatar is answered and put off where the desk reads it.
-const DESK_ACTIONS: &[(&str, &str)] = &[
-    ("answer_ask", DESK_RESOURCE),
-    ("put_off_ask", DESK_RESOURCE),
+pub const DESK_ACTIONS: &[(&str, &str)] = &[
+    ("answer-ask", DESK_RESOURCE),
+    ("put-off-ask", DESK_RESOURCE),
 ];
 
 /// How often the instance and its window may answer each other in one frame before the frame

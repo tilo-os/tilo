@@ -37,7 +37,7 @@ use sha2::Digest as _;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::rooms::{PreAdmitRequest, RemoveMemberRequest};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};

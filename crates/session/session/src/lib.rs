@@ -122,7 +122,7 @@ use std::time::{Duration, Instant};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
     DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
@@ -186,7 +186,8 @@ pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_host::view::OnboardingView;
 
-/// The generation the session's own desktop commands carry.
+/// The generation the session's own desktop snapshots carry: a snapshot of
+/// an older one is stale.
 const GENERATION: &str = "session";
 
 /// How many times the session starts its lock screen for one lock before it
@@ -870,7 +871,7 @@ impl Shared {
                 invocations.push(Invocation::new(QUICK_SETTINGS, "paste"));
             }
             ShortcutAction::Search => {
-                invocations.push(Invocation::new(DESK_RESOURCE, "open-search"));
+                invocations.push(Invocation::new(DESK_RESOURCE, "search"));
             }
             ShortcutAction::TabMenu => {
                 invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));

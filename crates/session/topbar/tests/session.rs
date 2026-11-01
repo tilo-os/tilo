@@ -94,7 +94,7 @@ fn the_session_starts_the_bar_as_a_trusted_client_on_its_layer() {
 }
 
 #[test]
-fn the_session_asks_the_bar_to_open_its_workspace_menu() {
+fn the_session_asks_the_bar_for_its_profile_card() {
     let mut session = session_with(&[bar()]);
 
     // What the bar offers reaches the session as actions, like any app's.
@@ -108,11 +108,11 @@ fn the_session_asks_the_bar_to_open_its_workspace_menu() {
         pump(&mut session);
     }
     let published = session.surfaces().published("topbar");
-    let menu = published
+    let card = published
         .iter()
-        .find(|action| action.action == "workspace-menu")
-        .expect("the bar offers its workspace menu");
-    let (resource, action) = (menu.resource.clone(), menu.action.clone());
+        .find(|action| action.action == "profile")
+        .expect("the bar offers the person's profile card");
+    let (resource, action) = (card.resource.clone(), card.action.clone());
 
     // The session runs it, as a person's palette or an agent would, and the
     // bar answers on its own actions socket.
@@ -141,7 +141,7 @@ fn the_session_asks_the_bar_to_open_its_workspace_menu() {
     );
 
     let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-    save(&frame, "session-bar-workspace-menu");
+    save(&frame, "session-bar-profile-card");
     session.stop_surface("topbar");
 }
 

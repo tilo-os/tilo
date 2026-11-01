@@ -474,8 +474,8 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     );
     session
         .invoke(
-            tilo_desktop::desktop_actions::CHROME_RESOURCE,
-            "toggle-quick-settings",
+            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            "quick-settings",
             &args(&json!({})),
         )
         .expect("the bar asks for the panel");
@@ -496,8 +496,8 @@ fn a_dismissing_press_does_not_reopen_what_it_closed() {
     session.step(REFRESH).expect("a turn of the session");
     session
         .invoke(
-            tilo_desktop::desktop_actions::CHROME_RESOURCE,
-            "toggle-quick-settings",
+            tilo_desktop::desk_verbs::CHROME_RESOURCE,
+            "quick-settings",
             &args(&json!({})),
         )
         .expect("the bar asks for the panel");

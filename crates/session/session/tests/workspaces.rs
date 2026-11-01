@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 

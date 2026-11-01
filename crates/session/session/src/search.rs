@@ -239,9 +239,9 @@ impl SessionSearch {
             let address = &action.address;
             let searching = address
                 .resource
-                .starts_with(tilo_desktop::desktop_actions::SEARCH_RESOURCE);
-            let opening = address.resource == tilo_desktop::desktop_actions::DESK_RESOURCE
-                && address.action == "open-search";
+                .starts_with(tilo_desktop::desk_verbs::SEARCH_RESOURCE);
+            let opening = address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
+                && address.action == "search";
             !searching && !opening
         });
         *self.own.borrow_mut() = published;

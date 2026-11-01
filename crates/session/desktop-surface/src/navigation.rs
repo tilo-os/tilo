@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
     DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId,
 };
+use tilo_resource::Effect;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -98,178 +99,20 @@ fn history_direction(target: &str) -> Result<HistoryDirection, String> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum Command {
-    Close {
-        generation: String,
-        route: Route,
-    },
-    /// Put the window closed most recently in the shown workspace back where
-    /// it was, and focus it. Nothing closed is no error: the chord that sent
-    /// it belongs to the desktop whether or not it had a window to bring
-    /// back.
-    Reopen {
-        generation: String,
-    },
-    Workspace {
-        generation: String,
-        workspace: String,
-    },
-    WorkspaceActivity {
-        generation: String,
-        workspace: String,
-        view: ActivityView,
-        /// Show only what this person did, named as History names them;
-        /// everyone's when absent.
-        #[serde(default)]
-        author: Option<String>,
-    },
-    CloseWorkspaceActivity {
-        generation: String,
-        workspace: String,
-    },
-    NotificationCenter {
-        generation: String,
-        open: bool,
-    },
-    History {
-        generation: String,
-        route: Route,
-        target: String,
-    },
-    Select {
-        generation: String,
-        route: Route,
-    },
-    Strip {
-        generation: String,
-        workspace: String,
-        strip: String,
-    },
-    Pan {
-        generation: String,
-        workspace: String,
-        strip: String,
-        offset: f64,
-    },
-    Width {
-        generation: String,
-        route: Route,
-        permille: u32,
-    },
-    Maximize {
-        generation: String,
-        route: Route,
-        maximized: bool,
-    },
-    /// Cover the display with the window at `route`, or give it back.
-    Fullscreen {
-        generation: String,
-        route: Route,
-        fullscreen: bool,
-    },
-    /// Name the window at `route`; a blank name gives it its window's title
-    /// back.
-    Rename {
-        generation: String,
-        route: Route,
-        name: String,
-    },
-    Scroll {
-        generation: String,
-        region: String,
-        action: ScrollAction,
-    },
-    GlobalSearch {
-        generation: String,
-    },
-    Commands {
-        generation: String,
-        query: String,
-    },
-    /// Open `app` (an id from the snapshot's `applications`) in a new
-    /// window beside the focused one of the shown strip.
-    Launch {
-        generation: String,
-        app: String,
-    },
-    /// Show `app` on the shown strip, as following a link to it does: focus
-    /// its window there, else open one. The page then invokes the link's
-    /// view action through that window's action door.
-    Open {
-        generation: String,
-        app: String,
-    },
-    /// Open `app` as a tab right after the tab at `beside`, in its window
-    /// group: another window of an app that asked to open beside one of its
-    /// own. It takes focus unless `background`.
-    TabOpenBeside {
-        generation: String,
-        app: String,
-        beside: Route,
-        background: bool,
-    },
-    /// Carry the window at `route` into `strip`, another strip of its
-    /// workspace.
-    MoveToStrip {
-        generation: String,
-        route: Route,
-        strip: String,
-    },
-    /// Take the tab at `route` into `workspace`, as a window of its own.
-    MoveToWorkspace {
-        generation: String,
-        route: Route,
-        workspace: String,
-    },
-    /// Show the window at `route` on `display`.
-    MoveToDisplay {
-        generation: String,
-        route: Route,
-        display: u32,
-    },
-    /// Give the window at `route` a preset share of its strip.
-    WidthPreset {
-        generation: String,
-        route: Route,
-        preset: WidthPreset,
-    },
-    /// Give every window of the strip the window at `route` stands in the
-    /// same share of it.
-    EqualizeWidths {
-        generation: String,
-        route: Route,
-    },
-    /// Share the window at `route` with the people of its workspace, or stop
-    /// sharing it.
-    ShareWindow {
-        generation: String,
-        route: Route,
-        shared: bool,
-    },
-    /// Detach the tab at `route` into a window of its own, right after the
-    /// one it is in.
-    SplitRight {
-        generation: String,
-        route: Route,
-    },
-    /// Detach the tab at `route` into a window of its own at the end of its
-    /// strip.
-    MoveToNewGroup {
-        generation: String,
-        route: Route,
-    },
-    /// Close every tab of the window at `route`, as one close.
-    CloseWindow {
-        generation: String,
-        route: Route,
-    },
-    /// Take back the control of the desktop the app showing `route` holds.
-    StopDesktopControl {
-        generation: String,
-        route: Route,
-    },
+/// Where a window goes: another strip of its workspace, another workspace,
+/// or another display. Exactly one of them names the place.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Destination {
+    /// The strip of the window's workspace to carry the window to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strip: Option<String>,
+    /// The workspace to take the window to, as a window of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// The display to show the window on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 /// A share of its strip a window takes in one step.
@@ -295,44 +138,558 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
     }
 }
 
-impl Command {
-    pub fn generation(&self) -> &str {
+/// What the desk under the windows can be asked to do: which window has
+/// focus, closing one, which display is worked on, what the search and the
+/// empty desk's launchpad do. Each is one published action on the desk's
+/// resource, so a person's chord, a page, a script and an agent do the same
+/// thing by the same verb. Ids travel as the decimal text the desk
+/// addresses its windows by; a caller that names something the desk does
+/// not hold is refused rather than given the nearest thing.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "so.tilo.desk")]
+pub enum DeskEffect {
+    /// Focus a window
+    #[effect(own_device, idempotent)]
+    Focus {
+        /// The tab to bring forward.
+        #[param(decimal, "The tab to focus")]
+        tab: String,
+    },
+
+    /// Close a tab
+    #[effect(own_device)]
+    CloseTab {
+        /// The tab's id.
+        #[param(decimal, "The tab to close")]
+        tab: String,
+    },
+
+    /// Step through the windows
+    ///
+    /// Along the shown strip, onto the neighbouring display past either end.
+    #[effect(own_device)]
+    StepFocus {
+        /// How many windows on; negative is back.
+        #[param("How many windows on; negative goes back")]
+        steps: i64,
+    },
+
+    /// Focus a display
+    #[effect(own_device, idempotent)]
+    FocusDisplay {
+        /// The display's id.
+        #[param(decimal, "The display to focus")]
+        display: String,
+    },
+
+    /// Move the window in front to another display
+    #[effect(own_device)]
+    MoveToDisplay {
+        /// How many displays on; negative is back.
+        #[param("How many displays on; negative goes back")]
+        steps: i64,
+    },
+
+    /// Search the desktop
+    ///
+    /// Open the desktop's search, with `query` typed when given, or type it
+    /// into the search already open.
+    #[effect(own_device)]
+    Search {
+        /// What to type.
+        #[param("The query to type")]
+        query: Option<String>,
+    },
+
+    /// Choose a search row
+    #[effect(own_device)]
+    ChooseSearchRow {
+        /// The row, counting from 0 as the reading lists them.
+        #[param("The row to choose")]
+        row: u64,
+        /// The line its action asks for.
+        #[param("The line the row's action asks for")]
+        argument: Option<String>,
+    },
+
+    /// Choose a launchpad card
+    #[effect(own_device)]
+    Launchpad {
+        /// The card's slug, or `apps` for the applications.
+        #[param("The card's slug, or \"apps\" for the applications")]
+        card: String,
+    },
+}
+
+/// What the surfaces over the desk can be asked to do: open and show apps,
+/// move a window, and the windows of a strip and where they stand, what
+/// each shows, the strips and workspaces they are in, the notification
+/// centre, the workspace directory and the surfaces above them. Each is
+/// one published action on the chrome's resource; the desk publishes the
+/// verbs it carries out itself and these are the rest, so no verb has two
+/// doors.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.chrome")]
+pub enum ChromeEffect {
+    /// Open an app
+    ///
+    /// In a new window of the shown strip, or beside the window named.
+    #[effect(own_device, icon = "app-window")]
+    OpenApp {
+        /// The app's id.
+        #[param("The application to open, by its id")]
+        app: String,
+        /// The tab it opens right after, in that tab's window group.
+        #[param(decimal, "The tab to open it beside")]
+        beside: Option<String>,
+        /// Open it without taking focus.
+        #[param("Open it without taking focus")]
+        background: Option<bool>,
+    },
+
+    /// Show an app
+    ///
+    /// The shown strip's window of it when there is one, else a new window:
+    /// what following a link to the app does.
+    #[effect(own_device, idempotent)]
+    ShowApp {
+        /// The app's id.
+        #[param("The application to show, by its id")]
+        app: String,
+    },
+
+    /// Move a tab elsewhere
+    ///
+    /// Its window onto another strip of the workspace, the tab alone into
+    /// another workspace as a window of its own, or its window onto another
+    /// display.
+    #[effect(own_device)]
+    MoveTab {
+        /// The tab whose window moves.
+        #[param(decimal, "The tab to move")]
+        tab: String,
+        /// Where it goes.
+        #[param("Where the tab goes")]
+        to: Destination,
+    },
+
+    /// Close a window
+    ///
+    /// Every tab in it, as one close.
+    #[effect(own_device)]
+    CloseWindow {
+        /// The window group's id.
+        #[param(decimal, "The window group to close")]
+        group: String,
+    },
+
+    /// Split right
+    ///
+    /// Detach the tab into a window of its own, right after the one it is
+    /// in.
+    #[effect(own_device)]
+    SplitRight {
+        /// The tab to detach.
+        #[param(decimal, "The tab to detach")]
+        tab: String,
+    },
+
+    /// New group
+    ///
+    /// Detach the tab into a window of its own at the end of its strip.
+    #[effect(own_device)]
+    NewGroup {
+        /// The tab to detach.
+        #[param(decimal, "The tab to detach")]
+        tab: String,
+    },
+
+    /// Set width
+    ///
+    /// A preset share of its strip, or an exact share in permille.
+    #[effect(own_device, idempotent)]
+    SetWidth {
+        /// The window group whose width changes.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// The share of the strip, in permille.
+        #[param("The share of the strip in permille")]
+        permille: Option<u32>,
+        /// A preset share.
+        #[param("A preset share: half, narrow, normal or wide")]
+        preset: Option<WidthPreset>,
+    },
+
+    /// Equalize widths
+    ///
+    /// Every window of `strip` takes the same share of it.
+    #[effect(own_device, idempotent)]
+    Equalize {
+        /// The strip whose windows even out.
+        #[param(decimal, "The strip")]
+        strip: String,
+    },
+
+    /// Maximize a window
+    #[effect(own_device, idempotent)]
+    Maximize {
+        /// The window group.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// Whether it fills its strip.
+        #[param("Whether it fills its strip")]
+        on: bool,
+    },
+
+    /// Fill the display with a window
+    #[effect(own_device, idempotent)]
+    Fullscreen {
+        /// The window group.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// Whether it covers the display.
+        #[param("Whether it covers the display")]
+        on: bool,
+    },
+
+    /// Rename something
+    ///
+    /// A window, a strip or a workspace, by the one id given; a blank name
+    /// gives a window its own title back.
+    #[effect(own_device, idempotent)]
+    Rename {
+        /// The window group to name.
+        #[param(decimal, "The window group to rename")]
+        group: Option<String>,
+        /// The strip to name.
+        #[param("The strip to rename, its name or its decimal id")]
+        strip: Option<String>,
+        /// The workspace to name.
+        #[param("The workspace to rename, its name or its decimal id")]
+        workspace: Option<String>,
+        /// The name it takes.
+        #[param("The new name")]
+        name: String,
+    },
+
+    /// New strip
+    ///
+    /// An empty strip at the end of the workspace shown.
+    #[effect(own_device)]
+    NewStrip {
+        /// What to call it.
+        #[param("The strip's name; a new one by default")]
+        name: Option<String>,
+    },
+
+    /// Move a strip
+    #[effect(own_device)]
+    MoveStrip {
+        /// The strip to move.
+        #[param("The strip to move, its name or its decimal id")]
+        strip: String,
+        /// The strip it moves in front of; the end when absent.
+        #[param("The strip it goes before, its name or its decimal id; the end when absent")]
+        before: Option<String>,
+    },
+
+    /// Reopen what was closed last
+    ///
+    /// In the workspace shown, where it was, and focus it.
+    #[effect(own_device)]
+    ReopenClosed,
+
+    /// Share a window
+    ///
+    /// With the people of its workspace, or stop sharing it.
+    #[effect(own_device)]
+    ShareWindow {
+        /// The window group.
+        #[param(decimal, "The window group")]
+        group: String,
+        /// Whether it is shared.
+        #[param("Whether the window is shared")]
+        on: bool,
+    },
+
+    /// Take back the desktop control a window holds
+    #[effect(own_device)]
+    StopDesktopControl {
+        /// The window group holding it.
+        #[param(decimal, "The window group")]
+        group: String,
+    },
+
+    /// Step through the strips
+    #[effect(own_device)]
+    StepStrip {
+        /// How many strips on; negative is back.
+        #[param("How many strips on; negative goes back")]
+        steps: i64,
+    },
+
+    /// Switch workspace
+    ///
+    /// The one named, or that many on (back when negative); the overview's
+    /// strip ribbon leaves `strip` shown.
+    #[effect(own_device, idempotent)]
+    SwitchWorkspace {
+        /// The workspace to go to.
+        #[param(decimal, "The workspace to go to")]
+        workspace: Option<String>,
+        /// ...or how many workspaces on.
+        #[param("How many workspaces on; negative goes back")]
+        delta: Option<i64>,
+    },
+
+    /// Show a strip
+    ///
+    /// The strip of the workspace shown to put in front.
+    #[effect(own_device, idempotent)]
+    ShowStrip {
+        /// The workspace the strip is in.
+        #[param(decimal, "The workspace")]
+        workspace: String,
+        /// The strip to show.
+        #[param(decimal, "The strip to show")]
+        strip: String,
+    },
+
+    /// Show the strips
+    ///
+    /// The ribbon of the workspace shown, each strip where it stands.
+    #[effect(view, own_device, idempotent)]
+    ShowStrips,
+
+    /// Pan a strip
+    ///
+    /// Its horizontal offset, committed when the gesture ends.
+    #[effect(own_device)]
+    Pan {
+        /// The strip shown.
+        #[param(decimal, "The strip to pan")]
+        strip: String,
+        /// Where it goes, in logical px.
+        #[param("The offset in logical pixels")]
+        offset: f64,
+    },
+
+    /// Scroll a window
+    #[effect(own_device)]
+    Scroll {
+        /// The window's primary region, as the snapshot names it.
+        #[param("The scroll region the snapshot names")]
+        region: String,
+        /// What the scroll does.
+        #[param("Line, page, an exact offset, the start or the end")]
+        action: ScrollAction,
+    },
+
+    /// Move through a window's own history
+    #[effect(own_device)]
+    History {
+        /// The tab.
+        #[param(decimal, "The tab")]
+        tab: String,
+        /// `back` or `forward`.
+        #[param("The way to go: back or forward")]
+        target: String,
+    },
+
+    /// Show a workspace's history
+    #[effect(own_device)]
+    Activity {
+        /// The workspace shown.
+        #[param(decimal, "The workspace")]
+        workspace: String,
+        /// Which view: catch up, explore or replay.
+        #[param("The view to show")]
+        view: ActivityView,
+        /// Only what the person named did.
+        #[param("Show only what this person did")]
+        author: Option<String>,
+    },
+
+    /// Close the workspace's history
+    #[effect(own_device, idempotent)]
+    CloseActivity {
+        /// The workspace shown.
+        #[param(decimal, "The workspace")]
+        workspace: String,
+    },
+
+    /// Open or close the notification centre
+    #[effect(own_device, idempotent)]
+    Notifications {
+        /// Whether it is open.
+        #[param("Whether the centre is open")]
+        open: bool,
+    },
+
+    /// New workspace
+    ///
+    /// An empty one, or one joined from the directory when `workspace` is
+    /// given, named when a name is.
+    #[effect(own_device)]
+    NewWorkspace {
+        /// The workspace to open here, by the id it is shared under.
+        #[param("The workspace to open here, by the id it is shared under")]
+        workspace: Option<String>,
+        /// What to call it.
+        #[param("What to call the workspace")]
+        name: Option<String>,
+    },
+
+    /// Show the workspaces this computer may join
+    #[effect(view, own_device)]
+    JoinWorkspace,
+
+    /// Leave a workspace
+    ///
+    /// Here on this computer: the one named, or the one shown.
+    #[effect(own_device)]
+    LeaveWorkspace {
+        /// The workspace to leave.
+        #[param("The workspace to leave, its name or its decimal id")]
+        workspace: Option<String>,
+    },
+
+    /// Open the workspace's settings
+    #[effect(view, own_device)]
+    WorkspaceSettings,
+
+    /// Run a desktop shortcut
+    ///
+    /// By its id in the shortcut table, as its chord does.
+    #[effect(own_device)]
+    Shortcut {
+        /// The shortcut's id.
+        #[param("The shortcut's id in the shortcut table")]
+        action: String,
+    },
+
+    /// Open or close who is here
+    #[effect(view, own_device, idempotent)]
+    ToggleCollaborators,
+
+    /// Show a person
+    #[effect(view, own_device)]
+    ShowPerson {
+        /// The person, as the roster names them.
+        #[param("The person to show")]
+        person: String,
+    },
+
+    /// Open or close the overview
+    ///
+    /// Whether it is to be open; toggled when absent.
+    #[effect(view, own_device, idempotent)]
+    Overview {
+        /// Whether it is open.
+        #[param("Whether the overview is open; toggled when absent")]
+        open: Option<bool>,
+    },
+
+    /// Show the top bar over a full screen window
+    ///
+    /// As the Super key and a finger swiped down from the top edge do.
+    #[effect(view, own_device, idempotent)]
+    RevealTopBar,
+
+    /// Open or close quick settings
+    #[effect(view, own_device, idempotent)]
+    QuickSettings,
+
+    /// Open or close the Tilo menu
+    #[effect(view, own_device, idempotent)]
+    TiloMenu {
+        /// Whether it is open.
+        #[param("Whether the menu is open; toggled when absent")]
+        open: Option<bool>,
+    },
+
+    /// Open or close the workspace menu
+    #[effect(view, own_device, idempotent)]
+    WorkspaceMenu,
+}
+
+/// A verb a host page or a surface dispatches, from either resource: the
+/// desktop's own verbs and the ones its surfaces over it carry out, named by
+/// the one vocabulary's ids.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Verb {
+    Desk(DeskEffect),
+    Chrome(ChromeEffect),
+}
+
+impl Verb {
+    /// The verb `effect` with `arguments`, as a caller dispatched it.
+    ///
+    /// # Errors
+    /// Returns why no verb of the desk's is named by the id and arguments.
+    pub fn decode(
+        effect: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, String> {
+        if let Ok(verb) = DeskEffect::decode(effect, arguments) {
+            return Ok(Self::Desk(verb));
+        }
+        ChromeEffect::decode(effect, arguments)
+            .map(Self::Chrome)
+            .map_err(|error| error.to_string())
+    }
+
+    /// This verb's id among the declared ones.
+    #[must_use]
+    pub fn id(&self) -> &'static str {
         match self {
-            Self::Close { generation, .. }
-            | Self::Reopen { generation }
-            | Self::Workspace { generation, .. }
-            | Self::WorkspaceActivity { generation, .. }
-            | Self::CloseWorkspaceActivity { generation, .. }
-            | Self::NotificationCenter { generation, .. }
-            | Self::Pan { generation, .. }
-            | Self::History { generation, .. }
-            | Self::Select { generation, .. }
-            | Self::Strip { generation, .. }
-            | Self::Width { generation, .. }
-            | Self::Maximize { generation, .. }
-            | Self::Fullscreen { generation, .. }
-            | Self::Rename { generation, .. }
-            | Self::Scroll { generation, .. }
-            | Self::GlobalSearch { generation }
-            | Self::Commands { generation, .. }
-            | Self::Launch { generation, .. }
-            | Self::Open { generation, .. }
-            | Self::TabOpenBeside { generation, .. }
-            | Self::MoveToStrip { generation, .. }
-            | Self::MoveToWorkspace { generation, .. }
-            | Self::MoveToDisplay { generation, .. }
-            | Self::WidthPreset { generation, .. }
-            | Self::EqualizeWidths { generation, .. }
-            | Self::ShareWindow { generation, .. }
-            | Self::SplitRight { generation, .. }
-            | Self::MoveToNewGroup { generation, .. }
-            | Self::CloseWindow { generation, .. }
-            | Self::StopDesktopControl { generation, .. } => generation,
+            Self::Desk(verb) => verb.id(),
+            Self::Chrome(verb) => verb.id(),
+        }
+    }
+
+    /// The verb `payload` encodes, from either vocabulary: an invocation's
+    /// effect id and the arguments its caller gave.
+    ///
+    /// # Errors
+    /// Returns why no verb is named by it.
+    pub fn from_payload(payload: &[u8]) -> Result<Self, String> {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            effect: String,
+            #[serde(default)]
+            args: serde_json::Map<String, serde_json::Value>,
+        }
+        let Payload { effect, args } =
+            serde_json::from_slice(payload).map_err(|error| format!("Unknown verb: {error}"))?;
+        Self::decode(&effect, &args)
+    }
+
+    /// The verb as the wire spells it: its id and its arguments.
+    ///
+    /// # Errors
+    /// Never: every verb of the vocabulary is its declaration's arguments.
+    pub fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+        match self {
+            Self::Desk(verb) => Effect::arguments(verb),
+            Self::Chrome(verb) => Effect::arguments(verb),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+impl From<DeskEffect> for Verb {
+    fn from(verb: DeskEffect) -> Self {
+        Self::Desk(verb)
+    }
+}
+
+impl From<ChromeEffect> for Verb {
+    fn from(verb: ChromeEffect) -> Self {
+        Self::Chrome(verb)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -469,25 +826,72 @@ pub const CAPABILITIES: Capabilities = Capabilities {
 /// The longest name a person may give a window.
 pub const MAX_NAME_CHARS: usize = 200;
 
-/// A person's name for the window at `route`: trimmed, within the length a
+/// The window group `group` names, wherever in the tree it stands, and the
+/// tab focus lands on in it.
+///
+/// # Errors
+/// Refuses an id that is not decimal text, or a group the tree does not
+/// hold with a tab to focus.
+pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> {
+    let group = id(group)?;
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            for held in &strip.window_groups {
+                if held.id == group && held.tabs.iter().any(|tab| tab.id == held.active_tab) {
+                    return Ok(RouteIds {
+                        workspace: workspace.id,
+                        strip: strip.id,
+                        group: held.id,
+                        tab: held.active_tab,
+                    });
+                }
+            }
+        }
+    }
+    Err("Window unavailable".into())
+}
+
+/// The window the tab `tab` is in, wherever in the tree it stands.
+///
+/// # Errors
+/// Refuses an id that is not decimal text, or a tab the tree does not hold.
+pub fn tab_route(tree: &DesktopTree, tab: &str) -> Result<RouteIds, String> {
+    let tab = id(tab)?;
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                if group.tabs.iter().any(|held| held.id == tab) {
+                    return Ok(RouteIds {
+                        workspace: workspace.id,
+                        strip: strip.id,
+                        group: group.id,
+                        tab,
+                    });
+                }
+            }
+        }
+    }
+    Err("Window unavailable".into())
+}
+
+/// A person's name for the window at `ids`: trimmed, within the length a
 /// name may be, and refused for a window the tree no longer holds.
-fn named(route: &Route, name: &str, tree: &DesktopTree) -> Result<Admitted, String> {
+fn named(ids: RouteIds, name: &str, tree: &DesktopTree) -> Result<Admitted, String> {
     if name.chars().count() > MAX_NAME_CHARS {
         return Err("Window name too long".into());
     }
-    let ids = route.ids()?;
     locate(tree, ids)
         .map(|_| Admitted::Rename(ids, name.trim().to_owned()))
         .ok_or_else(|| "Window unavailable".into())
 }
 
-/// Check `command` against `generation` and `tree` without changing either.
+/// Check `verb` against `tree` without changing either.
 ///
 /// # Errors
-/// Refuses a stale generation, a malformed or absent identity, or a command
-/// this surface does not perform.
-pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<Admitted, String> {
-    admit_with(command, generation, tree, &CAPABILITIES)
+/// Refuses a malformed or absent identity, one the tree does not hold, or a
+/// verb this surface does not carry out.
+pub fn admit(verb: &Verb, tree: &DesktopTree) -> Result<Admitted, String> {
+    admit_with(verb, tree, &CAPABILITIES)
 }
 
 /// History at `view` over `workspace`, at `author`'s doings when named,
@@ -519,19 +923,49 @@ fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
 ///
 /// # Errors
 /// As [`admit`].
-#[expect(
-    clippy::too_many_lines,
-    reason = "one command, one arm: every navigation command is admitted here"
-)]
 pub fn admit_with(
-    command: &Command,
-    generation: &str,
+    verb: &Verb,
     tree: &DesktopTree,
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
-    if command.generation() != generation {
-        return Err("Stale desktop surface".into());
+    match verb {
+        Verb::Desk(verb) => admit_desk(verb, tree),
+        Verb::Chrome(verb) => admit_chrome(verb, tree, capabilities),
     }
+}
+
+/// The desk's own verbs, as the surface carries them out: the ones a page
+/// dispatches to move around the windows it shows.
+fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String> {
+    match verb {
+        DeskEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
+        DeskEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
+        DeskEffect::Search { query } => match query {
+            None => Ok(Admitted::Search(None)),
+            Some(query) if ui::search::system::query_input_is_bounded(query) => {
+                Ok(Admitted::Search(Some(query.clone())))
+            }
+            Some(_) => Err("Search query too long".into()),
+        },
+        DeskEffect::StepFocus { .. }
+        | DeskEffect::FocusDisplay { .. }
+        | DeskEffect::MoveToDisplay { .. }
+        | DeskEffect::ChooseSearchRow { .. }
+        | DeskEffect::Launchpad { .. } => Err("The desk carries this out itself".into()),
+    }
+}
+
+/// The verbs the surfaces over the desk carry out, as the surface changes
+/// what it shows.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one verb, one arm: every verb the surface carries out is admitted here"
+)]
+fn admit_chrome(
+    verb: &ChromeEffect,
+    tree: &DesktopTree,
+    capabilities: &Capabilities,
+) -> Result<Admitted, String> {
     let workspace = |value: &str| -> Result<WorkspaceId, String> {
         let workspace = WorkspaceId(id(value)?);
         tree.workspaces
@@ -540,149 +974,150 @@ pub fn admit_with(
             .then_some(workspace)
             .ok_or_else(|| "Workspace unavailable".into())
     };
-    let active_workspace = |value: &str| active_workspace(tree, value);
-    let route = |route: &Route| -> Result<RouteIds, String> {
-        let ids = route.ids()?;
-        locate(tree, ids)
-            .map(|_| ids)
-            .ok_or_else(|| "Window unavailable".into())
-    };
-    match command {
-        Command::Select { route: r, .. } => route(r).map(Admitted::Select),
-        Command::Close { route: r, .. } => route(r).map(Admitted::Close),
-        Command::Reopen { .. } => admit_reopen(tree),
-        Command::Width {
-            route: r, permille, ..
-        } => {
-            let permille = (*permille).clamp(
-                ui::widget::WIDTH_MIN_PERMILLE,
-                ui::widget::WIDTH_MAX_PERMILLE,
-            );
-            route(r).map(|ids| Admitted::Width(ids, permille))
+    match verb {
+        ChromeEffect::OpenApp {
+            app,
+            beside,
+            background,
+        } => match beside {
+            Some(beside) => tab_route(tree, beside)
+                .and_then(|ids| admit_beside(ids, app, background.unwrap_or(false))),
+            None => admit_launch(tree, app),
+        },
+        ChromeEffect::ShowApp { app } => admit_open(tree, app),
+        ChromeEffect::MoveTab { tab, to } => {
+            let ids = tab_route(tree, tab)?;
+            admit_move(ids, to, tree)
         }
-        Command::Maximize {
-            route: r,
-            maximized,
-            ..
-        } => route(r).map(|ids| Admitted::Maximize(ids, *maximized)),
-        Command::Fullscreen {
-            route: r,
-            fullscreen,
-            ..
-        } => route(r).map(|ids| Admitted::Fullscreen(ids, *fullscreen)),
-        Command::Rename { route: r, name, .. } => named(r, name, tree),
-        Command::Workspace { workspace: w, .. } => workspace(w).map(Admitted::Workspace),
-        Command::Strip {
-            workspace: w,
-            strip,
-            ..
+        ChromeEffect::CloseWindow { group } => group_route(tree, group).map(Admitted::CloseWindow),
+        ChromeEffect::SplitRight { tab } => tab_route(tree, tab).map(Admitted::SplitRight),
+        ChromeEffect::NewGroup { tab } => tab_route(tree, tab).map(Admitted::MoveToNewGroup),
+        ChromeEffect::SetWidth {
+            group,
+            permille,
+            preset,
         } => {
-            let workspace = workspace(w)?;
+            let ids = group_route(tree, group)?;
+            match (preset, permille) {
+                (Some(preset), _) => Ok(Admitted::WidthPreset(ids, (*preset).into())),
+                (None, permille) => {
+                    let permille = permille.unwrap_or(500).clamp(
+                        ui::widget::WIDTH_MIN_PERMILLE,
+                        ui::widget::WIDTH_MAX_PERMILLE,
+                    );
+                    Ok(Admitted::Width(ids, permille))
+                }
+            }
+        }
+        ChromeEffect::Equalize { strip } => {
             let strip = StripId(id(strip)?);
-            tree.workspaces
+            let workspace = tree
+                .workspaces
                 .iter()
-                .find(|w| w.id == workspace)
-                .is_some_and(|w| w.strips.iter().any(|s| s.id == strip))
-                .then_some(Admitted::Strip(workspace, strip))
-                .ok_or_else(|| "Strip unavailable".into())
+                .find(|workspace| {
+                    active_strip(tree, workspace) == Some(strip)
+                        && workspace.strips.iter().any(|held| held.id == strip)
+                })
+                .ok_or_else(|| "Strip is no longer active".to_owned())?;
+            let group = workspace
+                .strips
+                .iter()
+                .find(|held| held.id == strip)
+                .and_then(|held| {
+                    held.window_groups
+                        .iter()
+                        .find(|group| group.tabs.iter().any(|tab| tab.id == group.active_tab))
+                })
+                .ok_or_else(|| "Window unavailable".to_owned())?;
+            Ok(Admitted::EqualizeWidths(RouteIds {
+                workspace: workspace.id,
+                strip,
+                group: group.id,
+                tab: group.active_tab,
+            }))
         }
-        Command::WorkspaceActivity {
-            workspace: w,
-            view,
-            author,
-            ..
-        } => admit_activity(active_workspace(w)?, *view, author.clone(), capabilities),
-        Command::CloseWorkspaceActivity { workspace: w, .. } => {
-            active_workspace(w).map(Admitted::CloseActivity)
+        ChromeEffect::Maximize { group, on } => {
+            group_route(tree, group).map(|ids| Admitted::Maximize(ids, *on))
         }
-        Command::NotificationCenter { open, .. } => admit_notifications(*open, capabilities),
-        Command::History {
-            route: r, target, ..
-        } => {
-            let direction = history_direction(target)?;
-            route(r).map(|ids| Admitted::History(ids, direction))
+        ChromeEffect::Fullscreen { group, on } => {
+            group_route(tree, group).map(|ids| Admitted::Fullscreen(ids, *on))
         }
-        Command::Pan {
-            workspace: w,
-            strip,
-            offset,
-            ..
-        } => admit_pan(tree, w, strip, *offset),
-        Command::Scroll { region, action, .. } => {
+        ChromeEffect::Rename { group, name, .. } => match group {
+            Some(group) => named(group_route(tree, group)?, name, tree),
+            None => Err("Name a window, a strip or a workspace to rename".into()),
+        },
+        ChromeEffect::ReopenClosed => admit_reopen(tree),
+        ChromeEffect::ShareWindow { group, on } => {
+            group_route(tree, group).map(|ids| Admitted::ShareWindow(ids, *on))
+        }
+        ChromeEffect::StopDesktopControl { group } => {
+            group_route(tree, group).map(Admitted::StopDesktopControl)
+        }
+        ChromeEffect::Pan { strip, offset } => admit_pan(tree, strip, *offset),
+        ChromeEffect::Scroll { region, action } => {
             let ids = parse_scroll_region(region)?;
             if active_route(tree) != Some(ids) {
                 return Err("Scroll target is no longer active".into());
             }
             Ok(Admitted::Scroll(ids, *action))
         }
-        Command::GlobalSearch { .. } => Ok(Admitted::Search(None)),
-        Command::Commands { query, .. } => {
-            if ui::search::system::query_input_is_bounded(query) {
-                Ok(Admitted::Search(Some(query.clone())))
-            } else {
-                Err("Search query too long".into())
-            }
+        ChromeEffect::History { tab, target } => {
+            let direction = history_direction(target)?;
+            tab_route(tree, tab).map(|ids| Admitted::History(ids, direction))
         }
-        Command::Launch { app, .. } => admit_launch(tree, app),
-        Command::TabOpenBeside {
-            app,
-            beside: r,
-            background,
-            ..
-        } => route(r).and_then(|ids| admit_beside(ids, app, *background)),
-        Command::Open { app, .. } => admit_open(tree, app),
-        Command::MoveToStrip {
-            route: r, strip, ..
+        ChromeEffect::Activity {
+            workspace: w,
+            view,
+            author,
+        } => admit_activity(
+            active_workspace(tree, w)?,
+            *view,
+            author.clone(),
+            capabilities,
+        ),
+        ChromeEffect::CloseActivity { workspace: w } => {
+            active_workspace(tree, w).map(Admitted::CloseActivity)
+        }
+        ChromeEffect::Notifications { open } => admit_notifications(*open, capabilities),
+        ChromeEffect::SwitchWorkspace {
+            workspace: Some(w), ..
+        } => workspace(w).map(Admitted::Workspace),
+        ChromeEffect::ShowStrip {
+            workspace: w,
+            strip,
         } => {
-            let ids = route(r)?;
-            let to = StripId(id(strip)?);
-            let there = tree
-                .workspaces
+            let workspace = active_workspace(tree, w)?;
+            let strip = StripId(id(strip)?);
+            tree.workspaces
                 .iter()
-                .find(|workspace| workspace.id == ids.workspace)
-                .is_some_and(|workspace| {
-                    to != ids.strip && workspace.strips.iter().any(|held| held.id == to)
-                });
-            there
-                .then_some(Admitted::MoveToStrip(ids, to))
+                .find(|held| held.id == workspace)
+                .is_some_and(|held| held.strips.iter().any(|known| known.id == strip))
+                .then_some(Admitted::Strip(workspace, strip))
                 .ok_or_else(|| "Strip unavailable".into())
         }
-        Command::MoveToWorkspace {
-            route: r,
-            workspace: to,
-            ..
-        } => {
-            let ids = route(r)?;
-            let to = workspace(to)?;
-            (to != ids.workspace)
-                .then_some(Admitted::MoveToWorkspace(ids, to))
-                .ok_or_else(|| "Workspace unavailable".into())
-        }
-        Command::MoveToDisplay {
-            route: r, display, ..
-        } => {
-            let ids = route(r)?;
-            let connected = tree.outputs.displays.iter().any(|held| held.id == *display)
-                && tree.outputs.display_of(ids.group) != Some(*display);
-            connected
-                .then_some(Admitted::MoveToDisplay(ids, *display))
-                .ok_or_else(|| "Display unavailable".into())
-        }
-        Command::WidthPreset {
-            route: r, preset, ..
-        } => route(r).map(|ids| Admitted::WidthPreset(ids, (*preset).into())),
-        Command::EqualizeWidths { route: r, .. } => route(r).map(Admitted::EqualizeWidths),
-        Command::ShareWindow {
-            route: r, shared, ..
-        } => route(r).map(|ids| Admitted::ShareWindow(ids, *shared)),
-        Command::SplitRight { route: r, .. } => route(r).map(Admitted::SplitRight),
-        Command::MoveToNewGroup { route: r, .. } => route(r).map(Admitted::MoveToNewGroup),
-        Command::CloseWindow { route: r, .. } => route(r).map(Admitted::CloseWindow),
-        Command::StopDesktopControl { route: r, .. } => route(r).map(Admitted::StopDesktopControl),
+        ChromeEffect::NewStrip { .. }
+        | ChromeEffect::MoveStrip { .. }
+        | ChromeEffect::StepStrip { .. }
+        | ChromeEffect::NewWorkspace { .. }
+        | ChromeEffect::JoinWorkspace
+        | ChromeEffect::LeaveWorkspace { .. }
+        | ChromeEffect::WorkspaceSettings
+        | ChromeEffect::Shortcut { .. }
+        | ChromeEffect::ToggleCollaborators
+        | ChromeEffect::ShowStrips
+        | ChromeEffect::ShowPerson { .. }
+        | ChromeEffect::Overview { .. }
+        | ChromeEffect::RevealTopBar
+        | ChromeEffect::QuickSettings
+        | ChromeEffect::TiloMenu { .. }
+        | ChromeEffect::WorkspaceMenu
+        | ChromeEffect::SwitchWorkspace {
+            workspace: None, ..
+        } => Err("The surfaces carry this out themselves".into()),
     }
 }
 
-/// A launch, checked against the desktop it opens on.
+/// A launch of `app`, checked against the desktop it opens on.
 fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
     let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
     active_strip(tree, workspace).ok_or("Strip unavailable")?;
@@ -698,6 +1133,42 @@ fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, 
         return Err("Application unavailable".into());
     }
     Ok(Admitted::TabOpenBeside(ids, app.to_owned(), background))
+}
+
+/// Where a window goes: the destination one of `to`'s ids names, checked
+/// against the tree.
+fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Admitted, String> {
+    if let Some(strip) = &to.strip {
+        let target = StripId(id(strip)?);
+        let there = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == ids.workspace)
+            .is_some_and(|workspace| {
+                target != ids.strip && workspace.strips.iter().any(|held| held.id == target)
+            });
+        return there
+            .then_some(Admitted::MoveToStrip(ids, target))
+            .ok_or_else(|| "Strip unavailable".into());
+    }
+    if let Some(workspace) = &to.workspace {
+        let workspace = WorkspaceId(id(workspace)?);
+        let there = tree.workspaces.iter().any(|held| held.id == workspace);
+        return (there && workspace != ids.workspace)
+            .then_some(Admitted::MoveToWorkspace(ids, workspace))
+            .ok_or_else(|| "Workspace unavailable".into());
+    }
+    if let Some(display) = &to.display {
+        let display: u32 = display
+            .parse()
+            .map_err(|_| "Display unavailable".to_owned())?;
+        let connected = tree.outputs.displays.iter().any(|held| held.id == display)
+            && tree.outputs.display_of(ids.group) != Some(display);
+        return connected
+            .then_some(Admitted::MoveToDisplay(ids, display))
+            .ok_or_else(|| "Display unavailable".into());
+    }
+    Err("The surface carries a tab to a strip, workspace or display only".into())
 }
 
 fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
@@ -790,22 +1261,14 @@ fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceId, Stri
         .ok_or_else(|| "Workspace is no longer active".into())
 }
 
-fn admit_pan(
-    tree: &DesktopTree,
-    workspace: &str,
-    strip: &str,
-    offset: f64,
-) -> Result<Admitted, String> {
+fn admit_pan(tree: &DesktopTree, strip: &str, offset: f64) -> Result<Admitted, String> {
     if !offset.is_finite() {
         return Err("Invalid pan offset".into());
     }
-    let workspace = active_workspace(tree, workspace)?;
     let strip = StripId(id(strip)?);
     let shown = tree
-        .workspaces
-        .iter()
-        .find(|w| w.id == workspace)
-        .and_then(|w| active_strip(tree, w));
+        .active_workspace()
+        .and_then(|workspace| active_strip(tree, workspace));
     if shown != Some(strip) {
         return Err("Strip is no longer active".into());
     }
@@ -1124,6 +1587,62 @@ mod tests {
         }
     }
 
+    /// A verb as a page sends it: its resource's effect id and the
+    /// arguments the caller gives.
+    fn decode<E: Effect>(effect: &str, args: serde_json::Value) -> Result<E, String> {
+        let payload = serde_json::Value::Object(serde_json::Map::from_iter([
+            ("effect".to_owned(), serde_json::Value::from(effect)),
+            ("args".to_owned(), args),
+        ]));
+        let payload = serde_json::to_vec(&payload).unwrap();
+        E::from_payload(&payload).map_err(|error| error.to_string())
+    }
+
+    fn desk(effect: &str, args: serde_json::Value) -> Verb {
+        Verb::Desk(decode(effect, args).unwrap())
+    }
+
+    fn chrome(effect: &str, args: serde_json::Value) -> Verb {
+        Verb::Chrome(decode(effect, args).unwrap())
+    }
+
+    fn admitted(tree: &DesktopTree, verb: &Verb) -> Result<Admitted, String> {
+        admit(verb, tree)
+    }
+
+    /// Every verb of either vocabulary decodes from its declaration's id, and
+    /// is asked for with exactly the arguments its declaration makes
+    /// optional: nothing of it can be dropped, or invented, on the wire.
+    #[test]
+    fn every_verb_decodes_from_its_id_and_refuses_a_bad_argument() {
+        for declaration in DeskEffect::declarations()
+            .into_iter()
+            .chain(ChromeEffect::declarations())
+        {
+            let none_needed = declaration.params.iter().all(|param| !param.required);
+            let decoded = DeskEffect::decode(declaration.id, &serde_json::Map::default()).is_ok()
+                || ChromeEffect::decode(declaration.id, &serde_json::Map::default()).is_ok();
+            assert_eq!(
+                decoded, none_needed,
+                "{}: arguments are required only where its declaration asks",
+                declaration.id
+            );
+        }
+        assert!(decode::<DeskEffect>("no-such-verb", serde_json::json!({})).is_err());
+        assert_eq!(
+            decode::<DeskEffect>("focus", serde_json::json!({"tab":"4"})).ok(),
+            Some(DeskEffect::Focus { tab: "4".into() })
+        );
+        assert!(decode::<DeskEffect>("focus", serde_json::json!({"tab":4})).is_err());
+        assert_eq!(
+            decode::<ChromeEffect>("pan", serde_json::json!({"strip":"9","offset":1.5})).ok(),
+            Some(ChromeEffect::Pan {
+                strip: "9".into(),
+                offset: 1.5
+            })
+        );
+    }
+
     #[test]
     fn route_round_trips_full_u64_and_rejects_numeric_ids() {
         let route = Route {
@@ -1153,24 +1672,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_wire_commands_are_generation_bound() {
-        for kind in [
-            "workspace",
-            "workspace-activity",
-            "close-workspace-activity",
-        ] {
-            let mut wire = serde_json::json!({"kind":kind,"generation":"mount-1","workspace":"9007199254740993"});
-            if kind == "workspace-activity" {
-                wire["view"] = "catch-up".into();
-            }
-            let command: Command = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(command.generation(), "mount-1");
-            wire["workspace"] = 1.into();
-            assert!(serde_json::from_value::<Command>(wire).is_err());
-        }
-    }
-
-    #[test]
     fn snapshot_names_the_active_window_and_admits_only_live_routes() {
         let tree = tree();
         let snapshot = snapshot(&tree, "g1", vec![]);
@@ -1186,59 +1687,41 @@ mod tests {
         assert_eq!(json["activeStrip"], "9007199254740993");
         assert_eq!(json["capabilities"]["workspaceSelect"], true);
 
-        let select = Command::Select {
-            generation: "g1".into(),
-            route: active.clone(),
-        };
-        assert!(matches!(
-            admit(&select, "g1", &tree),
-            Ok(Admitted::Select(_))
-        ));
+        let select = desk("focus", serde_json::json!({"tab":"4"}));
+        assert!(matches!(admit(&select, &tree), Ok(Admitted::Select(_))));
+        let gone = desk("focus", serde_json::json!({"tab":"5"}));
+        assert_eq!(admit(&gone, &tree).unwrap_err(), "Window unavailable");
+        let bad: Result<DeskEffect, String> = decode("focus", serde_json::json!({"tab":"four"}));
         assert_eq!(
-            admit(&select, "g2", &tree).unwrap_err(),
-            "Stale desktop surface"
+            bad.unwrap_err(),
+            "the effect's `tab` argument is `four`, which names no id: ids travel as decimal \
+             text"
         );
-        let gone = Command::Close {
-            generation: "g1".into(),
-            route: Route {
-                tab: "5".into(),
-                ..active
-            },
-        };
-        assert_eq!(admit(&gone, "g1", &tree).unwrap_err(), "Window unavailable");
-        let search = Command::GlobalSearch {
-            generation: "g1".into(),
-        };
-        assert_eq!(admit(&search, "g1", &tree), Ok(Admitted::Search(None)));
-        assert!(admit(&search, "g2", &tree).is_err());
-        let wire = serde_json::json!({"kind":"commands","generation":"g1","query":"sheets"});
-        let commands: Command = serde_json::from_value(wire).unwrap();
+        let search = desk("search", serde_json::json!({}));
+        assert_eq!(admit(&search, &tree), Ok(Admitted::Search(None)));
+        let typed = desk("search", serde_json::json!({"query":"sheets"}));
         assert_eq!(
-            admit(&commands, "g1", &tree),
+            admit(&typed, &tree),
             Ok(Admitted::Search(Some("sheets".into())))
         );
         assert_eq!(json["capabilities"]["globalSearch"], true);
     }
 
-    fn admitted(tree: &DesktopTree, wire: serde_json::Value) -> Result<Admitted, String> {
-        admit(&serde_json::from_value(wire).unwrap(), "g", tree)
-    }
-
     #[test]
     fn pan_is_admitted_only_for_the_shown_strip_at_a_finite_offset() {
         let tree = tree();
-        let (w, s) = (u64::MAX.to_string(), "9007199254740993");
+        let s = "9007199254740993";
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"pan","generation":"g","workspace":w,"strip":s,"offset":120.5})
+                &chrome("pan", serde_json::json!({"strip":s,"offset":120.5}))
             ),
             Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 120.5))
         );
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"pan","generation":"g","workspace":w,"strip":"8","offset":0})
+                &chrome("pan", serde_json::json!({"strip":"8","offset":0}))
             )
             .unwrap_err(),
             "Strip is no longer active"
@@ -1246,19 +1729,16 @@ mod tests {
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"pan","generation":"g","workspace":"5","strip":s,"offset":0})
-            )
-            .unwrap_err(),
-            "Workspace unavailable"
+                &chrome("pan", serde_json::json!({"strip":s,"offset":0}))
+            ),
+            Ok(Admitted::Pan(StripId(9_007_199_254_740_993), 0.0))
         );
-        let infinite = Command::Pan {
-            generation: "g".into(),
-            workspace: w,
+        let infinite = ChromeEffect::Pan {
             strip: s.into(),
             offset: f64::INFINITY,
         };
         assert_eq!(
-            admit(&infinite, "g", &tree).unwrap_err(),
+            admit(&infinite.into(), &tree).unwrap_err(),
             "Invalid pan offset"
         );
     }
@@ -1271,7 +1751,10 @@ mod tests {
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"scroll","generation":"g","region":region,"action":{"kind":"page","value":-1}})
+                &chrome(
+                    "scroll",
+                    serde_json::json!({"region":region,"action":{"kind":"page","value":-1}})
+                )
             ),
             Ok(Admitted::Scroll(active, ScrollAction::Page(-1)))
         );
@@ -1279,7 +1762,10 @@ mod tests {
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"scroll","generation":"g","region":gone,"action":{"kind":"end"}})
+                &chrome(
+                    "scroll",
+                    serde_json::json!({"region":gone,"action":{"kind":"end"}})
+                )
             )
             .unwrap_err(),
             "Scroll target is no longer active"
@@ -1287,22 +1773,24 @@ mod tests {
         assert!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"scroll","generation":"g","region":"nonsense","action":{"kind":"end"}})
+                &chrome(
+                    "scroll",
+                    serde_json::json!({"region":"nonsense","action":{"kind":"end"}})
+                )
             )
             .is_err()
         );
-        let route = Route::from_ids(active);
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"history","generation":"g","route":route,"target":"forward"})
+                &chrome("history", serde_json::json!({"tab":"4","target":"forward"}))
             ),
             Ok(Admitted::History(active, HistoryDirection::Forward))
         );
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"history","generation":"g","route":route,"target":"up"})
+                &chrome("history", serde_json::json!({"tab":"4","target":"up"}))
             )
             .unwrap_err(),
             "Unknown history target"
@@ -1316,7 +1804,7 @@ mod tests {
         for view in ["catch-up", "explore", "replay"] {
             let reason = admitted(
                 &tree,
-                serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":w,"view":view}),
+                &chrome("activity", serde_json::json!({"workspace":w,"view":view})),
             )
             .unwrap_err();
             assert!(
@@ -1331,18 +1819,18 @@ mod tests {
             ..Presentation::default()
         }
         .capabilities();
-        let command: Command = serde_json::from_value(
-            serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":"2","view":"explore"}),
-        )
-        .unwrap();
+        let elsewhere = chrome(
+            "activity",
+            serde_json::json!({"workspace":"2","view":"explore"}),
+        );
         assert_eq!(
-            admit_with(&command, "g", &tree, &capabilities).unwrap_err(),
+            admit_with(&elsewhere, &tree, &capabilities).unwrap_err(),
             "Workspace is no longer active"
         );
         assert_eq!(
             admitted(
                 &tree,
-                serde_json::json!({"kind":"close-workspace-activity","generation":"g","workspace":w})
+                &chrome("close-activity", serde_json::json!({"workspace":w}))
             ),
             Ok(Admitted::CloseActivity(WorkspaceId(u64::MAX)))
         );
@@ -1376,25 +1864,19 @@ mod tests {
             ("explore", ActivityView::Explore),
             ("replay", ActivityView::Replay),
         ] {
-            let command: Command = serde_json::from_value(
-                serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":w,"view":wire}),
-            )
-            .unwrap();
+            let verb = chrome("activity", serde_json::json!({"workspace":w,"view":wire}));
             assert_eq!(
-                admit_with(&command, "g", &tree, &capabilities),
+                admit_with(&verb, &tree, &capabilities),
                 Ok(Admitted::Activity(WorkspaceId(u64::MAX), view, None))
             );
         }
-        let center: Command = serde_json::from_value(
-            serde_json::json!({"kind":"notification-center","generation":"g","open":true}),
-        )
-        .unwrap();
+        let center = chrome("notifications", serde_json::json!({"open":true}));
         assert_eq!(
-            admit_with(&center, "g", &tree, &capabilities),
+            admit_with(&center, &tree, &capabilities),
             Ok(Admitted::NotificationCenter(true))
         );
         assert_eq!(
-            admit(&center, "g", &tree).unwrap_err(),
+            admit(&center, &tree).unwrap_err(),
             "Notifications are unavailable on this desktop"
         );
         let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
@@ -1440,21 +1922,13 @@ mod tests {
     #[test]
     fn launch_names_an_application_on_the_shown_strip() {
         let tree = tree();
-        let wire = serde_json::json!({"kind":"launch","generation":"g1","app":"so.tilo.notes"});
-        let launch: Command = serde_json::from_value(wire).unwrap();
+        let launch = chrome("open-app", serde_json::json!({"app":"so.tilo.notes"}));
         assert_eq!(
-            admit(&launch, "g1", &tree),
+            admit(&launch, &tree),
             Ok(Admitted::Launch("so.tilo.notes".into()))
         );
-        assert_eq!(
-            admit(&launch, "g2", &tree).unwrap_err(),
-            "Stale desktop surface"
-        );
-        let empty = Command::Launch {
-            generation: "g1".into(),
-            app: String::new(),
-        };
-        assert!(admit(&empty, "g1", &tree).is_err());
+        let empty = chrome("open-app", serde_json::json!({"app":""}));
+        assert!(admit(&empty, &tree).is_err());
         assert_eq!(
             serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap()["capabilities"]["launch"],
             true
@@ -1464,10 +1938,7 @@ mod tests {
     #[test]
     fn open_focuses_the_shown_window_of_an_app_or_launches_one() {
         let tree = tree();
-        let open = |app: &str| -> Command {
-            serde_json::from_value(serde_json::json!({"kind":"open","generation":"g1","app":app}))
-                .unwrap()
-        };
+        let open = |app: &str| chrome("show-app", serde_json::json!({"app":app}));
         let shown = RouteIds {
             workspace: WorkspaceId(u64::MAX),
             strip: StripId(9_007_199_254_740_993),
@@ -1475,14 +1946,14 @@ mod tests {
             tab: 4,
         };
         assert_eq!(
-            admit(&open("so.tilo.notes"), "g1", &tree),
+            admit(&open("so.tilo.notes"), &tree),
             Ok(Admitted::Select(shown))
         );
         assert_eq!(
-            admit(&open("so.tilo.chat"), "g1", &tree),
+            admit(&open("so.tilo.chat"), &tree),
             Ok(Admitted::Open("so.tilo.chat".into()))
         );
-        assert!(admit(&open(""), "g1", &tree).is_err());
+        assert!(admit(&open(""), &tree).is_err());
         let json = serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap();
         assert_eq!(json["entries"][0]["app"], "so.tilo.notes");
     }

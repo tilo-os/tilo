@@ -31,7 +31,7 @@ function desktopNavigation(windows) {
     async dispatch(command) {
       commands.push(command);
       const route = {workspace: '1', strip: '1', group: '7', tab: '8'};
-      queueMicrotask(() => show({generation: 'g1', active: route, entries: [...windows, {route, app: command.app}]}));
+      queueMicrotask(() => show({generation: 'g1', active: route, entries: [...windows, {route, app: command.args?.app}]}));
     },
   }};
 }
@@ -44,7 +44,7 @@ test('desktop mode opens the app through navigation, then the view through its w
     invokeAction: (...args) => { invoked.push(args); return {state: 'completed'}; },
   };
   await openTarget({mount, navigation, mode: 'desktop', target: {app: 'so.tilo.chat', record: '', resource: message}});
-  assert.deepEqual(commands, [{kind: 'open', app: 'so.tilo.chat', generation: 'g1'}]);
+  assert.deepEqual(commands, [{effect: 'show-app', args: {app: 'so.tilo.chat'}}]);
   assert.deepEqual(invoked, [[message.id, 'reveal', {}, {window: '8'}]]);
 });
 

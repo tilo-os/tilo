@@ -286,7 +286,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         "the lock screen draws its clock and prompt, not only the dim"
     );
     assert!(
-        publisher(&session, "toggle-overview").is_none(),
+        publisher(&session, "overview").is_none(),
         "the locked session withholds the desktop's actions"
     );
     // What the screen shows is the session's own resource: the same reading
@@ -350,7 +350,7 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
          desk it showed before the lock, and {was:.0} from the lock screen"
     );
     assert!(
-        publisher(&session, "toggle-overview").is_some(),
+        publisher(&session, "overview").is_some(),
         "the unlocked session publishes the desktop's actions again"
     );
 }

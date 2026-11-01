@@ -2543,7 +2543,10 @@ fn check_bound(
 }
 
 fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {
-    if encoded.type_id == expected {
+    // A refusal carries the builder's own reason to the caller; the door reads
+    // it out of the payload. Only an encoding of another operation, which the
+    // spec cannot invoke, is a defect worth naming here.
+    if encoded.type_id == expected || encoded.type_id == INVALID_ARGUMENTS_TYPE {
         encoded
     } else {
         EncodedAction {

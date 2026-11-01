@@ -41,7 +41,7 @@ use tilo_desktop::desktop_host::{
     JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{
     DesktopHandle, DesktopNotifications, HostAction, HostActionSource,
     notifications::{Notification, NotificationIconKind},
@@ -208,13 +208,10 @@ fn open_listed(
     directory: &directory::Store,
     key: &str,
 ) {
-    let opened = handle.dispatch(
-        &Command::Workspace {
-            generation: crate::GENERATION.into(),
-            workspace: key.to_owned(),
-        },
-        crate::GENERATION,
-    );
+    let opened = handle.dispatch(ChromeEffect::SwitchWorkspace {
+        workspace: Some(key.to_owned()),
+        delta: None,
+    });
     if let Err(error) = opened {
         tracing::warn!(%error, %key, "workspace directory open");
         directory.set_note(Some(error));
@@ -1003,7 +1000,10 @@ impl crate::Shared {
     /// their other device made opens here without joining anything anew.
     pub(crate) fn add_workspace(&self, room: &str, name: &str) -> Result<(), String> {
         let args = serde_json::Map::from_iter([
-            ("room".to_owned(), serde_json::Value::from(room.to_owned())),
+            (
+                "workspace".to_owned(),
+                serde_json::Value::from(room.to_owned()),
+            ),
             ("name".to_owned(), serde_json::Value::from(name.to_owned())),
         ]);
         self.ask_of_desk("new-workspace", &args)

@@ -730,7 +730,7 @@ mod tests {
         // The sheet shows her in the People tab.
         session
             .invoke(
-                tilo_desktop::desktop_actions::CHROME_RESOURCE,
+                tilo_desktop::desk_verbs::CHROME_RESOURCE,
                 "workspace-settings",
                 &serde_json::Map::new(),
             )

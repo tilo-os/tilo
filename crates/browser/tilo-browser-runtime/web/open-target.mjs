@@ -103,7 +103,7 @@ export async function openTarget({mount, navigation, target, mode, timers}) {
     if (!navigation) throw new Error('This desktop cannot follow links');
     const snapshot = navigation.getSnapshot();
     if (focusedApp(snapshot) !== target.app) {
-      await navigation.dispatch({kind: 'open', app: target.app, generation: snapshot.generation});
+      await navigation.dispatch({effect: 'show-app', args: {app: target.app}});
     }
     const frames = () => mount.state?.()?.frames ?? Infinity;
     const shown = await untilSnapshot(navigation, next => focusedApp(next) === target.app, {timers, frames});

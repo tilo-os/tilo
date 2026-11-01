@@ -640,11 +640,13 @@ fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
         "the desktop's focused window has the keyboard from the start"
     );
 
-    let command = serde_json::from_value(serde_json::json!({
-        "kind": "launch", "generation": "g", "app": APP
-    }))
-    .unwrap();
-    desk.handle.dispatch(&command, "g").unwrap();
+    desk.handle
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: APP.into(),
+            beside: None,
+            background: None,
+        })
+        .unwrap();
     desk.settle();
     let opened = desk
         .handle

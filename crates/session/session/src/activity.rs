@@ -562,7 +562,7 @@ mod tests {
     use tilo_actions::remote::{Caller, InvokeArgument, PendingPoll};
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
-    use tilo_desktop_surface::navigation::{ActivityView, Command};
+    use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
     use ui::widget::TileHost;
 
@@ -631,15 +631,11 @@ mod tests {
         /// The person asks for this workspace's history, and it opens.
         fn open_history(&mut self) {
             self.handle
-                .dispatch(
-                    &Command::WorkspaceActivity {
-                        generation: "g".into(),
-                        workspace: self.workspace.raw().to_string(),
-                        view: ActivityView::Explore,
-                        author: None,
-                    },
-                    "g",
-                )
+                .dispatch(ChromeEffect::Activity {
+                    workspace: self.workspace.raw().to_string(),
+                    view: ActivityView::Explore,
+                    author: None,
+                })
                 .expect("the history is admitted");
             self.frame();
         }

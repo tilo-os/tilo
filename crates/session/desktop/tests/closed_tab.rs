@@ -16,7 +16,7 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::DeskEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use ui::headless::FrameHarness;
 use ui::synthetic_input::key_press;
@@ -176,13 +176,7 @@ fn the_reopen_chord_brings_a_closed_window_back_where_it_was() {
     let closed = handle.snapshot("g", vec![]).entries[1].route.clone();
     assert_eq!(closed.group, "3");
     handle
-        .dispatch(
-            &Command::Close {
-                generation: "g".into(),
-                route: closed,
-            },
-            "g",
-        )
+        .dispatch(DeskEffect::CloseTab { tab: closed.tab })
         .unwrap();
     for _ in 0..4 {
         desk.relayout();

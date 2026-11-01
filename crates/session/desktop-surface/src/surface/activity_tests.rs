@@ -11,6 +11,7 @@ use tilo_desktop_model::WorkspaceId;
 use ui::{Arrival, RemoteActions};
 
 use super::*;
+use crate::navigation::ChromeEffect;
 use ui::widget::TileContent;
 
 const WORKSPACE: &str = "workspace-a";
@@ -279,14 +280,13 @@ fn the_app_reads_the_retained_history_and_follows_new_changes() {
 fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
     let mut desk = Served::new(None);
     let workspace = desk.workspace();
-    let open = |view, author: Option<&str>| Command::WorkspaceActivity {
-        generation: "g".into(),
+    let open = |view, author: Option<&str>| ChromeEffect::Activity {
         workspace: workspace.clone(),
         view,
         author: author.map(str::to_owned),
     };
     let replay = open(navigation::ActivityView::Replay, None);
-    desk.handle.dispatch(&replay, "g").unwrap();
+    desk.handle.dispatch(replay).unwrap();
     desk.frame();
     assert_eq!(desk.activity_windows(), 1);
 
@@ -311,7 +311,7 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
 
     // One person's changes: the window there already comes forward.
     let theirs = open(navigation::ActivityView::CatchUp, Some("Ben"));
-    desk.handle.dispatch(&theirs, "g").unwrap();
+    desk.handle.dispatch(theirs).unwrap();
     desk.frame();
     assert_eq!(desk.activity_windows(), 1);
     let (_, offered) = latest::<Option<wire::Focus>>(&focus).unwrap();
@@ -319,11 +319,8 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
     assert_eq!(offered.author.as_deref(), Some("Ben"));
     assert_eq!(offered.view, wire::View::History);
 
-    let close = Command::CloseWorkspaceActivity {
-        generation: "g".into(),
-        workspace,
-    };
-    desk.handle.dispatch(&close, "g").unwrap();
+    let close = ChromeEffect::CloseActivity { workspace };
+    desk.handle.dispatch(close).unwrap();
     desk.frame();
     assert_eq!(desk.activity_windows(), 0);
 }

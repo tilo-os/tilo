@@ -12,9 +12,7 @@
 
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::workspace_menu::WorkspaceMenuChoice;
-use tilo_topbar::{
-    Ask, BarService, Command, Link, MediaCommand, TopBarApp, TopBarEffect, TopBarSurface, fixture,
-};
+use tilo_topbar::{Ask, BarEffect, BarService, Command, Link, TopBarApp, TopBarSurface, fixture};
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget as _;
@@ -111,7 +109,9 @@ fn every_other_display_carries_a_compact_bar() {
 #[test]
 fn choosing_a_workspace_in_the_menu_asks_the_desktop() {
     let (mut app, link) = hosted("bar");
-    app.effect(&TopBarEffect::WorkspaceMenu).unwrap();
+    let name = link.shown().workspace_name;
+    assert!(!name.is_zero_area(), "the workspace has its name");
+    app.harness().click_at(name.center().x, name.center().y);
     app.settle();
     assert!(link.shown().modal, "the menu takes the next press");
     let chosen = app
@@ -143,19 +143,10 @@ fn a_click_on_the_status_cluster_opens_quick_settings() {
 #[test]
 fn published_actions_reach_the_desktop() {
     let (mut app, link) = hosted("bar");
-    app.effect(&TopBarEffect::Notifications).unwrap();
-    app.effect(&TopBarEffect::NextTrack).unwrap();
-    app.effect(&TopBarEffect::ShowStrips).unwrap();
-    assert_eq!(
-        link.take_asks(),
-        [
-            Ask::Notifications,
-            Ask::Media(MediaCommand::Next),
-            Ask::Chrome(ChromeIntent::ShowStrips),
-        ]
-    );
+    app.effect(&BarEffect::Invite).unwrap();
+    assert_eq!(link.take_asks(), [Ask::Chrome(ChromeIntent::Invite)]);
     assert!(
-        app.effect(&TopBarEffect::ActivateTrayItem {
+        app.effect(&BarEffect::ActivateTrayItem {
             item: "nothing".into()
         })
         .is_err(),

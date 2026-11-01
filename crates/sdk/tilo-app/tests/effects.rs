@@ -1772,7 +1772,7 @@ fn an_attended_effect_is_published_as_attended() {
             .into_iter()
             .find(|decl| decl.id == id)
             .unwrap();
-        let spec = decl.spec("test.mailbox.device");
+        let spec = decl.spec::<DeviceEffect>("test.mailbox.device");
         assert_eq!(decl.attended, spec.contract.is_attended(), "{id}");
         assert_eq!(
             spec.contract.kind,

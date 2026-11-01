@@ -469,10 +469,7 @@ impl Shell {
                 reason: "The window menu is not open".into(),
             });
         };
-        match self
-            .handle
-            .choose_window_menu(menu.tab, row, None, crate::GENERATION)
-        {
+        match self.handle.choose_window_menu(menu.tab, row, None) {
             Ok(()) => {
                 self.close();
                 Ok(())

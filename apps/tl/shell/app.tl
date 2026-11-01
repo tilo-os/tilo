@@ -202,7 +202,7 @@ action switch_to(w: Workspace) (icon: .layers, label: "Switch to") {
 
 /// Opens or closes the system's menu: about Tilo, settings, sleep and power.
 action system_menu(d: Desk) (icon: .tilo, label: "Tilo") {
-    outside("session.act", "toggle-tilo-menu")
+    outside("session.act", "tilo-menu")
 }
 
 /// Shows the strips of the workspace in front, to choose one.
@@ -220,7 +220,7 @@ action open_tray_item(d: Desk, item: TrayItem) (icon: .app_window, label: "Open"
 
 /// Opens or closes the device's status: quick settings, or the notifications.
 action status(d: Desk) (icon: .bell, label: "Notifications") {
-    outside("session.act", "toggle-quick-settings")
+    outside("session.act", "quick-settings")
 }
 
 /// Makes a new workspace on this device and brings it to the front.
@@ -238,9 +238,9 @@ action workspace_settings(d: Desk) (icon: .settings, label: "Workspace settings"
     outside("session.act", "workspace-settings")
 }
 
-/// Shows the windows and strips of every workspace at once, to search and move things.
+/// Shows every workspace's strips and windows at once.
 action show_overview(d: Desk) (icon: .layout_grid, label: "Overview") {
-    outside("session.act", "toggle-overview")
+    outside("session.act", "overview")
 }
 
 /// Shows the windows of the workspace, most recent first, as Alt+Tab walks them.
@@ -250,12 +250,12 @@ action switch_windows(d: Desk) (icon: .layers, label: "Switch windows") {
 
 /// Answers the question waiting on the person's avatar.
 action answer_ask(d: Desk) (icon: .check, label: "Answer") {
-    outside("session.act", "answer_ask")
+    outside("session.act", "answer-ask")
 }
 
 /// Puts the question on the person's avatar off for now.
 action put_off_ask(d: Desk) (icon: .x, label: "Ask me later") {
-    outside("session.act", "put_off_ask")
+    outside("session.act", "put-off-ask")
 }
 
 /// Opens search and launching over the whole workspace: apps, resources, actions and recents.

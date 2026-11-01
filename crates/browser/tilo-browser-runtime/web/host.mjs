@@ -219,7 +219,7 @@ export async function mountDesktop(target,options={}) {
     if(focusedApp(snapshot)===CHAT_APP)return snapshot.active.tab;
     const open=snapshot.entries?.find(entry=>entry.app===CHAT_APP);
     if(open)return open.route.tab;
-    await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+    await nav.dispatch({effect:'show-app',args:{app:CHAT_APP}});
     const shown=await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
     return shown.active.tab;
   }
@@ -240,7 +240,7 @@ export async function mountDesktop(target,options={}) {
     const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
     const snapshot=nav.getSnapshot();
     if(focusedApp(snapshot)!==CHAT_APP){
-      await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+      await nav.dispatch({effect:'show-app',args:{app:CHAT_APP}});
       await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
     }
     await runOwnAsk(ask);

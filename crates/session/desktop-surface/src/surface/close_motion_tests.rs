@@ -124,13 +124,7 @@ impl Desk {
             .unwrap()
             .route;
         self.handle
-            .dispatch(
-                &navigation::Command::Close {
-                    generation: "g".into(),
-                    route,
-                },
-                "g",
-            )
+            .dispatch(navigation::DeskEffect::CloseTab { tab: route.tab })
             .unwrap();
     }
 

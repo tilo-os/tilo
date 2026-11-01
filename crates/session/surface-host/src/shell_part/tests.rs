@@ -176,7 +176,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     );
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.action.clone()),
-        Some("toggle-quick-settings".to_owned())
+        Some("quick-settings".to_owned())
     );
 }
 

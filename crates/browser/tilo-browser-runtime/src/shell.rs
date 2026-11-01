@@ -48,7 +48,7 @@ use tilo_desktop::profile_card::{
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{DesktopTree, StripId, TabId};
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostActionSource};
 use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
@@ -688,13 +688,9 @@ impl BrowserShell {
         let open_app = |app: &str| {
             crate::desktop::known_application(app).is_some()
                 && handle
-                    .dispatch(
-                        &Command::Open {
-                            generation: generation.clone(),
-                            app: app.to_owned(),
-                        },
-                        generation,
-                    )
+                    .dispatch(ChromeEffect::ShowApp {
+                        app: app.to_owned(),
+                    })
                     .is_ok()
         };
         if self.pinned.track(&people, handle, &open_app) {
@@ -864,8 +860,8 @@ impl BrowserShell {
         }
     }
 
-    fn dispatch(&self, command: &Command) {
-        if let Err(error) = self.handle.dispatch(command, &self.generation) {
+    fn dispatch(&self, command: impl Into<Verb>) {
+        if let Err(error) = self.handle.dispatch(command) {
             web_sys::console::warn_1(&format!("desktop chrome: {error}").into());
         }
     }
@@ -875,9 +871,10 @@ impl BrowserShell {
             ui::control_hints::performed::note(
                 ui::control_hints::performed::Performed::OpenedWindow,
             );
-            self.dispatch(&Command::Launch {
-                generation: self.generation.clone(),
+            self.dispatch(ChromeEffect::OpenApp {
                 app: app.into(),
+                beside: None,
+                background: None,
             });
         } else {
             self.handle.open_search(None);
@@ -1055,8 +1052,7 @@ impl BrowserShell {
                     .presentation()
                     .notifications
                     .is_some_and(|n| n.center_open);
-                self.dispatch(&Command::NotificationCenter {
-                    generation: self.generation.clone(),
+                self.dispatch(ChromeEffect::Notifications {
                     open: !open || matches!(intent, ChromeIntent::ShowQuickSettings),
                 });
             }

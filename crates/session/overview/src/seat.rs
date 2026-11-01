@@ -61,6 +61,12 @@ impl OverviewSeat {
         self.open_asked.take()
     }
 
+    /// The overview's own `open` verb asks the shell to bring it up.
+    pub(crate) fn ask_open(&self) {
+        self.open_asked.set(true);
+        self.presentation.wake();
+    }
+
     /// The pictures of the windows: the overview names them, the
     /// compositor draws them and keeps the clock.
     pub fn flight(&self) -> &WindowFlight {
@@ -79,11 +85,6 @@ impl OverviewSeat {
 
     pub(crate) fn ask(&self, pick: OverviewPick) {
         self.asked.borrow_mut().push(pick);
-        self.presentation.wake();
-    }
-
-    pub(crate) fn ask_open(&self) {
-        self.open_asked.set(true);
         self.presentation.wake();
     }
 }

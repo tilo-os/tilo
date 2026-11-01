@@ -14,6 +14,9 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 /// constant table). `place,` marks a place inside the resource
 /// (`at: Option<Place>`): the effect acts there instead of at the invoker's
 /// caret; `place = "field"` names the collection whose items it takes.
+/// `decimal,` marks an identity the record or the surface names: it travels
+/// as canonical decimal text, since a salted id outgrows what a JSON number
+/// carries exactly, and any other text is refused when the effect is read.
 #[derive(Default)]
 struct Param {
     /// What the argument is beyond a value, by its leading flag.
@@ -42,6 +45,8 @@ enum Flag {
     /// A documented struct whose fields are the effect's arguments (the
     /// effect's only field).
     Flatten,
+    /// An identity, as canonical decimal text: anything else names no id.
+    Identity,
 }
 
 impl syn::parse::Parse for Param {
@@ -57,10 +62,12 @@ impl syn::parse::Parse for Param {
                 param.flag = Flag::Place;
             } else if flag == "content" {
                 param.flag = Flag::Content;
+            } else if flag == "decimal" {
+                param.flag = Flag::Identity;
             } else {
                 return Err(syn::Error::new(
                     flag.span(),
-                    "expected `secret`, `content`, `place` or `flatten`",
+                    "expected `secret`, `content`, `place`, `decimal` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -692,6 +699,32 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 described.name.clone().unwrap_or_else(|| field.to_string())
             })
             .collect();
+        let field_decodes: Vec<Tokens> = fields
+            .iter()
+            .map(|(field, ty, described)| {
+                let name = described.name.clone().unwrap_or_else(|| field.to_string());
+                let decode = if described.flag == Flag::Identity {
+                    match identity_field(ty) {
+                        Some(IdentityForm::Optional) => {
+                            quote!(#krate::effect::optional_identity_argument(arguments, #name)?)
+                        }
+                        Some(IdentityForm::Text) => {
+                            quote!(#krate::effect::identity_argument(arguments, #name)?)
+                        }
+                        None => {
+                            return Err(syn::Error::new(
+                                field.span(),
+                                "`decimal` is for an identity carried as text: `String` or \
+                                 `Option<String>`",
+                            ));
+                        }
+                    }
+                } else {
+                    quote!(#krate::effect::argument(arguments, #name)?)
+                };
+                Ok(decode)
+            })
+            .collect::<syn::Result<Vec<Tokens>>>()?;
         let pattern = if matches!(variant.fields, Fields::Unit) {
             quote!(Self::#ident)
         } else {
@@ -728,7 +761,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             (
                 quote!(#(#krate::effect::put(&mut arguments, #field_names, #field_idents);)*),
-                quote!(Self::#ident { #(#field_idents: #krate::effect::argument(arguments, #field_names)?,)* }),
+                quote!(Self::#ident { #(#field_idents: #field_decodes,)* }),
             )
         };
         encodes.push(quote! {
@@ -863,4 +896,25 @@ fn name_self(tokens: Tokens, name: &syn::Ident) -> Tokens {
             other => other,
         })
         .collect()
+}
+
+/// How a `#[param(decimal)]` field carries its identity.
+enum IdentityForm {
+    /// `String`: the effect always names one.
+    Text,
+    /// `Option<String>`: the effect may name none.
+    Optional,
+}
+
+/// How a `#[param(decimal)]` field carries its identity, when it is declared
+/// the way a decimal id is: as `String` or `Option<String>` text.
+fn identity_field(ty: &syn::Type) -> Option<IdentityForm> {
+    match crate::last_ident(ty) {
+        Some((name, None)) if name == "String" => Some(IdentityForm::Text),
+        Some((name, Some(inner))) if name == "Option" => match crate::last_ident(inner) {
+            Some((inner, None)) if inner == "String" => Some(IdentityForm::Optional),
+            _ => None,
+        },
+        _ => None,
+    }
 }

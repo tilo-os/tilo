@@ -10,11 +10,11 @@
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_desktop::overlays::Slot;
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::{DeviceHost, SessionRequest};
 
-use crate::{GENERATION, SESSION_RESOURCE, Shared, notifications};
+use crate::{SESSION_RESOURCE, Shared, notifications};
 
 /// The settings app, which quick settings opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
@@ -60,11 +60,12 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
             return;
         }
     }
-    let launch = Command::Launch {
-        generation: GENERATION.into(),
+    let launch = ChromeEffect::OpenApp {
         app: SETTINGS_APP.into(),
+        beside: None,
+        background: None,
     };
-    if let Err(error) = shared.handle.dispatch(&launch, GENERATION) {
+    if let Err(error) = shared.handle.dispatch(launch) {
         tracing::warn!(%error, "open settings");
     }
 }

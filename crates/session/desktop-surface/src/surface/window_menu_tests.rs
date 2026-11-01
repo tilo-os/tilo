@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::TileSource;
+use crate::navigation::{ChromeEffect, DeskEffect, Verb};
 use crate::surface::tests::{desk_with, one_window_desk};
 use crate::surface::{DesktopHandle, DesktopSurface};
 use std::collections::HashMap;
@@ -145,7 +146,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
     );
     for offered in rows.iter().filter(|row| row.enabled) {
         assert!(
-            command(&tree, &route, &offered.id, Some("A name"), "g").is_some(),
+            command(&tree, &route, &offered.id, Some("A name")).is_some(),
             "{offered:?} means a command"
         );
     }
@@ -171,13 +172,13 @@ fn a_window_asking_for_the_person_offers_to_be_gone_to_first() {
     let route = first_route(&handle);
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, REVEAL, None, "g"),
-        Some(Command::Select { .. })
+        command(&tree, &route, REVEAL, None),
+        Some(Verb::Desk(DeskEffect::Focus { .. }))
     ));
 
     let mut frame = present(surface);
     handle
-        .choose_window_menu(tab, REVEAL, None, "g")
+        .choose_window_menu(tab, REVEAL, None)
         .expect("going to the window is offered");
     settle(&mut frame);
     assert_eq!(
@@ -202,7 +203,7 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     assert!(row(&handle.window_menu(route.tab), FULLSCREEN).is_some());
 
     handle
-        .choose_window_menu(route.tab, FULLSCREEN, None, "g")
+        .choose_window_menu(route.tab, FULLSCREEN, None)
         .unwrap();
     settle(&mut frame);
     assert_eq!(covering(&handle), Some(route.group), "the tree holds it");
@@ -224,7 +225,7 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     assert!(row(&rows, EXIT_FULLSCREEN).is_some());
 
     handle
-        .choose_window_menu(route.tab, EXIT_FULLSCREEN, None, "g")
+        .choose_window_menu(route.tab, EXIT_FULLSCREEN, None)
         .unwrap();
     settle(&mut frame);
     assert_eq!(covering(&handle), None, "the display is given back");
@@ -249,16 +250,14 @@ fn filling_the_strip_is_offered_and_then_giving_it_back() {
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), MAXIMIZE).is_some());
     handle
-        .choose_window_menu(route.tab, MAXIMIZE, None, "g")
+        .choose_window_menu(route.tab, MAXIMIZE, None)
         .unwrap();
     settle(&mut frame);
     assert!(handle.read(|tree| group_at(tree, route).maximized));
     let rows = handle.window_menu(route.tab);
     assert!(row(&rows, MAXIMIZE).is_none());
     assert!(row(&rows, RESTORE).is_some());
-    handle
-        .choose_window_menu(route.tab, RESTORE, None, "g")
-        .unwrap();
+    handle.choose_window_menu(route.tab, RESTORE, None).unwrap();
     settle(&mut frame);
     assert!(!handle.read(|tree| group_at(tree, route).maximized));
 }
@@ -280,14 +279,15 @@ fn every_width_row_gives_the_window_the_share_it_names() {
         let tree = handle.read(Clone::clone);
         assert!(
             matches!(
-                command(&tree, &route, id, None, "g"),
-                Some(Command::WidthPreset { .. })
+                command(&tree, &route, id, None),
+                Some(Verb::Chrome(ChromeEffect::SetWidth {
+                    preset: Some(_),
+                    ..
+                }))
             ),
             "{id} is the share it names"
         );
-        handle
-            .choose_window_menu(route.tab, id, None, "g")
-            .expect(id);
+        handle.choose_window_menu(route.tab, id, None).expect(id);
         settle(&mut frame);
         assert_eq!(
             handle.read(|tree| group_at(tree, route).width),
@@ -305,11 +305,11 @@ fn every_width_row_gives_the_window_the_share_it_names() {
     );
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, NARROWER, None, "g"),
-        Some(Command::Width { permille, .. }) if permille == WIDTH_NORMAL_PERMILLE
+        command(&tree, &route, NARROWER, None),
+        Some(Verb::Chrome(ChromeEffect::SetWidth { permille: Some(permille), .. })) if permille == WIDTH_NORMAL_PERMILLE
     ));
     handle
-        .choose_window_menu(route.tab, NARROWER, None, "g")
+        .choose_window_menu(route.tab, NARROWER, None)
         .unwrap();
     settle(&mut frame);
     assert_eq!(
@@ -317,7 +317,7 @@ fn every_width_row_gives_the_window_the_share_it_names() {
         WIDTH_NORMAL_PERMILLE
     );
     handle
-        .choose_window_menu(route.tab, NARROWER, None, "g")
+        .choose_window_menu(route.tab, NARROWER, None)
         .unwrap();
     settle(&mut frame);
     assert_eq!(
@@ -333,7 +333,7 @@ fn every_width_row_gives_the_window_the_share_it_names() {
     );
     assert!(
         handle
-            .choose_window_menu(route.tab, NARROWER, None, "g")
+            .choose_window_menu(route.tab, NARROWER, None)
             .is_err(),
         "and it means no command"
     );
@@ -353,7 +353,7 @@ fn equalizing_gives_every_window_of_the_strip_the_same_share() {
     settle(&mut frame);
 
     handle
-        .choose_window_menu(route.tab, EQUALIZE, None, "g")
+        .choose_window_menu(route.tab, EQUALIZE, None)
         .unwrap();
     settle(&mut frame);
     let widths: Vec<WindowWidth> = handle.read(|tree| {
@@ -389,11 +389,11 @@ fn a_window_moves_to_another_strip_by_its_name() {
     assert_eq!(across.label, "Move to strip Research");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, &across.id, None, "g"),
-        Some(Command::MoveToStrip { ref strip, .. }) if strip == "90"
+        command(&tree, &route, &across.id, None),
+        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { strip: Some(ref strip), .. }, .. })) if strip == "90"
     ));
     handle
-        .choose_window_menu(route.tab, &across.id, None, "g")
+        .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
     let strips: Vec<StripId> = handle.read(|tree| {
@@ -430,11 +430,11 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     assert_eq!(across.label, "Move to workspace Studio");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, &across.id, None, "g"),
-        Some(Command::MoveToWorkspace { ref workspace, .. }) if workspace == "91"
+        command(&tree, &route, &across.id, None),
+        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { workspace: Some(ref workspace), .. }, .. })) if workspace == "91"
     ));
     handle
-        .choose_window_menu(route.tab, &across.id, None, "g")
+        .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
     let home: Vec<WorkspaceId> = handle.read(|tree| {
@@ -498,11 +498,11 @@ fn a_window_moves_to_another_display_by_its_name() {
     assert_eq!(across.label, "Move to display Display 2");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, &across.id, None, "g"),
-        Some(Command::MoveToDisplay { display: 2, .. })
+        command(&tree, &route, &across.id, None),
+        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { display: Some(ref display), .. }, .. })) if display == "2"
     ));
     handle
-        .choose_window_menu(route.tab, &across.id, None, "g")
+        .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
     assert_eq!(
@@ -522,9 +522,7 @@ fn a_new_tab_row_opens_another_tab_of_its_app_beside_it() {
     let (surface, handle) = apps_desk(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
-    handle
-        .choose_window_menu(route.tab, NEW_TAB, None, "g")
-        .unwrap();
+    handle.choose_window_menu(route.tab, NEW_TAB, None).unwrap();
     settle(&mut frame);
     let group = handle.read(|tree| group_at(tree, route));
     assert_eq!(group.tabs.len(), 2, "the tab opened beside it");
@@ -569,13 +567,11 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
     );
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, SHARE, None, "g"),
-        Some(Command::ShareWindow { shared: true, .. })
+        command(&tree, &route, SHARE, None),
+        Some(Verb::Chrome(ChromeEffect::ShareWindow { on: true, .. }))
     ));
     assert!(
-        handle
-            .choose_window_menu(route.tab, SHARE, None, "g")
-            .is_ok(),
+        handle.choose_window_menu(route.tab, SHARE, None).is_ok(),
         "it is sent to the sharing app as the bar's item is"
     );
 
@@ -594,8 +590,8 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
         Some("Stop sharing")
     );
     assert!(matches!(
-        command(&tree, &route, UN_SHARE, None, "g"),
-        Some(Command::ShareWindow { shared: false, .. })
+        command(&tree, &route, UN_SHARE, None),
+        Some(Verb::Chrome(ChromeEffect::ShareWindow { on: false, .. }))
     ));
 }
 
@@ -619,22 +615,22 @@ fn only_a_host_windows_tab_offers_a_name() {
     assert_eq!(name.label, "Name this window…");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, RENAME, Some("Shell"), "g"),
-        Some(Command::Rename { .. })
+        command(&tree, &route, RENAME, Some("Shell")),
+        Some(Verb::Chrome(ChromeEffect::Rename { .. }))
     ));
     assert!(
-        command(&tree, &route, RENAME, None, "g").is_none(),
+        command(&tree, &route, RENAME, None).is_none(),
         "a row without a name is no command"
     );
     let long = "x".repeat(crate::navigation::MAX_NAME_CHARS.saturating_add(1));
     assert!(
         handle
-            .choose_window_menu(route.tab, RENAME, Some(&long), "g")
+            .choose_window_menu(route.tab, RENAME, Some(&long))
             .is_err(),
         "a name too long to show is refused"
     );
     handle
-        .choose_window_menu(route.tab, RENAME, Some("Shell"), "g")
+        .choose_window_menu(route.tab, RENAME, Some("Shell"))
         .unwrap();
     settle(&mut frame);
     let named = handle
@@ -657,7 +653,7 @@ fn split_right_splits_a_tab_into_the_window_beside_it() {
     let rows = handle.window_menu(route.tab);
     assert!(row(&rows, SPLIT_RIGHT).is_some());
     handle
-        .choose_window_menu(route.tab, SPLIT_RIGHT, None, "g")
+        .choose_window_menu(route.tab, SPLIT_RIGHT, None)
         .unwrap();
     settle(&mut frame);
     let groups: Vec<(u64, Vec<TabId>)> = handle.read(|tree| {
@@ -695,7 +691,7 @@ fn a_tab_moves_to_a_new_window_at_the_strips_end() {
     let rows = handle.window_menu(route.tab);
     assert!(row(&rows, NEW_GROUP).is_some());
     handle
-        .choose_window_menu(route.tab, NEW_GROUP, None, "g")
+        .choose_window_menu(route.tab, NEW_GROUP, None)
         .unwrap();
     settle(&mut frame);
     let groups: Vec<(u64, Vec<TabId>)> = handle.read(|tree| {
@@ -734,16 +730,14 @@ fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
     assert!(row(&rows, CLOSE).is_some());
     assert!(row(&rows, CLOSE_WINDOW).is_some());
 
-    handle
-        .choose_window_menu(route.tab, CLOSE, None, "g")
-        .unwrap();
+    handle.choose_window_menu(route.tab, CLOSE, None).unwrap();
     settle(&mut frame);
     let group = handle.read(|tree| group_at(tree, route));
     assert_eq!(group.tabs.len(), 1, "the tab closed, the window stayed");
     assert_eq!(group.tabs[0].id, other, "the other tab is what is left");
 
     handle
-        .choose_window_menu(other, CLOSE_WINDOW, None, "g")
+        .choose_window_menu(other, CLOSE_WINDOW, None)
         .unwrap();
     settle(&mut frame);
     assert!(
@@ -751,14 +745,7 @@ fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
         "the window and its tab are gone"
     );
     assert!(handle.snapshot("g", vec![]).entries.is_empty());
-    handle
-        .dispatch(
-            &Command::Reopen {
-                generation: "g".into(),
-            },
-            "g",
-        )
-        .unwrap();
+    handle.dispatch(ChromeEffect::ReopenClosed).unwrap();
     settle(&mut frame);
     assert_eq!(
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.len()),
@@ -789,11 +776,11 @@ fn stopping_desktop_control_takes_the_grant_back() {
     assert_eq!(stop.label, "Stop controlling the desktop");
     let tree = handle.read(Clone::clone);
     assert!(matches!(
-        command(&tree, &route, STOP_DESKTOP_CONTROL, None, "g"),
-        Some(Command::StopDesktopControl { .. })
+        command(&tree, &route, STOP_DESKTOP_CONTROL, None),
+        Some(Verb::Chrome(ChromeEffect::StopDesktopControl { .. }))
     ));
     handle
-        .choose_window_menu(route.tab, STOP_DESKTOP_CONTROL, None, "g")
+        .choose_window_menu(route.tab, STOP_DESKTOP_CONTROL, None)
         .unwrap();
     settle(&mut frame);
     assert!(
@@ -828,9 +815,7 @@ fn someone_elses_window_offers_no_move_nor_close() {
         "still theirs to fill"
     );
     assert!(
-        handle
-            .choose_window_menu(route.tab, CLOSE, None, "g")
-            .is_err(),
+        handle.choose_window_menu(route.tab, CLOSE, None).is_err(),
         "choosing it is refused"
     );
 }
@@ -847,5 +832,5 @@ fn a_window_that_is_gone_offers_nothing() {
     handle.replace_tree(gone);
     let tree = handle.read(Clone::clone);
     assert!(super::rows(&tree, &route, &Facts::default()).is_empty());
-    assert!(command(&tree, &route, CLOSE, None, "g").is_none());
+    assert!(command(&tree, &route, CLOSE, None).is_none());
 }

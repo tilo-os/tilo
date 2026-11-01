@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
@@ -862,13 +862,10 @@ impl Service for Desk {
             )));
         }
         self.handle
-            .dispatch(
-                &Command::Workspace {
-                    generation: crate::GENERATION.into(),
-                    workspace,
-                },
-                crate::GENERATION,
-            )
+            .dispatch(ChromeEffect::SwitchWorkspace {
+                workspace: Some(workspace),
+                delta: None,
+            })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
@@ -879,7 +876,7 @@ impl Service for Desk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_surface_host::shell_part::{SWITCH_WORKSPACE, WORKSPACE_ARG};
+    use tilo_surface_host::shell_part::{DESK_ACTIONS, SWITCH_WORKSPACE, WORKSPACE_ARG};
 
     #[test]
     fn the_shell_invokes_the_desk_by_the_names_it_offers() {
@@ -895,5 +892,18 @@ mod tests {
                 .any(|param| param.name == WORKSPACE_ARG),
             "switch-workspace takes {WORKSPACE_ARG}"
         );
+    }
+
+    /// The bar names the desk's own actions by the ids the desk publishes them under.
+    #[test]
+    fn the_bars_desk_actions_are_the_desks_own() {
+        let declared = DeskEffect::declarations();
+        for (id, resource) in DESK_ACTIONS {
+            assert_eq!(*resource, DESK_RESOURCE, "{id} is not the desk's");
+            assert!(
+                declared.iter().any(|decl| decl.id == *id),
+                "the desk publishes no {id}"
+            );
+        }
     }
 }

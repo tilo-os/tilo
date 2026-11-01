@@ -117,16 +117,30 @@
 //! the invoker's best-placed device as that signed package's catalogue
 //! entrypoint, and the handler is its local run; [`tilo_actions::Offload`]). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
-//! secret the host keeps out of logs, history and confirmations, and
-//! `#[param("…", choices = EXPR)]` names the values it takes when they are a
-//! fixed list (`EXPR` yields strings: a constant table, an array of names).
+//! secret the host keeps out of logs, history and confirmations;
+//! `#[param(decimal, "…")]` makes it an identity that travels as canonical
+//! decimal text and is refused otherwise; and `#[param("…", choices = EXPR)]`
+//! names the values it takes when they are a fixed list (`EXPR` yields
+//! strings: a constant table, an array of names).
 
 use std::sync::Arc;
 
 use tilo_actions::{
     ActionContract, ActionKind, ActionParam, ActionSpec, ActionType, ConfirmationPolicy,
-    EncodedAction, ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel, Target,
+    EncodedAction, ExecutionMode, OperationKind, ResourceSpec, ResultSpec, RetryPolicy, RiskLevel,
+    Target,
 };
+
+/// `resource` offering every action of the vocabulary `E`: a device's
+/// readings and the desktop's verbs are published this way.
+///
+/// It sits beside [`Effect::specs`] so that a crate publishing a vocabulary
+/// needs only the vocabulary, not the service host that runs one.
+#[must_use]
+pub fn offer<E: Effect>(mut resource: ResourceSpec) -> ResourceSpec {
+    resource.actions.extend(E::specs());
+    resource
+}
 
 /// Why a caller's invocation does not name an effect of a vocabulary.
 #[derive(Debug, thiserror::Error)]
@@ -144,6 +158,11 @@ pub enum EffectDecodeError {
         #[source]
         source: serde_json::Error,
     },
+    /// One argument names no identity: it is not canonical decimal text.
+    #[error(
+        "the effect's `{name}` argument is `{value}`, which names no id: ids travel as decimal text"
+    )]
+    Identity { name: String, value: String },
 }
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -197,7 +216,7 @@ pub trait Effect: Sized + 'static {
     /// The spec `id` declares: what a control binding it reads, so binding one
     /// effect costs one declaration rather than the vocabulary's.
     fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
-        Self::declaration(id).map(|decl| decl.spec(Self::OPERATION))
+        Self::declaration(id).map(|decl| decl.spec::<Self>(Self::OPERATION))
     }
 
     /// This effect's arguments, named as its declaration's parameters.
@@ -215,7 +234,7 @@ pub trait Effect: Sized + 'static {
     /// The published action of every effect offered on the resource: all
     /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
-        kept_specs(
+        kept_specs::<Self>(
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
@@ -231,7 +250,7 @@ pub trait Effect: Sized + 'static {
         let id = self.id();
         let arguments = self.arguments();
         let spec = kept_type((std::any::TypeId::of::<Self>(), id, None), || {
-            bound_type(Self::OPERATION, id, Self::declaration(id))
+            bound_type::<Self>(Self::OPERATION, id, Self::declaration(id))
         })
         .bind(Target::new(arguments.clone()))
         .with_bound(arguments.into_iter().collect());
@@ -261,7 +280,7 @@ pub trait Effect: Sized + 'static {
         let id = self.id();
         match Self::declaration(id) {
             Some(decl) => asking_phrase(
-                asking_spec(Self::OPERATION, &decl, params, self.arguments()),
+                asking_spec::<Self>(Self::OPERATION, &decl, params, self.arguments()),
                 self.confirmation_phrase(),
             ),
             None => self.bound(),
@@ -272,7 +291,7 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs(
+        item_specs::<Self>(
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
@@ -342,35 +361,27 @@ enum Bound {
 /// was offered on.
 type BoundArguments = serde_json::Map<String, serde_json::Value>;
 
-/// The one encoder of every effect spec: the invocation of effect `effect`
-/// under `operation`, with its arguments made as `mode` says of the ones its
-/// target binds ([`BoundArguments`]) and the caller's.
-fn encoder(
+/// The one encoder of every effect spec of the vocabulary `E`: the invocation
+/// of effect `effect` under `operation`, with its arguments made as `mode`
+/// says of the ones its target binds ([`BoundArguments`]) and the caller's.
+///
+/// The arguments are read back as `E` before they are encoded, so a client
+/// that names an id or a value the effect does not take is refused at the
+/// door, [`INVALID_ARGUMENTS_TYPE`](tilo_actions::resource::INVALID_ARGUMENTS_TYPE)
+/// with why, rather than handed to a host that cannot run it.
+fn encoder<E: Effect>(
     operation: &'static str,
     effect: &'static str,
     mode: Bound,
 ) -> impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
     move |target, args| {
-        let empty = BoundArguments::new();
-        let bound = target.get::<BoundArguments>().unwrap_or(&empty);
-        let args = match mode {
-            Bound::None => args.to_json(),
-            Bound::Only => bound.clone(),
-            Bound::UnderCaller => {
-                let mut merged = bound.clone();
-                merged.extend(args.to_json());
-                merged
-            }
-            Bound::OverCaller => {
-                let mut merged = args.to_json();
-                merged.extend(
-                    bound
-                        .iter()
-                        .map(|(name, value)| (name.clone(), value.clone())),
-                );
-                merged
-            }
-        };
+        let args = effect_arguments(mode, target, args);
+        if let Err(problem) = E::decode(effect, &args) {
+            return EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+                payload: problem.to_string().into_bytes(),
+            };
+        }
         EncodedAction::encode_operation(
             operation,
             &Payload {
@@ -385,12 +396,40 @@ fn encoder(
     }
 }
 
-/// [`Effect::specs`] of the declarations `decls`.
+/// The arguments an invocation of an effect offered with `mode` carries: the
+/// ones its target binds, the caller's, or both, as [`Bound`] says.
+fn effect_arguments(
+    mode: Bound,
+    target: &Target,
+    args: &tilo_actions::ActionArgs,
+) -> BoundArguments {
+    let empty = BoundArguments::new();
+    let bound = target.get::<BoundArguments>().unwrap_or(&empty);
+    match mode {
+        Bound::None => args.to_json(),
+        Bound::Only => bound.clone(),
+        Bound::UnderCaller => {
+            let mut merged = bound.clone();
+            merged.extend(args.to_json());
+            merged
+        }
+        Bound::OverCaller => {
+            let mut merged = args.to_json();
+            merged.extend(
+                bound
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+            merged
+        }
+    }
+}
+
 /// [`Effect::specs`] of the vocabulary `key`. They depend on its type alone
 /// and are published on every refresh of a view's actions, so each thread
 /// builds them once per generation of app code
 /// ([`reset_type_schemas`](crate::reset_type_schemas)) and hands out copies.
-fn kept_specs(
+fn kept_specs<E: Effect>(
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
@@ -413,7 +452,7 @@ fn kept_specs(
         }
     });
     let specs = found.unwrap_or_else(|| {
-        let built: std::rc::Rc<[ActionSpec]> = offered_specs(declarations(), operation).into();
+        let built: std::rc::Rc<[ActionSpec]> = offered_specs::<E>(declarations(), operation).into();
         KEPT.with(|kept| {
             let mut kept = kept.borrow_mut();
             if kept.0 != epoch {
@@ -426,12 +465,12 @@ fn kept_specs(
     specs.to_vec()
 }
 
-fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+fn offered_specs<E: Effect>(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     decls
         .into_iter()
         .filter(|decl| !decl.row)
         .map(|decl| {
-            let mut spec = decl.spec(operation);
+            let mut spec = decl.spec::<E>(operation);
             // Offered on each item it acts on (`item = field`), its item
             // bound, it stays published here for scripts that name the item,
             // out of the palette's way, as an item verb does.
@@ -447,12 +486,12 @@ fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionS
 
 /// The type of [`Effect::bound`] of the effect `id`, declared as `decl`: its
 /// target binds every argument.
-fn bound_type(
+fn bound_type<E: Effect>(
     operation: &'static str,
     id: &'static str,
     decl: Option<EffectDecl>,
 ) -> Arc<ActionType> {
-    let build = encoder(operation, id, Bound::Only);
+    let build = encoder::<E>(operation, id, Bound::Only);
     let spec = match decl {
         Some(decl) => decl.spec_with(operation, Vec::new(), build),
         None => ActionSpec::typed_operation_on(
@@ -470,7 +509,7 @@ fn bound_type(
 
 /// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
 /// `args`, asking `params`.
-fn asking_spec(
+fn asking_spec<E: Effect>(
     operation: &'static str,
     decl: &EffectDecl,
     params: Vec<ActionParam>,
@@ -481,7 +520,7 @@ fn asking_spec(
         .filter(|(name, _)| !params.iter().any(|param| param.name == name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    let build = encoder(operation, decl.id, Bound::UnderCaller);
+    let build = encoder::<E>(operation, decl.id, Bound::UnderCaller);
     decl.spec_with(operation, params, build)
         .action_type()
         .bind(Target::new(args))
@@ -490,7 +529,7 @@ fn asking_spec(
 
 /// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
 /// `declarations` are: each type is kept per field, bound here to `item`.
-fn item_specs(
+fn item_specs<E: Effect>(
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
@@ -504,7 +543,7 @@ fn item_specs(
             let first = decl.params.first()?.name.to_string();
             let ty = kept_type((key, decl.id, Some(decl.item?)), || {
                 let rest = decl.params.get(1..).unwrap_or_default().to_vec();
-                let build = encoder(operation, decl.id, Bound::OverCaller);
+                let build = encoder::<E>(operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
             let bound = BoundArguments::from_iter([(
@@ -721,10 +760,17 @@ pub enum Answers {
 }
 
 impl EffectDecl {
-    /// The published action of this effect under `operation`.
-    pub fn spec(&self, operation: &'static str) -> ActionSpec {
-        let build = encoder(operation, self.id, Bound::None);
+    /// The published action of this effect under `operation`, of the
+    /// vocabulary `E` it is declared in.
+    pub fn spec<E: Effect>(&self, operation: &'static str) -> ActionSpec {
+        let build = encoder::<E>(operation, self.id, Bound::None);
         self.spec_with(operation, self.params.clone(), build)
+    }
+
+    /// The published action of this effect, as the vocabulary `E` that
+    /// declares it publishes it: [`Self::spec`] under `E`'s own operation.
+    pub fn spec_of<E: Effect>(&self) -> ActionSpec {
+        self.spec::<E>(E::OPERATION)
     }
 
     /// Every effect of a derived vocabulary, declared as `rows` say.
@@ -961,6 +1007,59 @@ pub fn argument<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// The identity argument `name`: canonical decimal text, as a record and a
+/// surface name their windows, strips, groups and workspaces by. A salted id
+/// outgrows what a JSON number carries exactly, so it travels as text; any
+/// other text names no id, and is refused here rather than taken for one.
+///
+/// # Errors
+/// Returns why the argument is not an identity.
+pub fn identity_argument(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<String, EffectDecodeError> {
+    match argument_value(arguments, name) {
+        serde_json::Value::String(text) => identity(name, &text),
+        serde_json::Value::Null => Err(EffectDecodeError::Argument {
+            name: name.to_owned(),
+            source: serde::de::Error::custom("is required"),
+        }),
+        other => Err(not_an_identity(name, other.to_string())),
+    }
+}
+
+/// [`identity_argument`] for an identity that need not be given.
+///
+/// # Errors
+/// Returns why the argument is not an identity.
+pub fn optional_identity_argument(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<String>, EffectDecodeError> {
+    match argument_value(arguments, name) {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => identity(name, &text).map(Some),
+        other => Err(not_an_identity(name, other.to_string())),
+    }
+}
+
+/// `text` as an identity of `name`, its decimal form being its own.
+fn identity(name: &str, text: &str) -> Result<String, EffectDecodeError> {
+    let canonical = text.parse::<u64>().is_ok_and(|id| id.to_string() == text);
+    if canonical {
+        return Ok(text.to_owned());
+    }
+    Err(not_an_identity(name, text.to_owned()))
+}
+
+/// Why `value`, given for the identity `name`, names no id.
+fn not_an_identity(name: &str, value: String) -> EffectDecodeError {
+    EffectDecodeError::Identity {
+        name: name.to_owned(),
+        value,
+    }
+}
+
 /// The argument `name`, or `null` when it is absent.
 #[inline(never)]
 fn argument_value(
@@ -1021,6 +1120,15 @@ mod tests {
             // `Self` in an attribute reaches the rows' static as the enum.
             #[param(choices = Self::SHADES)]
             shade: Option<String>,
+        },
+        /// Widen a column.
+        Widen {
+            #[param(decimal, "The column")]
+            column: String,
+            #[param(decimal, "The table")]
+            table: Option<String>,
+            #[param("The width")]
+            width: u32,
         },
     }
 
@@ -1087,7 +1195,17 @@ mod tests {
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key", "paint"]);
+        assert_eq!(
+            ids,
+            [
+                "reload",
+                "rename-thing",
+                "wipe",
+                "copy-key",
+                "paint",
+                "widen"
+            ]
+        );
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -1172,6 +1290,44 @@ mod tests {
                 thing: "a".into(),
                 label: Some("b".into()),
             }
+        );
+    }
+
+    /// An identity travels as decimal text, and one that names no id is
+    /// refused when the invocation is encoded: the door answers a caller that
+    /// names something the effect cannot act on, rather than a host failing
+    /// to read it.
+    #[test]
+    fn an_identity_argument_is_decimal_text_and_is_refused_otherwise() {
+        let widen = Sample::spec("widen").unwrap();
+        let encoded = |arguments: serde_json::Value| -> Result<String, String> {
+            let arguments: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(arguments).expect("a test's call is an object");
+            widen
+                .build_json(&arguments)
+                .map(|built| built.type_id)
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(
+            encoded(serde_json::json!({"column": "9007199254740993", "width": 80})),
+            Ok("test.effects".to_owned()),
+            "a salted id outgrows a JSON number, and travels as text"
+        );
+        for refused in [
+            serde_json::json!({"column": "left", "width": 80}),
+            serde_json::json!({"column": "07", "width": 80}),
+            serde_json::json!({"column": "1", "table": "wide", "width": 80}),
+        ] {
+            assert_eq!(
+                encoded(refused.clone()),
+                Ok(tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned()),
+                "{refused}"
+            );
+        }
+        let not_text = encoded(serde_json::json!({"column": 7, "width": 80}));
+        assert!(
+            not_text.is_err(),
+            "an id is text, never a number: {not_text:?}"
         );
     }
 

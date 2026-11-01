@@ -193,10 +193,9 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
         .find(|entry| entry.route.tab == bid.to_string())
         .unwrap()
         .route;
-    let command =
-        serde_json::from_value(serde_json::json!({"kind":"select","generation":"g","route":route}))
-            .unwrap();
-    handle.dispatch(&command, "g").unwrap();
+    handle
+        .dispatch(tilo_desktop_surface::navigation::DeskEffect::Focus { tab: route.tab })
+        .unwrap();
     driver.relayout();
     driver.service_pending_owner_models().unwrap();
     let a = signals.borrow()[&aid].clone();

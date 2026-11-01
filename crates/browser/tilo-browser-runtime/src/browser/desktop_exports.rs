@@ -457,21 +457,20 @@ impl super::Desktop {
                 })
             });
             if let Some(route) = route {
-                let command = tilo_desktop_surface::navigation::Command::Close {
-                    generation: self.generation.clone(),
-                    route,
-                };
+                let command =
+                    tilo_desktop_surface::navigation::DeskEffect::CloseTab { tab: route.tab };
                 // A window the person already closed is gone either way.
-                let _ = self.handle.dispatch(&command, &self.generation);
+                let _ = self.handle.dispatch(command);
             }
             self.shared.closed_peer_window(tab);
         }
         for app in launch {
-            let command = tilo_desktop_surface::navigation::Command::Launch {
-                generation: self.generation.clone(),
+            let command = tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
                 app,
+                beside: None,
+                background: None,
             };
-            self.handle.dispatch(&command, &self.generation)?;
+            self.handle.dispatch(command)?;
         }
         self.shared.wake();
         Ok(true)
@@ -499,19 +498,18 @@ pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
     })
 }
 
-/// Dispatch a `DesktopNavigationCommand` (JSON). Acceptance queues the
-/// change for the next frame; the page observes it in later snapshots.
+/// Dispatch a verb (JSON: its effect id and arguments). Acceptance queues
+/// the change for the next frame; the page observes it in later snapshots.
 ///
 /// # Errors
 ///
-/// Rejects a closed or single-application mount, a malformed command, a
-/// stale generation, an absent target, or a command the desktop does not
-/// perform.
+/// Rejects a closed or single-application mount, a malformed verb, an
+/// absent target, or a verb the desktop does not perform.
 #[wasm_bindgen]
 pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
-    let command: tilo_desktop_surface::navigation::Command =
-        serde_json::from_str(command).map_err(error)?;
-    if let tilo_desktop_surface::navigation::Command::Launch { app, .. } = &command
+    use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
+    let verb = Verb::from_payload(command.as_bytes()).map_err(error)?;
+    if let Verb::Chrome(ChromeEffect::OpenApp { app, .. }) = &verb
         && crate::desktop::known_application(app).is_none()
     {
         return Err(error(format!("{app} is not available in the browser")));
@@ -521,10 +519,7 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop navigation unavailable"))?;
-        desktop
-            .handle
-            .dispatch(&command, &desktop.generation)
-            .map_err(error)?;
+        desktop.handle.dispatch(verb).map_err(error)?;
         desktop.shared.wake();
         m.pending = true;
         m.window.request_redraw();

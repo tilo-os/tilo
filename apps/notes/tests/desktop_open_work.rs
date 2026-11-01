@@ -7,7 +7,7 @@
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, collections::HashSet, rc::Rc};
 use tilo_desktop_model::{IdMinter, Tab, TabId, TileContent, Workspace};
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::application::AppComponent;
 use ui::headless::FrameHarness;
@@ -169,12 +169,13 @@ impl Desktop {
     }
 
     fn launch(&self) {
-        let command = Command::Launch {
-            generation: "open".into(),
+        let command = ChromeEffect::OpenApp {
             app: NOTES.into(),
+            beside: None,
+            background: None,
         };
         self.handle
-            .dispatch(&command, "open")
+            .dispatch(command)
             .expect("the desktop launches Notes");
     }
 }

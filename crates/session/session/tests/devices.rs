@@ -24,7 +24,7 @@ use std::time::Duration;
 use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -599,7 +599,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     let mut harness = session(&link, Rc::new(Host::default()));
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     harness.playing();
     for _ in 0..40 {
@@ -815,7 +815,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let mut harness = session(&link, Rc::clone(&host));
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..4 {
         harness.step();
@@ -932,7 +932,7 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
     );
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
@@ -1036,7 +1036,7 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
@@ -1075,7 +1075,7 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
 fn open_devices(harness: &mut Harness) {
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
