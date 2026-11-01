@@ -1837,13 +1837,10 @@ fn pump_floating_surface_service(
                 connection,
                 app_id,
                 network_status_allowed,
-                pid,
+                launch,
             } => {
                 appearance.connected(connection, &app_id, network_status_allowed);
-                state.input_order.connected(
-                    connection,
-                    pid.map(crate::compositor::input_order::launch_of),
-                );
+                state.input_order.connected(connection, launch);
                 frame_builder
                     .host_mut()
                     .connect_window_share(connection, &app_id);

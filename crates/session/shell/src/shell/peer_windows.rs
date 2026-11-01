@@ -15,7 +15,6 @@ use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{GroupId, RoomId, StripId, TabId, TileContent, Workspace, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
 use tilo_desktop_model::MissingApp;
-#[cfg(not(test))]
 use tilo_lock::MutexRecover as _;
 
 /// Shown while the local instance is starting.
@@ -484,7 +483,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let installing = start_requested_installs(tree);
     let reread = reread_missing_apps(tree);
     let retried = start_requested_retries(tree);
-    let interrupted = settle_orphaned_local_restores(tree);
+    let interrupted = settle_orphaned_local_restores(tree) | settle_refused_launches(tree);
     let mut todo = pending(tree);
     if todo.is_empty() {
         return released || installing || reread || retried || interrupted;
@@ -1001,8 +1000,26 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     // A window saved under an id its app had before opens the app that took its place; the tab
     // takes the new id when that window lands in it.
     let launch_id = launched_as(&item.app_id);
-    let launched = launcher::launch_in_workspace(&launch_id, ws)
-        .map(|_| ())
+    // Whether the app is here and has a window is answered from the apps the
+    // loop is served, which never reads the registries; the launch itself
+    // resolves the package on the launch worker, from the registries as
+    // they are then, and a refusal there comes back to the tab
+    // ([`settle_refused_launches`]).
+    let launched =
+        match launcher::find_installed(&launcher::installed_apps_without_waiting(), &launch_id) {
+            None => Err(launcher::LaunchError::NotInstalled {
+                package_id: launch_id.clone(),
+            }),
+            Some(app) if !app.has_gui => Err(launcher::LaunchError::NotAGuiApp {
+                package_id: app.package_id,
+            }),
+            Some(_) => {
+                let (tab, refused_as) = (item.tab, launch_id.clone());
+                launcher::queue_launch_in_workspace_or(launch_id.clone(), ws, move |error| {
+                    lock_refused().push((tab, refused_as, error));
+                })
+            }
+        }
         .or_else(|err| {
             if item.local
                 && matches!(err, launcher::LaunchError::NotInstalled { .. })
@@ -1027,20 +1044,82 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
             }
             Err(err)
         });
-    match launched {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            launcher::clear_pending_placement(&launch_id);
-            Err(match err {
-                launcher::LaunchError::NotInstalled { .. }
-                | launcher::LaunchError::HostAppNotFound { .. } => Refusal::NotInstalled,
-                launcher::LaunchError::NotAGuiApp { .. } => {
-                    Refusal::Said("This app has no window to open".to_string())
-                }
-                other => Refusal::Said(format!("Could not open it here: {other}")),
-            })
+    launched.map_err(|err| {
+        launcher::clear_pending_placement(&launch_id);
+        refusal_for(err)
+    })
+}
+
+/// What a card says of a launch that could not start.
+fn refusal_for(err: launcher::LaunchError) -> Refusal {
+    match err {
+        launcher::LaunchError::NotInstalled { .. }
+        | launcher::LaunchError::HostAppNotFound { .. } => Refusal::NotInstalled,
+        launcher::LaunchError::NotAGuiApp { .. } => {
+            Refusal::Said("This app has no window to open".to_string())
         }
+        other => Refusal::Said(format!("Could not open it here: {other}")),
     }
+}
+
+/// Launches [`open_for`] queued that the launch worker could not start: the
+/// tab, the package launched, and why. The worker wakes the loop for them.
+type RefusedLaunches = Vec<(TabId, String, launcher::LaunchError)>;
+
+fn lock_refused() -> std::sync::MutexGuard<'static, RefusedLaunches> {
+    static REFUSED: std::sync::Mutex<RefusedLaunches> = std::sync::Mutex::new(Vec::new());
+    REFUSED.lock_recover()
+}
+
+/// Whether a queued launch's refusal waits for the next [`examine`]. Kept
+/// outside the tree, so no tree revision announces it.
+pub(crate) fn launch_refused() -> bool {
+    !lock_refused().is_empty()
+}
+
+/// Answer each tab whose queued launch the worker refused, as [`examine`]
+/// answers a launch refused on the spot: the launch's place is given up and
+/// the card says why. A tab that was closed or answered meanwhile is left
+/// alone.
+fn settle_refused_launches(tree: &mut WorkspaceTree) -> bool {
+    let refused = std::mem::take(&mut *lock_refused());
+    let mut changed = false;
+    for (tab, launch_id, error) in refused {
+        launcher::clear_pending_placement(&launch_id);
+        let Some((app_id, local)) = opening_tab(tree, tab) else {
+            continue;
+        };
+        let (note, missing) = match refusal_for(error) {
+            Refusal::Said(refusal) => (refusal, None),
+            Refusal::NotInstalled => (
+                NOT_INSTALLED.to_string(),
+                (!local).then(|| missing_app(&app_id, &crate::shell::catalogue::available_apps())),
+            ),
+        };
+        changed |= set_state(tree, tab, note, missing);
+    }
+    changed
+}
+
+/// The app of `tab` and whether it is this device's own window, while the
+/// tab is still opening.
+fn opening_tab(tree: &WorkspaceTree, tab: TabId) -> Option<(String, bool)> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|ws| &ws.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find(|candidate| candidate.id == tab)
+        .and_then(|candidate| match &candidate.tile {
+            TileContent::LocalApp { app_id, note, .. } if note == OPENING => {
+                Some((app_id.clone(), true))
+            }
+            TileContent::PeerWindow { app_id, note, .. } if note == OPENING => {
+                Some((app_id.clone(), false))
+            }
+            _ => None,
+        })
 }
 
 /// Stage the exact continuation selected for a pending tab before launching.
@@ -1425,6 +1504,44 @@ mod tests {
                 })
             })
             .expect("local app tab remains in the tree")
+    }
+
+    /// A restored window's launch starts on the launch worker, never on the
+    /// loop; when the worker cannot start it, the refusal comes back to the
+    /// tab and wakes the loop's next examination, which answers the card as a
+    /// launch refused on the spot is answered and gives up its place. A tab
+    /// answered meanwhile keeps its answer.
+    #[test]
+    fn a_launch_the_worker_refused_is_answered_on_its_card() {
+        let app = "dev.tilo.refused-on-the-worker";
+        let (mut tree, tab) = tree_with_local_app(app);
+        set_note(&mut tree, tab, OPENING.into());
+        launcher::set_pending_placement(app, Placement::IntoTab(tab));
+        let answered = next_id();
+        lock_refused().push((
+            tab,
+            app.to_owned(),
+            launcher::LaunchError::NotAGuiApp {
+                package_id: app.to_owned(),
+            },
+        ));
+        lock_refused().push((
+            answered,
+            app.to_owned(),
+            launcher::LaunchError::NotInstalled {
+                package_id: app.to_owned(),
+            },
+        ));
+        assert!(launch_refused(), "the refusal waits for the loop");
+        assert!(examine(&mut tree));
+        assert_eq!(local_app_note(&tree, tab), "This app has no window to open");
+        assert!(!launch_refused(), "each refusal is answered once");
+        assert!(
+            !launcher::has_unclaimed_restore_launch(),
+            "the refused launch gives up its place"
+        );
+        assert!(!examine(&mut tree), "nothing is left to answer");
+        launcher::clear_pending_placements();
     }
 
     #[test]

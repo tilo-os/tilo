@@ -56,8 +56,15 @@ fn room() -> Replica {
             ),
         ],
     );
-    // It reads the device's and Settings' published resources too (the quick settings), whose
-    // packages the platform describes from their surfaces, as the session loads them.
+    // It calls the session's actions (`use so.tilo.session as session`) and reads the device's
+    // and Settings' published resources (the quick settings): packages the platform describes,
+    // loaded as the session loads them.
+    let session = tilolang_tilo::catalogue::described(
+        "so.tilo.session",
+        "Session",
+        include_str!("../../../../apps/tl/session/surface.toml"),
+    )
+    .expect("the session's description reads");
     let mut imports: Vec<_> = [
         "so.tilo.lang.chat",
         "so.tilo.lang.notes",
@@ -66,7 +73,9 @@ fn room() -> Replica {
     .iter()
     .map(|app| replica.host.package(app).unwrap().meta)
     .collect();
-    for meta in tilolang_tilo::platform_apps::platform_packages().unwrap() {
+    for meta in
+        std::iter::once(session).chain(tilolang_tilo::platform_apps::platform_packages().unwrap())
+    {
         replica.host.runtime().load_foreign(meta.clone()).unwrap();
         imports.push(meta);
     }

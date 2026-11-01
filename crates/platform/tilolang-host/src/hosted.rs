@@ -264,6 +264,8 @@ pub struct Hosted {
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
+    /// Why the surface was last refused instead of published: empty once it publishes.
+    refused: Vec<tilo_actions::ContractViolation>,
     registry: ActionRegistry,
     /// What the instance last published to the session's persistent search index, and what it
     /// published from: it publishes the app's resources' entries when the record's heads move,
@@ -363,6 +365,7 @@ impl Hosted {
             directory: PublishedDirectory::default(),
             directory_behind: false,
             published_from: None,
+            refused: Vec::new(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
             search_index_from: None,
@@ -377,6 +380,13 @@ impl Hosted {
         self.published
             .as_ref()
             .map_or(&[], |(descriptors, _)| descriptors.as_slice())
+    }
+
+    /// Why the instance's surface was last refused rather than published: empty while what it
+    /// offers is a valid resource/action surface.
+    #[must_use]
+    pub fn refused(&self) -> &[tilo_actions::ContractViolation] {
+        &self.refused
     }
 
     /// Keep the identity-service connection the instance's connection signs through for as long
@@ -767,10 +777,9 @@ impl Hosted {
         }
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
             // A search hit, or an agent's `open`: the window shows what it names.
-            let OpenEffect::Open { anchor } =
-                <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                    .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
-            self.instance.open_requests().borrow_mut().push(anchor);
+            let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+            self.instance.open_requests().borrow_mut().push(open);
             return Ok(tilo_actions::ActionOutput::default());
         }
         Err(Refused::new(
@@ -882,8 +891,10 @@ impl Hosted {
                     self.published_from = None;
                 }
             }
+            self.refused = violations;
             return;
         }
+        self.refused.clear();
         let descriptors = tilo_actions::door::survey(&resources);
         self.directory.publish(&resources, &descriptors);
         self.directory_behind = false;
@@ -1219,10 +1230,11 @@ impl Applier {
     }
 
     /// Make the app's root when `change` addresses it and the record does not hold it yet: the
-    /// one per-workspace resource of the package's root type is made the first time it is wanted,
-    /// here as in a window that opens it, and a task reads it from the package whether or not
-    /// any window ever made it. It is applied as the change's invoker's step, before the
-    /// change. Whether it made it.
+    /// one per-workspace resource of each of the package's root types is made the first time it
+    /// is wanted, here as in a window that opens it, and a task reads it from the package
+    /// whether or not any window ever made it. A package may declare several roots
+    /// (`root viewing: Viewing`, `root Desk`); the change names which. It is applied as the
+    /// change's invoker's step, before the change. Whether it made it.
     fn make_root(
         &mut self,
         change: &runtime_portal::tilolang_host::Change,
@@ -1236,19 +1248,25 @@ impl Applier {
         else {
             return Ok(false);
         };
-        if !doc.starts_with("root-") || self.host.store().contains(doc) {
+        let Some(ty) = doc.strip_prefix("root-") else {
+            return Ok(false);
+        };
+        if self.host.store().contains(doc) {
             return Ok(false);
         }
-        let made = self
+        let declared = self
             .host
-            .root_of(&self.spec.app)
-            .map_err(|error| error.to_string())?;
-        if made.doc != doc {
+            .package(&self.spec.app)
+            .is_some_and(|package| package.declares_root(ty));
+        if !declared {
             return Err(format!(
-                "{} is not the root of {}",
+                "{} is no root of {}",
                 change.resource, self.spec.app
             ));
         }
+        self.host
+            .root_record(&self.spec.app, ty)
+            .map_err(|error| error.to_string())?;
         let invoker: ActionInvoker = serde_json::from_value(change.invoker.clone())
             .map_err(|error| format!("the change's invoker does not decode: {error}"))?;
         let ambient: Option<ActionContext> = change

@@ -49,23 +49,30 @@ pub(crate) fn registry_stamps() -> Vec<Option<RegistryStamp>> {
 
 /// The ids installed apps were published under before, as the catalogue believes them
 /// ([`tilo_installed_apps::earlier_ids`]): the one lookup a window, a launch or an open written
-/// under an earlier id goes through. Read again only when a registry changed; empty for an
-/// unreadable catalogue.
+/// under an earlier id goes through. Asked from the compositor's loop (a peer's window names
+/// its app), so it is the table [`read_earlier_ids`] last read beside the installed apps,
+/// which the registry watch, an install and a launch read again off the loop
+/// ([`crate::shell::launcher`]'s app cache); read here only before the first of those reads.
+/// Empty for an unreadable catalogue.
 pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
-    static EARLIER: Mutex<Option<(Vec<Option<RegistryStamp>>, tilo_action_policy::EarlierIds)>> =
-        Mutex::new(None);
-    let stamps = registry_stamps();
-    if let Some((at, ids)) = EARLIER.lock_recover().as_ref()
-        && *at == stamps
-    {
+    if let Some(ids) = EARLIER.lock_recover().as_ref() {
         return ids.clone();
     }
+    read_earlier_ids()
+}
+
+/// The table [`installed_earlier_ids`] serves.
+static EARLIER: Mutex<Option<tilo_action_policy::EarlierIds>> = Mutex::new(None);
+
+/// Read the earlier ids from the catalogue and serve them from now on: with every read of the
+/// installed apps, never on the compositor's loop.
+pub(crate) fn read_earlier_ids() -> tilo_action_policy::EarlierIds {
     let ids = package_store::Catalog::from_env()
         .ok()
         .and_then(|catalog| tilo_installed_apps::earlier_ids(&catalog).ok())
         .unwrap_or_default();
     // Every decision this process makes without a table of its own reads these too.
     tilo_action_policy::earlier::register_all(&ids);
-    *EARLIER.lock_recover() = Some((stamps, ids.clone()));
+    *EARLIER.lock_recover() = Some(ids.clone());
     ids
 }

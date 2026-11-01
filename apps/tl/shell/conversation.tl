@@ -93,7 +93,7 @@ view program_step(d: Desk, r: Run, e: RunEntry) {
 view reference(r: Run, x: EntryRef) {
     let a = arrangement
     ui.ListRow(if x.label == "" { x.resource } else { x.label }, secondary: .some(type_label(x.type_kind)), icon: .file) {
-        on activate: place(a, x.resource, beside_x(a, r), beside_y(a, r))
+        on activate: session.place(workspace: .none, row: .none, strip: .none, place: .none, resource: x.resource, view: .none, x: .some(beside_x(a, r)), y: .some(beside_y(a, r)), width: .none, height: .none)
     }
 }
 

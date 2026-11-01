@@ -71,6 +71,11 @@ pub fn next_policy_revision() -> u64 {
 #[derive(Clone, Default)]
 pub struct WorkspaceTreeHandle(Arc<TreeCell>);
 
+thread_local! {
+    /// [`WorkspaceTreeHandle::writes_on_this_thread`].
+    static WRITES_ON_THIS_THREAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// A handle that does not keep the tree alive.
 #[derive(Clone, Default)]
 pub struct WeakWorkspaceTreeHandle(Weak<TreeCell>);
@@ -382,6 +387,15 @@ impl WorkspaceTreeHandle {
         self.0.generation.load(Ordering::Acquire)
     }
 
+    /// How many write guards that lent a tree mutably this thread has
+    /// released: [`Self::generation`] for the writes one thread made itself.
+    /// A worker that tells another thread when its own work wrote the tree
+    /// compares this, not the generation, which also moves for that other
+    /// thread's own writes in the meantime.
+    pub fn writes_on_this_thread() -> u64 {
+        WRITES_ON_THIS_THREAD.with(std::cell::Cell::get)
+    }
+
     /// The revision of the authorization state the tree holds now.
     ///
     /// Asked by the thread that holds the tree for writing (a launch started
@@ -515,6 +529,7 @@ impl WorkspaceTreeWriteGuard<'_> {
             );
         }
         self.generation.fetch_add(1, Ordering::Release);
+        WRITES_ON_THIS_THREAD.with(|writes| writes.set(writes.get().wrapping_add(1)));
         *self.holder.lock() = None;
         // Rosters, roles, grants and the devices a room admitted live here:
         // the collaboration broker re-checks what it admitted on this
@@ -568,6 +583,38 @@ impl WorkspaceTreeWriteGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worker that tells the loop when its work wrote the tree counts its
+    /// own writes: one the loop makes meanwhile moves the generation, not
+    /// the worker's count, so the worker does not wake the loop for the
+    /// loop's own write.
+    #[test]
+    fn a_thread_counts_only_the_writes_it_made() {
+        let handle = WorkspaceTreeHandle::default();
+        let bump = |handle: &WorkspaceTreeHandle| {
+            let mut tree = handle.write();
+            tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+        };
+        let mine = WorkspaceTreeHandle::writes_on_this_thread();
+        let generation = handle.generation();
+        std::thread::scope(|scope| {
+            scope.spawn(|| bump(&handle));
+        });
+        assert_ne!(handle.generation(), generation, "the other thread wrote");
+        assert_eq!(
+            WorkspaceTreeHandle::writes_on_this_thread(),
+            mine,
+            "another thread's write is not this one's"
+        );
+        drop(handle.write());
+        assert_eq!(
+            WorkspaceTreeHandle::writes_on_this_thread(),
+            mine,
+            "a write guard only read through wrote nothing"
+        );
+        bump(&handle);
+        assert_eq!(WorkspaceTreeHandle::writes_on_this_thread(), mine + 1);
+    }
 
     /// A step that found the tree held is woken once, by that writer's
     /// release, and then reads it; a step that found it free leaves nothing

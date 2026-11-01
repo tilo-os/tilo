@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Pick, Target};
 use tilo_resource::{JsonSchema, Model, Replica as Record, resource};
 use tilolang_runtime::meta::Meta;
+use tilolang_tilo::OpenEffect;
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::publish::{ActionTypes, PlanRequest, Planner, action_type, publish_record};
+use tilolang_tilo::publish::{
+    ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record,
+};
 use tilolang_tilo::surface::package_surfaces;
 
 use crate::fixtures::Replica;
@@ -46,6 +49,13 @@ view main(s: Shelf) {
 view compact(s: Shelf) {
   page {
     text(s.name)
+  }
+}
+
+/// One of its items: shown only with the item, so no resource alone opens it.
+view shelved(s: Shelf, item: Item) {
+  page {
+    text(item.name)
   }
 }
 
@@ -276,8 +286,9 @@ fn the_planner_takes_the_arguments_as_published() {
 }
 
 /// A resource says which views show it, so a host that does not run the app can list them and
-/// mount one: the package's offered views of that type, each opened through the resource's own
-/// `open`, with the type's default view the primary one.
+/// open one: the package's offered views that take the resource alone, the type's default view
+/// the primary one opened through the resource's own `open`, every other through an action of
+/// its own.
 #[test]
 fn a_resource_lists_the_views_that_show_it() {
     let meta = shapes();
@@ -310,14 +321,42 @@ fn a_resource_lists_the_views_that_show_it() {
         second.description.as_deref(),
         Some("Its items, as a list of their names.")
     );
-    assert!(
-        shelf.views.iter().all(|view| view.open_action == "open")
-            && shelf.actions.iter().any(|action| action.id == "open"),
-        "each view opens through the resource's own open"
+    // A view and the action that opens it name each other: the default view through the
+    // resource's own `open`, which shows it; another through an action of its own.
+    assert_eq!(first.open_action, "open");
+    assert_eq!(second.open_action, open_with_id(&compact));
+    let opens = shelf
+        .actions
+        .iter()
+        .find(|action| action.id == second.open_action)
+        .expect("the compact view's open action is published");
+    assert_eq!(opens.label, "compact", "labelled as the view is");
+    let encoded = opens.encode_immediate().expect("it takes no input");
+    let effect = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
+        .expect("an open effect");
+    assert_eq!(
+        effect,
+        OpenEffect::OpenWith {
+            anchor: "s".to_owned(),
+            view: compact.clone(),
+        },
+        "it opens this resource through that view"
     );
-    for view in &shelf.views {
-        assert_eq!(view.validate(&shelf), Vec::<String>::new(), "{view:?}");
-    }
+    assert_eq!(
+        tilo_actions::validate_surface_contracts(
+            std::slice::from_ref(&shelf),
+            &tilo_actions::ActionRegistry::new()
+        ),
+        Vec::new(),
+        "a surface the host publishes"
+    );
+    // A view that needs more than the resource has nothing that opens it, so it is not listed.
+    let shelved = id("shelved");
+    assert!(
+        shelf.views.iter().all(|view| view.id != shelved),
+        "{:?}",
+        shelf.views
+    );
     // A view is listed on the type it shows: an item has none of its own.
     let item = publish_record(&types, "Item", "i", "An item");
     assert!(item.views.is_empty(), "{:?}", item.views);

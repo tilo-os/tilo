@@ -6,8 +6,8 @@
 //!
 //! `cargo run -p tilo-ui --example theme-looks -- OUT_DIR [THEME.json ...]`
 //!
-//! Without theme files it shoots the shipped Block, Glass, Pixelated and
-//! Liquid Glass presets; each file given is a theme document shot under its
+//! Without theme files it shoots the shipped Block, Glass, Pixelated,
+//! Liquid Glass and Liquid Glass light presets; each file given is a theme document shot under its
 //! own id. Run it on a software adapter (lavapipe) where the GPU is not to
 //! be touched.
 //!
@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Preset::Glass,
             Preset::Pixelated,
             Preset::LiquidGlass,
+            Preset::LiquidGlassLight,
         ] {
             themes.push((preset.id().to_owned(), Theme::preset(preset)));
         }
