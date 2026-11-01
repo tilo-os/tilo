@@ -341,7 +341,8 @@ impl Shell {
 
     /// Run what the shell asked through `invoke` (the session's door).
     ///
-    /// The shell's effects carry every argument as text (`outside("session.run", ("…", k))`),
+    /// The shell's effects carry every argument as text
+    /// (`outside("session.run", (resource, action, [(name, value)]))`),
     /// so each is typed here by the type the action itself declares for it: a workspace's key
     /// is text even when it reads as digits, and a count is a number. `types` answers with the
     /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.

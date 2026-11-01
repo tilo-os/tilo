@@ -851,22 +851,28 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
     }
 }
 
-/// The ask `session.run` carries: `(resource, action, (argument, value)…)`. The shell names the
+/// The ask `session.run` carries: `(resource, action, [(argument, value)…])`, an action
+/// invocation as every caller of the action protocol addresses one. The shell names the
 /// session's own resource and action, as the door publishes them (a window's `focus` on
 /// `desktop:tab:7`, the chrome's `move-tab-to-strip`), and each argument by the name the
-/// action's own fields have. `session.notify` is the same, on the notification centre.
+/// action's own fields have. `session.notify` is the same, on the notification centre. The
+/// tilolang checker holds every such effect to this shape (`tilolang::origin::payload_type`).
 fn run_ask(payload: &Json, capability: &str) -> Result<Ask, String> {
+    let shape =
+        || format!("{capability} takes (resource, action, [(argument, value)…]), not {payload}");
     let Json::Array(items) = payload else {
-        return Err(format!(
-            "{capability} takes (resource, action, (argument, value)…), not {payload}"
-        ));
+        return Err(shape());
     };
-    let (Some(Json::String(resource)), Some(Json::String(action))) = (items.first(), items.get(1))
+    let [
+        Json::String(resource),
+        Json::String(action),
+        Json::Array(given),
+    ] = items.as_slice()
     else {
-        return Err(format!("{capability} names its resource and action first"));
+        return Err(shape());
     };
     let mut arguments = BTreeMap::new();
-    for argument in items.iter().skip(2) {
+    for argument in given {
         let Json::Array(pair) = argument else {
             return Err(format!(
                 "{capability} takes each argument as (name, value), not {argument}"

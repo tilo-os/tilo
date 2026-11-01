@@ -56,6 +56,24 @@ fn an_outside_effect_goes_to_a_capability_the_platform_has() {
     assert_eq!(codes(unknown), ["E022"]);
 }
 
+/// `session.run` takes an action invocation as every caller of the action protocol addresses
+/// one, `(resource, action, [(argument, value)…])`; a payload of another shape (an action and
+/// positional arguments) is refused where it is written, not by the session at the press.
+#[test]
+fn a_session_run_is_an_invocation_by_address() {
+    let ok = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.run\", (\"desktop:tab:{d.to}\", \"focus\", []))\n}\naction move(d: D) {\n    outside(\"session.run\", (\"desktop:chrome\", \"move-tab-to-strip\", [(\"tab\", d.to), (\"strip\", \"Main\")]))\n}";
+    assert!(codes(ok).is_empty(), "{:?}", codes(ok));
+    let positional = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.run\", (\"focus-window\", d.to))\n}";
+    assert!(
+        !codes(positional).is_empty(),
+        "an action and its arguments by position"
+    );
+    let loose = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.notify\", (\"session:desk\", \"dismiss-notice\", (\"notice\", d.to)))\n}";
+    assert!(!codes(loose).is_empty(), "arguments outside their list");
+    let text = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.act\", (d.to, d.to))\n}";
+    assert!(!codes(text).is_empty(), "session.act takes one text");
+}
+
 #[test]
 fn a_named_filter_tests_a_set_holding_a_value() {
     let src = "type T {\n    boxes: Set<Text>\n    search {\n        filter \"Inbox\" = boxes.contains(\"inbox\")\n    }\n}";

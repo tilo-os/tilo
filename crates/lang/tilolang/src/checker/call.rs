@@ -857,7 +857,11 @@ impl Checker<'_> {
                 ),
             );
         }
-        let p = self.expr(&payload.value, None);
+        // A capability whose reader reads one shape holds the payload to it.
+        let p = match crate::origin::payload_type(name) {
+            Some(want) => self.expr_as(&payload.value, &want),
+            None => self.expr(&payload.value, None),
+        };
         self.st.facts.outside = true;
         match held {
             Some(third) => {

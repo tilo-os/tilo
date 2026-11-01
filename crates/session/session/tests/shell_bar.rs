@@ -772,3 +772,369 @@ fn a_persons_presence_opens_their_menu() {
     );
     keep(&mut session, "shell-person-menu");
 }
+
+// ---- each press of the shell's reaches the session ------------------------------------------
+//
+// Every `session.run` and `session.notify` the shell hands the session is an invocation on the
+// session's door, `(resource, action, [(argument, value)…])`: each test below presses the shell's
+// own view and reads the session's state, so a payload the door cannot run fails here.
+
+/// Bring the desk's surface `surface` up, as the bar's own buttons do.
+fn show(session: &mut Session, surface: &str) {
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String(surface.to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(session, |session| here(session) == surface);
+}
+
+/// Type `text` (lower-case letters) on the keyboard, a key at a time.
+fn type_text(session: &mut Session, text: &str) {
+    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+    for letter in text.chars() {
+        let keycode = ROWS
+            .iter()
+            .find_map(|(row, first)| {
+                row.chars()
+                    .position(|c| c == letter)
+                    .map(|at| first + u32::try_from(at).unwrap())
+            })
+            .unwrap_or_else(|| panic!("no key types {letter:?}"));
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+    }
+}
+
+/// Where the tab `tab` stands: its workspace's id and its strip's name, while it is open.
+fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
+    session.handle().read(|tree| {
+        tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|group| group.tabs.iter().any(|t| t.id == tab))
+                    .then(|| (workspace.id.0, strip.name.clone()))
+            })
+        })
+    })
+}
+
+/// The tab `tab` is the one in front of its group.
+fn in_front(session: &Session, tab: u64) -> bool {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .any(|group| group.tabs.iter().any(|t| t.id == tab) && group.active_tab == tab)
+    })
+}
+
+/// Name the strip in front `first`, and add a strip `second` beside it holding a window of
+/// `app`, its tab's id.
+fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> u64 {
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let tab = handle.mint_id();
+    let group = handle.mint_id();
+    let strip = tilo_desktop_model::StripId(handle.mint_id());
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == tree.active)
+        .expect("a workspace is in front");
+    workspace.strips[0].name = first.to_owned();
+    let mut added = tilo_desktop_model::Strip::new(strip, second);
+    added.window_groups.push(tilo_desktop_model::WindowGroup {
+        id: group,
+        tabs: vec![tilo_desktop_model::Tab {
+            id: tab,
+            title: app.to_owned(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: app.to_owned(),
+                label: app.to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: tilo_desktop_model::WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    workspace.strips.push(added);
+    handle.replace_tree(tree);
+    session.step(Duration::from_millis(1)).unwrap();
+    tab
+}
+
+/// Open the overview's menu of its (only, or first) window, and wait for `item` in it.
+fn window_menu(session: &mut Session, item: &str) {
+    until(session, |session| {
+        session.shell_control("This window").is_some()
+    });
+    press(session, "This window");
+    until(session, |session| session.shell_control(item).is_some());
+}
+
+/// The launcher's row of a window goes to it: `focus` on the window's own resource.
+#[test]
+fn a_press_on_a_launcher_row_brings_its_window_front() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    assert!(!in_front(&session, notes), "mail opened in front of notes");
+    show(&mut session, "launcher");
+    let title = desk(&session)
+        .windows
+        .iter()
+        .find(|w| w.key == notes.to_string())
+        .unwrap()
+        .title
+        .clone();
+    until(&mut session, |session| {
+        session.shell_control(&title).is_some()
+    });
+    press(&mut session, &title);
+    until(&mut session, |session| in_front(session, notes));
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The launcher's door to the overview shows it: `show-surface` on the desk.
+#[test]
+fn a_press_on_a_launcher_door_shows_that_surface() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "launcher");
+    until(&mut session, |session| {
+        session.shell_control("Workspaces").is_some()
+    });
+    press(&mut session, "Workspaces");
+    until(&mut session, |session| here(session) == "workspaces");
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// What the launcher holds no window for, Search everywhere hands the desk's search: it opens
+/// with what was typed.
+#[test]
+fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "launcher");
+    type_text(&mut session, "quarterly");
+    let button = "Search everywhere for quarterly";
+    until(&mut session, |session| {
+        session.shell_control(button).is_some()
+    });
+    press(&mut session, button);
+    until(&mut session, |session| {
+        session.resources().iter().any(|resource| {
+            resource.id.as_str() == "desktop:desk"
+                && resource.children.iter().any(|child| {
+                    child.id.as_str() == tilo_desktop::desktop_actions::SEARCH_RESOURCE
+                        && child.label == "quarterly"
+                })
+        })
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window's Close in the overview closes it: `close` on the window's own resource.
+#[test]
+fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    show(&mut session, "overview");
+    window_menu(&mut session, "Close");
+    press(&mut session, "Close");
+    until(&mut session, |session| tab_place(session, notes).is_none());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window carried to another strip from the overview stands on it: the chrome's
+/// `move-tab-to-strip`.
+#[test]
+fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    let mail = second_strip(&mut session, "Main", "Research", "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    show(&mut session, "overview");
+    // The first window's menu offers the other window's strip, whichever window it is.
+    until(&mut session, |session| {
+        session.shell_control("This window").is_some()
+    });
+    press(&mut session, "This window");
+    until(&mut session, |session| {
+        ["Move to Main", "Move to Research"]
+            .iter()
+            .any(|item| session.shell_control(item).is_some())
+    });
+    let (item, strip) = if session.shell_control("Move to Research").is_some() {
+        ("Move to Research", "Research")
+    } else {
+        ("Move to Main", "Main")
+    };
+    press(&mut session, item);
+    until(&mut session, |session| {
+        [notes, mail]
+            .iter()
+            .all(|tab| tab_place(session, *tab).is_some_and(|(_, on)| on == strip))
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window carried to another workspace from the overview is in it: the chrome's `move-tab`.
+#[test]
+fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let first = desk(&session);
+    let first_key = first
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current)
+        .unwrap()
+        .key
+        .clone();
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "new-workspace",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    until(&mut session, |session| desk(session).workspaces.len() == 2);
+    let second = desk(&session)
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current)
+        .unwrap()
+        .clone();
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "switch-workspace",
+            &serde_json::Map::from_iter([(
+                "workspace".to_owned(),
+                serde_json::Value::String(first_key),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| {
+        desk(session).workspace == first.workspace
+    });
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    show(&mut session, "overview");
+    let item = format!("Move to {}", second.name);
+    window_menu(&mut session, &item);
+    press(&mut session, &item);
+    until(&mut session, |session| {
+        tab_place(session, notes).is_some_and(|(workspace, _)| workspace.to_string() == second.key)
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The centre's Clear all empties it: the desk's `clear-notices`.
+#[test]
+fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    for (title, body) in [
+        ("Backup finished", "12 GB safe"),
+        ("Update ready", "Restart"),
+    ] {
+        session.notices().post(
+            tilo_desktop_surface::notifications::Notification::new(title, body)
+                .with_app_name("Settings"),
+        );
+    }
+    until(&mut session, |session| desk(session).notices.len() == 2);
+    show(&mut session, "centre");
+    until(&mut session, |session| {
+        session.shell_control("Clear all").is_some()
+    });
+    press(&mut session, "Clear all");
+    until(&mut session, |session| desk(session).notices.is_empty());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A workspace named in the workspaces surface is made and in front: the chrome's
+/// `new-workspace` with its name.
+#[test]
+fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "workspaces");
+    until(&mut session, |session| {
+        session.shell_control("Name a new workspace").is_some()
+    });
+    press(&mut session, "Name a new workspace");
+    type_text(&mut session, "studio");
+    press(&mut session, "Create");
+    until(&mut session, |session| {
+        desk(session)
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.name == "studio")
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
