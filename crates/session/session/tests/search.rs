@@ -228,6 +228,38 @@ fn typing_after_the_search_chord_reaches_its_query() {
     });
 }
 
+/// Pressing the chord again over the open search leaves it open: the chord
+/// opens search, and nothing the desk's own keyboard answers closes it.
+#[test]
+fn the_search_chord_over_the_open_search_leaves_it_open() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for _ in 0..2 {
+        for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .expect("input");
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for _ in 0..10 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        find(&session.resources(), SEARCH_RESOURCE).is_some(),
+        "the search is still up after the chord is pressed over it"
+    );
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
