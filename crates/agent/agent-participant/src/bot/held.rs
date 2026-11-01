@@ -1,5 +1,5 @@
 //! The records a bot acts on where they are kept: on the host that governs
-//! the room, which holds each record itself and needs no session.
+//! the workspace, which holds each record itself and needs no session.
 //!
 //! Each record is a confined replica opened as the bot for its installer.
 //! The host brings a replica up to date before a run ([`HeldRecords::hold`])
@@ -23,10 +23,10 @@ use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
 
-/// One installation's replicas of the room's records.
+/// One installation's replicas of the workspace's records.
 pub struct HeldRecords {
     catalogue: AppCatalogue,
-    room: String,
+    workspace: String,
     actor: ReplicaActor,
     replicas: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// The records held beside another (the parts of a chain its app
@@ -40,12 +40,12 @@ pub struct HeldRecords {
 }
 
 impl HeldRecords {
-    /// No records yet, for `room`, acting as `actor`.
+    /// No records yet, for `workspace`, acting as `actor`.
     #[must_use]
-    pub fn new(catalogue: AppCatalogue, room: String, actor: ReplicaActor) -> Self {
+    pub fn new(catalogue: AppCatalogue, workspace: String, actor: ReplicaActor) -> Self {
         Self {
             catalogue,
-            room,
+            workspace,
             actor,
             replicas: BTreeMap::new(),
             beside: BTreeMap::new(),
@@ -91,7 +91,7 @@ impl HeldRecords {
         let replica = ConfinedReplica::open(
             &self.catalogue,
             &route.app_id,
-            &self.room,
+            &self.workspace,
             &self.participant(),
             &self.actor,
             Seed::Existing {
@@ -171,7 +171,7 @@ impl HeldRecords {
     /// Drop the replica of `route` (or the one it is held beside, with
     /// every record held there) and anything it changed that was not
     /// taken: the next [`Self::hold`] opens it afresh from the record as
-    /// the room keeps it. For a change the room refused, which must not
+    /// the workspace keeps it. For a change the workspace refused, which must not
     /// stay in the bot's copy under its later changes.
     pub fn forget(&mut self, route: &DocumentRoute) {
         let holder = self.holder(route).clone();
@@ -197,8 +197,8 @@ impl HeldRecords {
 }
 
 impl DoorParticipant for HeldRecords {
-    fn room(&self) -> &str {
-        &self.room
+    fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     fn offered(&self) -> Vec<(DocumentRoute, Vec<ActionDescriptor>)> {
@@ -316,11 +316,14 @@ mod tests {
 
     #[test]
     fn a_workspace_record_under_a_watched_apps_routes_is_left_alone() {
-        let mut held =
-            HeldRecords::new(AppCatalogue::native(), "room-1".into(), ReplicaActor::Owner);
+        let mut held = HeldRecords::new(
+            AppCatalogue::native(),
+            "workspace-1".into(),
+            ReplicaActor::Owner,
+        );
         let emoji = DocumentRoute {
             app_id: "so.tilo.chat".into(),
-            cluster_id: "room-1".into(),
+            cluster_id: "workspace-1".into(),
             record: collab_types::workspace_record_id("tilo.workspace.emoji"),
         };
         assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));

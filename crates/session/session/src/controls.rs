@@ -28,7 +28,8 @@ pub const MAGNIFIER_RESOURCE: &str = "session:magnifier";
 pub const SESSION_RESOURCE: &str = "session:screen";
 /// The resource of the night light.
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
-/// The resource of this device's clipboard.
+/// The resource of this device's clipboard, which the clipboard publishes
+/// itself: [`crate::mount::clipboard`].
 pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
 /// What the session's resources ask of the compositor.
@@ -91,7 +92,7 @@ impl From<Magnify> for settings_store::magnifier::MagnifierStep {
     clippy::expect_used,
     reason = "a session command always serializes to JSON"
 )]
-fn action(
+pub(crate) fn action(
     id: &'static str,
     label: String,
     params: Vec<ActionParam>,
@@ -124,7 +125,6 @@ fn resources() -> Vec<ResourceSpec> {
         screen_resource(),
         night_light_resource(),
         magnifier_resource(),
-        clipboard_resource(),
         apps_resource(),
     ]
 }
@@ -204,22 +204,6 @@ fn magnifier_resource() -> ResourceSpec {
         ))
 }
 
-/// What the person copies, and pasting it into a folder.
-fn clipboard_resource() -> ResourceSpec {
-    ResourceSpec::new(CLIPBOARD_RESOURCE, "session", t("session-clipboard")).with_action(action(
-        "paste-files",
-        t("session-clipboard-paste-files"),
-        vec![ActionParam::required_owned(
-            "destination",
-            ParamType::Text,
-            t("session-param-paste-destination"),
-        )],
-        |args| SessionCommand::PasteFiles {
-            destination: args.text("destination").unwrap_or_default().to_owned(),
-        },
-    ))
-}
-
 /// The questions about the person's apps: whether to uninstall one. The
 /// answer is the downloaded apps registry's own action, as from anywhere.
 fn apps_resource() -> ResourceSpec {
@@ -235,6 +219,20 @@ fn apps_resource() -> ResourceSpec {
             app: args.text(APP_PARAM).unwrap_or_default().to_owned(),
         },
     ))
+}
+
+/// The [`SessionCommand`] `arguments` make of `address`, checked against what
+/// `published` offers.
+pub(crate) fn command_of(
+    published: &[ResourceSpec],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<SessionCommand, DoorError> {
+    let encoded = tilo_actions::door::encode_json(published, address, arguments)?;
+    (encoded.type_id == OPERATION)
+        .then(|| serde_json::from_slice::<SessionCommand>(&encoded.payload).ok())
+        .flatten()
+        .ok_or_else(|| DoorError::Failed("not a session command".into()))
 }
 
 /// The session's own door: its actions become [`SessionCommand`]s the
@@ -264,11 +262,7 @@ impl Published for SessionControls {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        let encoded = tilo_actions::door::encode_json(&resources(), address, arguments)?;
-        let command = (encoded.type_id == OPERATION)
-            .then(|| serde_json::from_slice::<SessionCommand>(&encoded.payload).ok())
-            .flatten()
-            .ok_or_else(|| DoorError::Failed("not a session command".into()))?;
+        let command = command_of(&resources(), address, arguments)?;
         self.commands.borrow_mut().push(command);
         Ok(ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),

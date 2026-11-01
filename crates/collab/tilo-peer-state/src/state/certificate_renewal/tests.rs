@@ -51,7 +51,7 @@ fn admit(
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: owner,
             role: MemberRole::Editor,
             nonce: [53; 16],
@@ -90,7 +90,7 @@ fn admit(
     );
 }
 
-/// A room with an Editor whose certificate lasted from 1000s to 1500s, now
+/// A workspace with an Editor whose certificate lasted from 1000s to 1500s, now
 /// at 2000s expired; and a renewal of it the person's root issued at 1900s.
 struct Fixture {
     peer: StatePeer,
@@ -232,7 +232,7 @@ fn a_renewal_grants_no_more_than_the_certificate_it_replaces() {
 
 /// The membership exchange is how a member brings its renewal: challenged
 /// as the device it renews, it is held in the old one's place before the
-/// governor answers, and the answer is the room with the member's role.
+/// governor answers, and the answer is the workspace with the member's role.
 #[test]
 fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member() {
     let Fixture {
@@ -248,7 +248,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let mut ledger = JoinLedger::default();
     let challenge = {
         let host_cert = peer.owner_certificates()[0].clone();
-        let room = Governed {
+        let workspace = Governed {
             peer: &peer,
             host: &host_cert,
             workspace_id: 7,
@@ -257,10 +257,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         };
         ledger
             .membership_challenge(
-                &room,
+                &workspace,
                 renewed.device_public_key,
                 MembershipChallengeRequest {
-                    room: peer.room().into(),
+                    room: peer.workspace_id().into(),
                     workspace_id: 7,
                     device_cert: renewed.clone(),
                     request_id: [60; 32],
@@ -275,7 +275,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     };
     let renewal = {
         let host_cert = peer.owner_certificates()[0].clone();
-        let room = Governed {
+        let workspace = Governed {
             peer: &peer,
             host: &host_cert,
             workspace_id: 7,
@@ -283,7 +283,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
             governance_messages: &messages,
         };
         ledger
-            .membership_renewal(&room, renewed.device_public_key, &request, now_ns)
+            .membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
             .unwrap()
     };
     assert_eq!(renewal.as_ref(), Some(&renewed));
@@ -291,7 +291,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         .renew_member_certificate(&renewed, &authority, now)
         .unwrap();
     let host_cert = peer.owner_certificates()[0].clone();
-    let room = Governed {
+    let workspace = Governed {
         peer: &peer,
         host: &host_cert,
         workspace_id: 7,
@@ -300,13 +300,13 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     };
     assert_eq!(
         ledger
-            .membership_renewal(&room, renewed.device_public_key, &request, now_ns)
+            .membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
             .unwrap(),
         None,
-        "the room holds it now"
+        "the workspace holds it now"
     );
     let bootstrap = ledger
-        .membership_complete(&room, renewed.device_public_key, &request, now_ns)
+        .membership_complete(&workspace, renewed.device_public_key, &request, now_ns)
         .unwrap();
     assert_eq!(bootstrap.device_cert, renewed);
     assert_eq!(bootstrap.role, MemberRole::Editor);

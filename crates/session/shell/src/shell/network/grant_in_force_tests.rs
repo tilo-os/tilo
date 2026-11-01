@@ -103,7 +103,7 @@ fn member_device(
 fn question(room: RoomId, person: &str) -> AppActionConsentRequest {
     AppActionConsentRequest {
         handle: "app-action:test".into(),
-        room: room.to_string(),
+        workspace: room.to_string(),
         person: person.to_owned(),
         app_id: INVOKER.into(),
         target_app: TARGET.into(),
@@ -246,7 +246,7 @@ fn a_grant_given_where_its_room_is_hosted_is_in_force_before_the_call() {
         .iter_mut()
         .find(|workspace| workspace.room() == room)
         .expect("the room's workspace");
-    tilo_peer_state::room::adopt_room(workspace, &document, &[]);
+    tilo_peer_state::workspace::adopt_workspace(workspace, &document, &[]);
     drop(held);
     assert_eq!(
         receipts_by(&tree, room, &person),
@@ -400,7 +400,7 @@ fn a_wait_on_the_rooms_host_ends_when_its_session_does() {
     member
         .cmd_tx
         .try_send(NetCmd::WatchHostSessions {
-            ws: super::room_topic_id(room),
+            ws: super::workspace_topic_id(room),
             ended: watch,
         })
         .unwrap();

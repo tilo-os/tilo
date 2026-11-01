@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_network_actor::native_ingress::Connect;
-use tilo_network_actor::{Actor, HostIdentity, NetCmd, room_topic_id, workspace_sync};
+use tilo_network_actor::{Actor, HostIdentity, NetCmd, workspace_sync, workspace_topic_id};
 
 /// A room placed on this device's own host.
 const HOSTED_HERE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -24,7 +24,7 @@ fn native_custody_missing_disk_never_uses_retained_certificate() {
         workspace_revocations: HashMap::default(),
         identity_paths: None,
     };
-    let topic = room_topic_id(room);
+    let topic = workspace_topic_id(room);
     assert!(identity.current_native_material(topic).is_ok());
     identity.identity_paths = Some(tilo_user_identity::IdentityPaths::under(
         directory.path().join("missing-custody"),
@@ -104,7 +104,7 @@ async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
             .await
             .unwrap();
     }
-    let topic = room_topic_id(room);
+    let topic = workspace_topic_id(room);
     tilo_test_env::within("the room to say its host cannot be reached", async {
         while workspace_sync::state(topic) != Some(WorkspaceSyncState::Unreachable) {
             tokio::task::yield_now().await;
@@ -113,7 +113,7 @@ async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
     })
     .await;
     assert_eq!(
-        workspace_sync::state(room_topic_id(governed)),
+        workspace_sync::state(workspace_topic_id(governed)),
         None,
         "a room hosted here is not waiting for anyone"
     );

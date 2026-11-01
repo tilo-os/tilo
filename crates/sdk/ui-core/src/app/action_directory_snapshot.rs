@@ -331,11 +331,43 @@ impl App {
             visible.get(resource.id.as_str()).cloned()
         });
         if self.actions.action_directory_snapshot.as_deref() != Some(&snapshot) {
-            if let Some((_, revision)) = &mut self.actions.action_directory_stamp {
-                *revision = format!("v5:{}", uuid::Uuid::new_v4());
-            }
+            // A pass that re-derived the directory without changing what it
+            // lists (a sync, a wake) continues the revision readers hold, so
+            // a paged read of a busy app still reads one snapshot.
+            let retired = self.actions.action_directory_retired.take();
             self.actions.action_directory_cursors.clear();
+            if let Some((witness, revision)) = &mut self.actions.action_directory_stamp {
+                match retired.filter(|retired| {
+                    witness.reusable_model_projection()
+                        && witness.same_non_scheduling_fields(&retired.witness)
+                        && *retired.snapshot == snapshot
+                }) {
+                    Some(retired) => {
+                        *revision = retired.revision;
+                        self.actions.action_directory_cursors = retired.cursors;
+                    }
+                    None => *revision = format!("v5:{}", uuid::Uuid::new_v4()),
+                }
+            }
             self.actions.action_directory_snapshot = Some(std::rc::Rc::new(snapshot));
+        }
+    }
+
+    /// The directory went stale: what its revision named is set aside for
+    /// [`Self::capture_action_directory_snapshot`] to compare against. A
+    /// revision handed out before its snapshot was captured named nothing
+    /// new, so the directory set aside before it stays.
+    pub(super) fn retire_action_directory(&mut self) {
+        let cursors = std::mem::take(&mut self.actions.action_directory_cursors);
+        let snapshot = self.actions.action_directory_snapshot.take();
+        let stamp = self.actions.action_directory_stamp.take();
+        if let (Some(snapshot), Some((witness, revision))) = (snapshot, stamp) {
+            self.actions.action_directory_retired = Some(ModelDirectoryCandidate {
+                witness,
+                revision,
+                snapshot,
+                cursors,
+            });
         }
     }
 }

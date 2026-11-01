@@ -157,7 +157,7 @@ fn step_key(step: &Step) -> String {
 
 /// Whether `error` is a refusal no other plan would meet differently: the
 /// person declined or nobody was there to confirm, or the agent is not
-/// permitted the app or room, or was paused or stopped.
+/// permitted the app or workspace, or was paused or stopped.
 pub(super) fn is_final(error: &str) -> bool {
     [
         DoorError::ConfirmationRequired.code(),

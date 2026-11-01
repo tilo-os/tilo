@@ -1,4 +1,4 @@
-//! Owner-neutral transactions over the canonical room governance document.
+//! Owner-neutral transactions over the canonical workspace governance document.
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use web_time::SystemTime;
@@ -9,7 +9,7 @@ use crate::state::{GovernedIdentity, RedemptionReceipt, put_member, put_member_j
 /// its first (`GovernedIdentity::admission`).
 ///
 /// The row is a single JSON blob rewritten on every redemption, so an
-/// unbounded list makes each later admission, roster read and room sync pay
+/// unbounded list makes each later admission, roster read and workspace sync pay
 /// for the device's whole redemption history. The first receipt is kept for
 /// good: it is the admission evidence membership reads (`has_admission`, the
 /// governed member list). Only the oldest of the later receipts are dropped,
@@ -34,16 +34,16 @@ pub enum AdmissionOutcome {
 }
 
 /// Apply certificate, role and immutable redemption receipt to the caller's
-/// existing canonical room document as one transaction, written by any
+/// existing canonical workspace document as one transaction, written by any
 /// participant's device. The invitation is checked on its own: it
-/// verifies, has not expired, names this room and the joiner when narrowed,
+/// verifies, has not expired, names this workspace and the joiner when narrowed,
 /// was issued by a member who may invite with its role, and was not
 /// redeemed before. Whether its writer may admit is decided as every receiver
-/// decides it ([`crate::room::membership`]). On error `document` remains
+/// decides it ([`crate::workspace::membership`]). On error `document` remains
 /// byte-for-byte unchanged.
 ///
 /// The change is made under `document`'s actor, which the caller sets
-/// ([`crate::room_host_actor`]).
+/// ([`crate::workspace_host_actor`]).
 ///
 /// # Errors
 ///
@@ -66,15 +66,15 @@ pub fn admit_invited_member(
         .unwrap_or(u64::MAX);
     let cert = redemption.certificate();
     tilo_user_identity::verify_device_cert_at(cert, now_ns).map_err(|error| error.to_string())?;
-    let declared_room = document
+    let declared_workspace = document
         .get(ROOT, "room")
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
-        .ok_or("governed room id is missing")?;
-    let policy = tilo_desktop_model::projection::room_policy_of(document, &declared_room);
-    let grant = crate::room::membership::invitation_admits(
+        .ok_or("governed workspace id is missing")?;
+    let policy = tilo_desktop_model::projection::room_policy_of(document, &declared_workspace);
+    let grant = crate::workspace::membership::invitation_admits(
         &policy,
-        &declared_room,
+        &declared_workspace,
         redemption.join().signed_invitation(),
         cert.user_public_key,
         now_ns,
@@ -90,8 +90,8 @@ pub fn admit_invited_member(
             redemption.join().signed_invitation(),
         )),
     };
-    let governance = crate::room::governance_of(Some(document));
-    let invitation_receipts = crate::room::invitation_receipts(document)?;
+    let governance = crate::workspace::governance_of(Some(document));
+    let invitation_receipts = crate::workspace::invitation_receipts(document)?;
     let mut exact_redemption = false;
     let spent = invitation_receipts
         .values()
@@ -121,9 +121,9 @@ pub fn admit_invited_member(
         return Ok(AdmissionOutcome::AlreadyApplied);
     }
     // A banned person stays out whatever invitation they hold, an older one
-    // or a new one, until the room unbans them.
+    // or a new one, until the workspace unbans them.
     if policy.is_banned(&hex::encode(cert.user_public_key)) {
-        return Err("this person is banned from the room".into());
+        return Err("this person is banned from the workspace".into());
     }
     let id = hex::encode(cert.device_public_key);
     let prior = governance
@@ -216,7 +216,7 @@ pub fn admit_invited_member(
     )?;
     put_member_joined_once(&mut candidate, cert.user_public_key, now_ns / 1_000_000)?;
     candidate.commit();
-    crate::room::media::refresh_authorization(document, &mut candidate)
+    crate::workspace::media::refresh_authorization(document, &mut candidate)
         .map_err(|error| error.to_string())?;
     let changes = candidate
         .get_changes(&before)
@@ -374,7 +374,7 @@ mod display_name_tests {
         let signed = issue_invitation(
             InviteGrant {
                 workspace_id: 7,
-                room: peer.room().into(),
+                room: peer.workspace_id().into(),
                 issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [53; 16],
@@ -454,7 +454,7 @@ mod retention_tests {
         (key, cert)
     }
 
-    /// Invitation `nonce` from the room authority, redeemed by `device`.
+    /// Invitation `nonce` from the workspace authority, redeemed by `device`.
     fn redemption(
         peer: &StatePeer,
         authority: &SigningKey,
@@ -465,7 +465,7 @@ mod retention_tests {
         let signed = issue_invitation(
             InviteGrant {
                 workspace_id: 7,
-                room: peer.room().into(),
+                room: peer.workspace_id().into(),
                 issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [nonce; 16],
@@ -498,12 +498,12 @@ mod retention_tests {
         verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns).unwrap()
     }
 
-    /// The room governance document the peer sends.
-    fn governance(peer: &StatePeer) -> crate::room::RoomGovernance {
-        let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
-            panic!("room message is a SyncResp")
+    /// The workspace governance document the peer sends.
+    fn governance(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
+        let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
+            panic!("workspace message is a SyncResp")
         };
-        crate::room::governance_of(Some(&crate::room::candidate(None, &changes).unwrap()))
+        crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
     }
 
     #[test]

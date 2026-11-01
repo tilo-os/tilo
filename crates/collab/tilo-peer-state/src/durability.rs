@@ -45,7 +45,7 @@ impl DurableReceipt {
     }
 }
 /// Identity of the whole governed receipt set for "unchanged"
-/// comparisons; `None` when the room carries none.
+/// comparisons; `None` when the workspace carries none.
 pub fn governed_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
     crate::governed_routes::identity(doc, LAYOUT)
 }
@@ -208,7 +208,7 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
         if next.generation < prior.generation
             || next.coverage.sequence < prior.coverage.sequence
             || next.coverage.author != prior.coverage.author
-            || next.coverage.room != prior.coverage.room
+            || next.coverage.workspace != prior.coverage.workspace
             || next.coverage.app != prior.coverage.app
             || next.coverage.record != prior.coverage.record
             || prior.coverage.watermarks.iter().any(|(author, seq)| {
@@ -227,7 +227,7 @@ mod tests {
     fn receipt(generation: u64) -> DurableReceipt {
         DurableReceipt::new(
             Coverage {
-                room: "room".into(),
+                workspace: "room".into(),
                 app: "app".into(),
                 record: "record".into(),
                 payload_hash: [3; 32],
@@ -279,11 +279,14 @@ mod tests {
             BTreeMap::from([(route_key("app", "record"), receipt(1))]),
         )
         .unwrap();
-        assert!(!crate::room::governance_unchanged(Some(&before), &after));
+        assert!(!crate::workspace::governance_unchanged(
+            Some(&before),
+            &after
+        ));
     }
     fn compact_coverage(sequence: u64) -> Coverage {
         Coverage {
-            room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
             app: "app".into(),
             record: "record".into(),
             payload_hash: [3; 32],

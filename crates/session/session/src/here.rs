@@ -68,7 +68,7 @@ impl Shared {
                     }
                     let calls = calls
                         .iter()
-                        .filter(|call| call.room == room)
+                        .filter(|call| call.workspace == room)
                         .map(|call| CallHere {
                             channel: call.channel.clone(),
                             name: call.name.clone(),

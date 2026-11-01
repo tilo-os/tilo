@@ -231,7 +231,7 @@ impl WorkspaceTree {
                 violations.push(format!("two workspaces are room {}", workspace.room()));
             }
         }
-        for room in self.native_authority.rooms() {
+        for room in self.native_authority.workspaces() {
             if !self.has_workspace(room) {
                 violations.push(format!("room {room} has no workspace"));
             }

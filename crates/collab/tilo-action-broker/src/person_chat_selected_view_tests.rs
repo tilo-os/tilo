@@ -9,7 +9,7 @@ struct SelectedViewOwner {
 impl crate::services::person_chat::PersonChatServices for SelectedViewOwner {
     fn command(
         &self,
-        _room: &str,
+        _workspace: &str,
         caller: &tilo_user_identity::DeviceCert,
         command: &[u8],
     ) -> Result<Vec<u8>, String> {
@@ -41,7 +41,7 @@ impl crate::services::person_chat::PersonChatServices for SelectedViewOwner {
     }
     fn subscribe(
         &self,
-        _room: &str,
+        _workspace: &str,
         caller: &tilo_user_identity::DeviceCert,
         _peer: &str,
     ) -> Result<tokio::sync::watch::Receiver<u64>, String> {

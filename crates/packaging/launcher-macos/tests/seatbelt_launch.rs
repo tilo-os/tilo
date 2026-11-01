@@ -598,7 +598,7 @@ fn a_confined_app_captures_only_what_its_broker_grants() {
     let (app, runtime) = std::os::unix::net::UnixDatagram::pair().unwrap();
     let policy: Arc<dyn Policy> = Arc::new(tilo_capture::grants::GrantPolicy {
         grants,
-        room: "personal".into(),
+        workspace: "personal".into(),
         app: PACKAGE.into(),
         declared: vec![DeviceKind::Camera],
         consent: |_| Ok(true),

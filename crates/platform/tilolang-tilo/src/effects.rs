@@ -3,7 +3,7 @@
 //!
 //! They are an [`Effect`] vocabulary published on the `tl:host` resource, so the desktop agent,
 //! the runtime door, shortcuts and grants reach them as they reach every other operation. The
-//! window answers them with [`Host::answer`]; what they change in the room they change through
+//! window answers them with [`Host::answer`]; what they change in the workspace they change through
 //! the runtime's own commits, which the window hands to the door like a press's.
 
 use serde_json::{Value as Json, json};
@@ -22,11 +22,11 @@ use crate::publish::Caller;
 pub enum HostEffect {
     /// Run a block.
     ///
-    /// Evaluate a tilolang expression against every app of the room: a view block renders, a
+    /// Evaluate a tilolang expression against every app of the workspace: a view block renders, a
     /// value block is shown as data, and an action block runs or, when it needs a person's
     /// approval, is recorded as a suggested invocation.
     ///
-    /// The block itself changes only the room's record: each action it applies is decided as
+    /// The block itself changes only the workspace's record: each action it applies is decided as
     /// the caller's code, and what it commits carries that action's own need (an outside effect
     /// needs what reaching outside needs), so running it is an undoable change, not an outside
     /// one.
@@ -68,7 +68,7 @@ pub enum HostEffect {
     },
     /// List the catalogue.
     ///
-    /// The signatures of every type, action, view and flow of the room's apps, doc comments
+    /// The signatures of every type, action, view and flow of the workspace's apps, doc comments
     /// included.
     #[effect(kind = "read", returns)]
     Catalogue,
@@ -311,7 +311,7 @@ impl Host {
     /// own (a message of a conversation) opens the window of what holds it.
     ///
     /// # Errors
-    /// The anchor names nothing in this room.
+    /// The anchor names nothing in this workspace.
     pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
         use tilolang_runtime::store::Store as _;
         let probe = ResourceRef::parse_id(anchor, String::new())
@@ -320,7 +320,7 @@ impl Host {
             .records()
             .into_iter()
             .find(|(_, _, id)| *id == probe.doc)
-            .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+            .ok_or_else(|| format!("`{anchor}` is not in this workspace"))?;
         // The items from the record down to the anchor, as they are held now.
         let mut chain = Vec::new();
         let mut at = Some(probe);
@@ -348,13 +348,13 @@ impl Host {
         })
     }
 
-    /// What the room's resources hold, as an agent or a script reads it through the door's
-    /// `read`: with no `item`, every record of the room with its id, kind and title; with an
+    /// What the workspace's resources hold, as an agent or a script reads it through the door's
+    /// `read`: with no `item`, every record of the workspace with its id, kind and title; with an
     /// `item` (a published id, `tl:<app>:<id>`, an item of a record by its path), that resource
     /// with its fields, each of the items it holds named by its published id.
     ///
     /// # Errors
-    /// The item names nothing in this room.
+    /// The item names nothing in this workspace.
     pub fn read_content(&self, item: Option<&str>) -> Result<Json, String> {
         use crate::meta::MetaExt as _;
         use tilolang_runtime::store::Store as _;

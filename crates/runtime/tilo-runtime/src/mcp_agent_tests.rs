@@ -10,7 +10,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionParam, InvocationUpdate, ParamType, ResourceSemanticIdentity};
 
 const APP: &str = "so.tilo.notes";
-const WORKSPACE: &str = "workspace:room";
+const WORKSPACE: &str = "workspace:workspace";
 /// The peer of [`Notes::with_unpublished_instance`]'s newer instance.
 const UNPUBLISHED: &str = "3";
 const NOTEBOOK: &str = "notes.notebook";
@@ -609,7 +609,7 @@ impl Notes {
             let instance = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
                 app_id: app_id.into(),
-                room: "room".into(),
+                room: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             };
@@ -901,7 +901,7 @@ async fn tool(server: &McpServer<Notes>, name: &str, arguments: Value) -> (Strin
 }
 
 fn agent(host: &Notes) -> McpServer<Notes> {
-    McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada")
+    McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
 }
 
 #[test]
@@ -957,7 +957,7 @@ fn an_agent_is_offered_six_small_tools_and_no_classic_ones() {
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(size < 3_500, "the tool list is {size} bytes");
-        let classic = McpServer::new(host.clone(), "room".into(), "owner".into())
+        let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
             .unwrap();

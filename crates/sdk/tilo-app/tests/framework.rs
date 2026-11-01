@@ -482,7 +482,7 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     app.set_role(tilo_app::permissions::Role::Viewer);
     let viewer = app.permissions();
     let mut standing = viewer.standing().clone();
-    let room = TreePath::room(&standing.policy.room);
+    let room = TreePath::room(&standing.policy.workspace);
     let person = Subject::person(standing.person.clone());
     standing.policy.grants.extend([
         Grant::new(

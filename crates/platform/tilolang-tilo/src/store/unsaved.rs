@@ -1,4 +1,4 @@
-//! The store's **unsaved layer**: what an origin derives, which the room record never holds,
+//! The store's **unsaved layer**: what an origin derives, which the workspace record never holds,
 //! and the writes the store replays when it puts the mirror back (rollback, rewind).
 //!
 //! A type whose origin kind is derived (`type Desk (origin: session.desk)`,

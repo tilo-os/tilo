@@ -1,4 +1,4 @@
-//! A simulated browser and an agent share one room on a local host.
+//! A simulated browser and an agent share one workspace on a local host.
 //!
 //! The browser is the page's session code built natively: HTTPS for
 //! documents and remote actions, WebTransport `moq-lite` for presence, and
@@ -79,7 +79,7 @@ use tilo_user_identity::{
 };
 
 use common::catalogue;
-use support::{Device, ROOM, TestHost, enrol, ready, start_peer, wait_for, workspace};
+use support::{Device, ROOM as WORKSPACE, TestHost, enrol, ready, start_peer, wait_for, workspace};
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -106,7 +106,7 @@ impl tilo_agent_participant::Planner for GatedPlanner {
 }
 
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
-const OTHER_ROOM: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
+const OTHER_WORKSPACE: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
 
 /// The host with its agent supervisor as the app-serving plane.
 async fn start_host(
@@ -396,7 +396,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Writer helper",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: vec![SCRATCHPAD.into()],
         },
         now,
@@ -423,13 +423,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join_placed(ROOM, "Workspace").unwrap();
+    browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
     let mut page = Replica::open(
         &catalogue,
         SCRATCHPAD,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -439,7 +439,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // which travels as the route without a record id.
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record: page.wire_record().to_owned(),
     };
     browser
@@ -482,7 +482,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: tilo_content::ContentStore::memory(),
         },
         identity,
@@ -629,21 +629,24 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         Some(ParticipantKind::Person)
     );
 
-    // 7. The host keeps the agent to its delegated rooms.
+    // 7. The host keeps the agent to its delegated workspaces.
     agent
         .peer()
-        .join(tilo_relay_protocol::room_workspace_id(OTHER_ROOM).unwrap())
+        .join(tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap())
         .unwrap();
-    wait_for("the host to refuse a room outside the delegation", || {
-        agent.pump();
-        let refused = agent
-            .peer()
-            .status()
-            .failures
-            .iter()
-            .any(|failure| failure.code == "permission-required");
-        async move { refused.then_some(()) }
-    })
+    wait_for(
+        "the host to refuse a workspace outside the delegation",
+        || {
+            agent.pump();
+            let refused = agent
+                .peer()
+                .status()
+                .failures
+                .iter()
+                .any(|failure| failure.code == "permission-required");
+            async move { refused.then_some(()) }
+        },
+    )
     .await;
 
     // 8. Pause holds the next task, resume releases it, stop ends the agent.

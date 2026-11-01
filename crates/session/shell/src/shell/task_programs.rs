@@ -200,7 +200,7 @@ impl HostStepServices for BrokerDoor {
             request
                 .task_run
                 .ok_or("a task's programs run only as steps of its run")?,
-            request.room,
+            request.workspace,
             agent,
             actor.acting_for(),
             issue,

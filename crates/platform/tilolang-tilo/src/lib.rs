@@ -4,7 +4,7 @@
 //! platform:
 //!
 //! * [`record`]: `DynRecord`, a tilolang resource as a `tilo_resource` model, so resources live
-//!   in the room record and merge by their field kinds;
+//!   in the workspace record and merge by their field kinds;
 //! * [`action`]: `DynAction`, the replayable form of a planned tilolang action, which a peer
 //!   without the wasm module applies;
 //! * [`meta`] and [`surface`]: what the platform derives from package metadata, and the surface
@@ -79,8 +79,8 @@ pub fn member_record_of(person: &str) -> Option<String> {
 }
 
 /// Whether `person` reaches what the record `record` holds: a member's own record
-/// ([`member_record_of`]) is that person's alone, whatever their role in the room, as every door
-/// decides it; any other record is the room policy's to decide. An agent reaches it as the
+/// ([`member_record_of`]) is that person's alone, whatever their role in the workspace, as every door
+/// decides it; any other record is the workspace policy's to decide. An agent reaches it as the
 /// person it acts for; an invoker acting for nobody reaches no one's own record.
 #[must_use]
 pub fn reaches(record: Option<&str>, person: Option<&str>) -> bool {

@@ -32,7 +32,7 @@ impl LauncherServices for Launcher {
         record: Option<&str>,
         _place: &LaunchPlace,
     ) -> Result<(), String> {
-        if workspace.room() != room()
+        if workspace.room() != workspace_id()
             || app != WRITER
             || !(record.is_none() || record == Some("main"))
         {
@@ -73,7 +73,7 @@ impl LauncherServices for Launcher {
             .send(app.into())
             .map_err(|error| error.to_string())
     }
-    fn attest_process(&self, _pid: u32, _app: &str, _room: &str) -> bool {
+    fn attest_process(&self, _pid: u32, _app: &str, _workspace: &str) -> bool {
         false
     }
 }
@@ -122,7 +122,7 @@ fn permission(f: &Fixture, allow: bool) {
         Grant::new(
             format!("cold-writer-{}", if allow { "allow" } else { "deny" }),
             Subject::agent("scribe"),
-            TreePath::room(room().to_string()).app(WRITER),
+            TreePath::room(workspace_id().to_string()).app(WRITER),
             KindSet::READ.union(KindSet::UNDOABLE),
             if allow { Answer::Allow } else { Answer::Deny },
             Subject::person(hex::encode(f.native.certificate.user_public_key)),
@@ -136,7 +136,7 @@ fn once_permission(f: &Fixture) {
         tilo_action_policy::Grant::new(
             "cold-writer-allow",
             tilo_action_policy::Subject::agent("scribe"),
-            tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+            tilo_action_policy::TreePath::room(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::READ.union(tilo_action_policy::KindSet::UNDOABLE),
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
@@ -281,7 +281,7 @@ async fn native_task_activation_refuses_missing_host_signer_before_launching() {
             let result = invoke_provider(
                 &agent,
                 &run,
-                &tilo_actions::remote::workspace_provider(&room().to_string()),
+                &tilo_actions::remote::workspace_provider(&workspace_id().to_string()),
                 &format!("app.{WRITER}"),
                 "open",
                 serde_json::json!({}),
@@ -309,7 +309,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         f.approve();
         let agent = f.channel(100, true);
         let run = delivered(&agent).await;
-        let workspace_provider = tilo_actions::remote::workspace_provider(&room().to_string());
+        let workspace_provider = tilo_actions::remote::workspace_provider(&workspace_id().to_string());
         let app_resource = format!("app.{WRITER}");
         let open = invoke_provider(&agent, &run, &workspace_provider,
             &app_resource, "open", serde_json::json!({}));
@@ -323,7 +323,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         assert!(matches!(open.await.unwrap().1, tilo_actions::InvocationUpdate::Succeeded { .. }));
         // Deterministic planner: append through the fresh resource publication,
         // then invoke Writer's registered view operation, never pointer input.
-        let provider = tilo_actions::remote::application_action_target(&room().to_string(), WRITER, Document::KIND, "append-paragraph").provider;
+        let provider = tilo_actions::remote::application_action_target(&workspace_id().to_string(), WRITER, Document::KIND, "append-paragraph").provider;
         let appended = invoke_provider(&agent, &run, &provider, Document::KIND, "append-paragraph",
             serde_json::json!({"text":"Visible governed paragraph"})).await.unwrap();
         writer.settle(appended.0).await;
@@ -362,7 +362,7 @@ fn retain_writer(f: &Fixture) -> String {
     let surface = PublishedSurface {
         peer_id: 209,
         app_id: WRITER.into(),
-        route: CrdtRoute::record(WRITER, room().to_string(), "main"),
+        route: CrdtRoute::record(WRITER, workspace_id().to_string(), "main"),
         live: true,
         actions: vec![PublishedAction {
             state: tilo_actions::ActionState::default(),
@@ -395,7 +395,7 @@ fn assert_closed_writer(f: &Fixture) {
     let catalogue: serde_json::Value = serde_json::from_str(
         &f.state
             .action_catalogue_json(
-                &room().to_string(),
+                &workspace_id().to_string(),
                 &hex::encode(f.native.certificate.user_public_key),
             )
             .unwrap(),
@@ -426,7 +426,7 @@ fn assert_closed_writer(f: &Fixture) {
     );
     assert_eq!(
         retained[0].route,
-        CrdtRoute::record(WRITER, room().to_string(), "main")
+        CrdtRoute::record(WRITER, workspace_id().to_string(), "main")
     );
     assert!(
         !retained[0].live,
@@ -435,7 +435,7 @@ fn assert_closed_writer(f: &Fixture) {
     assert!(
         !f.state.has_live_published_action(
             WRITER,
-            &room().to_string(),
+            &workspace_id().to_string(),
             "main",
             Document::KIND,
             "append-paragraph",
@@ -528,7 +528,7 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                 let agent = f.channel(100, true);
                 let run = delivered(&agent).await;
                 let provider = tilo_actions::remote::application_action_target(
-                    &room().to_string(),
+                    &workspace_id().to_string(),
                     WRITER,
                     Document::KIND,
                     "append-paragraph",
@@ -583,7 +583,7 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
                 tilo_action_policy::Grant::new(
                     "foreign-writer-denied",
                     tilo_action_policy::Subject::ForeignDevice,
-                    tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+                    tilo_action_policy::TreePath::room(workspace_id().to_string()).app(WRITER),
                     tilo_action_policy::KindSet::UNDOABLE,
                     tilo_action_policy::Answer::Deny,
                     tilo_action_policy::Subject::person(hex::encode(
@@ -594,12 +594,12 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let provider = tilo_actions::remote::workspace_provider(&room().to_string());
+            let provider = tilo_actions::remote::workspace_provider(&workspace_id().to_string());
             let resource = format!("app.{WRITER}");
             let issue_run = f.native.runs.lock().unwrap()[0].clone();
             crate::services::TrackerRuns::authorize_action(
                 f.native.as_ref(),
-                &room().to_string(),
+                &workspace_id().to_string(),
                 &issue_run,
                 &crate::services::NativeTaskActionRequirement {
                     binding: f
@@ -651,14 +651,14 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
-            // The room holds the agent to the changes it is given app by app,
+            // The workspace holds the agent to the changes it is given app by app,
             // so beyond the one-use grant its run may not open Writer.
             put_grant(
                 &f,
                 tilo_action_policy::Grant::new(
-                    "cold-writer-room-held",
+                    "cold-writer-workspace-held",
                     tilo_action_policy::Subject::agent("scribe"),
-                    tilo_action_policy::TreePath::room(room().to_string()),
+                    tilo_action_policy::TreePath::room(workspace_id().to_string()),
                     tilo_action_policy::KindSet::UNDOABLE,
                     tilo_action_policy::Answer::Deny,
                     tilo_action_policy::Subject::person(hex::encode(
@@ -670,7 +670,7 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let provider = tilo_actions::remote::workspace_provider(&room().to_string());
+            let provider = tilo_actions::remote::workspace_provider(&workspace_id().to_string());
             let resource = format!("app.{WRITER}");
             let id = uuid::Uuid::new_v4();
             let open = invoke_provider_id(
@@ -766,7 +766,7 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
         f.approve();
         let agent = f.channel(100, true);
         let run = delivered(&agent).await;
-        let provider = tilo_actions::remote::workspace_provider(&room().to_string());
+        let provider = tilo_actions::remote::workspace_provider(&workspace_id().to_string());
         let resource = format!("app.{WRITER}");
         let id = uuid::Uuid::new_v4();
         let open = invoke_provider_id(&agent, &run, &provider, &resource, "open", serde_json::json!({}), id);
@@ -782,7 +782,7 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
         drop(writer);
         put_grant(&f, tilo_action_policy::Grant::new(
             "foreign-writer-denied-after-close", tilo_action_policy::Subject::ForeignDevice,
-            tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+            tilo_action_policy::TreePath::room(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::UNDOABLE, tilo_action_policy::Answer::Deny,
             tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
         ));
@@ -812,7 +812,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                     tilo_action_policy::Grant::new(
                         "foreign-writer-barrier-denied",
                         tilo_action_policy::Subject::ForeignDevice,
-                        tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+                        tilo_action_policy::TreePath::room(workspace_id().to_string()).app(WRITER),
                         tilo_action_policy::KindSet::UNDOABLE,
                         tilo_action_policy::Answer::Deny,
                         tilo_action_policy::Subject::person(hex::encode(
@@ -858,8 +858,10 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                                         tilo_action_policy::Grant::new(
                                             "writer-denied-after-custody",
                                             tilo_action_policy::Subject::agent("scribe"),
-                                            tilo_action_policy::TreePath::room(room().to_string())
-                                                .app(WRITER),
+                                            tilo_action_policy::TreePath::room(
+                                                workspace_id().to_string(),
+                                            )
+                                            .app(WRITER),
                                             tilo_action_policy::KindSet::UNDOABLE,
                                             tilo_action_policy::Answer::Deny,
                                             tilo_action_policy::Subject::person(hex::encode(
@@ -878,7 +880,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                     invoke_provider_id(
                         &agent,
                         &run,
-                        &tilo_actions::remote::workspace_provider(&room().to_string()),
+                        &tilo_actions::remote::workspace_provider(&workspace_id().to_string()),
                         &format!("app.{WRITER}"),
                         "open",
                         serde_json::json!({}),
@@ -896,7 +898,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                 assert!(f.state.invocation_subscribers.lock().unwrap().is_empty());
                 let digest = blake3::hash(format!("native-host-activation:{id}").as_bytes());
                 let key = InvocationKey {
-                    room: room().to_string(),
+                    workspace: workspace_id().to_string(),
                     host: f.state.invocation_host().unwrap(),
                     owner: InvocationOwner::NativeTask {
                         agent: "scribe".into(),
@@ -956,7 +958,7 @@ async fn activation_uses_the_current_workspace_after_custody() {
                     *native.cached_projection.lock().unwrap() = Some(tree);
                 }),
             );
-            let provider = tilo_actions::remote::workspace_provider(&room().to_string());
+            let provider = tilo_actions::remote::workspace_provider(&workspace_id().to_string());
             let resource = format!("app.{WRITER}");
             let open = invoke_provider_id(
                 &agent,
@@ -989,7 +991,7 @@ fn ask_first_for_writer(f: &Fixture) {
         tilo_action_policy::Grant::new(
             "cold-writer-ask",
             tilo_action_policy::Subject::agent("scribe"),
-            tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+            tilo_action_policy::TreePath::room(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::UNDOABLE,
             tilo_action_policy::Answer::Ask,
             tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),

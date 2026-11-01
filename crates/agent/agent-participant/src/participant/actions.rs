@@ -1,9 +1,9 @@
 //! `actionsV1` for apps over the remote-action path: the agent answers
-//! `tilo_actions::remote` frames other devices of the room address to it,
+//! `tilo_actions::remote` frames other devices of the workspace address to it,
 //! for the records it has open, through the same door its own steps use.
 //!
 //! - A catalogue lists one provider per open record (`record:<app>:<record>`)
-//!   with every operation the record publishes, and the room's provider (`workspace:<room>`) offering
+//!   with every operation the record publishes, and the workspace's provider (`workspace:<workspace>`) offering
 //!   `app.<app>#open` for each delegated app.
 //! - An invocation runs through the app's door with the caller's arguments;
 //!   an explicit `Confirmed` from the caller satisfies a confirmation step.
@@ -12,8 +12,8 @@
 //! - Invocation ids are idempotent: a retry reports the original receipt, a
 //!   different request under a used id is a conflict.
 //!
-//! The host stamps the sending device and delivers only within the room, so
-//! a caller is a device of the room's user.
+//! The host stamps the sending device and delivers only within the workspace, so
+//! a caller is a device of the workspace's user.
 
 use std::collections::VecDeque;
 
@@ -39,20 +39,20 @@ pub fn record_provider(route: &DocumentRoute) -> String {
     format!("{RECORD_PROVIDER}:{}:{}", route.app_id, route.record)
 }
 
-pub(crate) fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
+pub(crate) fn record_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
     let rest = provider.strip_prefix(RECORD_PROVIDER)?.strip_prefix(':')?;
     // App ids have no colon; record ids may (`uuid:…`).
     let (app_id, record) = rest.split_once(':')?;
     Some(DocumentRoute {
         app_id: app_id.to_owned(),
-        cluster_id: room.to_owned(),
+        cluster_id: workspace.to_owned(),
         record: record.to_owned(),
     })
 }
 
-/// The row offering to open `app` on a new record in workspace `room`.
-pub(crate) fn open_row(room: &str, app: &str) -> CatalogueRow {
-    let target = application_open_target(room, app);
+/// The row offering to open `app` on a new record in workspace `workspace`.
+pub(crate) fn open_row(workspace: &str, app: &str) -> CatalogueRow {
+    let target = application_open_target(workspace, app);
     CatalogueRow::for_action(
         target.provider,
         app,
@@ -65,7 +65,7 @@ pub(crate) fn open_row(room: &str, app: &str) -> CatalogueRow {
             action_label: format!("Open {app}"),
             keywords: Vec::new(),
             icon: None,
-            description: Some(format!("Open {app} on a new record in this room.")),
+            description: Some(format!("Open {app} on a new record in this workspace.")),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
             contract: tilo_actions::ActionContract::default(),
@@ -155,7 +155,7 @@ impl AgentParticipant {
     }
 
     fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
-        let room = self.room.clone();
+        let workspace = self.workspace.clone();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         let routes: Vec<DocumentRoute> = self.apps.keys().cloned().collect();
@@ -171,7 +171,7 @@ impl AgentParticipant {
             providers.push(CatalogueProvider {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
-                room: room.clone(),
+                room: workspace.clone(),
                 record_id: route.record.clone(),
                 browsable: false,
             });
@@ -183,23 +183,23 @@ impl AgentParticipant {
                 ));
             }
         }
-        let workspace = workspace_provider(&room);
+        let provider = workspace_provider(&workspace);
         if query
             .provider
             .as_ref()
-            .is_none_or(|wanted| *wanted == workspace)
+            .is_none_or(|wanted| *wanted == provider)
         {
             rows.extend(
                 self.catalogue
                     .iter()
                     .map(ui::application::ApplicationDefinition::app_id)
                     .filter(|app| self.identity.delegation.permits_app(app))
-                    .map(|app| open_row(&room, app)),
+                    .map(|app| open_row(&provider, app)),
             );
             providers.push(CatalogueProvider {
-                provider: workspace,
+                provider,
                 app_id: String::new(),
-                room,
+                room: workspace,
                 record_id: String::new(),
                 browsable: false,
             });
@@ -258,7 +258,7 @@ impl AgentParticipant {
             return Err(reject(ActionHostError::StaleRevision));
         }
         let target = &request.target;
-        if workspace_provider_room(&target.provider) == Some(self.room.as_str()) {
+        if workspace_provider_room(&target.provider) == Some(self.workspace.as_str()) {
             let app = target
                 .address
                 .resource
@@ -279,7 +279,7 @@ impl AgentParticipant {
                 resources: Vec::new(),
             });
         }
-        let route = record_of(&target.provider, &self.room)
+        let route = record_of(&target.provider, &self.workspace)
             .filter(|route| self.apps.contains_key(route))
             .ok_or_else(|| reject(ActionHostError::UnknownAction))?;
         let arguments = match &request.argument {

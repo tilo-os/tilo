@@ -40,12 +40,12 @@ pub enum Mode {
     },
     RunApp {
         app_id: String,
-        /// A room this profile joined; the profile's own room when `None`.
-        room: Option<String>,
+        /// A workspace this profile joined; the profile's own workspace when `None`.
+        workspace: Option<String>,
         executable: OsString,
         args: Vec<OsString>,
     },
-    /// Join the room an invitation names, through the running daemon.
+    /// Join the workspace an invitation names, through the running daemon.
     Join {
         invitation: String,
     },
@@ -163,7 +163,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
         return Err(invalid(
             "native admission requires an explicit isolated profile",
@@ -185,7 +185,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     })
 }
 
-/// `--run-app APP_ID [--room ROOM] -- EXECUTABLE ARGS...`, after `--run-app`:
+/// `--run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE ARGS...`, after `--run-app`:
 /// the rest of the command line is the app's.
 fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
     let app_id = arguments
@@ -196,20 +196,25 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
         return Err(invalid("invalid application ID"));
     }
     let mut next = arguments.next();
-    let mut room = None;
-    if next.as_deref() == Some(std::ffi::OsStr::new("--room")) {
-        room = Some(
+    let mut workspace = None;
+    // `--room` is what the flag was called: a launcher outside this repository
+    // may still pass it, so it is read as the same thing.
+    if matches!(
+        next.as_deref().and_then(std::ffi::OsStr::to_str),
+        Some("--workspace" | "--room")
+    ) {
+        workspace = Some(
             arguments
                 .next()
                 .and_then(|arg| arg.into_string().ok())
-                .filter(|room| uuid::Uuid::parse_str(room).is_ok())
-                .ok_or_else(|| invalid("--room requires a room id"))?,
+                .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
+                .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
         );
         next = arguments.next();
     }
     if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
         return Err(invalid(
-            "--run-app APP_ID [--room ROOM] requires -- EXECUTABLE ARGS...",
+            "--run-app APP_ID [--workspace WORKSPACE] requires -- EXECUTABLE ARGS...",
         ));
     }
     let executable = arguments
@@ -217,7 +222,7 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
         .ok_or_else(|| invalid("missing app executable"))?;
     Ok(Mode::RunApp {
         app_id,
-        room,
+        workspace,
         executable,
         args: arguments.collect(),
     })
@@ -228,7 +233,10 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
 struct Status {
     version: u32,
     pid: u32,
-    room: String,
+    /// The workspace the daemon serves. A daemon started before the field
+    /// was called this answers `room`, which is read as the same.
+    #[serde(alias = "room")]
+    workspace: String,
 }
 
 fn probe(profile: &Path) -> io::Result<Status> {
@@ -244,7 +252,10 @@ fn probe(profile: &Path) -> io::Result<Status> {
         return Err(invalid("invalid native runtime status frame"));
     }
     let status: Status = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    if status.version != 1 || status.pid == 0 || status.room.is_empty() || status.room.len() > 4096
+    if status.version != 1
+        || status.pid == 0
+        || status.workspace.is_empty()
+        || status.workspace.len() > 4096
     {
         return Err(invalid("invalid native runtime status"));
     }
@@ -750,11 +761,11 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
     let mcp = crate::mcp_http::Config::from_env()?
         .map(|config| {
             session
-                .mcp_room(config.room.as_deref())
-                .map(|room| (config, room))
+                .mcp_workspace(config.workspace.as_deref())
+                .map(|workspace| (config, workspace))
         })
         .transpose()?;
-    let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
+    let search = crate::os_search::start(host.clone(), session.workspace(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     // Tasks learned in legacy apps live in the profile beside everything else
     // this device keeps, so a connection that learns one leaves it for the
@@ -765,11 +776,11 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
     // endpoint, and a second --daemon cannot reach this point.
     stages.enter("binding the native endpoint");
     let listener = tilo_files::native::private::bind_socket(&path)?;
-    if let Some((config, room)) = mcp {
+    if let Some((config, workspace)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
         // Computer, viewer and media are scoped to this profile's private
-        // desktop. A shared-room endpoint has only the semantic action door.
-        let private = room == session.room();
+        // desktop. A shared-workspace endpoint has only the semantic action door.
+        let private = workspace == session.workspace();
         let viewer = if private {
             crate::viewer::start_from_env(profile)?
         } else {
@@ -777,13 +788,13 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         };
         let endpoint = crate::mcp_http::Endpoint::with_viewer(
             host,
-            room.clone(),
+            workspace.clone(),
             session.actor().to_owned(),
             config.token.clone(),
             private.then(|| computer.clone()).flatten(),
             viewer,
         );
-        endpoint.serve_sessions(session.mcp_session_factory(&room)?)?;
+        endpoint.serve_sessions(session.mcp_session_factory(&workspace)?)?;
         if private {
             endpoint.serve_media(session.media());
         }
@@ -795,10 +806,10 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
     let status = Status {
         version: 1,
         pid: std::process::id(),
-        room: session.room().to_owned(),
+        workspace: session.workspace().to_owned(),
     };
     let endpoint = Endpoint {
-        session_factory: session.mcp_session_factory(session.room())?,
+        session_factory: session.mcp_session_factory(session.workspace())?,
         status,
         computer,
         adapters,
@@ -954,22 +965,22 @@ pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Val
     }
 }
 
-/// A native join request's answer: the joined room, or why not.
+/// A native join request's answer: the joined workspace, or why not.
 fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
     let Some(joiner) = joiner else {
-        return json!({"error": "this host joins rooms through its own surfaces"});
+        return json!({"error": "this host joins workspaces through its own surfaces"});
     };
     let Some(invitation) = request.get("invitation").and_then(Value::as_str) else {
         return json!({"error": "a join request needs an invitation"});
     };
     match joiner(invitation) {
-        Ok(room) => json!({"room": room}),
+        Ok(workspace) => json!({"workspace": workspace}),
         Err(error) => json!({"error": error.to_string()}),
     }
 }
 
-/// Join the room `invitation` names, through the running daemon, and print
-/// the joined room's id.
+/// Join the workspace `invitation` names, through the running daemon, and print
+/// the joined workspace's id.
 pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     ensure_running(profile)?;
     let mut stream = UnixStream::connect(profile.join("native.sock"))?;
@@ -983,11 +994,15 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
         .read_until(b'\n', &mut reply)?;
     let reply: Value = serde_json::from_slice(&reply).map_err(io::Error::other)?;
     match (
-        reply.get("room").and_then(Value::as_str),
+        // A daemon older than this name answers `room`.
+        reply
+            .get("workspace")
+            .or_else(|| reply.get("room"))
+            .and_then(Value::as_str),
         reply.get("error"),
     ) {
-        (Some(room), None) => {
-            println!("{room}");
+        (Some(workspace), None) => {
+            println!("{workspace}");
             Ok(())
         }
         (_, error) => Err(io::Error::other(
@@ -1062,21 +1077,22 @@ pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Re
 pub fn run_app(
     profile: &Path,
     app_id: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
     executable: &OsString,
     args: &[OsString],
 ) -> io::Result<()> {
     let status = ensure_running(profile)?;
     // Only the argument-free default presentation is interchangeable here.
     // App-specific arguments must run their own parser and are never discarded.
-    let launch_guard = if args.is_empty() && room.is_none_or(|room| room == status.room) {
-        match default_launch_guard(profile, app_id, Duration::from_secs(3))? {
-            Some(guard) => Some(guard),
-            None => return Ok(()),
-        }
-    } else {
-        None
-    };
+    let launch_guard =
+        if args.is_empty() && workspace.is_none_or(|workspace| workspace == status.workspace) {
+            match default_launch_guard(profile, app_id, Duration::from_secs(3))? {
+                Some(guard) => Some(guard),
+                None => return Ok(()),
+            }
+        } else {
+            None
+        };
     let owner = std::process::id().to_string();
     // Only the bootstrap exec for this exact process can request resumption.
     // A same-app ordinary child must run its own command handler first.
@@ -1086,12 +1102,12 @@ pub fn run_app(
             == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
     command.args(args);
-    // This process is introducing the local runtime room. A launcher that
+    // This process is introducing the local runtime workspace. A launcher that
     // already named a workspace keeps its participation, including fail-closed
-    // viewer. A personal attach has no room yet, and the person who owns this
+    // viewer. A personal attach has no workspace yet, and the person who owns this
     // runtime may edit their own app.
-    // A joined room's role is the one its governor admitted.
-    if room.is_none()
+    // A joined workspace's role is the one its governor admitted.
+    if workspace.is_none()
         && std::env::var_os("TILO_WORKSPACE_ID").is_none()
         && std::env::var_os("TILO_PARTICIPATION").is_none()
     {
@@ -1100,7 +1116,7 @@ pub fn run_app(
     let connections = unix::Connections::prepare(
         &mut command,
         app_id,
-        room.unwrap_or(&status.room),
+        workspace.unwrap_or(&status.workspace),
         &unix::ServiceSockets {
             collab: &profile.join(COLLAB_SOCKET),
             identity: &profile.join(IDENTITY_SOCKET),

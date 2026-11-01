@@ -179,7 +179,9 @@ mod tests {
     async fn an_acl_naming_someone_else_wakes_the_relays_at_start() {
         let acl = AclHandle::new(WorkspaceAcl::from_capabilities(
             [1; 32],
-            &[grant(Subject::Principal(Principal::Room("team".into())))],
+            &[grant(Subject::Principal(Principal::Workspace(
+                "team".into(),
+            )))],
             &[],
             None,
         ));
@@ -190,7 +192,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             None,
         );
-        assert!(wake_when_acl_admits_others(&reachability, &acl, "a room grant").is_none());
+        assert!(wake_when_acl_admits_others(&reachability, &acl, "a workspace grant").is_none());
         until_relays(&relays, 2).await;
         endpoint.close().await;
     }

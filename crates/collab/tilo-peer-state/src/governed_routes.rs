@@ -1,14 +1,14 @@
 //! Per-route storage of the governor's checkpoint coverage and durability
-//! receipts in the room CRDT.
+//! receipts in the workspace CRDT.
 //!
 //! Each governed value is a map object keyed by route whose values are the
 //! route's own canonical postcard bytes, so a commit rewrites only the routes
-//! it changed instead of growing the room history by the whole map.
+//! it changed instead of growing the workspace history by the whole map.
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 
-/// The layout of one governed route map: its room map key.
+/// The layout of one governed route map: its workspace map key.
 #[derive(Clone, Copy)]
 pub(crate) struct Layout {
     pub(crate) routes: &'static str,

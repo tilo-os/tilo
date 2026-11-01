@@ -113,7 +113,7 @@ tilo-content = { version = "0.1.0", path = "../../system/content" }
 # Pictures shown to a planning model: sent base64-encoded, and decoded and
 # shrunk only in a confined worker (`worker::shrink_picture`).
 base64.workspace = true
-# A room's content store is kept under the room's id.
+# A workspace's content store is kept under the workspace's id.
 uuid.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The render service's side of `tilo-video-render`, the confined helper an
@@ -130,12 +130,12 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
-# A connector app, mounted only where a room's host runs its worker.
+# A connector app, mounted only where a workspace's host runs its worker.
 discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
-# The demo room and the helpers that write a chat as its people would.
+# The demo workspace and the helpers that write a chat as its people would.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }

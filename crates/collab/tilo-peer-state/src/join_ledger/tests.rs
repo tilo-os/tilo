@@ -40,7 +40,7 @@ fn invitation(recipient: Option<[u8; 32]>, now: u64) -> IssueInvitationRequest {
 }
 
 /// One ledger serves every governor: issuing, challenging, redeeming and
-/// completing a join through it admits the device into the room, answers
+/// completing a join through it admits the device into the workspace, answers
 /// a retry of the same Complete with the same bootstrap, and spends the
 /// invitation.
 #[test]
@@ -53,7 +53,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let now_ns = ns(now);
     let messages = || vec![b"governance".to_vec()];
     let host_cert = peer.owner_certificates()[0].clone();
-    let room = Governed {
+    let workspace = Governed {
         peer: &peer,
         host: &host_cert,
         workspace_id: 7,
@@ -66,7 +66,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
 
     let issued = ledger
         .issue(
-            &room,
+            &workspace,
             &peer.owner_certificates()[0],
             invitation(Some(guest_cert.user_public_key), now_ns),
             Vec::new(),
@@ -79,7 +79,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         .unwrap();
     let again = ledger
         .issue(
-            &room,
+            &workspace,
             &peer.owner_certificates()[0],
             invitation(Some(guest_cert.user_public_key), now_ns),
             Vec::new(),
@@ -95,7 +95,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
 
     let challenge = ledger
         .challenge(
-            &room,
+            &workspace,
             guest_cert.device_public_key,
             JoinChallengeRequest {
                 request_id: [44; 32],
@@ -111,12 +111,17 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     };
     assert!(
         ledger
-            .redeem(&room, [9; 32], &complete.proof, now_ns)
+            .redeem(&workspace, [9; 32], &complete.proof, now_ns)
             .is_err(),
         "a proof is redeemed only from the endpoint it was challenged on"
     );
     let redemption = ledger
-        .redeem(&room, guest_cert.device_public_key, &complete.proof, now_ns)
+        .redeem(
+            &workspace,
+            guest_cert.device_public_key,
+            &complete.proof,
+            now_ns,
+        )
         .unwrap();
     let proof_digest = request_digest(&complete.proof).unwrap();
     let joins = [Redeeming {
@@ -139,7 +144,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     assert_eq!(
         guest_member.display_name.as_deref(),
         Some("Calm Owl"),
-        "the room names the guest as they named themself, not by their device"
+        "the workspace names the guest as they named themself, not by their device"
     );
     let host_cert = candidate.owner_certificates()[0].clone();
     let committed = Governed {
@@ -157,7 +162,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         candidate
             .permissions(guest_cert.device_public_key, now)
             .is_ok(),
-        "the guest is a member of the room"
+        "the guest is a member of the workspace"
     );
     assert!(ledger.redeemed(issued.invite_id));
     assert_eq!(
@@ -211,7 +216,7 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let now_ns = ns(now);
     let messages = Vec::<Vec<u8>>::new;
     let host_cert = peer.owner_certificates()[0].clone();
-    let room = Governed {
+    let workspace = Governed {
         peer: &peer,
         host: &host_cert,
         workspace_id: 7,
@@ -221,7 +226,7 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let mut ledger = JoinLedger::default();
     let issued = ledger
         .issue(
-            &room,
+            &workspace,
             &peer.owner_certificates()[0],
             invitation(None, now_ns),
             Vec::new(),
@@ -249,7 +254,7 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     assert!(ledger.pending(now_ns).is_empty());
     assert!(
         ledger
-            .inspect(&room, &issued.signed_invitation, now_ns)
+            .inspect(&workspace, &issued.signed_invitation, now_ns)
             .is_err()
     );
 }
@@ -270,11 +275,11 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 }
 
 #[test]
-fn a_join_receipt_keeps_none_of_the_rooms_state_and_replays_while_it_is_unchanged() {
+fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
     let messages = || vec![b"governance".to_vec()];
     let host_cert = peer.owner_certificates()[0].clone();
-    let room = Governed {
+    let workspace = Governed {
         peer: &peer,
         host: &host_cert,
         workspace_id: 7,
@@ -282,10 +287,10 @@ fn a_join_receipt_keeps_none_of_the_rooms_state_and_replays_while_it_is_unchange
         governance_messages: &messages,
     };
     let (_, cert) = guest();
-    let delivered = room.bootstrap([9; 32], cert, MemberRole::Editor);
+    let delivered = workspace.bootstrap([9; 32], cert, MemberRole::Editor);
     assert!(!delivered.certified_roster.is_empty());
     let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], &delivered).unwrap();
     assert!(receipt.bootstrap.certified_roster.is_empty());
     assert!(receipt.bootstrap.records.is_empty());
-    assert_eq!(receipt.replay(&room).unwrap(), delivered);
+    assert_eq!(receipt.replay(&workspace).unwrap(), delivered);
 }

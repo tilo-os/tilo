@@ -153,7 +153,7 @@ impl InvocationOwner {
                 || agent.chars().any(char::is_control)
                 || task.is_empty()
                 || task.len() > 256
-                // An issue's run, or a room task's in a journal kept from
+                // An issue's run, or a workspace task's in a journal kept from
                 // before tasks were issues.
                 || !(task.starts_with("task:") || crate::services::is_tracker_issue(task))
                 || *epoch == 0)
@@ -188,7 +188,9 @@ impl InvocationOwner {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct InvocationKey {
-    pub room: String,
+    /// Written as `room`: existing journals keep their exact bytes on save.
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub host: uuid::Uuid,
     pub owner: InvocationOwner,
     pub invocation: InvocationId,
@@ -501,7 +503,7 @@ pub(super) fn evidence_facts(
     };
     Ok(crate::action_evidence::AdmissionFacts {
         host: key.host,
-        room: key.room.clone(),
+        workspace: key.workspace.clone(),
         invocation: key.invocation,
         actor: key
             .owner
@@ -981,7 +983,7 @@ impl InvocationJournal {
         }
         // Application lifecycle routing and internal dedup use the full UUID
         // without the owner. Permanently reserve it for one durable key so a
-        // different device, room, or legacy caller can never alias that state.
+        // different device, workspace, or legacy caller can never alias that state.
         if self.index.by_invocation.contains_key(&key.invocation) {
             return Err("action_invocation_identity_conflict: UUID already reserved".into());
         }
@@ -1680,7 +1682,7 @@ mod tests {
 
     fn key() -> InvocationKey {
         InvocationKey {
-            room: "5ca720b0-7649-4bdc-9c30-77380f7c2be5".into(),
+            workspace: "5ca720b0-7649-4bdc-9c30-77380f7c2be5".into(),
             host: uuid::Uuid::from_u128(99),
             owner: InvocationOwner::Certified {
                 root: [1; 32],

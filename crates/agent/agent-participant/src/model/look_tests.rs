@@ -95,11 +95,11 @@ fn a_model_that_does_not_see_gets_no_look_content_and_is_told_so() {
 }
 
 /// `look_content` looks only at an address the conversation named, and at
-/// a room's own picture only where the agent may show them; a PDF is
-/// pointed to pdf-viewer. Allowed, a room's picture is written out again in
+/// a workspace's own picture only where the agent may show them; a PDF is
+/// pointed to pdf-viewer. Allowed, a workspace's picture is written out again in
 /// the confined worker and shown.
 #[test]
-fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
+fn look_content_refuses_unshown_addresses_and_workspace_pictures_unless_allowed() {
     let mut reads = Looks::new('a');
     let scan = reads.keep('b', crate::vision::tests::png(10, 10));
     let pdf = reads.keep('c', b"%PDF-1.4\n".to_vec());
@@ -124,8 +124,11 @@ fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
         unnamed.starts_with("Not shown:") && unnamed.contains("was not named"),
         "{unnamed}"
     );
-    let room = &results(&requests[2])[0];
-    assert!(room.contains("not shown the room's pictures"), "{room}");
+    let workspace = &results(&requests[2])[0];
+    assert!(
+        workspace.contains("not shown the workspace's pictures"),
+        "{workspace}"
+    );
     let document = &results(&requests[3])[0];
     assert!(
         document.contains("is a PDF") && document.contains("look-page"),
@@ -146,7 +149,7 @@ fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
         true,
     );
     let mut context = look_context();
-    context.room_pictures = true;
+    context.workspace_pictures = true;
     planner.plan_reading(&task, &context, &mut reads).unwrap();
     let requests = sent.lock().unwrap().clone();
     let shown = &results(&requests[1])[0];

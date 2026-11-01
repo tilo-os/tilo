@@ -8,32 +8,21 @@
 //! delta from the same author ([`EnvelopeV2::CodedDelta`]), and forwarded
 //! presence arrives batched and slot-coded ([`EnvelopeV2::PresenceBatch`]).
 //! [`SessionReader`] turns all three back into `State` values, so nothing
-//! past the session boundary sees them. Private frames never enter the state
-//! codec or the durable relay store.
+//! past the session boundary sees them.
 #![allow(
     missing_docs,
     reason = "wire frame types, described as a whole by the module documentation above"
 )]
-use crate::peer_actions::{
-    DirectedAction, MAX_PRIVATE_BYTES, SignedDirectedAction, UnavailableReason,
-};
 use serde::{Deserialize, Serialize};
-use tilo_actions::InvocationId;
 use tilo_relay_client::frame::FrameError;
 use tilo_relay_protocol::transport::{Envelope, MAX_FRAME_BYTES};
-use uuid::Uuid;
 
-/// Discriminant of [`EnvelopeV2::UnsignedDelta`]: a state frame, so it takes
-/// the state lane's size bound rather than the private one.
+/// Discriminant of [`EnvelopeV2::UnsignedDelta`].
 const UNSIGNED_DELTA_KIND: u8 = 11;
-/// Discriminant of [`EnvelopeV2::PresenceBatch`], a state frame.
+/// Discriminant of [`EnvelopeV2::PresenceBatch`].
 const PRESENCE_BATCH_KIND: u8 = 12;
-/// Discriminant of [`EnvelopeV2::CodedDelta`], a state frame.
+/// Discriminant of [`EnvelopeV2::CodedDelta`].
 const CODED_DELTA_KIND: u8 = 13;
-
-/// Why a session refuses a retired unsigned action delivery: the same
-/// refusal a delivery without its device's signature gets.
-pub const UNSIGNED_DELIVERY_REFUSAL: &str = "unsigned action delivery refused";
 
 mod delta;
 mod presence;
@@ -46,70 +35,34 @@ pub use presence::{
     encode_presence_batch,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActionCapability {
-    /// Private routing exists; durable effect admission is not available.
-    TransportOnly,
-    DurableBroker {
-        host: Uuid,
-    },
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EnvelopeV2 {
     State(Envelope),
-    EnableActions {
-        room: Uuid,
-    },
-    ActionsReady {
-        room: Uuid,
-        capability: ActionCapability,
-    },
+    /// Retired: a device opened the broker private lane in a room. Actions
+    /// travel to another device on its own connection now; nothing sends
+    /// this, and its place is kept so stored bytes still decode.
+    RetiredEnableActions,
+    /// Retired: the host's answer to [`Self::RetiredEnableActions`].
+    RetiredActionsReady,
     /// Retired: an action a source device sent unsigned, before a delivery
-    /// carried its signature. Kept in its place so bytes from a build that
-    /// still sends one decode here; nothing constructs it, and a session
-    /// refuses it ([`EnvelopeV2::retired_unsigned_action`]).
-    RetiredDirected(DirectedAction),
-    Unavailable {
-        room: Uuid,
-        request_id: Uuid,
-        target: [u8; 32],
-        invocation: Option<InvocationId>,
-        reason: UnavailableReason,
-    },
+    /// carried its signature.
+    RetiredDirected,
+    /// Retired: the host refused to deliver an action.
+    RetiredUnavailable,
     /// Retired: [`Self::RetiredDirected`] with the source user the relay
-    /// attested. A relay's word is not the sending device's signature, so a
-    /// session refuses it as unsigned.
-    RetiredDelivered {
-        action: DirectedAction,
-        source_user: [u8; 32],
-    },
-    EnableBrokerClient {
-        room: Uuid,
-    },
-    RegisterBroker {
-        room: Uuid,
-        host: Uuid,
-    },
+    /// attested.
+    RetiredDelivered,
+    /// Retired: a lane spoke the broker's protocol extensions.
+    RetiredEnableBrokerClient,
+    /// Retired: a lane named the durable broker host of its room.
+    RetiredRegisterBroker,
     /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
-    /// The certificate names a device; it does not sign this action, so a
-    /// session refuses it as unsigned.
-    RetiredCertifiedDelivered {
-        action: DirectedAction,
-        source_certificate: Vec<u8>,
-    },
-    /// A private action its source device signed; the host checks the
-    /// signature against the authenticated session's device and routes it.
-    /// The only way an action travels: no relay forwards one it cannot
-    /// attribute to a device.
-    SignedDirected(SignedDirectedAction),
-    /// [`Self::SignedDirected`] carrying the source's signed bytes unchanged,
-    /// with the certificate of the device that signed: the target verifies
-    /// the signature against that certificate's device key.
-    CertifiedSignedDelivered {
-        action: SignedDirectedAction,
-        source_certificate: Vec<u8>,
-    },
+    RetiredCertifiedDelivered,
+    /// Retired: an action its source device signed.
+    RetiredSignedDirected,
+    /// Retired: [`Self::RetiredSignedDirected`] with the signing device's
+    /// certificate.
+    RetiredCertifiedSignedDelivered,
     /// `State(Envelope::Delta { signature: [0; 64], .. })` without the
     /// signature. [`SessionReader`] returns it as that `State` value, so
     /// nothing past the session boundary sees this variant.
@@ -137,29 +90,23 @@ pub enum EnvelopeV2 {
 }
 
 impl EnvelopeV2 {
-    /// The action a retired unsigned delivery carries, if this is one.
-    ///
-    /// The three retired variants predate signed deliveries. Nothing
-    /// constructs them; a session that receives one refuses it with
-    /// [`UNSIGNED_DELIVERY_REFUSAL`], exactly as it refuses an action that
-    /// arrived without its device's signature.
-    pub fn retired_unsigned_action(&self) -> Option<&DirectedAction> {
-        match self {
-            Self::RetiredDirected(action)
-            | Self::RetiredDelivered { action, .. }
-            | Self::RetiredCertifiedDelivered { action, .. } => Some(action),
-            _ => None,
-        }
-    }
-
-    pub fn unavailable(action: &DirectedAction, reason: UnavailableReason) -> Self {
-        Self::Unavailable {
-            room: action.room,
-            request_id: action.request_id,
-            target: action.target,
-            invocation: action.message.invocation(),
-            reason,
-        }
+    /// Whether this frame is one of the retired private-lane frames: a
+    /// device's action lane went with the host that routed it, so a peer
+    /// sending one speaks a protocol this build does not serve.
+    pub const fn is_retired(&self) -> bool {
+        matches!(
+            self,
+            Self::RetiredEnableActions
+                | Self::RetiredActionsReady
+                | Self::RetiredDirected
+                | Self::RetiredUnavailable
+                | Self::RetiredDelivered
+                | Self::RetiredEnableBrokerClient
+                | Self::RetiredRegisterBroker
+                | Self::RetiredCertifiedDelivered
+                | Self::RetiredSignedDirected
+                | Self::RetiredCertifiedSignedDelivered
+        )
     }
 }
 
@@ -168,22 +115,7 @@ impl EnvelopeV2 {
 /// Returns `postcard::Error` if the value violates its wire bounds or cannot be serialized.
 pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(envelope)?;
-    let limit = if matches!(
-        envelope,
-        EnvelopeV2::State(_)
-            | EnvelopeV2::UnsignedDelta { .. }
-            | EnvelopeV2::PresenceBatch { .. }
-            | EnvelopeV2::CodedDelta { .. }
-    ) {
-        MAX_FRAME_BYTES + 1
-    } else {
-        MAX_PRIVATE_BYTES
-    };
-    // A delivery appends a certified 32-byte root; reserve it at ingress so a
-    // legal signed action cannot disconnect its target during re-encoding.
-    let reserved =
-        usize::from(matches!(envelope, EnvelopeV2::SignedDirected(_))).saturating_mul(32);
-    if payload.len().saturating_add(reserved) > limit {
+    if payload.len() > MAX_FRAME_BYTES + 1 {
         return Err(postcard::Error::SerializeBufferFull);
     }
     let len = u32::try_from(payload.len()).map_err(|_| postcard::Error::SerializeBufferFull)?;
@@ -196,15 +128,7 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
 ///
 /// Returns `postcard::Error` if the input is not a canonical encoding within this type's bounds.
 pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
-    let Some(&kind) = payload.first() else {
-        return Err(postcard::Error::DeserializeBadEncoding);
-    };
-    let limit = if is_state_kind(kind) {
-        MAX_FRAME_BYTES + 1
-    } else {
-        MAX_PRIVATE_BYTES
-    };
-    if payload.len() > limit {
+    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES + 1 {
         return Err(postcard::Error::DeserializeBadEncoding);
     }
     let (value, rest) = postcard::take_from_bytes(payload)?;
@@ -214,16 +138,7 @@ pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
     Ok(value)
 }
 
-/// Whether a v2 discriminant names a state-lane frame.
-const fn is_state_kind(kind: u8) -> bool {
-    kind == 0
-        || kind == UNSIGNED_DELTA_KIND
-        || kind == PRESENCE_BATCH_KIND
-        || kind == CODED_DELTA_KIND
-}
-
 /// Stateful framing survives cancellation by a concurrent writer/access audit.
-/// Read the discriminant before allocating so private frames have a small cap.
 pub struct SessionReader<R> {
     inner: R,
     prefix: [u8; 4],
@@ -316,14 +231,6 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
             }
             self.payload_read = 1;
-        }
-        if self
-            .payload
-            .first()
-            .is_some_and(|kind| !is_state_kind(*kind))
-            && len > MAX_PRIVATE_BYTES
-        {
-            return Err(FrameError::TooLarge(len));
         }
         self.payload.resize(len, 0);
         while self.payload_read < len {
@@ -465,7 +372,6 @@ fn coded_delta(payload: &[u8]) -> Result<EnvelopeV2, FrameError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer_actions::{ActionMessage, ActionSignatureError};
 
     fn keystroke(signature: [u8; 64]) -> Envelope {
         Envelope::Delta {
@@ -528,7 +434,7 @@ mod tests {
             workspace_id: 1,
             author_device_public_key: [1; 32],
             authored_at_ns: 1,
-            delta: vec![0; MAX_PRIVATE_BYTES + 1],
+            delta: vec![0; 128 * 1024],
             signature: [0; 64],
         };
         let wire = encode_state(&large).unwrap();
@@ -660,207 +566,46 @@ mod tests {
     }
 
     #[test]
-    fn private_frames_have_frozen_bytes() {
-        let room = Uuid::from_u128(7);
-        let request_id = Uuid::from_u128(8);
-        let room_wire = [vec![16], vec![0; 15], vec![7]].concat();
-        let request_wire = [vec![16], vec![0; 15], vec![8]].concat();
-        let cases = [
-            (EnvelopeV2::State(Envelope::Ping), vec![0, 6]),
-            (
-                EnvelopeV2::EnableActions { room },
-                [vec![1], room_wire.clone()].concat(),
-            ),
-            (
-                EnvelopeV2::ActionsReady {
-                    room,
-                    capability: ActionCapability::TransportOnly,
-                },
-                [vec![2], room_wire.clone(), vec![0]].concat(),
-            ),
-            (
-                // A retired unsigned delivery keeps the bytes it had: an old
-                // build's frame decodes here and is then refused.
-                EnvelopeV2::RetiredDirected(DirectedAction {
-                    room,
-                    request_id,
-                    source: [1; 32],
-                    target: [2; 32],
-                    message: ActionMessage::CatalogueRefresh { scope: None },
-                }),
-                [
-                    vec![3],
-                    room_wire.clone(),
-                    request_wire.clone(),
-                    vec![1; 32],
-                    vec![2; 32],
-                    vec![28],
-                    br#"{"type":"catalogue_refresh"}"#.to_vec(),
-                ]
-                .concat(),
-            ),
-            (
-                EnvelopeV2::Unavailable {
-                    room,
-                    request_id,
-                    target: [2; 32],
-                    invocation: None,
-                    reason: UnavailableReason::Offline,
-                },
-                [
-                    vec![4],
-                    room_wire.clone(),
-                    request_wire.clone(),
-                    vec![2; 32],
-                    vec![0, 0],
-                ]
-                .concat(),
-            ),
-            (
-                EnvelopeV2::RetiredDelivered {
-                    action: DirectedAction {
-                        room,
-                        request_id,
-                        source: [1; 32],
-                        target: [2; 32],
-                        message: ActionMessage::CatalogueRefresh { scope: None },
-                    },
-                    source_user: [3; 32],
-                },
-                [
-                    vec![5],
-                    room_wire,
-                    request_wire,
-                    vec![1; 32],
-                    vec![2; 32],
-                    vec![28],
-                    br#"{"type":"catalogue_refresh"}"#.to_vec(),
-                    vec![3; 32],
-                ]
-                .concat(),
-            ),
-        ];
-        for (frame, payload) in cases {
-            let expected = [
-                u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec(),
-                payload.clone(),
-            ]
-            .concat();
-            assert_eq!(encode(&frame).unwrap(), expected);
+    fn retired_private_frames_keep_their_places() {
+        // The private lane's ten frames are gone; each keeps its
+        // discriminant so a frame a peer of the old build sends still
+        // decodes as the tombstone in its place.
+        for (kind, frame) in [
+            (1, EnvelopeV2::RetiredEnableActions),
+            (2, EnvelopeV2::RetiredActionsReady),
+            (3, EnvelopeV2::RetiredDirected),
+            (4, EnvelopeV2::RetiredUnavailable),
+            (5, EnvelopeV2::RetiredDelivered),
+            (6, EnvelopeV2::RetiredEnableBrokerClient),
+            (7, EnvelopeV2::RetiredRegisterBroker),
+            (8, EnvelopeV2::RetiredCertifiedDelivered),
+            (9, EnvelopeV2::RetiredSignedDirected),
+            (10, EnvelopeV2::RetiredCertifiedSignedDelivered),
+        ] {
+            let payload = [kind];
+            assert_eq!(
+                encode(&frame).unwrap(),
+                [vec![1, 0, 0, 0], payload.to_vec()].concat()
+            );
             assert_eq!(decode(&payload).unwrap(), frame);
+            assert!(frame.is_retired());
         }
-    }
-
-    #[test]
-    fn a_retired_certified_delivery_keeps_its_bytes() {
-        let room = Uuid::from_u128(7);
-        let request_id = Uuid::from_u128(8);
-        let room_wire = [vec![16], vec![0; 15], vec![7]].concat();
-        let request_wire = [vec![16], vec![0; 15], vec![8]].concat();
-        let frame = EnvelopeV2::RetiredCertifiedDelivered {
-            action: DirectedAction {
-                room,
-                request_id,
-                source: [1; 32],
-                target: [2; 32],
-                message: ActionMessage::CatalogueRefresh { scope: None },
-            },
-            source_certificate: vec![0xff, 0x01],
-        };
-        let payload = [
-            vec![8],
-            room_wire,
-            request_wire,
-            vec![1; 32],
-            vec![2; 32],
-            vec![28],
-            br#"{"type":"catalogue_refresh"}"#.to_vec(),
-            vec![2, 0xff, 0x01],
-        ]
-        .concat();
-        assert_eq!(
-            encode(&frame).unwrap(),
-            [
-                u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec(),
-                payload.clone(),
-            ]
-            .concat()
-        );
-        assert_eq!(decode(&payload).unwrap(), frame);
-    }
-
-    #[test]
-    fn every_retired_delivery_names_the_action_it_carries() {
-        let room = Uuid::from_u128(7);
-        let action = DirectedAction {
-            room,
-            request_id: Uuid::from_u128(8),
-            source: [1; 32],
-            target: [2; 32],
-            message: ActionMessage::CatalogueRefresh { scope: None },
-        };
-        for frame in [
-            EnvelopeV2::RetiredDirected(action.clone()),
-            EnvelopeV2::RetiredDelivered {
-                action: action.clone(),
-                source_user: [3; 32],
-            },
-            EnvelopeV2::RetiredCertifiedDelivered {
-                action: action.clone(),
-                source_certificate: Vec::new(),
-            },
-        ] {
-            assert_eq!(frame.retired_unsigned_action(), Some(&action));
-        }
-        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let mut own = action;
-        own.source = key.verifying_key().to_bytes();
-        let signed = SignedDirectedAction::sign(&own, 1, &key).unwrap();
+        assert!(!EnvelopeV2::State(Envelope::Ping).is_retired());
         assert!(
-            EnvelopeV2::SignedDirected(signed)
-                .retired_unsigned_action()
-                .is_none()
+            !EnvelopeV2::UnsignedDelta {
+                workspace_id: 1,
+                author_device_public_key: [0; 32],
+                authored_at_ns: 1,
+                delta: Vec::new(),
+            }
+            .is_retired()
         );
-        assert!(
-            EnvelopeV2::EnableActions { room }
-                .retired_unsigned_action()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn broker_extension_frames_have_stable_encoding() {
-        let room = Uuid::from_u128(7);
-        let host = Uuid::from_u128(9);
-        let room_bytes = [vec![16], vec![0; 15], vec![7]].concat();
-        let host_bytes = [vec![16], vec![0; 15], vec![9]].concat();
-        for (frame, frozen) in [
-            (
-                EnvelopeV2::EnableBrokerClient { room },
-                [vec![6], room_bytes.clone()].concat(),
-            ),
-            (
-                EnvelopeV2::RegisterBroker { room, host },
-                [vec![7], room_bytes.clone(), host_bytes.clone()].concat(),
-            ),
-            (
-                EnvelopeV2::ActionsReady {
-                    room,
-                    capability: ActionCapability::DurableBroker { host },
-                },
-                [vec![2], room_bytes, vec![1], host_bytes].concat(),
-            ),
-        ] {
-            let wire = encode(&frame).unwrap();
-            assert_eq!(wire[4..], frozen);
-            assert_eq!(decode(&wire[4..]).unwrap(), frame);
-        }
     }
 
     #[tokio::test]
-    async fn private_frame_length_is_rejected_before_allocating_its_body() {
+    async fn a_frame_longer_than_the_bound_is_rejected_before_its_body() {
         let data = [
-            u32::try_from(MAX_PRIVATE_BYTES + 1)
+            u32::try_from(MAX_FRAME_BYTES + 2)
                 .unwrap()
                 .to_le_bytes()
                 .to_vec(),
@@ -872,10 +617,10 @@ mod tests {
             reader.read_next().await,
             Err(FrameError::TooLarge(_))
         ));
-        assert_eq!(reader.payload.len(), 1);
+        assert_eq!(reader.payload.len(), 0);
         let state = EnvelopeV2::State(Envelope::Presence {
             workspace_id: 7,
-            payload: vec![0; MAX_PRIVATE_BYTES + 1],
+            payload: vec![0; 64 * 1024],
         });
         let mut reader = SessionReader::new(std::io::Cursor::new(encode(&state).unwrap()));
         assert_eq!(reader.read_next().await.unwrap(), Some(state));
@@ -886,10 +631,11 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let (mut writer, read) = tokio::io::duplex(1024);
         let mut reader = SessionReader::new(read);
-        let wire = encode(&EnvelopeV2::EnableActions {
-            room: Uuid::from_u128(7),
-        })
-        .unwrap();
+        let frame = EnvelopeV2::State(Envelope::Presence {
+            workspace_id: 7,
+            payload: vec![9; 32],
+        });
+        let wire = encode(&frame).unwrap();
         // Each read takes in what has arrived, finds the frame incomplete
         // and is dropped, as a cancelled read is.
         let interrupted = |reader: &mut SessionReader<_>| {
@@ -902,75 +648,6 @@ mod tests {
         writer.write_all(&wire[2..8]).await.unwrap();
         assert!(interrupted(&mut reader));
         writer.write_all(&wire[8..]).await.unwrap();
-        assert_eq!(
-            reader.read_next().await.unwrap(),
-            Some(EnvelopeV2::EnableActions {
-                room: Uuid::from_u128(7)
-            })
-        );
-    }
-
-    #[test]
-    fn private_payload_bounds_identifiers_and_json_work() {
-        use tilo_actions::{InvocationId, InvocationUpdate};
-        let update = ActionMessage::Update {
-            update: InvocationUpdate::Progress {
-                invocation: InvocationId(Uuid::from_u128(7)),
-                sequence: 1,
-                phase: "x".repeat(513),
-                completed: None,
-                total: None,
-                message: None,
-            },
-        };
-        assert!(
-            !update.validate(),
-            "private phase identifiers are bounded before dispatch"
-        );
-        let mut argument = serde_json::json!(null);
-        for _ in 0..33 {
-            argument = serde_json::json!([argument]);
-        }
-        let invoke = ActionMessage::InvokeBound {
-            host: Uuid::from_u128(9),
-            invocation: InvocationId(Uuid::from_u128(7)),
-            app_peer: "app".into(),
-            app_id: "app".into(),
-            record_id: String::new(),
-            resource: "resource".into(),
-            action: "action".into(),
-            argument: Some(argument),
-            confirmation: None,
-            revision: None,
-        };
-        assert!(
-            !invoke.validate(),
-            "deep private payload is rejected before broker admission"
-        );
-    }
-
-    #[test]
-    fn private_codec_rejects_oversize_and_trailing_bytes() {
-        assert!(decode(&[0, 6, 1]).is_err());
-        let action = DirectedAction {
-            room: Uuid::from_u128(7),
-            request_id: Uuid::from_u128(8),
-            source: [1; 32],
-            target: [2; 32],
-            message: ActionMessage::Catalogue {
-                catalogue: serde_json::json!({"version":1,"surfaces":[],"private": "x".repeat(MAX_PRIVATE_BYTES)}),
-            },
-        };
-        assert!(
-            !action.wire_fits(),
-            "an action over the private bound is never sent"
-        );
-        let device = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let mut action = action;
-        action.source = device.verifying_key().to_bytes();
-        assert_eq!(
-            SignedDirectedAction::sign(&action, 1, &device),
-            Err(ActionSignatureError::Encoding)
-        );
+        assert_eq!(reader.read_next().await.unwrap(), Some(frame));
     }
 }

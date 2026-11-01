@@ -1,7 +1,7 @@
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet, Labels,
-    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, RoomPolicy, Rule, Subject,
-    TreePath, decide, describe, describe_node,
+    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
+    WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
 };
@@ -524,7 +524,7 @@ fn every_bound_applies() {
 
 #[test]
 fn the_owner_is_structural() {
-    let mut room = RoomPolicy::new("r", ALICE);
+    let mut room = WorkspacePolicy::new("r", ALICE);
     room.grants.push(grant(
         "deny-owner",
         TreePath::room("r"),
@@ -570,8 +570,8 @@ fn the_owner_is_structural() {
     );
 }
 
-fn room_with(members: &[(&str, Role)]) -> RoomPolicy {
-    let mut room = RoomPolicy::new("r", ALICE);
+fn room_with(members: &[(&str, Role)]) -> WorkspacePolicy {
+    let mut room = WorkspacePolicy::new("r", ALICE);
     for (person, role) in members {
         room.members.insert((*person).to_owned(), *role);
     }
@@ -836,7 +836,7 @@ fn non_members_hold_nothing() {
 
 #[test]
 fn admission_records_when_a_member_joined_until_they_leave() {
-    fn by_owner(room: &RoomPolicy, change: Change, now: u64) -> RoomPolicy {
+    fn by_owner(room: &WorkspacePolicy, change: Change, now: u64) -> WorkspacePolicy {
         let owner = Authority::person(room.party(ALICE));
         let mut next = room.clone();
         next.apply(ALICE, &owner, change, &Context::at(now), false)
@@ -1077,7 +1077,7 @@ fn nobody_grants_more_than_they_hold() {
     ));
     assert_eq!(
         granted.clone().apply(BOB, &bob, elsewhere, &cx(), false),
-        Err(Refusal::OutsideRoom(TreePath::room("s")))
+        Err(Refusal::OutsideWorkspace(TreePath::room("s")))
     );
 }
 
@@ -1150,7 +1150,7 @@ fn a_policy_moves_to_another_room_id() {
         alice(),
     ));
     room.rehome("q");
-    assert_eq!(room.room, "q");
+    assert_eq!(room.workspace, "q");
     let bob = Authority::person(room.party(BOB));
     let moved = TreePath::room("q").app("mail").action("archive");
     assert_eq!(
@@ -1166,7 +1166,7 @@ fn a_policy_moves_to_another_room_id() {
             .iter()
             .any(|grant| grant.node == TreePath::room("s"))
     );
-    let unowned = RoomPolicy::unowned("u", &alice());
+    let unowned = WorkspacePolicy::unowned("u", &alice());
     assert_eq!(unowned.owner, None);
     assert_eq!(
         unowned.grants.len(),
@@ -1234,6 +1234,43 @@ fn a_standing_carries_the_person_and_every_bound() {
     );
     let json = serde_json::to_string(&owner).unwrap();
     assert_eq!(serde_json::from_str::<Standing>(&json).unwrap(), owner);
+}
+
+/// Leaving is the one membership change no grant gates: whoever removes
+/// themselves does it by being who they are, even while restricted, and they
+/// reach nobody else by it.
+#[test]
+fn a_member_leaves_their_workspace_without_being_able_to_remove_anyone() {
+    let mut room = room_with(&[(BOB, Role::Viewer), (CAROL, Role::Editor)]);
+    room.grants.push(roles::restriction_grant(
+        "r",
+        BOB,
+        NOW + 1_000,
+        Subject::person(ALICE),
+    ));
+    let bob = Authority::person(room.party(BOB).clone());
+    let leave = Change::RemoveMember { person: BOB.into() };
+    assert_eq!(room.check(BOB, &bob, &leave, &cx(), false), Ok(()));
+    assert!(room.is_member(BOB), "check writes nothing");
+    let mut left = room.clone();
+    left.apply(BOB, &bob, leave, &cx(), false)
+        .expect("a restricted viewer leaves");
+    assert!(!left.is_member(BOB));
+    assert!(
+        matches!(
+            left.apply(
+                BOB,
+                &bob,
+                Change::RemoveMember {
+                    person: CAROL.into()
+                },
+                &cx(),
+                false
+            ),
+            Err(Refusal::NotPermitted(_))
+        ),
+        "leaving reaches no one else"
+    );
 }
 
 #[test]
@@ -1417,12 +1454,27 @@ fn grants_round_trip_through_json() {
     assert_eq!(json["answer"], "ask");
     let back: Grant = serde_json::from_value(json).expect("deserialises");
     assert_eq!(back, grant);
-    let room = RoomPolicy::new("r", ALICE);
+    let room = WorkspacePolicy::new("r", ALICE);
     let text = serde_json::to_string(&room).expect("serialises");
     assert_eq!(
-        serde_json::from_str::<RoomPolicy>(&text).expect("deserialises"),
+        serde_json::from_str::<WorkspacePolicy>(&text).expect("deserialises"),
         room
     );
+}
+
+#[test]
+fn a_policy_document_written_with_room_still_parses() {
+    let policy = WorkspacePolicy::new("r", ALICE);
+    let written = serde_json::to_string(&policy).expect("serialises");
+    assert!(written.contains("\"workspace\":\"r\""), "{written}");
+    assert!(!written.contains("\"room\":"), "{written}");
+    // Documents stored while the field was named `room` read as they are.
+    let stored = written.replace("\"workspace\":", "\"room\":");
+    assert!(stored.contains("\"room\":\"r\""), "{stored}");
+    let read: WorkspacePolicy = serde_json::from_str(&stored).expect("reads the stored shape");
+    assert_eq!(read, policy);
+    assert_eq!(read.workspace, "r");
+    assert_eq!(read.owner.as_deref(), Some(ALICE));
 }
 
 struct Names;
@@ -1545,7 +1597,7 @@ fn verdicts_explain_themselves() {
         verdict.explain(),
         "Asks first: the person's grants give outside effects on room:r/app:mail the answer \"ask\" (grant mail)."
     );
-    let room = RoomPolicy::new("r", ALICE);
+    let room = WorkspacePolicy::new("r", ALICE);
     let verdict = Authority::person(room.party(ALICE)).decide(&send(), ActionKind::Outside, &cx());
     assert_eq!(verdict.explain(), "Allowed: the person owns the room.");
 }
@@ -1601,7 +1653,7 @@ fn a_privileged_action_needs_the_persons_own_allow() {
 
 #[test]
 fn a_governance_change_spends_the_once_grant_it_ran_on() {
-    let mut room = RoomPolicy::new("r", CAROL);
+    let mut room = WorkspacePolicy::new("r", CAROL);
     room.members.insert(ALICE.into(), Role::Editor);
     let once = Grant::new(
         "grant-once",
@@ -2035,7 +2087,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants(
     );
     stored.grants.push(custom.clone());
 
-    let loaded: RoomPolicy =
+    let loaded: WorkspacePolicy =
         serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
     let mut expected = vec![adjustment];
     expected.extend(roles::room_role_grants("r", &alice()));
@@ -2063,6 +2115,58 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants(
     let mut current = room_with(&[]);
     current.grants.reverse();
     assert_eq!(current.clone().with_current_roles(), current);
+}
+
+#[test]
+fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
+    let copied = || {
+        TreePath::room("r")
+            .app(roles::SESSION_APP)
+            .kind(roles::SESSION_KIND)
+            .resource("clipboard")
+    };
+    let reads = |grants: &[Grant], app: &str| {
+        decide(
+            grants,
+            &[Subject::App(app.to_owned())],
+            &copied(),
+            ActionKind::Read,
+            &cx(),
+        )
+        .answer
+    };
+
+    let room = room_with(&[]);
+    let panel = room
+        .grants
+        .iter()
+        .find(|grant| roles::is_device_panel(grant))
+        .expect("a new room grants its device's panel");
+    assert_eq!(panel.subject, Subject::App(roles::DEVICE_PANEL.to_owned()));
+    assert_eq!(
+        panel.node,
+        TreePath::room("r")
+            .app(roles::SESSION_APP)
+            .kind(roles::SESSION_KIND)
+    );
+    assert_eq!(panel.kinds, KindSet::READ, "the panel reads, never writes");
+    assert_eq!(panel.answer, Answer::Allow);
+    assert_eq!(reads(&room.grants, roles::DEVICE_PANEL), Answer::Allow);
+    assert_eq!(reads(&room.grants, "so.tilo.settings"), Answer::Deny);
+
+    // A room written before the panel was a preset gains its grant, given
+    // by its owner.
+    let mut older = room_with(&[]);
+    older.grants.retain(|grant| !roles::is_device_panel(grant));
+    assert_eq!(reads(&older.grants, roles::DEVICE_PANEL), Answer::Deny);
+    let gained = older.with_current_roles();
+    let panel = gained
+        .grants
+        .iter()
+        .find(|grant| roles::is_device_panel(grant))
+        .expect("an older room gains the panel's grant");
+    assert_eq!(panel.granted_by, Subject::Person(ALICE.to_owned()));
+    assert_eq!(reads(&gained.grants, roles::DEVICE_PANEL), Answer::Allow);
 }
 
 #[test]

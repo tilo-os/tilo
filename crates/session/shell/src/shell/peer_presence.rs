@@ -6,7 +6,7 @@
 //! accept the same keys, and hand the overlay the same store, timing and
 //! glide ([`ui::presence::PresenceCtx::pointer_position_at`]).
 //!
-//! Outbound: a [`RoomSubscription`] republishes each local app's
+//! Outbound: a [`WorkspaceSubscription`] republishes each local app's
 //! surface-local pointer as this session's cursor — per session, not per
 //! connection, so one person stays one cursor across windows.
 //! [`should_publish_cursor`] throttles to [`MIN_PUBLISH_GAP`]. A still
@@ -37,7 +37,7 @@ use collab_types::presence::PresencePayload;
 use runtime_collab::event::CollabEvent;
 use ui::presence::PresenceCtx;
 
-use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
+use crate::shell::collab_broker::{BrokerHandle, WorkspaceSubscription};
 use crate::shell::network::ShellNetwork;
 use tilo_relay_protocol::live::ShownStrip;
 
@@ -213,7 +213,7 @@ pub struct PeerPresence {
     /// What the session's apps publish in its rooms. `None` for a session
     /// with no collaboration broker (a hosted shell started without one):
     /// it still publishes its own pointer and places its peers'.
-    subscription: Option<Arc<RoomSubscription>>,
+    subscription: Option<Arc<WorkspaceSubscription>>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
     rooms: Mutex<Vec<String>>,
@@ -467,7 +467,7 @@ impl PeerPresence {
                     inbound.push((room, people));
                 }
             }));
-        let subscription = broker.subscribe_rooms(
+        let subscription = broker.subscribe_workspaces(
             rooms.clone(),
             Box::new(move |event, route| {
                 if let CollabEvent::RemotePresenceUpdate {
@@ -582,7 +582,7 @@ impl PeerPresence {
         certified_people_subscription: Option<
             Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>,
         >,
-        subscription: Option<Arc<RoomSubscription>>,
+        subscription: Option<Arc<WorkspaceSubscription>>,
         net: &Arc<ShellNetwork>,
         rooms: Vec<String>,
     ) -> Self {
@@ -654,7 +654,7 @@ impl PeerPresence {
             people.retain(|room, _| rooms.contains(room));
         }
         if let Some(subscription) = &self.subscription {
-            subscription.set_rooms(rooms);
+            subscription.set_workspaces(rooms);
         }
     }
 

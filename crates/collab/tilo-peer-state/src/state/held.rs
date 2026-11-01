@@ -8,9 +8,9 @@ use super::{
 use crate::admission::DropReason;
 use automerge::transaction::Transactable as _;
 
-/// Most app messages one room holds for a prerequisite at once.
+/// Most app messages one workspace holds for a prerequisite at once.
 pub const MAX_HELD_INPUTS: usize = 64;
-/// Most encoded bytes of app messages one room holds for a prerequisite.
+/// Most encoded bytes of app messages one workspace holds for a prerequisite.
 pub const MAX_HELD_BYTES: usize = 4 * 1024 * 1024;
 
 /// How a message is held: what it waits for, and the admission context it
@@ -26,7 +26,7 @@ pub(super) struct Held {
 const MAX_MISSED: usize = 1024;
 
 /// What the app messages this peer let go waited for. A message let go is
-/// not lost: once something it waited for lands here, the room's host is
+/// not lost: once something it waited for lands here, the workspace's host is
 /// asked to replay what it retains ([`ReceiveOutcome::replay_wanted`]), and
 /// the message is decided again. Not persisted: a device that restarts
 /// subscribes afresh, and its host replays everything it retains anyway.
@@ -44,7 +44,7 @@ pub(super) struct Missed {
     /// unapplied, by its sequence. The author's later writes to the record
     /// wait for it: once a later one is applied, the earlier one never can
     /// be, its sequence behind the author's. Forgotten once it is applied
-    /// or refused, never to make room: forgetting it would let a later
+    /// or refused, never to make workspace: forgetting it would let a later
     /// write overtake it.
     behind: std::collections::BTreeMap<(Route, [u8; 32]), u64>,
 }
@@ -87,12 +87,12 @@ fn dropped_input(
 }
 
 impl StatePeer {
-    /// Hold `message` until `prerequisite` arrives: every later room change
+    /// Hold `message` until `prerequisite` arrives: every later workspace change
     /// and admitted document retries what is held. The queue is bounded
     /// ([`MAX_HELD_INPUTS`], [`MAX_HELD_BYTES`]) and never refuses the input
     /// being admitted: when it is full, the message held longest is decided
     /// again and, when still undecidable, let go with what it waited for in
-    /// the report's `dropped`. Nothing let go was applied, and the room's
+    /// the report's `dropped`. Nothing let go was applied, and the workspace's
     /// host still retains it.
     pub(super) fn defer(
         &mut self,
@@ -278,7 +278,7 @@ impl StatePeer {
         (sequence > earlier).then_some(earlier)
     }
     /// Forget `author`'s write `written` (its record and sequence) as one
-    /// let go: the room refuses it, so nothing after it waits for it.
+    /// let go: the workspace refuses it, so nothing after it waits for it.
     pub(super) fn forget_refused(&mut self, author: [u8; 32], written: Option<&(Route, u64)>) {
         let Some((route, sequence)) = written else {
             return;
@@ -295,7 +295,7 @@ impl StatePeer {
             .map(|document| document.doc.base_heads())
     }
     /// Whether something a message let go waited for has landed since,
-    /// forgetting what did: the room's host should replay what it retains.
+    /// forgetting what did: the workspace's host should replay what it retains.
     /// `landed` is whether the input just admitted changed anything.
     pub(super) fn missed_landed(&mut self, landed: bool) -> bool {
         if self.missed.is_empty() {

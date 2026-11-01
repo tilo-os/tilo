@@ -214,7 +214,7 @@ impl ContentBackend for DeviceBackend {
 
     /// The capability is the window's (room, app) scope: the daemon serves an
     /// address only when that room references it.
-    fn room_scoped(&self) -> bool {
+    fn workspace_scoped(&self) -> bool {
         true
     }
 }

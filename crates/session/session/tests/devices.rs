@@ -17,9 +17,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::io::{BufReader, Read};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,7 +40,6 @@ use tilo_device_fabric::{
     WakeInterfaceKind, WakeRoute,
 };
 use tilo_quick_settings::device::Device;
-use tilo_quick_settings::device::PlayerLink;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::hosted::{ASK_KEY, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_quick_settings::{QsEffect, RowPart};
@@ -416,13 +413,11 @@ impl AppActions for Host {
     }
 }
 
-/// The session and the device host behind its panel, which the test drives
-/// the players through.
+/// The session and the device host behind its panel, which the test hands
+/// what plays.
 struct Harness {
     session: Session,
     device: Rc<RefCell<Option<DeviceHost>>>,
-    /// The lines the audio helper writes: what plays here.
-    plays: Sender<String>,
 }
 
 fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
@@ -441,7 +436,6 @@ fn session_with(
     let fabric: SharedLink = Arc::new(link.clone());
     let held: Rc<RefCell<Option<DeviceHost>>> = Rc::default();
     let given = Rc::clone(&held);
-    let (lines, heard) = channel();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -454,10 +448,6 @@ fn session_with(
                     },
                     wake,
                 );
-                device.follow_players(PlayerLink::new(
-                    std::io::sink(),
-                    BufReader::new(Said(heard, Vec::new())),
-                ));
                 *given.borrow_mut() = Some(device.clone());
                 device
             }))),
@@ -490,7 +480,6 @@ fn session_with(
     Harness {
         session,
         device: Rc::new(RefCell::new(Some(device))),
-        plays: lines,
     }
 }
 
@@ -502,9 +491,10 @@ impl Harness {
             .expect("the panel's device host")
     }
 
-    /// What plays here: a browser stream, playing at 1:12.
+    /// What plays here: a browser stream, playing at 1:12, as the audio
+    /// service publishes it.
     fn playing(&self) {
-        self.plays.send(player().line()).expect("the helper reads");
+        self.device().media(what_plays(), None);
     }
 
     fn step(&mut self) {
@@ -577,6 +567,19 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
     );
+    let published: tilo_quick_settings::hosted::DevicesReading = serde_json::from_value(
+        harness
+            .session
+            .read(tilo_session::DEVICES_RESOURCE)
+            .expect("the session publishes its devices"),
+    )
+    .expect("a reading");
+    assert_eq!(
+        published.rows(),
+        state.device_rows,
+        "the panel lists the reading the session publishes"
+    );
+    assert_eq!(published.count(), 2, "the reading counts this device too");
 }
 
 /// The person's session on their other devices: locking the laptop locks this
@@ -1163,60 +1166,32 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
     );
 }
 
-/// What the helper says plays here: a browser stream.
-fn player() -> tilo_audio_service::Event {
-    tilo_audio_service::Event::Players {
-        players: vec![tilo_audio_service::Player {
-            bus_name: "org.mpris.MediaPlayer2.browser".into(),
-            unique_name: ":1.7".into(),
-            pid: None,
-            package_id: Some("so.tilo.music".into()),
-            desktop_entry: None,
-            identity: Some("Music".into()),
-            status: tilo_audio_service::Status::Playing,
+/// What the audio service publishes as the players: a browser stream,
+/// playing at 1:12, which another of the person's devices can continue.
+fn what_plays() -> tilo_audio_service::media::Media {
+    tilo_audio_service::media::Media {
+        players: vec![tilo_audio_service::media::Player {
+            token: tilo_audio_service::media::player_token("org.mpris.MediaPlayer2.browser"),
+            bus: "org.mpris.MediaPlayer2.browser".into(),
+            identity: "Music".into(),
             title: Some("Clair de lune".into()),
             artist: Some("Claude Debussy".into()),
-            url: Some("https://media.example/clair.flac".into()),
-            art_url: None,
-            track_id: Some("/track/1".into()),
-            length_us: Some(300_000_000),
-            position_us: 72_000_000,
-            rate: 1.0,
+            playing: true,
+            paused: false,
             can_play: true,
             can_pause: true,
+            can_next: true,
+            can_previous: true,
+            art: None,
+            position_ms: 72_000,
+            rate: 1.0,
+            duration_ms: Some(300_000),
             can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
+            url: Some("https://media.example/clair.flac".into()),
+            app_id: Some("so.tilo.music".into()),
+            session_id: Some("so.tilo.music:mpris:0123456789abcdef".into()),
         }],
-    }
-}
-
-/// Events, as the helper writes them.
-struct Said(Receiver<String>, Vec<u8>);
-
-impl Said {
-    fn fill(&mut self) -> bool {
-        match self.0.recv() {
-            Ok(line) => {
-                self.1.extend_from_slice(line.as_bytes());
-                self.1.push(b'\n');
-                true
-            }
-            Err(_) => false,
-        }
-    }
-}
-
-impl Read for Said {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        while self.1.is_empty() {
-            if !self.fill() {
-                return Ok(0);
-            }
-        }
-        let n = self.1.len().min(buf.len());
-        buf[..n].copy_from_slice(&self.1[..n]);
-        self.1.drain(..n);
-        Ok(n)
+        outputs: Vec::new(),
+        problem: None,
     }
 }

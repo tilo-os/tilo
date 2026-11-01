@@ -79,7 +79,7 @@ impl NativeEditor {
         let joined = tilo_desktop_model::RoomId::parse(room).unwrap();
         owner
             .with_current(joined, |view| {
-                assert_eq!(view.room_host(), governor);
+                assert_eq!(view.workspace_host(), governor);
                 assert_eq!(
                     view.peer()
                         .permissions(cert.device_public_key, SystemTime::now())

@@ -109,7 +109,7 @@ struct ControlState {
     tasks: Vec<AgentTask>,
     conversation: Vec<AgentMessage>,
     activity: Option<String>,
-    room: Option<String>,
+    workspace: Option<String>,
 }
 
 /// Raised whenever something the agent's loop acts on changed — its
@@ -201,7 +201,7 @@ impl AgentControl {
                 tasks: Vec::new(),
                 conversation: Vec::new(),
                 activity: None,
-                room: None,
+                workspace: None,
             }),
             changed: Changed::default(),
             witness: Mutex::new(None),
@@ -235,7 +235,7 @@ impl AgentControl {
                 tasks,
                 conversation: info.conversation.clone(),
                 activity: None,
-                room: info.room.clone(),
+                workspace: info.room.clone(),
             }),
             changed: Changed::default(),
             witness: Mutex::new(None),
@@ -244,13 +244,13 @@ impl AgentControl {
     }
 
     #[must_use]
-    pub fn room(&self) -> Option<String> {
-        self.state().room.clone()
+    pub fn workspace(&self) -> Option<String> {
+        self.state().workspace.clone()
     }
 
-    /// Name the room the agent works in.
-    pub fn set_room(&self, room: &str) {
-        self.state().room = Some(room.to_owned());
+    /// Name the workspace the agent works in.
+    pub fn set_workspace(&self, workspace: &str) {
+        self.state().workspace = Some(workspace.to_owned());
         self.persisted_changed();
     }
 
@@ -298,7 +298,7 @@ impl AgentControl {
     }
 
     /// What this agent persists changed: its status, tasks, conversation,
-    /// activity or room.
+    /// activity or workspace.
     fn persisted_changed(&self) {
         if let Some(changes) = self.reports_to.get() {
             changes.raise();
@@ -620,7 +620,7 @@ impl AgentControl {
             device: hex::encode(self.delegation.device_public_key),
             status: state.status,
             activity: state.activity.clone(),
-            room: state.room.clone(),
+            room: state.workspace.clone(),
             tasks: state.tasks.clone(),
             conversation: state.conversation.clone(),
             delegation: hex::encode(self.delegation.encode()),
@@ -708,7 +708,7 @@ pub trait AgentHostLink: Send + Sync {
         done: ApprovalDone,
     ) -> Result<String, String>;
 
-    /// Admit the agent device `cert` of `delegation` to its rooms.
+    /// Admit the agent device `cert` of `delegation` to its workspaces.
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String>;
 
     /// Refuse the agent device from now on.
@@ -902,7 +902,9 @@ impl AgentSupervisor {
             ));
         }
         if request.rooms.is_empty() || request.rooms.len() > MAX_DELEGATED_ROOMS {
-            return Err(format!("a grant names 1 to {MAX_DELEGATED_ROOMS} rooms"));
+            return Err(format!(
+                "a grant names 1 to {MAX_DELEGATED_ROOMS} workspaces"
+            ));
         }
         if request.apps.len() > MAX_DELEGATED_APPS {
             return Err(format!("a grant names at most {MAX_DELEGATED_APPS} apps"));
@@ -1061,18 +1063,18 @@ impl AgentSupervisor {
         due
     }
 
-    /// Start the agent of grant `grant` in `room` (the grant's first room
+    /// Start the agent of grant `grant` in `workspace` (the grant's first workspace
     /// when `None`) on `task`. Returns the agent and task ids.
     ///
     /// # Errors
     ///
-    /// Returns why: an unknown or unapproved grant, a room outside it, or
+    /// Returns why: an unknown or unapproved grant, a workspace outside it, or
     /// an agent already running under it.
     pub fn spawn(
         &self,
         grant: &str,
         task: &str,
-        room: Option<&str>,
+        workspace: Option<&str>,
     ) -> Result<(String, String), String> {
         let (identity, control) = {
             let mut state = self.state();
@@ -1094,21 +1096,23 @@ impl AgentSupervisor {
                 }
             };
             let scope = &identity.delegation.scope;
-            let room = match room {
-                Some(room) if scope.rooms.iter().any(|own| own == room) => room.to_owned(),
-                Some(_) => return Err("the grant does not cover this room".into()),
+            let workspace = match workspace {
+                Some(workspace) if scope.rooms.iter().any(|own| own == workspace) => {
+                    workspace.to_owned()
+                }
+                Some(_) => return Err("the grant does not cover this workspace".into()),
                 None => scope
                     .rooms
                     .first()
                     .cloned()
-                    .ok_or("the grant names no room")?,
+                    .ok_or("the grant names no workspace")?,
             };
             if state.agents.get(grant).is_some_and(|agent| !agent.ended()) {
                 return Err(ControlError::InUse.to_string());
             }
             let control = AgentControl::new(identity.delegation.clone());
             control.report_to(&self.changes);
-            control.set_room(&room);
+            control.set_workspace(&workspace);
             control.set_witness(
                 self.link()
                     .and_then(|link| link.witness(&identity.delegation)),
@@ -1300,19 +1304,19 @@ impl AgentSupervisor {
                             .filter(|value| !value.is_empty())
                             .ok_or_else(|| invalid(&format!("spawn needs {key}")))
                     };
-                    let room = arguments
+                    let workspace = arguments
                         .get("room")
                         .and_then(serde_json::Value::as_str)
                         .filter(|value| !value.is_empty());
                     let (agent, task) = self
-                        .spawn(text("grant")?, text("task")?, room)
+                        .spawn(text("grant")?, text("task")?, workspace)
                         .map_err(refused)?;
                     serde_json::json!({"agentId": agent, "taskId": task})
                 }
                 REQUEST_GRANT_ACTION => {
                     let InvokeArgument::Json(arguments) = &request.argument else {
                         return Err(invalid(
-                            "request-grant takes {label, rooms, apps, expiresInSecs}",
+                            "request-grant takes {label, workspaces, apps, expiresInSecs}",
                         ));
                     };
                     let grant: GrantRequest =
@@ -1596,7 +1600,7 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_actions::remote::{PendingPoll, ReceiptStatus, RemoteActionTarget};
 
-    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
     fn identity(root: &SigningKey) -> AgentIdentity {
         identity_until(root, u64::MAX)
@@ -1615,7 +1619,7 @@ pub(crate) mod tests {
             "Writer helper",
             [0x7c, 0x3a, 0xed],
             DelegateScope {
-                rooms: vec![ROOM.into()],
+                rooms: vec![WORKSPACE.into()],
                 apps: Vec::new(),
             },
             1,

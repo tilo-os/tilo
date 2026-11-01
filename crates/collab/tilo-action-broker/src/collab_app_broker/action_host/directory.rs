@@ -26,10 +26,10 @@ impl AppBrokerState {
         caller: &Caller,
         peer_id: u64,
     ) -> Option<ActionDirectoryRoot> {
-        let rooms = self.rooms_for(caller);
+        let workspaces = self.workspace_ids_for(caller);
         self.action_directory_roots()
             .into_iter()
-            .find(|root| root.peer_id == peer_id && rooms.contains(&root.cluster_id))
+            .find(|root| root.peer_id == peer_id && workspaces.contains(&root.cluster_id))
     }
 
     pub(super) fn canonical_provider_page(
@@ -84,7 +84,7 @@ impl AppBrokerState {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         // A directory root publishes one application's rows, so a query for
         // another application is answered empty without asking it: nothing
-        // it holds could match. The caller's room was checked before here.
+        // it holds could match. The caller's workspace was checked before here.
         if query
             .app_id
             .as_deref()

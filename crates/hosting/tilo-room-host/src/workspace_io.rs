@@ -49,63 +49,26 @@ async fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
         .map_err(|error| io_error(error.to_string()))
 }
 
-#[derive(Clone, Copy)]
-struct MembershipTrace {
-    request_id: uuid::Uuid,
-    workspace_id: u64,
-}
-
-fn membership_phase(trace: Option<MembershipTrace>, phase: &'static str) {
-    if crate::persistence::diagnostics()
-        && let Some(trace) = trace
-    {
-        tracing::info!(
-            request_id = %trace.request_id,
-            workspace_id = trace.workspace_id,
-            phase,
-            timestamp_ns = tilo_clock::unix_now_ns()
-        );
-    }
-}
-
 async fn authorization_io<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
-    trace: Option<MembershipTrace>,
 ) -> Result<T, StoreError> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    membership_phase(trace, "delivery_membership_worker_wait");
     let permit = WORKERS
         .get_or_init(|| Arc::new(Semaphore::new(AUTHORIZATION_WORKERS)))
         .clone()
         .acquire_owned()
         .await
         .map_err(|error| io_error(error.to_string()))?;
-    membership_phase(trace, "delivery_membership_worker_admitted");
     // The permit stays in blocking work even when the waiting caller cancels.
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        membership_phase(trace, "delivery_membership_read_started");
-        let result = operation();
-        membership_phase(
-            trace,
-            if result.is_ok() {
-                "delivery_membership_read_returned"
-            } else {
-                "delivery_membership_read_returned_error"
-            },
-        );
-        result
+        operation()
     })
     .await;
-    let result = match result {
+    match result {
         Ok(result) => result,
-        Err(error) => {
-            membership_phase(trace, "delivery_membership_worker_join_error");
-            return Err(io_error(error.to_string()));
-        }
-    };
-    membership_phase(trace, "delivery_membership_worker_joined");
-    result
+        Err(error) => Err(io_error(error.to_string())),
+    }
 }
 
 async fn authority_handles(
@@ -162,28 +125,6 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 pub async fn fresh_membership(
     workspace: &SharedWorkspace,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
-    fresh_membership_inner(workspace, None).await
-}
-
-pub(crate) async fn fresh_membership_for_delivery(
-    workspace: &SharedWorkspace,
-    workspace_id: u64,
-    request_id: uuid::Uuid,
-) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
-    fresh_membership_inner(
-        workspace,
-        Some(MembershipTrace {
-            request_id,
-            workspace_id,
-        }),
-    )
-    .await
-}
-
-async fn fresh_membership_inner(
-    workspace: &SharedWorkspace,
-    trace: Option<MembershipTrace>,
-) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     {
         let locking = crate::timing::start();
         let runtime = workspace.lock().await;
@@ -194,40 +135,17 @@ async fn fresh_membership_inner(
         }
     }
     let reloading = crate::timing::start();
-    let reloaded = reload_membership(workspace, trace).await;
+    let reloaded = reload_membership(workspace).await;
     crate::timing::window("room.membership_reload", reloading);
     reloaded
 }
 
 async fn reload_membership(
     workspace: &SharedWorkspace,
-    trace: Option<MembershipTrace>,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     let _slot = admit_work().await?;
-    membership_phase(trace, "delivery_membership_handles_wait");
     let (store, lane, generation) = reload_handles(workspace).await;
-    membership_phase(trace, "delivery_membership_handles_acquired");
-    membership_phase(trace, "delivery_membership_lane_wait");
-    #[cfg(test)]
-    let _lane = if trace.is_some() {
-        use std::{future::Future as _, task::Poll};
-
-        let root = store.root().to_path_buf();
-        let mut waiting = Box::pin(lane.lock_owned());
-        std::future::poll_fn(move |cx| match waiting.as_mut().poll(cx) {
-            Poll::Ready(guard) => Poll::Ready(guard),
-            Poll::Pending => {
-                crate::store::test_barrier::signal(&root, "delivery-membership-lane-pending");
-                Poll::Pending
-            }
-        })
-        .await
-    } else {
-        lane.lock_owned().await
-    };
-    #[cfg(not(test))]
     let _lane = lane.lock_owned().await;
-    membership_phase(trace, "delivery_membership_lane_acquired");
     // Observed before the read: a change during it moves the generation on,
     // and the next call reads again.
     let observed = generation.as_ref().and_then(DiskGeneration::current);
@@ -238,10 +156,8 @@ async fn reload_membership(
             return Ok(runtime);
         }
     }
-    let members = authorization_io(move || store.load_membership(), trace).await?;
-    membership_phase(trace, "delivery_membership_runtime_wait");
+    let members = authorization_io(move || store.load_membership()).await?;
     let mut runtime = workspace.lock().await;
-    membership_phase(trace, "delivery_membership_runtime_acquired");
     apply_loaded_membership(&mut runtime, members, observed);
     Ok(runtime)
 }
@@ -274,7 +190,7 @@ pub(crate) async fn admit_member(
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
         let reader = store.clone();
-        let mut members = authorization_io(move || reader.load_membership(), None).await?;
+        let mut members = authorization_io(move || reader.load_membership()).await?;
         {
             let runtime = workspace.lock().await;
             if runtime.membership_revision != expected_revision {
@@ -297,7 +213,7 @@ pub(crate) async fn admit_member(
             members.push(device);
         }
         let saved = members.clone();
-        authorization_io(move || store.save_membership(&saved), None).await?;
+        authorization_io(move || store.save_membership(&saved)).await?;
         workspace.lock().await.membership.set(members);
         Ok(())
     })
@@ -340,7 +256,7 @@ pub(crate) async fn replace_membership(
         // Sessions of removed devices re-check now, before the write.
         crate::authority_epoch::bump();
         let saved = members.clone();
-        authorization_io(move || store.save_membership(&saved), None).await?;
+        authorization_io(move || store.save_membership(&saved)).await?;
         let mut runtime = workspace.lock().await;
         runtime.membership.set(members);
         runtime.membership_ceiling = None;
@@ -416,19 +332,16 @@ pub(crate) async fn replace_governed_access(
             crate::authority_epoch::bump();
         }
         let saved = access.clone();
-        authorization_io(
-            move || {
-                let bytes = store.save_governed_access(&saved)?;
-                // Applied to the runtime below, its narrowing announced
-                // above: the watch need not announce the file again.
-                crate::membership_watch::wrote_own(
-                    &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
-                    &bytes,
-                );
-                Ok(())
-            },
-            None,
-        )
+        authorization_io(move || {
+            let bytes = store.save_governed_access(&saved)?;
+            // Applied to the runtime below, its narrowing announced
+            // above: the watch need not announce the file again.
+            crate::membership_watch::wrote_own(
+                &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
+                &bytes,
+            );
+            Ok(())
+        })
         .await?;
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);

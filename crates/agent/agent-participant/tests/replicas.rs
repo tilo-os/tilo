@@ -14,7 +14,7 @@ use collab_types::DocumentMutation;
 use common::catalogue;
 use tilo_agent_participant::{Replica, Seed};
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
@@ -24,7 +24,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     let mut page = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -44,12 +44,12 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     )
     .unwrap();
 
-    // A host, a bot or an agent opens what the room kept: it is brought up
+    // A host, a bot or an agent opens what the workspace kept: it is brought up
     // to the app's version as a window brings it up.
     let mut held = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "host",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
@@ -59,19 +59,19 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
     )
     .expect("an older record opens");
     assert_eq!(held.read(stored_version), Some(current));
-    // The room still keeps the older document; the host brings the replica
+    // The workspace still keeps the older document; the host brings the replica
     // up to it before each run, and the replica stays at its version.
     held.apply(&DocumentMutation::Snapshot(kept.save()))
-        .expect("the room's older document merges into the brought-up replica");
+        .expect("the workspace's older document merges into the brought-up replica");
     assert_eq!(held.read(stored_version), Some(current));
-    // The migration is sent with the replica's changes, so the room's copy
+    // The migration is sent with the replica's changes, so the workspace's copy
     // is brought up too.
     let Some(DocumentMutation::Incremental(migration)) = held.take_mutation() else {
         panic!("the migration is sent");
     };
-    let mut room = kept.clone();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut room, &migration).unwrap();
-    assert_eq!(stored_version(&room), current);
+    let mut workspace = kept.clone();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut workspace, &migration).unwrap();
+    assert_eq!(stored_version(&workspace), current);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     let mut page = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -106,7 +106,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     let resource = chat::projection::item_id("categories", &category);
     let before = body(&page);
-    let viewer = PermissionContext::member_of(ROOM, "ada", Role::Viewer);
+    let viewer = PermissionContext::member_of(WORKSPACE, "ada", Role::Viewer);
     let denied = PermissionContext::stranger("ada");
     let views = page.resource_views(&resource, "chat.workspace.categories", &viewer);
     assert!(
@@ -162,7 +162,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
     let mut page = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -175,7 +175,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
     let mut agent = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "writer",
         tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
@@ -236,7 +236,7 @@ fn identity_only(page: &Replica) -> Vec<u8> {
                 .get(ROOT, "tilo:record")
                 .unwrap()
                 .is_some_and(|(_, record)| {
-                    ["home", "id", "kind", "room"]
+                    ["home", "id", "kind", "workspace"]
                         .iter()
                         .all(|key| prefix.get(&record, *key).unwrap().is_some())
                 });
@@ -253,7 +253,7 @@ fn joined(
     Replica::open(
         catalogue,
         page.app_id(),
-        ROOM,
+        WORKSPACE,
         "writer",
         tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
@@ -278,7 +278,7 @@ fn content(app: &Replica) -> serde_json::Value {
 fn only_the_creator_seeds_a_record() {
     let catalogue = catalogue();
     let mut failures = Vec::new();
-    // The room's own record (Chat's) is not handed over as a copy.
+    // The workspace's own record (Chat's) is not handed over as a copy.
     for definition in tilo_agent_participant::component_apps()
         .into_iter()
         .filter(|definition| !definition.keeps_room_record())
@@ -287,7 +287,7 @@ fn only_the_creator_seeds_a_record() {
         let mut page = Replica::open(
             &catalogue,
             app,
-            ROOM,
+            WORKSPACE,
             "ada",
             tilo_agent_participant::ReplicaActor::Owner,
             Seed::New,
@@ -343,7 +343,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let mut agent = Replica::open(
         &catalogue,
         app,
-        ROOM,
+        WORKSPACE,
         "writer",
         tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
@@ -397,7 +397,7 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
     let mut agent = Replica::open(
         &catalogue(),
         "so.tilo.video-editor",
-        ROOM,
+        WORKSPACE,
         "editor",
         tilo_agent_participant::ReplicaActor::Agent,
         Seed::New,
@@ -428,26 +428,26 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
 }
 
 fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
-    use ui::permissions::policy::{Answer, Grant, RoomPolicy, Standing, Subject, TreePath};
+    use ui::permissions::policy::{Answer, Grant, Standing, Subject, TreePath, WorkspacePolicy};
     let bot = Subject::bot("b1");
     let grant = Grant::new(
         "bot:b1",
         bot.clone(),
-        TreePath::room(ROOM),
+        TreePath::room(WORKSPACE),
         kinds,
         Answer::Allow,
         Subject::person("ada"),
     );
-    Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![grant])
+    Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![grant])
 }
 
 /// Ada's new scratchpad, and the same record held by her bot `b1` granted
-/// `kinds` in the room.
+/// `kinds` in the workspace.
 fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica) {
     let mut page = Replica::open(
         &catalogue(),
         "so.tilo.scratchpad",
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -457,7 +457,7 @@ fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica
     let bot = Replica::open(
         &catalogue(),
         page.app_id(),
-        ROOM,
+        WORKSPACE,
         "bot:b1",
         tilo_agent_participant::ReplicaActor::Bot {
             installation: "b1".into(),
@@ -547,7 +547,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let mut page = Replica::open(
         &catalogue,
         "so.tilo.chat",
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -571,14 +571,14 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let mut bot = Replica::open(
         &catalogue,
         page.app_id(),
-        ROOM,
+        WORKSPACE,
         "bot:b1",
         tilo_agent_participant::ReplicaActor::Bot {
             installation: "b1".into(),
             installer: "ada".into(),
             standing: {
                 use ui::permissions::policy::{
-                    Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+                    Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
                 };
                 let bot = Subject::bot("b1");
                 let read = Grant::new(
@@ -592,7 +592,8 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
                     Answer::Allow,
                     Subject::person("ada"),
                 );
-                Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![read])
+                Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada")
+                    .bounded_by(bot, vec![read])
             },
         },
         Seed::Existing {
@@ -655,7 +656,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let mut page = Replica::open(
         &catalogue,
         "so.tilo.chat",
-        ROOM,
+        WORKSPACE,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -678,7 +679,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     // What a program that posts derives: posting on the chat's messages.
     let standing = {
         use ui::permissions::policy::{
-            Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+            Answer, Grant, KindSet, Level, Standing, Subject, TreePath, WorkspacePolicy,
         };
         let bot = Subject::bot("b1");
         let post = Grant::new(
@@ -695,12 +696,12 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             Answer::Allow,
             Subject::person("ada"),
         );
-        Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![post])
+        Standing::person(WorkspacePolicy::new(WORKSPACE, "ada"), "ada").bounded_by(bot, vec![post])
     };
     let mut bot = Replica::open(
         &catalogue,
         page.app_id(),
-        ROOM,
+        WORKSPACE,
         "bot:b1",
         tilo_agent_participant::ReplicaActor::Bot {
             installation: "b1".into(),

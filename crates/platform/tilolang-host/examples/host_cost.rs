@@ -2,7 +2,7 @@
 //! costs in a running tilolang host (`docs/designs/app-language/ui-host.md`, step 2b).
 //!
 //! Opens Notes instances in one host, as the session hands them over: each on its own broker
-//! connection (a broker the example plays), each over a room record of its own, each sending its
+//! connection (a broker the example plays), each over a workspace record of its own, each sending its
 //! window patches over a `SOCK_SEQPACKET` connection whose far end the example drains, as a
 //! window's process does. It prints
 //!
@@ -32,7 +32,7 @@ use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 
 const APP: &str = "so.tilo.lang.notes";
 
@@ -81,7 +81,7 @@ fn status(field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn record(index: usize) -> (RoomRecord, RouteSpec) {
+fn record(index: usize) -> (InstanceRecord, RouteSpec) {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -96,7 +96,7 @@ fn record(index: usize) -> (RoomRecord, RouteSpec) {
     });
     let _ = manager.poll();
     (
-        RoomRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada"),
+        InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada"),
         route,
     )
 }
@@ -116,7 +116,7 @@ fn open(
     let hosted = Hosted::with_record(
         Spec {
             app: APP.to_owned(),
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             instance: index as u64,
             person: "ada".to_owned(),
         },

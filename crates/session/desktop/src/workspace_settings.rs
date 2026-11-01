@@ -2094,7 +2094,7 @@ pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> 
             "workspace-settings-granted-by-token",
             &[("id", short_id(id).into())],
         ),
-        Principal::Room(id) => t_args(
+        Principal::Workspace(id) => t_args(
             "workspace-settings-granted-by-workspace",
             &[("id", short_id(id).into())],
         ),
@@ -2484,6 +2484,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for grant in &ws.policy.grants {
         if let tilo_action_policy::Subject::App(app) = &grant.subject
             && !tilo_action_policy::roles::is_session_app(grant)
+            && !tilo_action_policy::roles::is_device_panel(grant)
         {
             apps.push(app.clone());
         }
@@ -3735,7 +3736,7 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
                 &[("id", short_id(id).into())],
             ),
         },
-        Subject::Principal(Principal::Room(id)) => GrantSubject {
+        Subject::Principal(Principal::Workspace(id)) => GrantSubject {
             kind: SubjectKind::Other,
             id: t_args(
                 "workspace-settings-subject-workspace",
@@ -3816,7 +3817,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                 let admission = matches!(grant.subject, tilo_action_policy::Subject::Agent(_))
                     && grant.id.as_str().starts_with("agent-member:");
                 let session = tilo_action_policy::roles::is_session_app(grant);
-                !preset && !admission && !session
+                let panel = tilo_action_policy::roles::is_device_panel(grant);
+                !preset && !admission && !session && !panel
             })
             .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
     );
@@ -4923,7 +4925,7 @@ mod members_pane_tests {
             let admin = Grant::new(
                 "peer-administers",
                 tilo_action_policy::Subject::person(PEER),
-                roles::room_resource(&ws.policy.room),
+                roles::room_resource(&ws.policy.workspace),
                 KindSet::ALL,
                 Answer::Allow,
                 tilo_action_policy::Subject::person(OWNER),

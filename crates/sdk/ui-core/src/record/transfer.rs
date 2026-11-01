@@ -8,8 +8,11 @@
 //! workspace, with the source id kept in its `formerly` list as provenance.
 //! Nothing ever looks a record up through that list.
 //!
-//! The scope a document is stored under is still spelled `room`; it is stored
-//! data and a record keeps reading it.
+//! A record's workspace is stored under `workspace`; documents written
+//! before workspaces were called workspaces hold it under
+//! [`super::LEGACY_WORKSPACE_KEY`] and keep it there, so a document that is
+//! only read arrives as it was. A document this module writes names its
+//! workspace under the current key.
 //!
 //! Moving is transfer followed by [`retire`]: the source record gets one
 //! last change saying it left, which stays in its history the way a
@@ -133,20 +136,20 @@ pub enum Origin {
 }
 
 impl Origin {
-    fn key(&self, package: &str, room: &str) -> Result<StorageKey, TransferError> {
+    fn key(&self, package: &str, workspace: &str) -> Result<StorageKey, TransferError> {
         match self {
-            Self::Record(checkout) => key(package, room, &checkout.id),
+            Self::Record(checkout) => key(package, workspace, &checkout.id),
             Self::AppDocument(_) => {
-                app_state::validate_record_namespace(package, room)?;
+                app_state::validate_record_namespace(package, workspace)?;
                 Ok(StorageKey::package(package))
             }
         }
     }
 
-    /// Refuse anything but this origin's live document in `room`.
-    pub fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
+    /// Refuse anything but this origin's live document in `workspace`.
+    pub fn validate(&self, doc: &AutoCommit, workspace: &str) -> Result<(), TransferError> {
         match self {
-            Self::Record(checkout) => Ok(validate_identity(doc, checkout, room)?),
+            Self::Record(checkout) => Ok(validate_identity(doc, checkout, workspace)?),
             Self::AppDocument(_) if is_retired(doc) => Err(RecordOpenError::Retired.into()),
             Self::AppDocument(_) if identity(doc).is_some() => {
                 Err(RecordOpenError::IdentityMismatch.into())
@@ -164,15 +167,15 @@ impl Origin {
     }
 }
 
-fn key(package: &str, room: &str, id: &RecordId) -> Result<StorageKey, TransferError> {
+fn key(package: &str, workspace: &str, id: &RecordId) -> Result<StorageKey, TransferError> {
     if id.is_package_primary() {
         return Err(TransferError::NotTransferable(
             "a workspace's own package document never leaves its workspace",
         ));
     }
     let record = id.storage_key();
-    app_state::validate_record_identity(package, room, &record)?;
-    Ok(StorageKey::record(package, room, record))
+    app_state::validate_record_identity(package, workspace, &record)?;
+    Ok(StorageKey::record(package, workspace, record))
 }
 
 fn decode(store: &Rc<dyn DurableStore>, key: &StorageKey) -> Result<AutoCommit, TransferError> {
@@ -196,51 +199,51 @@ fn decode_stored(
     Ok(Some(doc))
 }
 
-/// Read `origin` as `package` last made it durable in `room`, without
+/// Read `origin` as `package` last made it durable in `workspace`, without
 /// taking its writer: the app showing it may still be running.
 ///
 /// # Errors
-/// A missing, retired, foreign-room or malformed document, or storage failure.
+/// A missing, retired, foreign-workspace or malformed document, or storage failure.
 pub fn read(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     origin: &Origin,
 ) -> Result<AutoCommit, TransferError> {
-    let doc = decode(store, &origin.key(package, room)?)?;
-    origin.validate(&doc, room)?;
+    let doc = decode(store, &origin.key(package, workspace)?)?;
+    origin.validate(&doc, workspace)?;
     Ok(doc)
 }
 
-/// A live record of `package` in `room` by its id alone, whatever its kind:
+/// A live record of `package` in `workspace` by its id alone, whatever its kind:
 /// what another device asks for when all it knows is the id.
 ///
 /// # Errors
-/// A missing, retired, foreign-room or malformed record, or storage failure.
+/// A missing, retired, foreign-workspace or malformed record, or storage failure.
 pub fn read_by_id(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     id: &RecordId,
 ) -> Result<AutoCommit, TransferError> {
-    let doc = decode(store, &key(package, room, id)?)?;
+    let doc = decode(store, &key(package, workspace, id)?)?;
     let checkout = identity(&doc)
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
-    validate_identity(&doc, &checkout, room)?;
+    validate_identity(&doc, &checkout, workspace)?;
     Ok(doc)
 }
 
-/// Verify `bytes` another device sent as record `id` of `room`, and keep it
+/// Verify `bytes` another device sent as record `id` of `workspace`, and keep it
 /// here: installed when new, merged when this device already holds it. The
 /// bytes are only trusted as far as they prove to be that live record.
 ///
 /// # Errors
-/// Bytes that are not a live record `id` scoped to `room`, or storage failure.
+/// Bytes that are not a live record `id` scoped to `workspace`, or storage failure.
 pub fn adopt_fetched(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     id: &RecordId,
     bytes: &[u8],
 ) -> Result<(RecordCheckout, Option<Landing>), TransferError> {
@@ -249,34 +252,45 @@ pub fn adopt_fetched(
     let checkout = identity(&doc)
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
-    validate_identity(&doc, &checkout, room)?;
+    validate_identity(&doc, &checkout, workspace)?;
     // One writer and one read for both cases: a thread that must not wait
     // is answered Opening until the store's thread has leased the key, and
     // a second lease of it would start that over.
-    let key = key(package, room, &checkout.id)?;
+    let key = key(package, workspace, &checkout.id)?;
     let _writer = writer(store, &key)?;
     let landing = match decode_stored(store, &key)? {
         None => Some(persist(store, &key, &mut doc)?),
-        Some(held) => merge_into(store, &key, held, &checkout, room, &doc)?.1,
+        Some(held) => merge_into(store, &key, held, &checkout, workspace, &doc)?.1,
     };
     Ok((checkout, landing))
 }
 
 /// Identity keys a record's meta map may hold; anything else could claim
-/// more than the one record the document is.
-const IMPORTABLE_META: [&str; 7] = ["id", "kind", "home", super::ROOM, FORMERLY, "refs", "blobs"];
+/// more than the one record the document is. A record carries its workspace
+/// under one of two keys: the current one, or the one written before a
+/// workspace was called a workspace, which an older document still holds.
+const IMPORTABLE_META: [&str; 8] = [
+    "id",
+    "kind",
+    "home",
+    super::WORKSPACE,
+    super::LEGACY_WORKSPACE_KEY,
+    FORMERLY,
+    "refs",
+    "blobs",
+];
 
-/// Check `bytes` offered to become record `id` of `room` with their whole
+/// Check `bytes` offered to become record `id` of `workspace` with their whole
 /// history, before anything keeps them: at most `max_bytes`, a complete
 /// document whose identity is exactly that freshly minted record scoped to
-/// that room, live, holding no room index and no references to other
+/// that workspace, live, holding no workspace index and no references to other
 /// records, and naming earlier ids only as provenance.
 ///
 /// # Errors
 /// Bytes that are too large, malformed, or not exactly that record.
 pub fn validate_import(
     bytes: &[u8],
-    room: &str,
+    workspace: &str,
     id: &RecordId,
     max_bytes: usize,
 ) -> Result<(AutoCommit, RecordCheckout), TransferError> {
@@ -288,7 +302,7 @@ pub fn validate_import(
     });
     if !minted || RecordId::parse(id.as_str()).as_ref() != Some(id) {
         return Err(TransferError::NotTransferable(
-            "a document joins a room only as a newly minted record",
+            "a document joins a workspace only as a newly minted record",
         ));
     }
     let label = std::path::PathBuf::from(format!("imported {id}"));
@@ -296,8 +310,8 @@ pub fn validate_import(
     let checkout = identity(&doc)
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
-    validate_identity(&doc, &checkout, room)?;
-    if super::workspace_scope(&doc).as_deref() != Some(room) {
+    validate_identity(&doc, &checkout, workspace)?;
+    if super::workspace_scope(&doc).as_deref() != Some(workspace) {
         return Err(RecordOpenError::IdentityMismatch.into());
     }
     if doc
@@ -307,7 +321,7 @@ pub fn validate_import(
         .is_some()
     {
         return Err(TransferError::NotTransferable(
-            "a document listing other records cannot join a room",
+            "a document listing other records cannot join a workspace",
         ));
     }
     let meta = meta_ro(&doc).ok_or(RecordOpenError::IdentityMismatch)?;
@@ -321,7 +335,7 @@ pub fn validate_import(
         || matches!(object_at(&doc, &meta, "refs", ObjType::List), ObjectAt::Object(list) if doc.length(&list) != 0)
     {
         return Err(TransferError::NotTransferable(
-            "a document referring to other records cannot join a room",
+            "a document referring to other records cannot join a workspace",
         ));
     }
     let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
@@ -347,27 +361,27 @@ pub fn validate_import(
 pub fn read_until(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     origin: &Origin,
     heads: &[ChangeHash],
 ) -> Result<AutoCommit, TransferError> {
-    let mut stored = decode(store, &origin.key(package, room)?)?;
+    let mut stored = decode(store, &origin.key(package, workspace)?)?;
     let doc = stored
         .fork_at(heads)
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
-    origin.validate(&doc, room)?;
+    origin.validate(&doc, workspace)?;
     Ok(doc)
 }
 
-/// The destination's copy of `source`, read from `origin` in `from_room`:
+/// The destination's copy of `source`, read from `origin` in `from_workspace`:
 /// its whole history, one more change giving it `target`'s id and
-/// `to_room`'s scope, and a record's origin id kept as provenance. `source`
+/// `to_workspace`'s scope, and a record's origin id kept as provenance. `source`
 /// is not changed.
 pub fn rehome(
     source: &AutoCommit,
     origin: &Origin,
-    from_room: &str,
-    to_room: &str,
+    from_workspace: &str,
+    to_workspace: &str,
     target: &RecordId,
 ) -> Result<AutoCommit, TransferError> {
     if target.is_package_primary()
@@ -382,10 +396,10 @@ pub fn rehome(
     {
         return Err(RecordOpenError::IdentityMismatch.into());
     }
-    origin.validate(source, from_room)?;
-    if from_room == to_room || to_room.is_empty() || from_room.is_empty() {
+    origin.validate(source, from_workspace)?;
+    if from_workspace == to_workspace || to_workspace.is_empty() || from_workspace.is_empty() {
         return Err(TransferError::NotTransferable(
-            "the record is already in that room",
+            "the record is already in that workspace",
         ));
     }
     let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
@@ -395,7 +409,16 @@ pub fn rehome(
         Origin::Record(checkout) => {
             let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
             doc.put(&meta, "id", target.as_str()).map_err(automerge)?;
-            doc.put(&meta, super::ROOM, to_room).map_err(automerge)?;
+            doc.put(&meta, super::WORKSPACE, to_workspace)
+                .map_err(automerge)?;
+            // The fork names its workspace under the current key only: the
+            // key it was minted under would name a second one.
+            if matches!(
+                super::string_at(&doc, &meta, super::LEGACY_WORKSPACE_KEY),
+                super::StringAt::Invalid | super::StringAt::String(_)
+            ) {
+                let _ = doc.delete(&meta, super::LEGACY_WORKSPACE_KEY);
+            }
             let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
                 ObjectAt::Object(list) => list,
                 ObjectAt::Missing => doc
@@ -408,9 +431,9 @@ pub fn rehome(
                 .map_err(automerge)?;
         }
         // The app's own document becomes a record the moment it leaves: it
-        // was minted in the source room and is now scoped to the destination.
+        // was minted in the source workspace and is now scoped to the destination.
         Origin::AppDocument(kind) => {
-            if !super::init_scoped(&mut doc, target, kind, from_room, Some(to_room)) {
+            if !super::init_scoped(&mut doc, target, kind, from_workspace, Some(to_workspace)) {
                 return Err(RecordOpenError::IdentityMismatch.into());
             }
         }
@@ -420,7 +443,7 @@ pub fn rehome(
             .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
     );
     let arrived = RecordCheckout::new(target.clone(), origin.kind().clone());
-    validate_identity(&doc, &arrived, to_room)?;
+    validate_identity(&doc, &arrived, to_workspace)?;
     Ok(doc)
 }
 
@@ -441,7 +464,7 @@ fn writer(
     })
 }
 
-/// Whether no app process holds `origin`'s writer in `room` any more: the
+/// Whether no app process holds `origin`'s writer in `workspace` any more: the
 /// point after which nothing more can arrive from it.
 ///
 /// # Errors
@@ -449,10 +472,10 @@ fn writer(
 pub fn writer_released(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     origin: &Origin,
 ) -> Result<bool, TransferError> {
-    match writer(store, &origin.key(package, room)?) {
+    match writer(store, &origin.key(package, workspace)?) {
         Ok(_) => Ok(true),
         Err(TransferError::Busy) => Ok(false),
         Err(error) => Err(error),
@@ -517,33 +540,33 @@ fn persist(
     }
 }
 
-/// Make `doc` (from [`rehome`]) a record of `package` in `room`. Refuses to
+/// Make `doc` (from [`rehome`]) a record of `package` in `workspace`. Refuses to
 /// overwrite anything already stored under its id. Open it elsewhere once
 /// the [`Landing`] has landed.
 ///
 /// # Errors
-/// A document not scoped to `room`, an occupied id, or storage failure.
+/// A document not scoped to `workspace`, an occupied id, or storage failure.
 pub fn install(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     doc: &mut AutoCommit,
 ) -> Result<(RecordCheckout, Landing), TransferError> {
     let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
-    install_as(store, package, room, checkout, doc)
+    install_as(store, package, workspace, checkout, doc)
 }
 
-/// [`install`] a document that arrived for `checkout`, including the room's
+/// [`install`] a document that arrived for `checkout`, including the workspace's
 /// package-primary record, whose identity the document does not carry.
 pub fn install_as(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     checkout: RecordCheckout,
     doc: &mut AutoCommit,
 ) -> Result<(RecordCheckout, Landing), TransferError> {
-    validate_identity(doc, &checkout, room)?;
-    let key = key(package, room, &checkout.id)?;
+    validate_identity(doc, &checkout, workspace)?;
+    let key = key(package, workspace, &checkout.id)?;
     let _writer = writer(store, &key)?;
     if store
         .read(&key)?
@@ -555,23 +578,23 @@ pub fn install_as(
     Ok((checkout, landing))
 }
 
-/// Put `doc` in place as the room's own document of `package` in `room`
+/// Put `doc` in place as the workspace's own document of `package` in `workspace`
 /// (the [package-primary](RecordId::package_primary) record), as an earlier
-/// version of the app left it on this device: how a room written before a
+/// version of the app left it on this device: how a workspace written before a
 /// change of the app's storage is opened in a test. Refuses to overwrite
 /// one.
 ///
 /// # Errors
-/// An invalid package or room, an occupied room document, or storage
+/// An invalid package or workspace, an occupied workspace document, or storage
 /// failure.
 pub fn install_room_document(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     doc: &mut AutoCommit,
 ) -> Result<Landing, TransferError> {
-    app_state::validate_record_namespace(package, room)?;
-    let key = StorageKey::room_index(package, room);
+    app_state::validate_record_namespace(package, workspace)?;
+    let key = StorageKey::room_index(package, workspace);
     let _writer = writer(store, &key)?;
     if store
         .read(&key)?
@@ -582,7 +605,7 @@ pub fn install_room_document(
     persist(store, &key, doc)
 }
 
-/// Merge every change `source` holds that `target` in `room` lacks — the
+/// Merge every change `source` holds that `target` in `workspace` lacks — the
 /// edits its old writer made after the transfer read it. Deterministic:
 /// it is a CRDT merge, so the order it runs in cannot change the result.
 /// Returns how many changes arrived, and the write bringing them when any
@@ -594,14 +617,14 @@ pub fn install_room_document(
 pub fn catch_up(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     target: &RecordCheckout,
     source: &AutoCommit,
 ) -> Result<(usize, Option<Landing>), TransferError> {
-    let key = key(package, room, &target.id)?;
+    let key = key(package, workspace, &target.id)?;
     let _writer = writer(store, &key)?;
     let doc = decode(store, &key)?;
-    merge_into(store, &key, doc, target, room, source)
+    merge_into(store, &key, doc, target, workspace, source)
 }
 
 /// Merge into `doc`, held under `key`'s writer, what `source` adds, and
@@ -611,22 +634,22 @@ fn merge_into(
     key: &StorageKey,
     mut doc: AutoCommit,
     target: &RecordCheckout,
-    room: &str,
+    workspace: &str,
     source: &AutoCommit,
 ) -> Result<(usize, Option<Landing>), TransferError> {
-    validate_identity(&doc, target, room)?;
+    validate_identity(&doc, target, workspace)?;
     let arriving = doc.clone().get_changes_added(&mut source.clone()).len();
     if arriving == 0 {
         return Ok((0, None));
     }
     doc.merge_incoming(&mut source.clone())
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
-    validate_identity(&doc, target, room)?;
+    validate_identity(&doc, target, workspace)?;
     let landing = persist(store, key, &mut doc)?;
     Ok((arriving, Some(landing)))
 }
 
-/// Stamp `origin` in `room` as retired: one last change in its own history,
+/// Stamp `origin` in `workspace` as retired: one last change in its own history,
 /// after which it is never opened as a live document again. No write, and
 /// no [`Landing`], for one already retired.
 ///
@@ -636,17 +659,17 @@ fn merge_into(
 pub fn retire(
     store: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
     origin: &Origin,
     why: &Retirement,
 ) -> Result<Option<Landing>, TransferError> {
-    let key = origin.key(package, room)?;
+    let key = origin.key(package, workspace)?;
     let _writer = writer(store, &key)?;
     let mut doc = decode(store, &key)?;
     if is_retired(&doc) {
         return Ok(None);
     }
-    origin.validate(&doc, room)?;
+    origin.validate(&doc, workspace)?;
     stamp_retired(&mut doc, why)?;
     persist(store, &key, &mut doc).map(Some)
 }
@@ -673,7 +696,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{RecordOwners, RecordStore, workspace_scope};
+    use crate::record::{RecordOwners, RecordStore, str_at, workspace_scope};
     use automerge::ROOT;
 
     const PACKAGE: &str = "so.tilo.transfer-test";
@@ -743,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_record_keeps_its_history_and_later_edits_and_leaves_its_room() {
+    fn a_moved_record_keeps_its_history_and_later_edits_and_leaves_its_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
         let (checkout, old_writer) = seeded(temp.path());
@@ -798,11 +821,11 @@ mod tests {
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))
         ));
-        let source_room = RecordOwners::new(temp.path().to_path_buf())
+        let source_workspace = RecordOwners::new(temp.path().to_path_buf())
             .open(PACKAGE, FROM)
             .unwrap();
         assert!(matches!(
-            source_room.try_open_record(&checkout),
+            source_workspace.try_open_record(&checkout),
             Err(RecordOpenError::Retired)
         ));
         let retired = decode(&store, &key(PACKAGE, FROM, &checkout.id).unwrap()).unwrap();
@@ -815,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_document_joins_another_room_only_as_exactly_the_minted_record_it_claims() {
+    fn a_document_joins_another_workspace_only_as_exactly_the_minted_record_it_claims() {
         let dir = tempfile::tempdir().unwrap();
         let (checkout, writer) = seeded(dir.path());
         drop(writer);
@@ -848,7 +871,7 @@ mod tests {
         );
         assert!(
             validate_import(&bytes, FROM, &target, bytes.len()).is_err(),
-            "scoped to the room it joins"
+            "scoped to the workspace it joins"
         );
         assert!(
             validate_import(&bytes, TO, &RecordId::minted(), bytes.len()).is_err(),
@@ -866,7 +889,7 @@ mod tests {
         let derived_bytes = arriving(&under_derived);
         assert!(
             validate_import(&derived_bytes, TO, &derived, derived_bytes.len()).is_err(),
-            "only a freshly minted id joins a room"
+            "only a freshly minted id joins a workspace"
         );
 
         let mut referring = rehomed.clone();
@@ -912,6 +935,79 @@ mod tests {
         assert!(validate_import(&retired, TO, &target, retired.len()).is_err());
     }
 
+    /// A record's workspace is imported whether the document names it under
+    /// the current key or the one written before workspaces were called
+    /// workspaces: it keeps the workspace it names, and the key it names it
+    /// under. A key the import does not know is refused.
+    #[test]
+    fn a_document_imports_with_its_workspace_under_either_key() {
+        let kind = RecordKind::new("transfer.test");
+        for key in [
+            crate::record::WORKSPACE,
+            crate::record::LEGACY_WORKSPACE_KEY,
+        ] {
+            let target = RecordId::minted();
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "body", "a draft").unwrap();
+            assert!(crate::record::init_scoped(
+                &mut doc, &target, &kind, FROM, None
+            ));
+            let meta = meta_obj(&mut doc).unwrap();
+            doc.put(&meta, key, FROM).unwrap();
+            doc.commit();
+            let bytes = doc.save();
+            let (mut kept, identity) = validate_import(&bytes, FROM, &target, bytes.len()).unwrap();
+            assert_eq!(identity.id, target, "{key}");
+            assert_eq!(workspace_scope(&kept).as_deref(), Some(FROM), "{key}");
+            let kept_meta = meta_obj(&mut kept).unwrap();
+            assert_eq!(
+                str_at(&kept, &kept_meta, key).as_deref(),
+                Some(FROM),
+                "the document keeps the key it named its workspace under"
+            );
+            kept.put(&kept_meta, "alias", "uuid:other").unwrap();
+            let aliased = kept.save();
+            assert!(
+                validate_import(&aliased, FROM, &target, aliased.len()).is_err(),
+                "a meta key it does not know is refused"
+            );
+        }
+    }
+
+    /// Carried into another workspace, a record of an old document names its
+    /// new workspace under the current key only: the key it was minted under
+    /// would name a second one.
+    #[test]
+    fn a_moved_record_names_its_new_workspace_under_the_current_key() {
+        let kind = RecordKind::new("transfer.test");
+        let source = RecordCheckout::new(RecordId::minted(), kind.clone());
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "body", "a draft").unwrap();
+        assert!(crate::record::init_scoped(
+            &mut doc,
+            &source.id,
+            &kind,
+            FROM,
+            Some(FROM)
+        ));
+        let meta = meta_obj(&mut doc).unwrap();
+        doc.delete(&meta, crate::record::WORKSPACE).unwrap();
+        doc.put(&meta, crate::record::LEGACY_WORKSPACE_KEY, FROM)
+            .unwrap();
+        doc.commit();
+        assert_eq!(workspace_scope(&doc).as_deref(), Some(FROM));
+
+        let target = RecordId::minted();
+        let moved = rehome(&doc, &Origin::Record(source), FROM, TO, &target).unwrap();
+        assert_eq!(workspace_scope(&moved).as_deref(), Some(TO));
+        let moved_meta = meta_obj(&mut moved.clone()).unwrap();
+        assert_eq!(
+            str_at(&moved, &moved_meta, crate::record::LEGACY_WORKSPACE_KEY),
+            None,
+            "the old key does not stay behind naming the workspace it left"
+        );
+    }
+
     #[test]
     fn a_record_from_another_device_is_kept_only_as_the_live_record_it_claims_to_be() {
         let holder_dir = tempfile::tempdir().unwrap();
@@ -930,7 +1026,7 @@ mod tests {
         );
         assert!(
             adopt_fetched(&here, PACKAGE, TO, &checkout.id, &bytes).is_err(),
-            "a record of one room is never kept as another room's"
+            "a record of one workspace is never kept as another workspace's"
         );
         assert!(adopt_fetched(&here, PACKAGE, FROM, &checkout.id, b"not a document").is_err());
         let (kept, _) = adopt_fetched(&here, PACKAGE, FROM, &checkout.id, &bytes).unwrap();
@@ -957,7 +1053,7 @@ mod tests {
                 &retired.save()
             )
             .is_err(),
-            "a record that left its room is never brought back to life"
+            "a record that left its workspace is never brought back to life"
         );
     }
 
@@ -1006,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transfer_never_overwrites_or_crosses_into_its_own_room() {
+    fn a_transfer_never_overwrites_or_crosses_into_its_own_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
         let (checkout, writer) = seeded(temp.path());
@@ -1019,7 +1115,7 @@ mod tests {
         ));
         assert!(
             rehome(&snapshot, &origin, TO, FROM, &RecordId::minted()).is_err(),
-            "a record is only read from the room it is scoped to"
+            "a record is only read from the workspace it is scoped to"
         );
         let target = RecordId::minted();
         let mut first = rehome(&snapshot, &origin, FROM, TO, &target).unwrap();
@@ -1032,12 +1128,12 @@ mod tests {
         let foreign = Origin::Record(RecordCheckout::new(target, checkout.kind.clone()));
         assert!(
             read(&store, PACKAGE, FROM, &foreign).is_err(),
-            "a destination id means nothing in the source room"
+            "a destination id means nothing in the source workspace"
         );
     }
 
     #[test]
-    fn an_app_document_arrives_as_a_record_and_its_room_keeps_a_retired_one() {
+    fn an_app_document_arrives_as_a_record_and_its_workspace_keeps_a_retired_one() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
         let mut app =

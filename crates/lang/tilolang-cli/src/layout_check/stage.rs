@@ -1,4 +1,4 @@
-//! An app's window as the UI host shows it, with nothing on screen: its instance over a room of
+//! An app's window as the UI host shows it, with nothing on screen: its instance over a workspace of
 //! its own, staged with a scenario, sending its views over the patch protocol to the UI host's
 //! half of the window (`tilo_ui_host::AppWindow`), which the toolkit's frame pipeline lays out
 //! (`ui::headless::FrameHarness`). Nothing is rasterised and no GPU is opened.
@@ -49,7 +49,7 @@ impl Platform for Packages {
     }
 }
 
-/// A room nobody else is in.
+/// A workspace nobody else is in.
 struct Alone;
 
 impl NameHost for Alone {
@@ -211,7 +211,7 @@ impl Staged {
         &mut self.harness
     }
 
-    /// The room's records and the items of their collections, as references.
+    /// The workspace's records and the items of their collections, as references.
     fn records(&self) -> Vec<ResourceRef> {
         let mut out = Vec::new();
         let Some(host) = self.instance.host() else {
@@ -249,7 +249,7 @@ impl Staged {
         out
     }
 
-    /// Every resource the room holds, the window's views and the rows of their lists name.
+    /// Every resource the workspace holds, the window's views and the rows of their lists name.
     pub fn resources(&mut self) -> Vec<ResourceRef> {
         fn in_value(value: &Value, out: &mut Vec<ResourceRef>) {
             match value {

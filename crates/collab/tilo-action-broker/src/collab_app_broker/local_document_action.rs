@@ -164,7 +164,7 @@ fn cached_receipt(
         .as_ref()
         .ok_or_else(|| BrokerError::failed("original caller certificate missing".into()))?;
     let key = InvocationKey {
-        room: route.cluster_id.clone(),
+        workspace: route.cluster_id.clone(),
         host: journal_host(state)?,
         invocation: tilo_actions::InvocationId(request.invocation),
         owner: InvocationOwner::AuthenticatedLocal {
@@ -420,7 +420,7 @@ pub(super) fn admit(
         drop(admission);
         drop(staged.start(state).await.map_err(BrokerError::failed)?);
         let key = InvocationKey {
-            room: route.cluster_id,
+            workspace: route.cluster_id,
             host: journal_host(state)?,
             invocation,
             owner,

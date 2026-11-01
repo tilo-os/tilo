@@ -1120,7 +1120,7 @@ impl NativeRealtimeServices {
                         .push(tilo_device_fabric::realtime_session::RealtimeMediaFacet::ShareAudio);
                 }
                 let registered = tilo_device_fabric::realtime_session::RealtimeResumeIntent {
-                    room: match tilo_device_fabric::realtime_session::SemanticRoomLocator::new(
+                    room: match tilo_device_fabric::realtime_session::SemanticWorkspaceLocator::new(
                         intent.provider,
                         intent.room_id,
                     ) {

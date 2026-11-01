@@ -6,11 +6,11 @@
 //! This crate joins them:
 //!
 //! * it keeps what the device publishes at the store
-//!   ([`StoreSession::keep`], [`StoreSession::keep_room`]), which the store
+//!   ([`StoreSession::keep`], [`StoreSession::keep_workspace`]), which the store
 //!   retains sealed and can never read;
 //! * it catches the replica up from the store on start
-//!   ([`StoreSession::catch_up`], [`StoreSession::catch_up_room`]): it asks
-//!   from the replica's own cursors ([`cursors`], [`room_cursors`]), and
+//!   ([`StoreSession::catch_up`], [`StoreSession::catch_up_workspace`]): it asks
+//!   from the replica's own cursors ([`cursors`], [`workspace_cursors`]), and
 //!   admits every replayed frame as its author's retained history, the same
 //!   admission a live frame from that device takes.
 //!
@@ -101,22 +101,22 @@ impl StoreSession {
         Ok(true)
     }
 
-    /// Keep everything `owner` has published to `room` that it may send
+    /// Keep everything `owner` has published to `workspace` that it may send
     /// now, in publication order. Returns how many frames the store took.
     ///
     /// # Errors
     ///
     /// [`StoreLinkError::Store`] when the session broke or the store
-    /// refused, and [`StoreLinkError::Replica`] when the room is not held
-    /// here.
-    pub async fn keep_room(
+    /// refused, and [`StoreLinkError::Replica`] when the workspace is not
+    /// held here.
+    pub async fn keep_workspace(
         &mut self,
         owner: &NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         now: std::time::SystemTime,
     ) -> Result<usize, StoreLinkError> {
         let outgoing: Vec<NeighbourMsg> = owner
-            .with_outgoing(room, now, |_, outgoing| {
+            .with_outgoing(workspace, now, |_, outgoing| {
                 outgoing
                     .entries()
                     .map(|entry| {
@@ -134,7 +134,7 @@ impl StoreSession {
         Ok(kept)
     }
 
-    /// Admit every frame the room lacks, from the store, until it holds
+    /// Admit every frame the workspace lacks, from the store, until it holds
     /// what the store has. Returns how many frames were replayed.
     ///
     /// # Errors
@@ -144,13 +144,13 @@ impl StoreSession {
     /// catch-up stops there, and the caller's cursors still stand where
     /// they did, so the next call asks for the refused frame again once
     /// what it needs has arrived.
-    pub async fn catch_up_room(
+    pub async fn catch_up_workspace(
         &mut self,
         owner: &NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         now: std::time::SystemTime,
     ) -> Result<usize, StoreLinkError> {
-        let mut standing = room_cursors(owner, room).map_err(StoreLinkError::Replica)?;
+        let mut standing = workspace_cursors(owner, workspace).map_err(StoreLinkError::Replica)?;
         let mut replayed = 0;
         loop {
             let replay = self.link.want(self.workspace, &standing).await?;
@@ -161,7 +161,7 @@ impl StoreSession {
                 let author = author_of(message).ok_or(StoreLinkError::NotAFrame)?;
                 owner
                     .receive(
-                        room,
+                        workspace,
                         TransportOrigin::RetainedRelayDelta(author),
                         message.clone(),
                         now,
@@ -210,13 +210,13 @@ impl StoreSession {
     }
 }
 
-/// The workspace a room's store holds: what both sides name a workspace by.
+/// The store's name for a workspace: what both sides name it by.
 ///
 /// # Errors
 ///
-/// Returns the reason when `room` is not a room id.
-pub fn workspace_of(room: &str) -> Result<u64, String> {
-    tilo_relay_protocol::room_workspace_id(room).map_err(|_| format!("{room} is not a room id"))
+/// Returns the reason when `id` is not a workspace id.
+pub fn workspace_of(id: &str) -> Result<u64, String> {
+    tilo_relay_protocol::room_workspace_id(id).map_err(|_| format!("{id} is not a workspace id"))
 }
 
 /// Where `sync`'s replica stands, one cursor per author line of its sealed
@@ -226,22 +226,25 @@ pub fn cursors(sync: &DirectSync) -> Vec<Cursor> {
     sync.read(cursors_of)
 }
 
-/// Where `owner`'s copy of `room` stands, one cursor per author line of its
-/// sealed history.
+/// Where `owner`'s copy of `workspace` stands, one cursor per author line of
+/// its sealed history.
 ///
 /// # Errors
 ///
-/// The room is not held here or is fenced.
-pub fn room_cursors(owner: &NativeWorkspaceOwner, room: RoomId) -> Result<Vec<Cursor>, String> {
-    owner.with_current(room, |view| Ok(cursors_of(view.peer())))
+/// The workspace is not held here or is fenced.
+pub fn workspace_cursors(
+    owner: &NativeWorkspaceOwner,
+    workspace: RoomId,
+) -> Result<Vec<Cursor>, String> {
+    owner.with_current(workspace, |view| Ok(cursors_of(view.peer())))
 }
 
 fn cursors_of(peer: &StatePeer) -> Vec<Cursor> {
-    let room = peer.room().to_owned();
+    let workspace = peer.workspace_id().to_owned();
     peer.replay_floors()
         .into_iter()
         .map(|(app, record, author, seq)| Cursor {
-            lineage: Lineage::of(&app, &room, &record, author),
+            lineage: Lineage::of(&app, &workspace, &record, author),
             after_seq: seq,
         })
         .collect()

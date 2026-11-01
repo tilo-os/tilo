@@ -42,6 +42,9 @@ struct HeadlessOutput {
     /// The gamma ramp the simulated display engine applies to what it
     /// shows (screenshots), not to what is drawn (captures).
     gamma: Option<crate::gamma::Ramp>,
+    /// What the panel is configured to show, as a real sink's EDID and
+    /// signal would say.
+    colour: tilo_color_pipeline::hdr_display::DisplayCapabilities,
 }
 
 /// The ramp size headless outputs carry, as many display engines do.
@@ -213,6 +216,19 @@ impl Backend for HeadlessBackend {
         "headless"
     }
 
+    fn output_colour(
+        &self,
+        output: &Output,
+    ) -> tilo_color_pipeline::hdr_display::DisplayCapabilities {
+        self.outputs
+            .iter()
+            .find(|known| known.output == *output)
+            .map_or_else(
+                tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default,
+                |known| known.colour,
+            )
+    }
+
     fn add_output(&mut self, state: &mut State, config: &OutputConfig) -> Result<(), BackendError> {
         // Right of the outputs already here until the layout places it: a
         // connector lit for the first time never lands on one showing.
@@ -246,6 +262,7 @@ impl Backend for HeadlessBackend {
             drawn: false,
             dark: false,
             gamma: None,
+            colour: config.colour,
         });
         self.arrange_outputs(state);
         Ok(())

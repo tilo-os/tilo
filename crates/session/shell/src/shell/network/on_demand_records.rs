@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use super::{NetCmd, ShellNetwork, room_topic_id};
+use super::{NetCmd, ShellNetwork, workspace_topic_id};
 use crate::shell::state::RoomId;
 
 /// Where an on-demand record a local app reads stands, while it is not here.
@@ -37,7 +37,7 @@ impl ShellNetwork {
     /// Ask `room`'s hosts for `app`'s on-demand `record` the first time a
     /// local app reads it, and say where it stands. Later reads ask nobody.
     pub(crate) fn read_on_demand(&self, room: RoomId, app: &str, record: &str) -> OnDemand {
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let channel = neighbour_wire::app_document_channel(app, record);
         let empty = {
             let Ok(mut asked) = self.on_demand_records.asked.lock() else {
@@ -97,7 +97,7 @@ impl ShellNetwork {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{NetCmd, NetEvent, room_topic_id, shell_network_for_test};
+    use super::super::{NetCmd, NetEvent, shell_network_for_test, workspace_topic_id};
     use super::OnDemand;
     use crate::shell::state::{RoomId, WorkspaceTree};
 
@@ -110,7 +110,7 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (network, mut commands) = shell_network_for_test(tree, 1);
         let room = RoomId::new();
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let record = neighbour_wire::record_part("derived:messages@room", 0);
         let channel = neighbour_wire::app_document_channel("so.tilo.chat", &record);
         let asked = |commands: &mut tokio::sync::mpsc::Receiver<NetCmd>| {

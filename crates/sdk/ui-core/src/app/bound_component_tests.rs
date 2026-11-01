@@ -1502,7 +1502,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     const ROOM: &str = "00000000-0000-0000-0000-000000000004";
     const APP: &str = "so.tilo.binding-probe";
     let owner = AppActionAuthorityProjection::project(
-        &tilo_action_policy::RoomPolicy::new(ROOM, "fixture-user"),
+        &tilo_action_policy::WorkspacePolicy::new(ROOM, "fixture-user"),
         APP,
         "fixture-user",
         false,

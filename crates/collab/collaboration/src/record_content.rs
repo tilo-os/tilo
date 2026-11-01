@@ -401,8 +401,8 @@ impl ContentBackend for RecordContent {
 
     /// The route only brings what the record's other readers hold for it, so
     /// what this store reads is as scoped as the window's own store.
-    fn room_scoped(&self) -> bool {
-        self.local.room_scoped()
+    fn workspace_scoped(&self) -> bool {
+        self.local.workspace_scoped()
     }
 
     fn collect_unreferenced(

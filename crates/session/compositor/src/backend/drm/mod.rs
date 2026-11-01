@@ -60,6 +60,7 @@ use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Point, Transform};
 use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
+use tilo_color_pipeline::hdr_display::HdrDisplayInfo;
 use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 
 use super::{Backend, BackendError, failed};
@@ -119,6 +120,9 @@ struct Lit {
     /// driven here when it does.
     sink_hdr: bool,
     hdr_unavailable: Option<HdrUnavailable>,
+    /// What the display's EDID says of its colour; `None` when it says
+    /// nothing, which is an SDR panel.
+    hdr_display: Option<HdrDisplayInfo>,
     color: LitColor,
     /// What clients on this output are told to allocate, when its planes
     /// can show their buffers directly.
@@ -411,6 +415,30 @@ impl Backend for DrmBackend {
                 color_profiles: profiles.clone(),
             })
             .collect()
+    }
+
+    fn output_colour(
+        &self,
+        output: &smithay::output::Output,
+    ) -> tilo_color_pipeline::hdr_display::DisplayCapabilities {
+        let inner = self.inner.borrow();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .find(|lit| lit.output == *output)
+            .map_or_else(
+                tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default,
+                |lit| match &lit.hdr_display {
+                    // What the sink takes, and only while the connector is
+                    // actually being sent HDR.
+                    Some(info) => tilo_color_pipeline::hdr_display::DisplayCapabilities::from_edid(
+                        info,
+                        lit.color.hdr_on,
+                    ),
+                    None => tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default(),
+                },
+            )
     }
 
     fn output_hdr(&self, output: &smithay::output::Output) -> Option<crate::config::Hdr> {
@@ -1689,36 +1717,40 @@ fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut
 /// right of the others.
 /// A connector to light: its name, the CRTC and mode to drive it with and
 /// the scale it starts at.
+/// The EDID the display on the connector `connector` of the card `card`
+/// reports, read from its sysfs node, which the kernel refreshes on every
+/// probe.
+fn connector_edid(card: &DrmNode, connector: &str) -> Option<Vec<u8>> {
+    let connector = connector
+        .rsplit_once('/')
+        .map_or(connector, |(_, label)| label);
+    let card = card.dev_path()?;
+    let card = card.file_name()?.to_str()?;
+    std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")).ok()
+}
+
 /// The EDID identity of the monitor on the connector `connector` of the
-/// card `card`, read from its sysfs node, which the kernel refreshes on
-/// every probe.
+/// card `card`.
 fn monitor_identity(
     card: &DrmNode,
     connector: &str,
 ) -> Option<settings_store::hardware::MonitorIdentity> {
-    let card = card.dev_path()?;
-    let card = card.file_name()?.to_str()?;
-    let edid = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")).ok()?;
-    tilo_wayland_ext::edid::parse_monitor_identity(&edid)
+    tilo_wayland_ext::edid::parse_monitor_identity(&connector_edid(card, connector)?)
 }
 
-/// Whether the display on `connector` of `card` asks for HDR in its EDID: a
-/// CTA-861 extension carrying the HDR static metadata block. Only a display
-/// that says it wants HDR is offered it, since a PQ signal on a panel that
-/// does not understand it arrives washed out.
-fn edid_wants_hdr(card: &DrmNode, connector: &str) -> bool {
-    let connector = connector
-        .rsplit_once('/')
-        .map_or(connector, |(_, label)| label);
-    let Some(card) = card.dev_path().and_then(|path| {
-        path.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-    }) else {
-        return false;
-    };
-    let Ok(edid) = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")) else {
-        return false;
-    };
+/// What a display's EDID says of its colour: its primaries, how bright it
+/// goes and which transfers it takes. `None` when it says nothing, which is
+/// an SDR panel.
+fn hdr_display(edid: &[u8]) -> Option<HdrDisplayInfo> {
+    let info = tilo_wayland_ext::edid::parse_hdr_display_info(edid);
+    (info != HdrDisplayInfo::default_sdr()).then_some(info)
+}
+
+/// Whether a display's EDID asks for HDR: a CTA-861 extension carrying the
+/// HDR static metadata block. Only a display that says it wants HDR is
+/// offered it, since a PQ signal on a panel that does not understand it
+/// arrives washed out.
+fn edid_wants_hdr(edid: &[u8]) -> bool {
     // The base block is 128 bytes and says how many extension blocks follow.
     let extensions = edid.get(126).copied().unwrap_or(0);
     for index in 0..extensions {
@@ -1846,7 +1878,9 @@ fn light(
     } else {
         Vrr::Unable
     };
-    let sink_hdr = edid_wants_hdr(&gpu.node, name);
+    let edid = connector_edid(&gpu.node, name);
+    let sink_hdr = edid.as_deref().is_some_and(edid_wants_hdr);
+    let hdr_display = edid.as_deref().and_then(hdr_display);
     let hdr_unavailable = sink_hdr
         .then(|| color::hdr_supported(gpu.manager.device(), info.handle()).err())
         .flatten();
@@ -1886,6 +1920,7 @@ fn light(
         vrr_unavailable: (vrr == Vrr::Unable).then_some(AdaptiveSyncUnavailable::DriverUnsupported),
         sink_hdr,
         hdr_unavailable,
+        hdr_display,
         color: LitColor::default(),
         feedback,
         next_frame: Instant::now(),

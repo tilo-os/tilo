@@ -469,8 +469,8 @@ impl ViewStorage {
             .answer(payload)
     }
 
-    /// The routes of the person's records the views opened, and of the
-    /// records every app of the room opens.
+    /// The person's records the views opened, and the routes of the
+    /// records every app of the workspace opens.
     pub(crate) fn person_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self
             .person

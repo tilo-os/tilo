@@ -9,7 +9,7 @@ pub const LIST_ACTION: &str = "invitation.list";
 pub const SET_ROLE_ACTION: &str = "member.role.set";
 pub const REMOVE_ACTION: &str = "member.remove";
 /// Operator-only: the loopback operator makes the machine owner's own session
-/// an administrator of the workspace it hosts. Not offered to room members.
+/// an administrator of the workspace it hosts. Not offered to workspace members.
 pub const ADMINISTRATOR_ACTION: &str = "member.administrator.set";
 pub const MEDIA_CREATE_ACTION: &str = "media.call.create";
 pub const MEDIA_END_ACTION: &str = "media.call.end";
@@ -104,8 +104,8 @@ pub fn action_definitions() -> Vec<CollaborationActionDefinition> {
     ]
 }
 
-pub fn resource(room: &str) -> String {
-    format!("workspace:{room}")
+pub fn resource(workspace: &str) -> String {
+    format!("workspace:{workspace}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,7 +263,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_media_actions_accept_exact_typed_arguments() {
+    fn workspace_media_actions_accept_exact_typed_arguments() {
         let id = "07".repeat(32);
         for (action, arguments) in [
             (
@@ -295,10 +295,10 @@ mod tests {
     }
 
     #[test]
-    fn room_media_parser_rejects_unknown_nested_fields_and_noncanonical_keys() {
+    fn workspace_media_parser_rejects_unknown_nested_fields_and_noncanonical_keys() {
         let id = "07".repeat(32);
         let base = serde_json::json!({"call_id":id,"expected_authorization_revision":1,"expected_epoch":1,"allowed":{"publish":true,"subscribe":true}});
-        for key in ["caller", "room", "epoch"] {
+        for key in ["caller", "workspace", "epoch"] {
             let mut value = base.clone();
             value[key] = serde_json::json!("injected");
             assert!(parse_operation(MEDIA_DIRECTIONS_ACTION, Some(&value.to_string())).is_err());

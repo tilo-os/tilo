@@ -2,7 +2,7 @@
 //!
 //! The actor is the transport: it keeps the endpoint, the topics, the host
 //! sessions and the person's private lane. Some of what arrives on them is
-//! the desktop's business, not the transport's: a call in a room, a device
+//! the desktop's business, not the transport's: a call in a workspace, a device
 //! being enrolled, a host's questions for an approver, an early-boot device
 //! asking for its unlock half, a device routing through this one, a peer
 //! that speaks another protocol version. The session installs those once at
@@ -20,7 +20,7 @@ use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use crate::HostIdentity;
 
-/// The relay session of a joined room's workspace, when it is connected.
+/// The relay session of a workspace this device joined, when it is connected.
 pub type Sessions<'a> = &'a dyn Fn(u64) -> Option<Arc<RelayCoeditSession>>;
 
 /// A command for one of the session's services, opaque to the actor, which
@@ -44,7 +44,7 @@ impl std::fmt::Debug for ServiceCommand {
     }
 }
 
-/// The calls of the rooms this device joined, kept on the actor's task.
+/// The calls of the workspaces this device joined, kept on the actor's task.
 pub trait Calls: Send + Sync {
     /// Carry out `command` ([`crate::NetCmd::NativeMedia`]).
     fn handle(
@@ -53,9 +53,9 @@ pub trait Calls: Send + Sync {
         identity: Option<&HostIdentity>,
         sessions: Sessions<'_>,
     );
-    /// The room on topic `ws` said something about its calls.
+    /// The workspace on topic `ws` said something about its calls.
     fn voice(&mut self, ws: u64, event: &VoiceEvent, session: Option<&RelayCoeditSession>);
-    /// The room on topic `ws` has a new relay session.
+    /// The workspace on topic `ws` has a new relay session.
     fn reconnected(&mut self, ws: u64, session: &RelayCoeditSession);
 }
 

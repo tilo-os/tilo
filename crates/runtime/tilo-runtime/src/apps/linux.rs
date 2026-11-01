@@ -32,7 +32,7 @@ pub(super) fn launch(
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
-    let identity = tilo_identity_host::registry::selected_identity_path(&apps.room)
+    let identity = tilo_identity_host::registry::selected_identity_path(&apps.workspace)
         .map_err(|error| format!("refusing to launch: the workspace identity: {error}"))?;
     let mut command = Command::new(&launcher);
     command
@@ -42,7 +42,7 @@ pub(super) fn launch(
         .arg("--payload-root")
         .arg(&app.payload_root)
         .arg("--workspace-id")
-        .arg(&apps.room)
+        .arg(&apps.workspace)
         .arg("--app-id")
         .arg(&app.package_id)
         .arg("--expected-package-hash")

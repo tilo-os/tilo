@@ -201,8 +201,6 @@ pub struct DesktopChromeSnapshot {
     /// People following the workspace without taking part (spectators). The bar
     /// counts them beside the avatars so an audience is never invisible.
     pub watching: u32,
-    /// Docked, or hidden and shown over the windows.
-    pub top_bar: TopBarPresence,
     /// The person at this desktop as everyone here sees them, for the
     /// bar's own avatar; `None` paints none.
     pub own: Option<OwnChip>,

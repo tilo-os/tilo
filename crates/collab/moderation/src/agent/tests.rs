@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use tilo_action_policy::{Authority, Context, Role, RoomPolicy};
+use tilo_action_policy::{Authority, Context, Role, WorkspacePolicy};
 use tilo_resource::{ActionCx, Collection, Model, NonBlank, Refusal, Replica, resource};
 
 use super::*;
@@ -86,7 +86,7 @@ impl Judge for FakeJudge {
 /// with the Moderator role (as the host delegates it).
 struct FakeRoom {
     now: i64,
-    policy: RoomPolicy,
+    policy: WorkspacePolicy,
     board: Replica<Board>,
     moderation: Replica<Moderation>,
     invoked: Vec<(String, String, String, serde_json::Value, String)>,
@@ -94,7 +94,7 @@ struct FakeRoom {
 
 impl FakeRoom {
     fn new() -> Self {
-        let mut policy = RoomPolicy::new("r", OWNER);
+        let mut policy = WorkspacePolicy::new("r", OWNER);
         for (person, role) in [
             (crate::AGENT, Role::Moderator),
             (MALLORY, Role::Editor),

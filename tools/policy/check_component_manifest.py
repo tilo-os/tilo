@@ -10,7 +10,9 @@ os/components.toml. This check fails when the two could drift:
 * the compile (os/image/compile.sh) builds or stages a binary the manifest does
   not declare, or the manifest declares one it never compiles;
 * the manifest names a cargo package, bin or feature missing from the
-  workspace, or a systemd unit the image does not ship.
+  workspace, or a systemd unit the image does not ship;
+* a program the session starts beside itself is not in the image, so a built
+  image starts a login without it.
 
 Static and fast: TOML and text parsing only, nothing is compiled.
 """
@@ -25,7 +27,7 @@ import shlex
 import sys
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # Where a stage copies another stage's file only so buildah keys the RUN that
 # bind-mounts that stage by its content: nothing there is installed.
@@ -58,6 +60,25 @@ SEEDED_STAGE = "app-store"
 SEEDED_TREE = "/usr/share/tilo-apps/"
 SEEDED_COPY = ("/out" + SEEDED_TREE, SEEDED_TREE)
 SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
+
+# The session starts its surface apps (the lock screen, the on-screen keyboard,
+# the window menu) as programs of its own: `program_path` looks beside the
+# session's executable first and then on PATH (crates/session/session/src/
+# surfaces.rs), so each one has to be installed there by a component. The old
+# shell in `crates/session/shell/` is not part of this: it starts no such
+# program itself.
+SESSION_CRATES = "crates/session"
+OLD_SHELL = "crates/session/shell/"
+SESSION_BINARY = "tilo-session"
+# Where `program_path` finds a program: on PATH, and beside the session, whose
+# own directory is read from the manifest.
+SESSION_PROGRAM_DIRS = ("/usr/bin",)
+# A literal or a constant, never a variable: `Surface::locate` hands its own
+# argument on as `program_path(name)`, and the programs are named where it is
+# called.
+PROGRAM_PATH_CALL = re.compile(r'\bprogram_path\s*\(\s*(?:"([^"]+)"|([A-Z_][A-Z0-9_]*))\s*\)')
+SURFACE_LOCATE_CALL = re.compile(r'\bSurface::locate\s*\(\s*"([^"]+)"\s*\)')
+STRING_CONSTANT = re.compile(r'\bconst\s+([A-Z][A-Z0-9_]*)\s*:\s*&\s*(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;')
 
 
 def load_installer(repo: Path):
@@ -308,6 +329,97 @@ def check_units(report: Report, manifest, containerfile_text: str) -> None:
                                  f"COPY {source} in the rootfs stage, or drop the unit from the component.")
 
 
+def session_programs(repo: Path) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
+    """The programs the session starts beside itself, as (file, line, name).
+
+    Every `program_path("name")` and `Surface::locate("name")` in the session
+    crates, with a name given by a simple `const NAME: &str = "…"` in the same
+    file resolved. The second list holds the calls naming a program this check
+    cannot read, so an unreadable name fails the check instead of passing it.
+    """
+    programs: list[tuple[str, int, str]] = []
+    unreadable: list[tuple[str, int, str]] = []
+    for path in sorted((repo / SESSION_CRATES).rglob("*.rs")):
+        relative = path.relative_to(repo).as_posix()
+        if relative.startswith(OLD_SHELL) or "/tests/" in f"/{relative}" \
+                or path.stem in ("tests", "examples") or path.stem.endswith("_tests"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "program_path" not in text and "Surface::locate" not in text:
+            continue
+        constants = dict(STRING_CONSTANT.findall(text))
+        for pattern in (PROGRAM_PATH_CALL, SURFACE_LOCATE_CALL):
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                literal = match.group(1)
+                if literal is not None:
+                    programs.append((relative, line, literal))
+                    continue
+                name = constants.get(match.group(2))
+                if name is None:
+                    unreadable.append((relative, line, match.group(2)))
+                else:
+                    programs.append((relative, line, name))
+    return programs, unreadable
+
+
+def check_session_programs(report: Report, manifest) -> None:
+    """Every program the session starts beside itself is one a component ships there."""
+    installed: dict[str, list[str]] = {}
+    optional: dict[str, list[str]] = {}
+    session_dir = None
+    # Dev-only components are os/Containerfile.dev's; the image must ship these.
+    for component in manifest.production_components():
+        for entry in component.files:
+            if entry.tree:
+                continue
+            name = PurePosixPath(entry.to).name
+            if not name:
+                continue
+            (optional if entry.optional else installed).setdefault(name, []).append(entry.to)
+            # The session's own binary, not the PAM session wrapper that shares
+            # its name and sits in /usr/libexec.
+            if entry.source == SESSION_BINARY and session_dir is None:
+                session_dir = PurePosixPath(entry.to).parent.as_posix()
+    if session_dir is None:
+        report.error("os/components.toml", f"no component installs {SESSION_BINARY!r}, which starts the "
+                     "session's surface apps",
+                     "ship the session binary in a component; this check reads what the components "
+                     "install beside it.")
+        return
+    directories = set(SESSION_PROGRAM_DIRS) | {session_dir}
+    programs, unreadable = session_programs(report.repo)
+    for source, line, identifier in unreadable:
+        report.error(f"{source}:{line}", f"the session starts a surface app named by {identifier!r}, "
+                     "which this check cannot read as a program name",
+                     'name it as a literal — `program_path("tilo-lock-screen")` — or as a '
+                     '`const IDENTIFIER: &str = "tilo-lock-screen";` in the same file, so the image can '
+                     "be checked for shipping it.")
+    for source, line, name in programs:
+        destinations = installed.get(name, [])
+        if any(PurePosixPath(to).parent.as_posix() in directories for to in destinations):
+            continue
+        where = f"{source}:{line}"
+        fix = ("ship it the way the window menu is shipped: add its cargo package and bin to the "
+               "`tilo-session` component's `packages` and `bins` in os/components.toml, install it "
+               f'with a `files` entry `{{ from = "<build output>", to = "{session_dir}/{name}", '
+               'mode = "0755" }`, and build and stage that output in os/image/compile.sh.')
+        if destinations:
+            report.error(where, f"the session starts {name!r} beside itself, but no component installs it "
+                         f"there: it is installed at {', '.join(sorted(destinations))}",
+                         fix)
+        elif name in optional:
+            report.error(where, f"the session starts {name!r} beside itself, but its only component entry "
+                         f"({', '.join(sorted(optional[name]))}) is optional, so an image may start a "
+                         "login without it",
+                         fix.replace("install it with a `files` entry", "install it with a mandatory "
+                                     "`files` entry"))
+        else:
+            report.error(where, f"the session starts {name!r} beside itself, and no component ships a "
+                         "program of that name, so a built image starts a login without it",
+                         fix)
+
+
 def check_containerfile(report: Report, manifest, installer, containerfile: Path, thin_script: Path,
                         compile_script: Path) -> None:
     relative = containerfile.relative_to(report.repo)
@@ -504,6 +616,7 @@ def audit(repo: Path) -> list[str]:
         return report.errors
     containerfile = repo / "os/Containerfile"
     check_manifest_against_workspace(report, manifest, workspace_packages(repo))
+    check_session_programs(report, manifest)
     check_units(report, manifest, containerfile.read_text(encoding="utf-8"))
     check_containerfile(report, manifest, installer, containerfile, repo / "os/scripts/build-thin-apps.sh",
                         repo / COMPILE_SCRIPT)

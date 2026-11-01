@@ -1,10 +1,10 @@
-//! Record reads outside their app: the door an agent task's host reads a room's records
+//! Record reads outside their app: the door an agent task's host reads a workspace's records
 //! through (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
 //! never one a person's device handed its session to, and holds no app's route. Each read is
 //! decided at the record's node with that actor, the lesser of the agent's grants and the
-//! person's ([`BrokerActor::answer_in`]), then captured by the room's document owner under the
+//! person's ([`BrokerActor::answer_in`]), then captured by the workspace's document owner under the
 //! person's device certificate, whose own check ([`NativeDocumentReads::authorize`]) is the
 //! person's read of the record. The capture's revalidation decides the agent's read again
 //! before every chunk it hands out. What leaves the broker is the record's committed content,
@@ -32,7 +32,7 @@ use super::{AppBrokerState, CrdtRoute};
 pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
 
 impl AppBrokerState {
-    /// The record read door, when this host keeps a room's documents and knows its person's
+    /// The record read door, when this host keeps a workspace's documents and knows its person's
     /// device.
     pub fn record_reads(self: &Arc<Self>) -> Option<Arc<dyn RecordReads>> {
         self.services.committed_documents.as_ref()?;
@@ -42,17 +42,17 @@ impl AppBrokerState {
         }))
     }
 
-    /// Whether `caller` may read `address` in `room` now: decided at the record's node with
+    /// Whether `caller` may read `address` in `workspace` now: decided at the record's node with
     /// the caller's actor, an agent's bounded by its person's authority.
     fn may_read_record(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         address: &RecordAddress,
     ) -> Result<(), ActionHostError> {
         super::action_host::check_execution(caller)?;
-        let node = collab_types::document_node(room, &address.app, &address.record);
-        match self.decide_for(caller, room, |workspace, actor, now| {
+        let node = collab_types::document_node(workspace, &address.app, &address.record);
+        match self.decide_for(caller, workspace, |workspace, actor, now| {
             actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
         }) {
             Some(true) => Ok(()),
@@ -64,11 +64,11 @@ impl AppBrokerState {
     }
 }
 
-/// What a caller is told about a change the room does not allow it.
+/// What a caller is told about a change the workspace does not allow it.
 pub const RECORD_CHANGE_REFUSED: &str = "not allowed to make this change";
 
 impl AppBrokerState {
-    /// The record change door, when this host has an origin for its rooms' records.
+    /// The record change door, when this host has an origin for its workspaces' records.
     pub fn record_changes(self: &Arc<Self>) -> Option<Arc<dyn RecordChanges>> {
         self.services.record_changes.as_ref()?;
         Some(Arc::new(BrokerRecordChanges {
@@ -92,7 +92,7 @@ impl RecordChanges for BrokerRecordChanges {
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let (Some((person, room)), CallerPrincipal::Agent(agent)) =
+        let (Some((person, workspace)), CallerPrincipal::Agent(agent)) =
             (task_person(caller), caller.principal())
         else {
             return Err(ActionHostError::Refused {
@@ -101,7 +101,7 @@ impl RecordChanges for BrokerRecordChanges {
         };
         super::action_host::check_execution(caller)?;
         let answer = state
-            .decide_for(caller, room, |workspace, actor, now| {
+            .decide_for(caller, workspace, |workspace, actor, now| {
                 let node = tilo_actions::action_node(
                     &workspace.node(),
                     &change.app,
@@ -122,15 +122,15 @@ impl RecordChanges for BrokerRecordChanges {
                 });
             }
         }
-        apply_record_change(state, room, change, (agent, person))
+        apply_record_change(state, workspace, change, (agent, person))
     }
 }
 
-/// Apply `change` in `room` at its record's origin as `agent` acting for
+/// Apply `change` in `workspace` at its record's origin as `agent` acting for
 /// `person`, admitted already.
 fn apply_record_change(
     state: Arc<AppBrokerState>,
-    room: &str,
+    workspace: &str,
     change: &RecordChange,
     (agent, person): (&str, &str),
 ) -> Result<serde_json::Value, ActionHostError> {
@@ -144,7 +144,9 @@ fn apply_record_change(
     let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
         .with_kind(tilo_actions::ActorKind::Agent)
         .acting_for(person);
-    origin.apply(room, change, &invoker).map_err(unavailable)
+    origin
+        .apply(workspace, change, &invoker)
+        .map_err(unavailable)
 }
 
 /// A task run's reads and changes of records outside their apps: admitted by
@@ -168,7 +170,7 @@ impl RecordChanges for RunRecords {
         )?;
         apply_record_change(
             host.state(),
-            host.room(),
+            host.workspace(),
             change,
             (host.agent(), host.person()),
         )
@@ -200,7 +202,7 @@ impl RecordReads for RunRecords {
         });
         read_record(
             host.state(),
-            (host.person(), host.room()),
+            (host.person(), host.workspace()),
             address,
             revalidate,
         )
@@ -211,7 +213,7 @@ impl RecordReads for RunRecords {
 const RECORD_READ_ACTION: &str = "read";
 
 /// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
-/// member acting for its person, confined to a room.
+/// member acting for its person, confined to a workspace.
 fn task_person(caller: &Caller) -> Option<(&str, &str)> {
     if !matches!(caller.principal(), CallerPrincipal::Agent(_)) || caller.is_session_delegated() {
         return None;
@@ -234,30 +236,30 @@ impl RecordReads for BrokerRecordReads {
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let Some((person, room)) = task_person(caller) else {
+        let Some((person, workspace)) = task_person(caller) else {
             return Err(ActionHostError::Refused {
                 reason: RECORD_READS_FOR_TASKS.into(),
             });
         };
-        state.may_read_record(caller, room, address)?;
+        state.may_read_record(caller, workspace, address)?;
         let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
         let revalidate = Arc::new(move || {
             let (state, caller, address) = &checked;
             let state = state.upgrade().ok_or("record read broker ended")?;
-            let room = caller.room().ok_or("record read lost its room")?;
+            let workspace = caller.room().ok_or("record read lost its workspace")?;
             state
-                .may_read_record(caller, room, address)
+                .may_read_record(caller, workspace, address)
                 .map_err(|_| "record read no longer allowed".to_owned())
         });
-        read_record(state, (person, room), address, revalidate)
+        read_record(state, (person, workspace), address, revalidate)
     }
 }
 
-/// Read `address` in `room` as `person`'s device captures it, admitted
+/// Read `address` in `workspace` as `person`'s device captures it, admitted
 /// already; `revalidate` decides the read again before every chunk.
 fn read_record(
     state: Arc<AppBrokerState>,
-    (person, room): (&str, &str),
+    (person, workspace): (&str, &str),
     address: &RecordAddress,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 ) -> Result<RecordCopy, ActionHostError> {
@@ -271,30 +273,31 @@ fn read_record(
                 tilo_actions::remote::RECORD_READS_UNAVAILABLE.into(),
             ));
         };
-        let certificate = people.certificate(room, person).map_err(unavailable)?;
+        let certificate = people.certificate(workspace, person).map_err(unavailable)?;
         drop(state);
         let context = NativeDocumentReadContext::for_task(
-            CrdtRoute::record(address.app.clone(), room, address.record.clone()),
+            CrdtRoute::record(address.app.clone(), workspace, address.record.clone()),
             certificate,
             revalidate,
         );
         context
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
-        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
-            // A record a sealed room holds nothing of may still arrive in its host's replay;
-            // once that landed, one this device holds nothing of is one the room has none of.
+        if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {
+            // A record a sealed workspace holds nothing of may still arrive in its host's replay;
+            // once that landed, one this device holds nothing of is one the workspace has none of.
             // This read runs on a thread of its own, which the wait holds.
             if let Some(history) = owner.await_sealed_history(&context) {
                 futures::executor::block_on(history);
             }
-            if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
-                if !owner.seals_records(room) {
+            if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {
+                if !owner.seals_records(workspace) {
                     return Err(unavailable(
-                        "this device holds none of the room's records outside their apps".into(),
+                        "this device holds none of the workspace's records outside their apps"
+                            .into(),
                     ));
                 }
-                if owner.holds_record(room, &address.app, &address.record) {
+                if owner.holds_record(workspace, &address.app, &address.record) {
                     return Err(unavailable(
                         "the writes this device holds of the record build on changes it does \
                          not hold"
@@ -313,10 +316,10 @@ fn read_record(
             }
             NativeDocumentRead::Absent => Ok(RecordCopy::Absent),
             NativeDocumentRead::Pending => Err(unavailable(
-                "the record is still arriving from the room".into(),
+                "the record is still arriving from the workspace".into(),
             )),
             NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Changes { .. } => Err(
-                unavailable("the room's owner answered a whole read with a part".into()),
+                unavailable("the workspace's owner answered a whole read with a part".into()),
             ),
         }
     }

@@ -9,15 +9,21 @@
 //! per member, read and changed by that person's devices alone.
 //!
 //! The person's shared records — their accounts, which Settings keeps for
-//! all of their apps, their contacts — and the settings sections are kept in
-//! the person's room ([`collab_types::person_room()`]), a room whose id is
-//! derived from the person's root key. [`PersonRecords`] is where they are
-//! kept on this device for one app; [`StoredRecord`] is one of them, opened,
-//! edited with attribution and undo, and synced on its own route
-//! ([`StoredRecord::history_owner`]) to the person's other devices.
+//! all of their apps, their contacts — and the settings sections belong to
+//! the person rather than to any workspace: they are kept in the person's
+//! own scope ([`PERSONAL_SCOPE`]), not in a workspace and not in an id
+//! derived from their key. [`PersonRecords`] is where they are kept on this
+//! device for one app; [`StoredRecord`] is one of them, opened, edited with
+//! attribution and undo, and sent on to the person's other devices
+//! ([`StoredRecord::history_owner`]).
 //!
-//! Without a root identity there is no person room: the records are kept
-//! on this device only, in a scope no route can name.
+//! A record of that scope carries one route per app and record
+//! ([`StoredRecord::route`]), and it names the person's own cluster: the
+//! cluster every device of theirs derives from their identity root alone,
+//! and the one their store carries between them. The same record opened by
+//! the same app on another device is therefore the same document. On a
+//! device whose identity derives no cluster they have no route, and are kept
+//! on that device alone.
 
 use std::rc::Rc;
 
@@ -36,23 +42,18 @@ use crate::permissions::UserId;
 #[path = "person_owner_tests.rs"]
 mod owner_tests;
 
-/// The scope of a person's records on a device that knows no root
-/// identity: kept here, never routed (it is not a room id).
-const DEVICE_ONLY: &str = "personal";
-
-/// The room the person `author` names, as a record scope: their person room
-/// when `author` is a root identity, else a device-only scope.
-#[must_use]
-pub fn scope_of(author: &UserId) -> String {
-    collab_types::person_room_of(&author.0)
-        .map_or_else(|| DEVICE_ONLY.to_owned(), |room| room.to_string())
-}
+/// The scope of the person's own records, `(app, personal)`: theirs and not
+/// a workspace's, so it is carried to their devices by their personal store
+/// and never by a workspace's route.
+pub const PERSONAL_SCOPE: &str = "personal";
 
 /// The id of the person's record of `kind` for an app: one per kind, the
-/// same on every device, so every device opens the same record.
+/// same on every device, so every device opens the same record. It plays
+/// the kind's role for the app's base record rather than for a window's or
+/// a workspace's, so it is the same wherever the app opens its records.
 #[must_use]
 pub fn record_id(kind: &RecordKind) -> RecordId {
-    RecordId::derived(kind.as_str(), &RecordId::room_default())
+    RecordId::derived(kind.as_str(), &RecordId::for_tab(0))
 }
 
 /// Where one app keeps the person's records on this device. Cloning shares
@@ -88,7 +89,7 @@ impl PersonRecords {
         author: UserId,
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
-            store: owners.open_person(package_id, &scope_of(&author))?,
+            store: owners.open_personal(package_id, &author.0)?,
             owners: owners.clone(),
             replica: false,
             author,
@@ -100,20 +101,24 @@ impl PersonRecords {
 
     /// Records that store nothing on this device, for a window whose app
     /// already holds the stored ones elsewhere (the same app open in another
-    /// room): they converge with that window over the record's route.
+    /// window): they converge with that window over the record's route.
     ///
     /// # Errors
     /// Rejects an invalid package.
     pub fn replica(package_id: &str, author: UserId) -> Result<Self, RecordOpenError> {
-        let scope = scope_of(&author);
-        Self::replica_in(package_id, &scope, author)
+        Self::replica_in(package_id, PERSONAL_SCOPE, author)
     }
 
     /// [`Self::replica`], of the records kept in `scope`.
     fn replica_in(package_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let store = if scope == PERSONAL_SCOPE {
+            owners.open_personal(package_id, &author.0)?
+        } else {
+            owners.open_person(package_id, scope)?
+        };
         Ok(Self {
-            store: owners.open_person(package_id, scope)?,
+            store,
             owners,
             replica: true,
             author,
@@ -127,8 +132,9 @@ impl PersonRecords {
     /// beside its own. In one host, these use the original profile-scoped
     /// owner registry; another mounted app never opens a second writer or
     /// empty fallback replica for the same record. Separate hosts/devices
-    /// still converge over the record's route. Sharing an owner adds no
-    /// editor permission; the framework enforces the resource's editor list.
+    /// converge over the record's route, which a record of the person's own
+    /// scope names in their own cluster. Sharing an owner adds no editor
+    /// permission; the framework enforces the resource's editor list.
     ///
     /// # Errors
     /// Rejects an invalid package.
@@ -138,7 +144,7 @@ impl PersonRecords {
         }
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
-            store: owners.open_person(package_id, &scope_of(&self.author))?,
+            store: owners.open_personal(package_id, &self.author.0)?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
@@ -238,14 +244,6 @@ impl PersonRecords {
     fn owns_records(&self) -> bool {
         let (package, _) = self.store.package_and_home();
         package == self.own_package
-    }
-
-    /// The person's room, when they have one: the records sync to their
-    /// other devices only then.
-    #[must_use]
-    pub fn room(&self) -> Option<uuid::Uuid> {
-        let (_, home) = self.store.package_and_home();
-        uuid::Uuid::parse_str(&home).ok()
     }
 
     /// Open the person's record of `kind`, created with `initialize` — its
@@ -369,13 +367,13 @@ pub(super) fn open_in(
 /// A record held beside the one an app shows: the app's own of a kind, one
 /// of the person's, or one of the workspace's ([`super::workspace`]), each
 /// held the same way. Edits are attributed to the person, recorded as undo
-/// steps of their own and synced on the record's route.
+/// steps of their own and synced on the record's route where it has one.
 pub struct StoredRecord {
     store: RecordStore,
     checkout: RecordCheckout,
     author: UserId,
     /// Whether this app publishes the record's changes on its route: the
-    /// records of its own package, and the room's shared ones. Another
+    /// records of its own package, and the workspace's shared ones. Another
     /// app's records are joined and merged from their route, never
     /// published there ([`Self::publishes`]).
     publishes: bool,
@@ -402,10 +400,10 @@ impl StoredRecord {
     /// Whether this app publishes the record's changes on its route.
     ///
     /// The identity service signs a change only for the route's own app, and
-    /// for the room's shared records: never for another app's record, its
-    /// keeper's or its editors'. A window of an app that only reads another
-    /// app's record joins its route and merges what comes back; nothing
-    /// local is sent there, and a change that was would be refused a
+    /// for the workspace's shared records: never for another app's record,
+    /// its keeper's or its editors'. A window of an app that only reads
+    /// another app's record joins its route and merges what comes back;
+    /// nothing local is sent there, and a change that was would be refused a
     /// signature — which stops the whole collaboration, not one record.
     #[must_use]
     pub fn publishes(&self) -> bool {
@@ -569,16 +567,20 @@ impl StoredRecord {
     }
 
     /// Where the content this record references is stored and read: under
-    /// the record's room, kept by the host and carried to other devices on
-    /// the record's route. `None` for a record kept on this device only,
-    /// which keeps no content of its own.
+    /// the workspace whose route carries the record. `None` for a record the
+    /// person keeps in their own scope, which carries no content of its own,
+    /// and for one kept on this device only.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.package_and_home();
-        let room = uuid::Uuid::parse_str(&home).ok()?;
+        let workspace = uuid::Uuid::parse_str(&home).ok()?;
         Some(
             crate::collaboration::record_content::ContentLane::record_store(
-                &crate::collaboration::RouteSpec::record(package, room, self.checkout.id.as_str()),
+                &crate::collaboration::RouteSpec::record(
+                    package,
+                    workspace,
+                    self.checkout.id.as_str(),
+                ),
             ),
         )
     }
@@ -586,14 +588,23 @@ impl StoredRecord {
 
 #[cfg(test)]
 mod record_id_tests {
-    /// Hosts name a person record by the id `collab_types` derives; it is
-    /// the one the record is opened under.
+    /// One record per kind: every device of the person derives the same id
+    /// from the kind alone, so each opens the record the others have.
     #[test]
-    fn a_person_record_has_the_id_hosts_derive() {
+    fn a_person_record_has_one_id_per_kind() {
         let kind = crate::record::RecordKind::new("terminal.history");
         assert_eq!(
-            super::record_id(&kind).as_str(),
-            collab_types::person_record_id("terminal.history")
+            super::record_id(&kind),
+            super::record_id(&crate::record::RecordKind::new("terminal.history"))
+        );
+        assert_ne!(
+            super::record_id(&kind),
+            super::record_id(&crate::record::RecordKind::new("terminal.bookmarks"))
+        );
+        assert_ne!(
+            super::record_id(&kind),
+            crate::record::RecordId::window_default(0),
+            "the person's record of a kind is no window's"
         );
     }
 }

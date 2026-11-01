@@ -402,7 +402,7 @@ struct AclArgs {
     /// The identity this mount acts as: 64 hex chars (Ed25519 public key). Defaults to the certified human root.
     #[arg(long, value_name = "HEX")]
     identity: Option<String>,
-    /// A principal this mount can prove beyond its own person id (`room:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
+    /// A principal this mount can prove beyond its own person id (`workspace:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
     /// Read `--acl` once, at mount time, instead of on every change.
@@ -429,10 +429,11 @@ struct DataPlaneArgs {
     /// Local data plane: `auto` serves the native tree when the store volume and kernel support it.
     #[arg(long, value_enum, default_value_t = DataPlaneChoice::Auto)]
     data_plane: DataPlaneChoice,
-    /// Root of the dedicated Btrfs store volume holding the native room trees.
+    /// Root of the dedicated Btrfs store volume holding the native workspace
+    /// trees.
     #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
     store: PathBuf,
-    /// Owner (`UID:GID`) of the workspace's files, the local person: the native data plane materialises them as theirs (default: the room directory's owner), and FUSE presents them as theirs (default: the caller).
+    /// Owner (`UID:GID`) of the workspace's files, the local person: the native data plane materialises them as theirs (default: the workspace directory's owner), and FUSE presents them as theirs (default: the caller).
     #[arg(long, value_name = "UID:GID")]
     native_owner: Option<String>,
     /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
@@ -1132,8 +1133,10 @@ fn parse_principal(spec: &str) -> Result<Principal> {
         "app" => Principal::App(id),
         "agent" => Principal::Agent(id),
         "token" => Principal::Token(id),
-        "room" => Principal::Room(id),
-        other => bail!("unknown principal kind {other:?} (person|app|agent|token|room)"),
+        // `room` is the kind's old spelling; a mount unit written before the
+        // rename keeps working.
+        "workspace" | "room" => Principal::Workspace(id),
+        other => bail!("unknown principal kind {other:?} (person|app|agent|token|workspace)"),
     })
 }
 
@@ -1301,7 +1304,7 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
 }
 
 /// [`open_store`] for a mount that may serve the native data plane: its
-/// file-backed content lives on the store volume next to the room, so
+/// file-backed content lives on the store volume next to the workspace, so
 /// publishing a file and filling a placeholder share extents with it
 /// instead of copying them.
 async fn open_workspace_store(
@@ -1318,7 +1321,7 @@ async fn open_workspace_store(
     }
 }
 
-/// `<store>/.content/<room>` when the native data plane may run on a
+/// `<store>/.content/<workspace>` when the native data plane may run on a
 /// dedicated store volume.
 #[cfg(target_os = "linux")]
 fn native_content_dir(data_plane: &DataPlaneArgs, workspace: uuid::Uuid) -> Option<PathBuf> {
@@ -4605,8 +4608,8 @@ mod tests {
         }
         {
             assert_eq!(
-                parse_principal("room:team").unwrap(),
-                Principal::Room("team".into())
+                parse_principal("workspace:team").unwrap(),
+                Principal::Workspace("team".into())
             );
             assert_eq!(
                 parse_principal("app:org.tilo.files").unwrap(),

@@ -7,7 +7,7 @@
 //! has meanwhile).
 //!
 //! The network actor records what happens to each workspace's host session
-//! (keyed by the workspace's topic, [`crate::room_topic_id`]); the session
+//! (keyed by the workspace's topic, [`crate::workspace_topic_id`]); the session
 //! reads it when it tells each app window its appearance. A workspace the
 //! actor never dials, one with no host or one this device hosts itself, has
 //! no entry: its apps' empty states are their own.

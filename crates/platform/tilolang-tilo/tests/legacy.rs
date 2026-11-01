@@ -1,7 +1,7 @@
 //! Records written before items were stored by their id, read as items of the flat form.
 //!
-//! The rooms in `tests/legacy/` (saved Automerge documents, as hex) were written by the code
-//! of that time (each app's scenarios run in a room of its own and saved, before items were
+//! The workspaces in `tests/legacy/` (saved Automerge documents, as hex) were written by the code
+//! of that time (each app's scenarios run in a workspace of its own and saved, before items were
 //! flat): every item is nested in the collection it was inserted into. Opened now, each item is read by its id, in the collection
 //! and place it was in, with what it holds; nothing of the record is rewritten; references
 //! written as paths still name their items; and moves, edits and removals of those items work
@@ -29,13 +29,13 @@ macro_rules! app {
 /// A package's source and ids lock.
 type Package = (&'static str, &'static str);
 
-/// Each fixture (the saved room, as hex), the app whose scenarios wrote it and every package it
+/// Each fixture (the saved workspace, as hex), the app whose scenarios wrote it and every package it
 /// needs.
 fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
         (include_str!("legacy/todo.hex"), vec![app!("tasks")]),
         (include_str!("legacy/notes.hex"), vec![app!("notes")]),
-        // Letters as it was when it wrote its room: it became Mail since, keeping its ids.
+        // Letters as it was when it wrote its workspace: it became Mail since, keeping its ids.
         (
             include_str!("legacy/letters.hex"),
             vec![(
@@ -108,9 +108,9 @@ fn nested(
     }
 }
 
-/// The records of the room: app, id and the record's map.
+/// The records of the workspace: app, id and the record's map.
 fn records(doc: &AutoCommit) -> Vec<(String, String, ObjId)> {
-    let tl = map_at(doc, &automerge::ROOT, "tl").expect("the room holds tilolang records");
+    let tl = map_at(doc, &automerge::ROOT, "tl").expect("the workspace holds tilolang records");
     let mut out = Vec::new();
     for app in doc.keys(&tl).collect::<Vec<_>>() {
         let Some(records) = map_at(doc, &tl, &app) else {
@@ -143,7 +143,7 @@ fn listed(replica: &Replica, holder: &ResourceRef, field: &str) -> Vec<String> {
     }
 }
 
-/// The saved room a fixture holds as hex.
+/// The saved workspace a fixture holds as hex.
 fn saved(hex: &str) -> AutoCommit {
     let digits: Vec<u8> = hex.bytes().filter(u8::is_ascii_hexdigit).collect();
     let bytes: Vec<u8> = digits
@@ -153,7 +153,7 @@ fn saved(hex: &str) -> AutoCommit {
     AutoCommit::load(&bytes).unwrap()
 }
 
-/// The room of a fixture, opened with its packages.
+/// The workspace of a fixture, opened with its packages.
 fn open(hex: &str, packages: &[(&str, &str)]) -> Replica {
     Replica::new("ada", saved(hex), packages).0
 }
@@ -219,7 +219,7 @@ fn every_item_of_an_older_record_reads_by_its_id_where_it_was_and_nothing_is_rew
             }
         }
         assert!(items > 0 || packages.len() > 1, "the fixture holds items");
-        // Reading changed nothing: the room holds the changes it held, and nothing is queued.
+        // Reading changed nothing: the workspace holds the changes it held, and nothing is queued.
         assert_eq!(replica.doc.get_heads(), heads);
         assert!(replica.host.take_committed().is_empty());
     }
@@ -466,7 +466,7 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
     assert!(matches!(column, Ok(Value::Ref(_))), "{column:?}");
     check_index(&replica, &packages, app);
 
-    // It ran once: neither this replica nor a peer opening the room afterwards runs it again.
+    // It ran once: neither this replica nor a peer opening the workspace afterwards runs it again.
     assert_eq!(replica.host.migrate(), 0);
     assert!(replica.host.take_committed().is_empty());
     let peer = Replica::new("peer", replica.doc.clone().fork(), &packages).0;
@@ -651,7 +651,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     // Every record is where it was, under the id it had.
     assert_eq!(stored(&replica), before);
     check_index(&replica, &packages, app);
-    // A peer that opens the room afterwards reads the same.
+    // A peer that opens the workspace afterwards reads the same.
     let fresh = Replica::new("fresh", replica.doc.clone().fork(), &packages).0;
     assert_eq!(
         listed(&fresh, &root(&fresh, app), &items_field),
@@ -678,7 +678,7 @@ fn mail_leaves_the_records_letters_wrote_where_they_are() {
                 .all(|(held, _)| held == "so.tilo.lang.letters"),
         "{before:?}"
     );
-    // Mail never was Letters: Letters' records are not Mail's, and opening the room beside them
+    // Mail never was Letters: Letters' records are not Mail's, and opening the workspace beside them
     // changes nothing of them.
     let mail = replica
         .host

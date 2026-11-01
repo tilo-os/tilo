@@ -3,7 +3,7 @@
 //! each until its certificate expires.
 use std::collections::HashMap;
 
-use super::{NetCmd, ShellNetwork, room_topic_id};
+use super::{NetCmd, ShellNetwork, workspace_topic_id};
 use tilo_network_actor::RosterDevice;
 
 /// The rosters last told to the actor, and the room epoch they were read at.
@@ -45,7 +45,7 @@ impl ShellNetwork {
                         })
                         .collect();
                     devices.sort_by_key(|(device, _)| *device.as_bytes());
-                    (room_topic_id(*room), devices)
+                    (workspace_topic_id(*room), devices)
                 })
                 .collect();
             drop(tree);
@@ -66,7 +66,7 @@ impl ShellNetwork {
         for (ws, devices) in changed {
             told &= self
                 .cmd_tx
-                .try_send(NetCmd::SetRoomRoster { ws, devices })
+                .try_send(NetCmd::SetWorkspaceRoster { ws, devices })
                 .is_ok();
         }
         // A roster the actor did not take is told again on the next tick.

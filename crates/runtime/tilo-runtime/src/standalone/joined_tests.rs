@@ -1,4 +1,4 @@
-//! Joining a room a certified host serves, as a foreign device.
+//! Joining a workspace a certified host serves, as a foreign device.
 #![allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
@@ -21,7 +21,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 type Authority = Arc<std::sync::Mutex<TestGovernor>>;
 
 /// What a sealed write says, which no file outside its key holders may hold.
-const SECRET: &str = "only the room's key holders read this";
+const SECRET: &str = "only the workspace's key holders read this";
 
 #[derive(Clone)]
 struct JoinService(Authority);
@@ -99,11 +99,11 @@ impl Joined {
         (joined, directory)
     }
 
-    /// [`Self::test_empty`] running its own room host, with `room` placed
-    /// on it and held: admitted as every joined room is, its session not
+    /// [`Self::test_empty`] running its own workspace host, with `workspace` placed
+    /// on it and held: admitted as every joined workspace is, its session not
     /// held yet.
     pub(in crate::standalone) async fn test_hosting(
-        room: RoomId,
+        workspace: RoomId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
         let host = tilo_room_host::host::RoomHost::open(
@@ -133,19 +133,19 @@ impl Joined {
                 },
             )
             .unwrap();
-        joined.place(room, "Home").await.unwrap();
+        joined.place(workspace, "Home").await.unwrap();
         (joined, directory)
     }
 }
 
-/// A room its governor's certified host serves over a relay with the join
+/// A workspace its governor's certified host serves over a relay with the join
 /// service, and the governor's own session on it once it publishes.
-struct HostedRoom {
+struct HostedWorkspace {
     authority: Authority,
     relay: tilo_relay::Relay,
     server: iroh::Endpoint,
     relay_root: std::path::PathBuf,
-    room: RoomId,
+    workspace: RoomId,
     topic: u64,
     governor: DeviceCert,
     governor_key: SigningKey,
@@ -153,10 +153,10 @@ struct HostedRoom {
     hint: join::TransportHint,
 }
 
-impl HostedRoom {
+impl HostedWorkspace {
     async fn start(dir: &std::path::Path) -> Self {
         let governing = TestGovernor::new();
-        let governor = governing.room_host().clone();
+        let governor = governing.workspace_host().clone();
         let governor_key = governing.governor_key().clone();
         let host = governing.host().clone();
         let host_key = governing.host_key().clone();
@@ -167,11 +167,16 @@ impl HostedRoom {
             .bind()
             .await
             .unwrap();
-        let room = RoomId::parse(governing.room()).unwrap();
-        let topic = room_topic(room).unwrap();
+        let workspace = RoomId::parse(governing.workspace()).unwrap();
+        let topic = workspace_topic(workspace).unwrap();
         let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
-        let baseline = governing.peer().admitted_room().unwrap().clone().save();
+        let baseline = governing
+            .peer()
+            .admitted_workspace()
+            .unwrap()
+            .clone()
+            .save();
         tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
@@ -209,7 +214,7 @@ impl HostedRoom {
             relay,
             server,
             relay_root,
-            room,
+            workspace,
             topic,
             governor,
             governor_key,
@@ -231,8 +236,8 @@ impl HostedRoom {
         join::encode_invitation_text(&signed)
     }
 
-    /// Admit the room's current members at the relay, open the governor's
-    /// session once `member` is subscribed, and publish the room's history
+    /// Admit the workspace's current members at the relay, open the governor's
+    /// session once `member` is subscribed, and publish the workspace's history
     /// through it.
     async fn publish_history(&self, member: [u8; 32]) -> (RelayCoeditSession, iroh::Endpoint) {
         let (access, publications) = {
@@ -288,11 +293,11 @@ impl HostedRoom {
     }
 }
 
-fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
+fn assert_changed_custody_refused(joined: &Joined, workspace: RoomId, actor: &str) {
     let mut custody = joined.custody.clone();
     // In memory only: this probe compares what it holds, never a disk.
     custody.identity_paths = None;
-    let room_cert = custody.device_cert.clone();
+    let workspace_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
     sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
@@ -301,7 +306,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     );
     custody
         .workspace_device_certs
-        .insert(room_topic(room).unwrap(), room_cert);
+        .insert(workspace_topic(workspace).unwrap(), workspace_cert);
     let mut probe = Joined {
         executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
@@ -322,20 +327,24 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         this: std::sync::Weak::new(),
     };
     assert!(
-        probe.action_room(actor, &room.to_string()).is_ok(),
+        probe
+            .action_workspace(actor, &workspace.to_string())
+            .is_ok(),
         "the admitted selected root is independent of the default root"
     );
     assert!(
         probe
-            .action_room(&default_actor, &room.to_string())
+            .action_workspace(&default_actor, &workspace.to_string())
             .is_err(),
         "a default root must not borrow the selected root's admission"
     );
-    let run = probe.admit_mcp_execution(&room.to_string(), actor).unwrap();
+    let run = probe
+        .admit_mcp_execution(&workspace.to_string(), actor)
+        .unwrap();
     let retained = run.caller().clone();
-    probe.recheck_mcp_executions(room).unwrap();
+    probe.recheck_mcp_executions(workspace).unwrap();
     assert!(retained.execution_is_live());
-    // What this profile holds for the room is not what the run was admitted
+    // What this profile holds for the workspace is not what the run was admitted
     // with: the read succeeds and says the custody changed, so the run ends.
     let mut renewed = probe.custody.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
@@ -343,9 +352,9 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     probe
         .custody
         .workspace_device_certs
-        .insert(room_topic(room).unwrap(), renewed);
+        .insert(workspace_topic(workspace).unwrap(), renewed);
     assert!(
-        probe.recheck_mcp_executions(room).is_err(),
+        probe.recheck_mcp_executions(workspace).is_err(),
         "a custody the read confirms is not what the run was admitted with"
     );
     assert!(
@@ -353,18 +362,20 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         "authority-side original-pin recheck closes retained custody without a wrapper call"
     );
     assert!(
-        probe.action_room(actor, &room.to_string()).is_err(),
+        probe
+            .action_workspace(actor, &workspace.to_string())
+            .is_err(),
         "changed selected custody must not reuse the retained roster identity"
     );
     assert!(
         !probe
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room() == room)
+            .any(|held| held.room() == workspace)
     );
 }
 
-fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &str) {
+fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, actor: &str) {
     use crate::standalone::RuntimeActionHost;
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
@@ -376,23 +387,23 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
-    let mut workspace = Workspace::in_room(WorkspaceId(41), room, "Execution isolation");
-    workspace.set_owner(actor.to_owned());
-    let room = room.to_string();
+    let mut placed = Workspace::in_room(WorkspaceId(41), workspace, "Execution isolation");
+    placed.set_owner(actor.to_owned());
+    let workspace_id = workspace.to_string();
     let directory = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
         ..WorkspaceTree::default()
     };
-    tree.desktop.workspaces.push(workspace);
+    tree.desktop.workspaces.push(placed);
     let membership = tree.shared();
-    let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+    let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
-    let admission = joined.admit_mcp_execution(&room, actor).unwrap();
+    let admission = joined.admit_mcp_execution(&workspace_id, actor).unwrap();
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(super::admission_tests::FixtureAuthority {
-        room: uuid::Uuid::parse_str(&room).unwrap(),
+        workspace: uuid::Uuid::parse_str(&workspace_id).unwrap(),
         cert: admission.certificate().clone(),
         time: origin.capture().unwrap(),
     }));
@@ -406,7 +417,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.files".into(),
-        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        route: CrdtRoute::app("so.tilo.files", workspace_id.clone()),
         actions: vec![PublishedAction {
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
@@ -431,7 +442,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
-    let owner = Caller::local_person(actor).in_room(room.clone());
+    let owner = Caller::local_person(actor).in_room(workspace_id.clone());
     let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
         policy_time: origin.capture().unwrap(),
         host: qualified,
@@ -441,7 +452,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     });
     let host = RuntimeActionHost {
         broker,
-        room: "private-profile-room".into(),
+        workspace: "private-profile-workspace".into(),
         joined: Arc::clone(joined),
         session: Some(Arc::clone(&session)),
     };
@@ -478,7 +489,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     assert!(host.observe(&owner, &id).is_some());
     joined
         .owner
-        .invalidate_identity(RoomId::parse(&room).unwrap());
+        .invalidate_identity(RoomId::parse(&workspace_id).unwrap());
     assert!(host.observe(&owner, &id).is_none());
     assert_eq!(
         host.cancel(&owner, &id)
@@ -503,13 +514,13 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways() {
-    if crate::standalone::tests::isolated_signing_identity("standalone::joined::tests::a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways").is_none() {
+async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_ways() {
+    if crate::standalone::tests::isolated_signing_identity("standalone::joined::tests::a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_ways").is_none() {
         return;
     }
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let governing = Box::pin(HostedRoom::start(directory.path())).await;
-    let room = governing.room;
+    let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
+    let workspace = governing.workspace;
 
     // The runtime's device: certified by its person as a foreign device.
     let device_key = SigningKey::from_bytes(&[91; 32]);
@@ -535,12 +546,12 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     };
-    let own_room = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+    let own_workspace = RoomId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
         custody,
         local_endpoint(&device_key).await,
-        BTreeSet::from([own_room]),
+        BTreeSet::from([own_workspace]),
         (
             Arc::new(Mutex::new(BrokerChannels::default())),
             Arc::new(FanoutState::new()),
@@ -550,45 +561,53 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let actor =
         tilo_action_broker::collab_app_broker::principal_id_for_root(device.user_public_key);
     assert!(
-        joined.action_room(&actor, &room.to_string()).is_err(),
+        joined
+            .action_workspace(&actor, &workspace.to_string())
+            .is_err(),
         "an invitation is not current admission"
     );
-    assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    assert_eq!(joined.join(&invitation).await.unwrap(), workspace);
     assert_eq!(
-        joined.action_room(&actor, &room.to_string()).unwrap(),
-        room.to_string()
+        joined
+            .action_workspace(&actor, &workspace.to_string())
+            .unwrap(),
+        workspace.to_string()
     );
     assert!(
         joined
-            .action_room("forged-profile-actor", &room.to_string())
+            .action_workspace("forged-profile-actor", &workspace.to_string())
             .is_err()
     );
-    assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
-    assert!(joined.action_room(&actor, "not-a-room").is_err());
+    assert!(
+        joined
+            .action_workspace(&actor, &own_workspace.to_string())
+            .is_err()
+    );
+    assert!(joined.action_workspace(&actor, "not-a-workspace").is_err());
     let execution = joined
-        .admit_mcp_execution(&room.to_string(), &actor)
+        .admit_mcp_execution(&workspace.to_string(), &actor)
         .unwrap();
     let presentation = runtime_collab::CertifiedJoinIdentity::decode(execution.presentation())
         .unwrap()
         .unwrap();
-    assert_eq!(presentation.workspace_id, room.to_string());
+    assert_eq!(presentation.workspace_id, workspace.to_string());
     let presented: DeviceCert = serde_json::from_slice(&presentation.device_certificate).unwrap();
     assert_eq!(presented, device);
     device_key
         .verifying_key()
         .verify_strict(
-            &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+            &runtime_identity::collaboration_join_signing_bytes(&workspace.to_string()),
             &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
         )
         .unwrap();
     let retained_caller = execution.caller().clone();
     {
-        use tilo_action_broker::peer_actions::CertificateAuthority as _;
-        let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         let authority = super::super::Certificates {
-            room: own_room.to_string(),
+            workspace: own_workspace.to_string(),
             device: device.device_public_key,
             policy_time: origin.capture().unwrap(),
             joined: Arc::downgrade(&joined),
@@ -599,7 +618,10 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
             "attacker-supplied certificate claiming the public local device".into();
         assert!(
             authority
-                .authorize_join(uuid::Uuid::parse_str(&room.to_string()).unwrap(), &forged)
+                .authorize_join(
+                    uuid::Uuid::parse_str(&workspace.to_string()).unwrap(),
+                    &forged
+                )
                 .is_err()
         );
         assert!(
@@ -610,7 +632,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
             retained_caller.execution_is_live(),
             "unverified input cannot retire an independently pinned real run"
         );
-        joined.recheck_mcp_executions(room).unwrap();
+        joined.recheck_mcp_executions(workspace).unwrap();
     }
 
     assert_eq!(
@@ -623,12 +645,12 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     );
     assert!(
         joined
-            .admit_mcp_execution(&room.to_string(), "forged-profile-actor")
+            .admit_mcp_execution(&workspace.to_string(), "forged-profile-actor")
             .is_err()
     );
     joined
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let role = view
                 .peer()
                 .permissions(device.device_public_key, SystemTime::now())
@@ -646,20 +668,20 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room() == room),
-        "the joined room is a workspace of this profile"
+            .any(|held| held.room() == workspace),
+        "the joined workspace is a workspace of this profile"
     );
     assert!(
-        std::fs::read(directory.path().join(JOINED_ROOMS)).is_ok(),
+        std::fs::read(directory.path().join(JOINED_WORKSPACES)).is_ok(),
         "the enrollment is kept in the profile's own file"
     );
 
-    // The governor publishes the room's history through its host; the
+    // The governor publishes the workspace's history through its host; the
     // runtime's own session admits it.
     let (publisher, publisher_endpoint) = governing.publish_history(device.device_public_key).await;
     let chat = tilo_test_env::within("the governor's history", async {
         loop {
-            if let Ok(chat) = joined.owner.with_current(room, |view| {
+            if let Ok(chat) = joined.owner.with_current(workspace, |view| {
                 view.peer()
                     .document("so.tilo.chat", "")
                     .ok_or_else(|| "not yet".to_owned())
@@ -678,7 +700,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     doc.commit_edit("fixture", "topic");
     let message = joined
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -693,7 +715,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     };
     let receipt = joined
         .commit(OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
@@ -701,7 +723,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
             },
         })
         .await;
-    receipt.expect("a member's write commits to the joined room");
+    receipt.expect("a member's write commits to the joined workspace");
     tilo_test_env::within("the write at the governor", async {
         loop {
             if let Some(Inbound::Delta { author, .. }) = publisher.recv().await
@@ -713,10 +735,10 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     })
     .await;
 
-    // A sealed write, as an SDK app seals it under a key only the room's
+    // A sealed write, as an SDK app seals it under a key only the workspace's
     // key holders have: this member's owner and the host keep only its
     // ciphertext, and the governor receives it sealed.
-    let channel = collab_types::document_channel_id("so.tilo.chat", &room.to_string(), "");
+    let channel = collab_types::document_channel_id("so.tilo.chat", &workspace.to_string(), "");
     let content = channel_crypto::ChannelGroup::create(
         channel,
         channel_crypto::MemberKey::generate("governor").unwrap(),
@@ -730,7 +752,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     doc.commit_edit("fixture", "secret");
     let message = joined
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -755,7 +777,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     collab_types::sign_op(&mut envelope, &device_key).unwrap();
     joined
         .commit(OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
@@ -776,8 +798,8 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         }
     })
     .await;
-    assert_changed_custody_refused(&joined, room, &actor);
-    assert_runtime_admission_revoked(&joined, room, &actor);
+    assert_changed_custody_refused(&joined, workspace, &actor);
+    assert_runtime_admission_revoked(&joined, workspace, &actor);
     assert!(
         !retained_caller.execution_is_live(),
         "native enrollment fence synchronously closes captured run custody"
@@ -785,18 +807,20 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     assert!(execution.check(&joined).is_err());
     assert!(
         joined
-            .admit_mcp_execution(&room.to_string(), &actor)
+            .admit_mcp_execution(&workspace.to_string(), &actor)
             .is_err()
     );
     assert!(
         !joined
             .workspaces()
             .iter()
-            .any(|workspace| workspace.room() == room),
+            .any(|held| held.room() == workspace),
         "broker snapshots must drop stale admission too"
     );
     assert!(
-        joined.action_room(&actor, &room.to_string()).is_err(),
+        joined
+            .action_workspace(&actor, &workspace.to_string())
+            .is_err(),
         "stale identity removes the selected audience"
     );
     publisher.close().await;
@@ -814,14 +838,14 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
 }
 
 const SDK_TEST: &str =
-    "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device";
+    "standalone::joined::tests::a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device";
 const SDK_HELPER: &str = "TILO_JOINED_SDK_HELPER";
 const SDK_APP: &str = "so.tilo.chat";
-const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined room";
+const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined workspace";
 
 #[test]
-fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
-    // Helper role: an ordinary SDK app in the joined room writes once. The
+fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
+    // Helper role: an ordinary SDK app in the joined workspace writes once. The
     // SDK holds the write until this device's channel service hands it the
     // route's keys, then seals and sends it.
     if std::env::var_os(SDK_HELPER).is_some() {
@@ -849,27 +873,28 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
         return;
     };
     let session = super::super::Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    let (_, device) = tilo_identity_host::broker::trusted_current_device(session.room()).unwrap();
+    let (_, device) =
+        tilo_identity_host::broker::trusted_current_device(session.workspace()).unwrap();
     let governor_root = profile.parent().unwrap().join("governor");
     std::fs::create_dir_all(&governor_root).unwrap();
     let governing = tilo_rt::app()
-        .block_on(Box::pin(HostedRoom::start(&governor_root)))
+        .block_on(Box::pin(HostedWorkspace::start(&governor_root)))
         .unwrap();
-    let room = session.joiner().unwrap()(&governing.invite(device.user_public_key)).unwrap();
-    assert_eq!(room, governing.room.to_string());
+    let workspace = session.joiner().unwrap()(&governing.invite(device.user_public_key)).unwrap();
+    assert_eq!(workspace, governing.workspace.to_string());
     let (publisher, publisher_endpoint) = tilo_rt::app()
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
     // A member writes only into a record it holds, and joining brings the
-    // room's governance alone: the chat record arrives through the room's
+    // workspace's governance alone: the chat record arrives through the workspace's
     // sync, once the host has kept the governor's history. The app opens
-    // in the room as it stands then.
+    // in the workspace as it stands then.
     tilo_rt::app()
         .block_on(tilo_test_env::within("the governor's history", async {
             while session
                 .joined
                 .owner
-                .with_current(governing.room, |view| {
+                .with_current(governing.workspace, |view| {
                     view.peer()
                         .document(SDK_APP, "")
                         .map(drop)
@@ -893,7 +918,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
     let mut app = crate::unix::launch(
         command,
         SDK_APP,
-        &room,
+        &workspace,
         &crate::unix::ServiceSockets {
             collab: session.broker.app_socket(),
             identity: &session.identity_socket,
@@ -906,11 +931,11 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
     // app's write then arrives sealed, kept by the host as ciphertext.
     let sealed = tilo_rt::app()
         .block_on(tilo_test_env::within(
-            "the SDK app's sealed write at the room",
+            "the SDK app's sealed write at the workspace",
             async {
                 loop {
                     if let Inbound::Delta { author, data } =
-                        publisher.recv().await.expect("the room's session")
+                        publisher.recv().await.expect("the workspace's session")
                         && author == device.device_public_key
                         && let Ok(NeighbourMsg::AppDocument { envelope, .. }) =
                             postcard::from_bytes(&data)
@@ -925,7 +950,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
     let _ = app.kill();
     let _ = app.wait();
 
-    // The keys the app sealed with are this device's own: the joined room's
+    // The keys the app sealed with are this device's own: the joined workspace's
     // channel service reads what the app wrote.
     let keys = session
         .joined
@@ -937,7 +962,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
             "the device's keys over the SDK app's sealed write",
             async {
                 loop {
-                    if let Ok(plaintext) = keys.open_history_write(governing.room, &sealed) {
+                    if let Ok(plaintext) = keys.open_history_write(governing.workspace, &sealed) {
                         break plaintext;
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1014,7 +1039,7 @@ fn settled_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 }
 
 #[test]
-fn the_rooms_the_desktop_session_enrolled_are_refused() {
+fn the_workspaces_the_desktop_session_enrolled_are_refused() {
     let directory = tempfile::tempdir().unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
     let record = tilo_peer_state::owner::owner_file_of(
@@ -1070,14 +1095,14 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
+async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     use tilo_action_broker::record_content::PIECE_BYTES;
     use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let governing = Box::pin(HostedRoom::start(directory.path())).await;
-    let room = governing.room;
+    let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
+    let workspace = governing.workspace;
     let device_key = SigningKey::from_bytes(&[95; 32]);
     let root_key = SigningKey::from_bytes(&[96; 32]);
     let mut capabilities = DeviceCapabilities::member();
@@ -1111,14 +1136,17 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     )
     .unwrap();
     let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
-    assert_eq!(joined.join(&invitation).await.unwrap(), room);
+    assert_eq!(joined.join(&invitation).await.unwrap(), workspace);
     let (governor, _endpoint) = governing.publish_history(device.device_public_key).await;
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
-    let route =
-        tilo_action_broker::route::CrdtRoute::record("so.tilo.slides", room.to_string(), "deck");
+    let route = tilo_action_broker::route::CrdtRoute::record(
+        "so.tilo.slides",
+        workspace.to_string(),
+        "deck",
+    );
 
-    // The runtime asks the room for a picture; the governor's device sends it.
+    // The runtime asks the workspace for a picture; the governor's device sends it.
     let picture: Vec<u8> = (0..PIECE_BYTES + 5)
         .map(|index| u8::try_from(index % 241).unwrap())
         .collect();
@@ -1226,7 +1254,7 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     assert_eq!(gathered, picture);
 }
 
-/// Two devices that reach each other only through the room's host: a want
+/// Two devices that reach each other only through the workspace's host: a want
 /// whose holder is offline waits (the host keeps none of it), and the
 /// moment the holder connects to the host the want is asked of it, and the
 /// content arrives: waiting, then fetching, then here.
@@ -1237,8 +1265,8 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     use tilo_peer_state::peer_handle;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let governing = Box::pin(HostedRoom::start(directory.path())).await;
-    let room = governing.room;
+    let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
+    let workspace = governing.workspace;
     let device_key = SigningKey::from_bytes(&[97; 32]);
     let root_key = SigningKey::from_bytes(&[98; 32]);
     let mut capabilities = DeviceCapabilities::member();
@@ -1272,13 +1300,16 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     )
     .unwrap();
     let content = content::record_content_on(&joined, Arc::new(Shelf::default()));
-    assert_eq!(joined.join(&invitation).await.unwrap(), room);
-    // The holder publishes the room's history, then goes offline.
+    assert_eq!(joined.join(&invitation).await.unwrap(), workspace);
+    // The holder publishes the workspace's history, then goes offline.
     drop(governing.publish_history(device.device_public_key).await);
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
-    let route =
-        tilo_action_broker::route::CrdtRoute::record("so.tilo.ebook", room.to_string(), "library");
+    let route = tilo_action_broker::route::CrdtRoute::record(
+        "so.tilo.ebook",
+        workspace.to_string(),
+        "library",
+    );
     let book: Vec<u8> = (0..PIECE_BYTES + 11)
         .map(|index| u8::try_from(index % 239).unwrap())
         .collect();
@@ -1350,14 +1381,14 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     assert_eq!(arrived.bytes, book);
 }
 
-/// A write as the SDK signs one, of `app`'s record in `room`, signed by `key`.
+/// A write as the SDK signs one, of `app`'s record in `workspace`, signed by `key`.
 fn signed_write(
-    room: RoomId,
+    workspace: RoomId,
     app: &str,
     key: &SigningKey,
 ) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
     const RECORD: &str = "tab:0000000000000001";
-    let room = room.to_string();
+    let workspace = workspace.to_string();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "text", "written").unwrap();
     doc.commit();
@@ -1370,16 +1401,16 @@ fn signed_write(
         collab_types::DocumentMutation::Snapshot(doc.save())
             .encode()
             .unwrap(),
-        collab_types::document_artifact_id(app, &room, RECORD),
+        collab_types::document_artifact_id(app, &workspace, RECORD),
         collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-        collab_types::document_attestation_id(app, &room, RECORD),
+        collab_types::document_attestation_id(app, &workspace, RECORD),
         collab_types::OpKind::Change,
         now,
         u64::try_from(sequence).unwrap(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     tilo_peer_state::owner_commit::OwnerCommitRequest {
-        room,
+        workspace,
         operation: CommitOperation::Document {
             app: app.into(),
             record: RECORD.into(),
@@ -1388,37 +1419,39 @@ fn signed_write(
     }
 }
 
-/// The profile's room is placed on the room host the profile runs and held
-/// as a joined room, admitted like any other; placing it again finds it.
+/// The profile's workspace is placed on the workspace host the profile runs and held
+/// as a joined workspace, admitted like any other; placing it again finds it.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_profile_room_is_placed_once_on_its_own_host_and_held() {
-    let room = RoomId::new();
-    let (joined, _directory) = Joined::test_hosting(room).await;
-    assert!(joined.hosted_here(room));
-    assert!(joined.workspace(room).is_some());
-    joined.place(room, "Home").await.unwrap();
-    assert_eq!(joined.owner.rooms(), vec![room]);
+async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
+    let workspace = RoomId::new();
+    let (joined, _directory) = Joined::test_hosting(workspace).await;
+    assert!(joined.hosted_here(workspace));
+    assert!(joined.workspace(workspace).is_some());
+    joined.place(workspace, "Home").await.unwrap();
+    assert_eq!(joined.owner.workspaces(), vec![workspace]);
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     assert_eq!(
-        joined.action_room(&actor, &room.to_string()).unwrap(),
-        room.to_string()
+        joined
+            .action_workspace(&actor, &workspace.to_string())
+            .unwrap(),
+        workspace.to_string()
     );
-    assert!(joined.requires_room(&room.to_string()));
+    assert!(joined.requires_workspace(&workspace.to_string()));
     assert!(
-        !joined.records_effects(&room.to_string()),
-        "the profile keeps its own room's effect records"
+        !joined.records_effects(&workspace.to_string()),
+        "the profile keeps its own workspace's effect records"
     );
 }
 
-/// An app's write to a record the profile's room does not hold yet is
+/// An app's write to a record the profile's workspace does not hold yet is
 /// taken only in a kind its installed manifest declares, and only signed by
 /// this device; nothing refused reaches the host.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_write_to_a_record_the_room_lacks_is_taken_only_in_a_declared_kind() {
-    let room = RoomId::new();
-    let (joined, _directory) = Joined::test_hosting(room).await;
+async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
+    let workspace = RoomId::new();
+    let (joined, _directory) = Joined::test_hosting(workspace).await;
     let key = joined.custody.device_signing_key.clone();
     for (app, kind) in [
         ("dev.tilo.declared", None),
@@ -1426,7 +1459,7 @@ async fn a_write_to_a_record_the_room_lacks_is_taken_only_in_a_declared_kind() {
         ("dev.tilo.not-installed", Some("dev.tilo.note")),
     ] {
         let refused = joined
-            .commit_with_record_kind(signed_write(room, app, &key), kind.map(str::to_owned))
+            .commit_with_record_kind(signed_write(workspace, app, &key), kind.map(str::to_owned))
             .await
             .unwrap_err();
         assert!(refused.contains("kind"), "{app} {kind:?}: {refused}");
@@ -1434,7 +1467,7 @@ async fn a_write_to_a_record_the_room_lacks_is_taken_only_in_a_declared_kind() {
     let stranger = SigningKey::from_bytes(&[7; 32]);
     let refused = joined
         .commit_with_record_kind(
-            signed_write(room, "dev.tilo.declared", &stranger),
+            signed_write(workspace, "dev.tilo.declared", &stranger),
             Some("dev.tilo.note".into()),
         )
         .await
@@ -1442,26 +1475,26 @@ async fn a_write_to_a_record_the_room_lacks_is_taken_only_in_a_declared_kind() {
     assert!(refused.contains("signer"), "{refused}");
 }
 
-/// The rooms the desktop session governs here are refused, writes included.
+/// The workspaces the desktop session governs here are refused, writes included.
 #[tokio::test(flavor = "multi_thread")]
-async fn writes_to_a_room_the_desktop_session_governs_are_refused() {
-    let room = RoomId::new();
+async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
+    let workspace = RoomId::new();
     let (empty, directory) = Joined::test_empty().await;
     let joined = Joined::open(
         directory.path(),
         empty.custody.clone(),
         empty.endpoint(),
-        BTreeSet::from([room]),
+        BTreeSet::from([workspace]),
         (
             Arc::new(Mutex::new(BrokerChannels::default())),
             Arc::new(FanoutState::new()),
         ),
     )
     .unwrap();
-    assert!(joined.requires_room(&room.to_string()));
+    assert!(joined.requires_workspace(&workspace.to_string()));
     let refused = joined
         .commit(signed_write(
-            room,
+            workspace,
             "dev.tilo.declared",
             &empty.custody.device_signing_key,
         ))

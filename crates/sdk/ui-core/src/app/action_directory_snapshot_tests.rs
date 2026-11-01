@@ -99,15 +99,22 @@ impl crate::resources::PublishesResources for DeclaredDirectory {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
         let wide = doc.get(ROOT, "wide").unwrap().is_some();
+        // Each generation of the document lists differently: its revision is
+        // a new one.
+        let generation = doc
+            .get(ROOT, "generation")
+            .unwrap()
+            .map(|(value, _)| format!(" {value:?}"))
+            .unwrap_or_default();
         let mut resources: Vec<ResourceSpec> = (0..self.count)
             .map(|index| {
                 let mut resource = ResourceSpec::new(
                     format!("declared:{index}"),
                     "declared",
                     if doc.get(ROOT, "large-label").unwrap().is_some() {
-                        "L".repeat(32 * 1024)
+                        format!("{}{generation}", "L".repeat(32 * 1024))
                     } else {
-                        format!("Declared {index}")
+                        format!("Declared {index}{generation}")
                     },
                 );
                 if doc.get(ROOT, "removed").unwrap().is_none() {
@@ -460,10 +467,6 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
             .unwrap(),
     ];
     // Tiny subsequent snapshots isolate the count limit from the byte limit.
-    app.state_mut_for_test()
-        .doc
-        .put(ROOT, "removed", true)
-        .unwrap();
     for generation in 1..64 {
         app.state_mut_for_test()
             .doc
@@ -1033,7 +1036,12 @@ impl crate::resources::PublishesResources for ExtendedDirectory {
 
 #[cfg(all(unix, feature = "broker-transport"))]
 fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
-    let (mut app, calls) = declared_directory(1);
+    connected_declared_directory_of(1)
+}
+
+#[cfg(all(unix, feature = "broker-transport"))]
+fn connected_declared_directory_of(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
+    let (mut app, calls) = declared_directory(count);
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     assert!(app.collaboration.manager.is_connected());
     app.init_layout();
@@ -1052,9 +1060,35 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
         app.action_directory_page(directory_query("", "", 8, 8192, 8))
             .rows
             .len(),
-        1
+        count
     );
     (app, calls)
+}
+
+/// A pass that derives the directory again without changing what it lists
+/// (a sync on every wake of a busy app) keeps the revision a reader holds and
+/// the cursor its next page continues from.
+#[cfg(all(unix, feature = "broker-transport"))]
+#[test]
+fn a_pass_that_changes_nothing_listed_keeps_the_revision_and_its_cursor() {
+    let (mut app, _) = connected_declared_directory_of(3);
+    let first = app.action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert_eq!(first.rows.len(), 1);
+    assert!(!first.next_cursor.is_empty());
+    for _ in 0..3 {
+        assert!(app.sync_model(true));
+        app.pump_collab_presence();
+    }
+    let mut next = directory_query(first.revision.clone(), "", 1, 8192, 8);
+    next.cursor.clone_from(&first.next_cursor);
+    let second = app.action_directory_page(next);
+    assert!(
+        !second.stale_cursor,
+        "nothing listed changed, so the read continues"
+    );
+    assert_eq!(second.revision, first.revision);
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(second.rows[0], first.rows[0]);
 }
 
 #[cfg(all(unix, feature = "broker-transport"))]

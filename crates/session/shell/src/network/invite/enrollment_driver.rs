@@ -83,7 +83,7 @@ impl Attempt {
 }
 fn cancel_pending(owner: &NativeWorkspaceOwner, local: WorkspaceId) -> Result<(), String> {
     if let Some(pending) = owner.pending_enrollment_for_slot(local)? {
-        owner.cancel_enrollment(pending.id().room(), pending.id())?;
+        owner.cancel_enrollment(pending.id().workspace(), pending.id())?;
     }
     Ok(())
 }

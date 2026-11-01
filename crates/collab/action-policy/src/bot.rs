@@ -14,7 +14,7 @@ use crate::{Answer, Bound, Grant, KindSet, Rule, Subject, TreePath, roles};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BotRuleError {
     /// A rule names another room.
-    OutsideRoom,
+    OutsideWorkspace,
     /// A rule reaches the room resource, where governance lives.
     Governance,
     /// A rule asks or denies. Nobody is present to answer for a bot, and a
@@ -26,7 +26,7 @@ pub enum BotRuleError {
 impl fmt::Display for BotRuleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::OutsideRoom => "a bot's grant names another room",
+            Self::OutsideWorkspace => "a bot's grant names another workspace",
             Self::Governance => "a bot's grant never reaches the room's governance",
             Self::NotAllow => "a bot's grant only allows",
         })
@@ -51,7 +51,7 @@ pub fn scoped_rules(room: &str, rules: &[Rule]) -> Result<Vec<Rule>, BotRuleErro
                 return Err(BotRuleError::NotAllow);
             }
             if rule.node.room_id().is_some_and(|named| named != room) {
-                return Err(BotRuleError::OutsideRoom);
+                return Err(BotRuleError::OutsideWorkspace);
             }
             let node = room_node.join(&rule.node.within_room());
             if node.overlaps(&governed) {

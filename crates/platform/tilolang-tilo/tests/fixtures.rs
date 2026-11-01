@@ -1,4 +1,4 @@
-//! Packages compiled from source, and replicas of one room that run them.
+//! Packages compiled from source, and replicas of one workspace that run them.
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
@@ -54,7 +54,7 @@ view main(l: TodoList) {
 
 pub const APP: &str = "so.tilo.lang.counter";
 
-/// One collaborator's machine: a copy of the room record and a host over it.
+/// One collaborator's machine: a copy of the workspace record and a host over it.
 pub struct Replica {
     pub name: String,
     pub doc: AutoCommit,
@@ -70,7 +70,7 @@ impl Replica {
     }
 
     /// As [`Self::new`], deciding what the runtime invokes by `standing`, the person's standing
-    /// in the room; without one, the door decides the person's own part.
+    /// in the workspace; without one, the door decides the person's own part.
     pub fn standing(
         name: &str,
         doc: AutoCommit,
@@ -93,7 +93,7 @@ impl Replica {
         )
     }
 
-    /// A second replica of this one's room, for `name`, running the same packages.
+    /// A second replica of this one's workspace, for `name`, running the same packages.
     pub fn fork(&mut self, name: &str, packages: &[(&str, &str)]) -> Self {
         Self::new(name, self.doc.fork(), packages).0
     }
@@ -130,7 +130,7 @@ impl Replica {
         ambient: Option<&ActionContext>,
     ) {
         let mut context = ActionContext::for_resource(
-            action.resources().first().copied().unwrap_or("room"),
+            action.resources().first().copied().unwrap_or("workspace"),
             &action.kind,
             &action.kind,
         )
@@ -158,17 +158,17 @@ impl Replica {
         self.host.sync_from(&self.doc);
     }
 
-    /// Apply the history verb `edit` to the record as this replica's person, as the room does
+    /// Apply the history verb `edit` to the record as this replica's person, as the workspace does
     /// for a window: a step of their own, recorded like any action.
-    #[cfg(feature = "room")]
+    #[cfg(feature = "record")]
     pub fn history(&mut self, edit: &collaboration::history_source::verbs::HistoryEdit) {
-        let action: tilolang_tilo::instance::room::HostHistoryEdit =
+        let action: tilolang_tilo::instance::record::HostHistoryEdit =
             serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
         let encoded = tilo_actions::EncodedAction {
             type_id: collaboration::history_source::verbs::EDIT_TYPE.to_owned(),
             payload: serde_json::to_vec(edit).unwrap(),
         };
-        let context = ActionContext::for_resource("room", "room", "room")
+        let context = ActionContext::for_resource("workspace", "workspace", "workspace")
             .with_app("so.tilo.lang", "tilolang")
             .with_invoker(ActionInvoker::actor(self.name.clone()));
         tilo_actions::apply_local_with_context(

@@ -1320,11 +1320,11 @@ fn selected_local_construction()
 }
 
 /// The actions socket the session handed this process, when it is a
-/// surface app's: `None` when the number in [`crate::surface_peer::ACTIONS_FD_ENV`]
-/// names no socket.
+/// surface app's: `None` when the number in
+/// [`crate::surface_services::ACTIONS_FD_ENV`] names no socket.
 #[cfg(feature = "native")]
 fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
-    let number = std::env::var(crate::surface_peer::ACTIONS_FD_ENV).ok()?;
+    let number = std::env::var(crate::surface_services::ACTIONS_FD_ENV).ok()?;
     let number: i32 = number.trim().parse().ok()?;
     crate::surface_peer::SurfacePeer::from_descriptor(number)
 }

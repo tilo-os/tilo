@@ -1,5 +1,5 @@
 //! Partner viewer invitations: short-lived, role-scoped invitations into the
-//! room a device host beside this runtime governs.
+//! workspace a device host beside this runtime governs.
 //!
 //! A hosting provider's dashboard asks for one when a person opens the
 //! computer. `watch` issues a `viewer` invitation, `control` an `editor`

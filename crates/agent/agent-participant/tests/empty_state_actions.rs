@@ -16,7 +16,7 @@ mod common;
 
 use std::fmt::Write as _;
 
-use common::{ROOM, catalogue};
+use common::{WORKSPACE, catalogue};
 use ui::accesskit;
 use ui::application::{ApplicationHost, ComponentRunnerInputs};
 use ui::headless::FrameHarness;
@@ -36,11 +36,11 @@ fn open(app_id: &str) -> (FrameHarness, tempfile::TempDir) {
     let definition = catalogue.get(app_id).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let permissions =
-        SharedPermissions::new(PermissionContext::member_of(ROOM, PERSON, Role::Owner));
+        SharedPermissions::new(PermissionContext::member_of(WORKSPACE, PERSON, Role::Owner));
     let mut host = ApplicationHost::new(
         directory.path().join("state"),
         "empty-state-device".into(),
-        ROOM,
+        WORKSPACE,
         UserId(PERSON.into()),
         permissions,
         tilo_actions::ActionContext::default(),

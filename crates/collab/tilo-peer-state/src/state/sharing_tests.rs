@@ -1,4 +1,4 @@
-//! A copy of a peer costs what its admissions change, not the room.
+//! A copy of a peer costs what its admissions change, not the workspace.
 use super::*;
 use crate::TransportOrigin;
 use crate::admission_tests::copy_on_write::{incremental, two_records};
@@ -75,7 +75,7 @@ fn durable_parts_reuse_what_a_write_did_not_change() {
     assert_ne!(before[1], after[1]);
     let restored = StatePeer::restore(
         &after.concat(),
-        candidate.room(),
+        candidate.workspace_id(),
         candidate.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),

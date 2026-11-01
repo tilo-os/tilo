@@ -55,7 +55,7 @@ impl AppBrokerState {
     ///
     /// The person is asked only for an action the catalogue offers them,
     /// that the app holds no standing grant for (a grant given once for
-    /// another call does not count), in a room this machine governs and
+    /// another call does not count), in a workspace this machine governs and
     /// they administer. A grant they could not make is never offered.
     pub(crate) fn app_action_consent(
         &self,
@@ -66,7 +66,7 @@ impl AppBrokerState {
         let Some((consent, target)) = self.consent_question(person, app_id, request) else {
             return ConsentStep::Serve;
         };
-        let key = (consent.room.clone(), consent.app_id.clone());
+        let key = (consent.workspace.clone(), consent.app_id.clone());
         let Ok(mut pending) = self.app_action_consent_pending.lock() else {
             return ConsentStep::Refuse;
         };
@@ -98,7 +98,7 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person_id) = person.principal() else {
             return None;
         };
-        let room = person.room()?;
+        let workspace = person.room()?;
         let grants = self.services.app_action_grants.as_ref()?;
         let row = self
             .eager_catalogue(person, RowScope::Provider(&request.target.provider))
@@ -124,18 +124,18 @@ impl AppBrokerState {
         {
             return None;
         }
-        if !grants.may_grant(room, person_id) {
+        if !grants.may_grant(workspace, person_id) {
             return None;
         }
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
         let as_app = BrokerActor::agent(format!("app:{app_id}"));
         // Standing grants only: a one-use grant is not consent to keep
-        // acting. The question needs this one room's workspace without
+        // acting. The question needs this one workspace without
         // those grants, so only it is copied, never the whole tree.
         let standing_allows = self
             .membership
             .as_ref()?
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let mut standing = workspace?.clone();
                 standing
                     .policy
@@ -163,7 +163,7 @@ impl AppBrokerState {
         let contract = &descriptor.contract;
         let consent = AppActionConsentRequest {
             handle: format!("app-action:{}", request.invocation.0),
-            room: room.to_string(),
+            workspace: workspace.to_string(),
             person: person_id.clone(),
             app_id: app_id.to_string(),
             target_app: row.app_id,
@@ -187,7 +187,10 @@ impl AppBrokerState {
     /// The question `consent` asked is off the screen.
     fn finish_app_action_consent(&self, consent: &PendingConsent) {
         if let Ok(mut pending) = self.app_action_consent_pending.lock() {
-            pending.remove(&(consent.request.room.clone(), consent.request.app_id.clone()));
+            pending.remove(&(
+                consent.request.workspace.clone(),
+                consent.request.app_id.clone(),
+            ));
         }
     }
 
@@ -202,7 +205,7 @@ impl AppBrokerState {
         let lifetime = answer.grant_lifetime()?;
         let request = &consent.request;
         let grants = self.services.app_action_grants.as_ref()?;
-        if !grants.may_grant(&request.room, &request.person) {
+        if !grants.may_grant(&request.workspace, &request.person) {
             return None;
         }
         let (resource_kind, need) = &consent.target;
@@ -210,7 +213,7 @@ impl AppBrokerState {
             format!("app-action:{}", uuid::Uuid::new_v4()),
             Subject::App(request.app_id.clone()),
             tilo_actions::action_node(
-                &TreePath::room(request.room.clone()),
+                &TreePath::room(request.workspace.clone()),
                 &request.target_app,
                 resource_kind,
                 &request.resource,

@@ -30,29 +30,30 @@ mod https_completion {
         });
     }
 
-    async fn native_app(room: &Room, peer: u64) -> signed_worker::Connection {
+    async fn native_app(workspace: &Workspace, peer: u64) -> signed_worker::Connection {
         use std::io::Write as _;
         // A native app needs the launcher's kernel-pinned process custody,
         // not a private worker socket (which intentionally skips the handoff).
         let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let (marker, handoff) = launcher_handoff_bytes(&room.route.app_id, &room.route.cluster_id);
+        let (marker, handoff) =
+            launcher_handoff_bytes(&workspace.route.app_id, &workspace.route.cluster_id);
         client.write_all(&marker).unwrap();
         client.write_all(&handoff).unwrap();
         let (rpc, server, client) = signed_worker::rpc_pair(
-            room.state.clone(),
+            workspace.state.clone(),
             peer,
             server,
             client,
             None,
-            room.directories.clone(),
+            workspace.directories.clone(),
         );
         let handle = rpc
             .join_channel(
-                &room.route.channel_key(),
+                &workspace.route.channel_key(),
                 &signed_worker::presentation(
-                    &room.route.cluster_id,
-                    &room.original.cert,
-                    &room.original.key,
+                    &workspace.route.cluster_id,
+                    &workspace.original.cert,
+                    &workspace.original.key,
                 ),
             )
             .await
@@ -436,7 +437,7 @@ mod https_completion {
         }
     }
     impl NativeDocumentReads for StoreOwner {
-        fn requires_room(&self, _: &str) -> bool {
+        fn requires_workspace(&self, _: &str) -> bool {
             true
         }
         fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
@@ -511,18 +512,18 @@ mod https_completion {
                 let files = tempfile::tempdir().unwrap();
                 let mut config = tilo_test_env::ScopedEnv::new();
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
-                let original = signed_worker::OriginalRoom::current_native();
+                let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, _) =
                     tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id)
                         .unwrap();
                 let server = HttpsRegistry::new(&device).await;
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
                 owner.commit("The description is misleading");
-                let room = Room::with_original(true, Some(owner), original);
-                let target = bounded("durable Store worker", room.worker(988)).await;
-                let state = Arc::downgrade(&room.state);
-                let directories = room.directories.clone();
-                let turn = room.state.action_directory_bridge.turn.clone();
+                let workspace = Workspace::with_original(true, Some(owner), original);
+                let target = bounded("durable Store worker", workspace.worker(988)).await;
+                let state = Arc::downgrade(&workspace.state);
+                let directories = workspace.directories.clone();
+                let turn = workspace.state.action_directory_bridge.turn.clone();
                 let _pump = DirectoryPump(tokio::task::spawn_local(async move {
                     loop {
                         turn.notified().await;
@@ -558,7 +559,9 @@ mod https_completion {
                     "{unavailable}"
                 );
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-                room.state.set_app_action_consent(Arc::new(Sheet(send)));
+                workspace
+                    .state
+                    .set_app_action_consent(Arc::new(Sheet(send)));
                 // Keep the same RPC read across absence checks: dropping its caller
                 // does not cancel the server's receive and can discard a delivery.
                 let mut delivery = Box::pin(stream.read());
@@ -572,7 +575,11 @@ mod https_completion {
                         result = &mut call => panic!("durable invocation bypassed host sheet: {result:?}"),
                         sheet = bounded("durable host sheet", sheets.recv()) => sheet.unwrap(),
                     };
-                    assert_preview(&question, &operation, &room.original.cert.user_public_key);
+                    assert_preview(
+                        &question,
+                        &operation,
+                        &workspace.original.cert.user_public_key,
+                    );
                     assert!(
                         server
                             .service()
@@ -642,7 +649,7 @@ mod https_completion {
                 let files = tempfile::tempdir().unwrap();
                 let mut config = tilo_test_env::ScopedEnv::new();
                 config.set("TILO_STORE_CONFIG_DIR", files.path());
-                let original = signed_worker::OriginalRoom::current_native();
+                let original = signed_worker::OriginalWorkspace::current_native();
                 let (device, cert) =
                     tilo_identity_host::broker::trusted_current_device(&original.route.cluster_id)
                         .unwrap();
@@ -657,11 +664,11 @@ mod https_completion {
                 )
                 .unwrap();
                 let owner = Arc::new(StoreOwner(files.path().join("store.automerge")));
-                let room = Room::with_original(true, Some(owner.clone()), original);
-                let target = bounded("native Store launch", native_app(&room, 987)).await;
-                let state = Arc::downgrade(&room.state);
-                let directories = room.directories.clone();
-                let turn = room.state.action_directory_bridge.turn.clone();
+                let workspace = Workspace::with_original(true, Some(owner.clone()), original);
+                let target = bounded("native Store launch", native_app(&workspace, 987)).await;
+                let state = Arc::downgrade(&workspace.state);
+                let directories = workspace.directories.clone();
+                let turn = workspace.state.action_directory_bridge.turn.clone();
                 let _pump = DirectoryPump(tokio::task::spawn_local(async move {
                     loop {
                         turn.notified().await;
@@ -670,7 +677,9 @@ mod https_completion {
                     }
                 }));
                 let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-                room.state.set_app_action_consent(Arc::new(Sheet(send)));
+                workspace
+                    .state
+                    .set_app_action_consent(Arc::new(Sheet(send)));
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let mut case_id = None;
                 for action in ["submit-report", "appeal"] {
@@ -697,7 +706,11 @@ mod https_completion {
                         result = &mut call => panic!("invocation bypassed the host sheet: {result:?}"),
                         sheet = bounded("native host sheet", sheets.recv()) => sheet.unwrap(),
                     };
-                    assert_preview(&question, &operation, &room.original.cert.user_public_key);
+                    assert_preview(
+                        &question,
+                        &operation,
+                        &workspace.original.cert.user_public_key,
+                    );
                     assert_eq!(
                         server.service().transparency(1, 10).unwrap().events.len(),
                         usize::from(case_id.is_some())

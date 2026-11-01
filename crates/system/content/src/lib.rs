@@ -212,19 +212,20 @@ pub trait ContentBackend: Send + Sync {
         false
     }
 
-    /// Whether this store answers only for content readable in one room: the device content
+    /// Whether this store answers only for content readable in one workspace: the device content
     /// store reads through the scope the launcher handed the window, and serves an address only
-    /// when that room references it. A caller's content reference is resolved only in such a
-    /// store, so naming a hash never reaches content from elsewhere on this machine.
-    fn room_scoped(&self) -> bool {
+    /// when that workspace references it. A caller's content reference is resolved only in such
+    /// a store, so naming a hash never reaches content from elsewhere on this machine.
+    fn workspace_scoped(&self) -> bool {
         false
     }
 }
 
-/// A store a host keeps for one room alone ([`ContentStore::for_one_room`]).
-struct OneRoom(Arc<dyn ContentBackend>);
+/// A store a host keeps for one workspace alone
+/// ([`ContentStore::for_one_workspace`]).
+struct OneWorkspace(Arc<dyn ContentBackend>);
 
-impl ContentBackend for OneRoom {
+impl ContentBackend for OneWorkspace {
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
         self.0.put(reader, mime)
     }
@@ -249,7 +250,7 @@ impl ContentBackend for OneRoom {
         self.0.shared()
     }
 
-    fn room_scoped(&self) -> bool {
+    fn workspace_scoped(&self) -> bool {
         true
     }
 }
@@ -412,24 +413,25 @@ impl ContentStore {
         self.backend.shared()
     }
 
-    /// Whether this store answers only for content readable in one room; see
-    /// [`ContentBackend::room_scoped`].
-    pub fn room_scoped(&self) -> bool {
-        self.backend.room_scoped()
+    /// Whether this store answers only for content readable in one workspace;
+    /// see [`ContentBackend::workspace_scoped`].
+    pub fn workspace_scoped(&self) -> bool {
+        self.backend.workspace_scoped()
     }
 
-    /// This store, declared as one room's ([`Self::room_scoped`]): for a host that keeps a
-    /// store for one room alone, so everything in it is that room's (a test's profile, one
-    /// room's headless drive).
+    /// This store, declared as one workspace's ([`Self::workspace_scoped`]): for a host that
+    /// keeps a store for one workspace alone, so everything in it is that workspace's (a
+    /// test's profile, one workspace's headless drive).
     #[must_use]
-    pub fn for_one_room(self) -> Self {
-        Self::new(OneRoom(self.backend))
+    pub fn for_one_workspace(self) -> Self {
+        Self::new(OneWorkspace(self.backend))
     }
 
-    /// Content in memory, as one room's store ([`Self::for_one_room`]): for tests of what a
+    /// Content in memory, as one workspace's store
+    /// ([`Self::for_one_workspace`]): for tests of what a
     /// caller may name by reference.
-    pub fn memory_in_room() -> Self {
-        Self::memory().for_one_room()
+    pub fn memory_in_workspace() -> Self {
+        Self::memory().for_one_workspace()
     }
 
     /// Remove every item not named in `live`; see [`ContentBackend::collect_unreferenced`].

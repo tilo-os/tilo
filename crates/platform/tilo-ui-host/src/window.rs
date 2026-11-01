@@ -752,6 +752,20 @@ impl AppWindow {
     /// Bring the shell up to date with the views: the root's shell with the view after it as
     /// its content, reconciled into the widgets it was built into.
     fn compose(&mut self) {
+        if self.shape == Shape::Part && self.root.is_none() {
+            // A part whose whole view is another app's state has no root of its own: what it
+            // shows is the detail lane's view, keyed as a window's detail view is so a press
+            // reaches the view that drew it.
+            let Some(detail) = self.detail.as_ref() else {
+                return;
+            };
+            let tree = crate::reconcile::normalize(&detail.tree);
+            let composed = crate::shell::prefixed(&crate::shell::without_rows(&tree), DETAIL);
+            self.reconcile_into_pane(&composed);
+            self.built = Some(composed);
+            self.refresh_bound();
+            return;
+        }
         let Some(root) = self.root.as_ref() else {
             return;
         };
@@ -1740,7 +1754,7 @@ impl AppWindow {
     }
 
     /// Tell the app `message` with the next batch: what the embedder knows that the app does
-    /// not, such as the names of the room's participants.
+    /// not, such as the names of the workspace's participants.
     pub fn tell(&mut self, message: ToApp) {
         self.out.push(message);
     }

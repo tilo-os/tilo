@@ -54,11 +54,11 @@ impl NativePublicationCut {
         if self
             .candidate
             .core
-            .room_doc
+            .workspace_doc
             .as_deref()
-            .is_some_and(|room| !room.get_missing_deps(&[]).is_empty())
+            .is_some_and(|workspace| !workspace.get_missing_deps(&[]).is_empty())
         {
-            return Err("native publication cut has unresolved room history".into());
+            return Err("native publication cut has unresolved workspace history".into());
         }
         if self.candidate.core.pending.len() > 64 {
             return Err("native cut pending queue exceeds entry limit".into());

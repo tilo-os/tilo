@@ -46,14 +46,14 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 /// increment must apply on top of what the record holds, with nothing
 /// missing. A worker that died is replaced from the mirror.
 ///
-/// Lent the room's content store ([`Self::lending`]), the replica carries
-/// content between the room and the worker around each operation: what the
+/// Lent the workspace's content store ([`Self::lending`]), the replica carries
+/// content between the workspace and the worker around each operation: what the
 /// operation names, and before an effect what the record refers to, goes
 /// in before it runs; what the app stored comes out after, hashed again
-/// here before the room keeps it.
+/// here before the workspace keeps it.
 pub struct ConfinedReplica {
     app_id: String,
-    room: String,
+    workspace: String,
     participant: String,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
@@ -84,12 +84,12 @@ fn worker_error(reason: impl Into<String>) -> AppError {
 }
 
 impl ConfinedReplica {
-    /// Hold a record of `app_id` in `room` as `participant`, in a new
+    /// Hold a record of `app_id` in `workspace` as `participant`, in a new
     /// confined worker: [`crate::Replica::open`].
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         participant: &str,
         actor: &ReplicaActor,
         seed: Seed,
@@ -118,7 +118,7 @@ impl ConfinedReplica {
         let reply = process
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
-                room: room.to_owned(),
+                workspace: workspace.to_owned(),
                 participant: participant.to_owned(),
                 actor: actor.clone(),
                 seed,
@@ -133,7 +133,7 @@ impl ConfinedReplica {
         };
         let replica = Self {
             app_id: definition.app_id().to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             participant: participant.to_owned(),
             actor,
             record,
@@ -145,7 +145,7 @@ impl ConfinedReplica {
                 fresh,
                 // An existing record's worker may have brought it up to
                 // the app's storage on open: asked once, so the migration
-                // reaches the mirror and the room.
+                // reaches the mirror and the workspace.
                 dirty: true,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
@@ -162,10 +162,10 @@ impl ConfinedReplica {
         Ok(replica)
     }
 
-    /// Lend the record the room's content store: content an operation names
+    /// Lend the record the workspace's content store: content an operation names
     /// (and, before an effect, content the record refers to) is put into the
     /// worker from it, and content the app stores in the worker is kept in
-    /// it, so an export or a look stays in the room.
+    /// it, so an export or a look stays in the workspace.
     #[must_use]
     pub fn lending(mut self, content: ContentStore) -> Self {
         self.content = Some(content);
@@ -235,7 +235,7 @@ impl ConfinedReplica {
         match process
             .call(&Request::Open {
                 app_id: self.app_id.clone(),
-                room: self.room.clone(),
+                workspace: self.workspace.clone(),
                 participant: self.participant.clone(),
                 actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
@@ -409,7 +409,7 @@ impl ConfinedReplica {
                 .into_iter()
                 .filter(|hash| content.has(hash))
                 .collect();
-            // What the app lacked and the room has: the operation runs once
+            // What the app lacked and the workspace has: the operation runs once
             // more with it there.
             if failed && !missing.is_empty() {
                 for hash in &missing {
@@ -432,7 +432,7 @@ impl ConfinedReplica {
         }
     }
 
-    /// Put the content at `hashes` the room has and the worker does not yet
+    /// Put the content at `hashes` the workspace has and the worker does not yet
     /// hold into the worker.
     fn supply(
         &self,
@@ -479,7 +479,7 @@ impl ConfinedReplica {
     }
 
     /// Before an effect or view runs, put into the worker the content the
-    /// record's document refers to that the room has and the worker does
+    /// record's document refers to that the workspace has and the worker does
     /// not hold: what an effect reads of the record (an export's pictures)
     /// may have been placed by another participant, in another worker.
     /// Document operations take nothing more than they name. Bounded by
@@ -534,9 +534,9 @@ impl ConfinedReplica {
         }
     }
 
-    /// Keep what the app stored in the room's store under the hash its
+    /// Keep what the app stored in the workspace's store under the hash its
     /// bytes have here, and answer the hashes it asked for and lacked.
-    /// Content the room does not keep is reported and left in the worker.
+    /// Content the workspace does not keep is reported and left in the worker.
     fn gather(&self, inner: &mut Inner, content: &ContentStore) -> Vec<String> {
         let mut wanted = Vec::new();
         while inner.process.is_some() {

@@ -34,7 +34,6 @@ struct Fixture {
     recipient_rx: mpsc::Receiver<StateDelivery>,
     recipient_disconnect: mpsc::Sender<()>,
     recipient_disconnected: mpsc::Receiver<()>,
-    private: mpsc::Sender<PrivateOutbound>,
     metrics: Arc<crate::metrics::Metrics>,
     receivers: Vec<mpsc::Receiver<Envelope>>,
 }
@@ -65,13 +64,6 @@ impl Fixture {
         workers: Arc<tokio::sync::Semaphore>,
     ) -> Self {
         Self::with_delivery_capacity_workers_and_workspace(delivery_capacity, workers, 7)
-    }
-    fn with_workspace_id(workspace_id: u64) -> Self {
-        Self::with_delivery_capacity_workers_and_workspace(
-            32,
-            crate::persistence::isolated_test_workers(),
-            workspace_id,
-        )
     }
     fn with_delivery_capacity_workers_and_workspace(
         delivery_capacity: usize,
@@ -132,7 +124,6 @@ impl Fixture {
             workspace_id,
             workspace.clone(),
         )])));
-        let (private, _) = mpsc::channel(8);
         Self {
             _tmp: tmp,
             root_key: root,
@@ -146,7 +137,6 @@ impl Fixture {
             recipient_rx,
             recipient_disconnect,
             recipient_disconnected,
-            private,
             metrics: Arc::new(crate::metrics::Metrics::default()),
             receivers: vec![source_rx, recipient_state_rx],
         }
@@ -239,13 +229,11 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
-            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             presence: None,
-            private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
@@ -579,13 +567,11 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         presence: None,
-        private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -638,13 +624,11 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         presence: None,
-        private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -715,13 +699,11 @@ async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Opti
         own_user_public_key: &own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         presence: None,
-        private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -1246,7 +1228,6 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
         }
         let registry = fixture.registry.clone();
         let source = fixture.source.clone();
-        let private = fixture.private.clone();
         let metrics = fixture.metrics.clone();
         let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let connection_live = live.clone();
@@ -1260,13 +1241,11 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 own_user_public_key: &source.own_user,
                 own_device_cert: &source.peer.cert,
                 own_device_public_key: &source.peer.cert.device_public_key,
-                own_device_signing_key: None,
                 app_serving: None,
                 metrics: &metrics,
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
                 presence: None,
-                private_tx: &private,
                 revocations: &source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
@@ -1367,13 +1346,11 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
-        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         presence: None,
-        private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
@@ -1523,13 +1500,11 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
-            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             presence: None,
-            private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
@@ -1610,401 +1585,6 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
             !cancel
         );
     }
-}
-
-#[tokio::test]
-async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
-    // Keep both owner queue occupancies for the successful replay's boundary:
-    // a full queue requires admission; one free slot permits a queued receipt.
-    // First-batch preparation is detached from that queue, so only the explicit
-    // batch-ready gate below orders private reply delivery and session replacement
-    // before batch authorization. The reply does not prove owner queue admission.
-    for (queued_count, replace_session) in [(32, false), (31, false), (32, true)] {
-        let fixture = Arc::new(Fixture::new());
-        let device = fixture.recipient.device_public_key;
-        fixture
-            .store
-            .enqueue_pending(
-                &device,
-                1,
-                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
-            )
-            .unwrap();
-        let ticket = fixture.subscribe_ticket().await;
-        let (release_batch, batch_reached) =
-            crate::store::test_barrier::install(fixture.store.root(), "replay-first-batch-ready");
-        let owner = crate::persistence::handle(&fixture.workspace).await;
-        let (release, reached) =
-            crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
-        owner
-            .read(1, |state| {
-                crate::store::test_barrier::pause(state.store.root(), "hold-owner");
-                Ok(())
-            })
-            .unwrap();
-        reached.await.unwrap();
-        let queued = (0..queued_count)
-            .map(|_| owner.read(1, |_| Ok(())).unwrap())
-            .collect::<Vec<_>>();
-        let (private_tx, mut private_rx) = mpsc::channel(1);
-        let reply = EnvelopeV2::ActionsReady {
-            room: uuid::Uuid::new_v4(),
-            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
-        };
-        private_tx
-            .send(PrivateOutbound::Reply(reply.clone()))
-            .await
-            .unwrap();
-        let (mut write, read) = tokio::io::duplex(4096);
-        let writer = fixture.clone();
-        let task = tokio::spawn(async move {
-            let session = SessionCtx {
-                workspaces: &writer.registry,
-                autobind: None,
-                outbound: &writer.recipient_tx,
-                state_outbound: None,
-                connection_live: None,
-                own_user_public_key: &writer.source.own_user,
-                own_device_cert: &writer.source.peer.cert,
-                own_device_public_key: &writer.source.peer.cert.device_public_key,
-                own_device_signing_key: None,
-                app_serving: None,
-                metrics: &writer.metrics,
-                trust_policy: &writer.source.policy,
-                disconnect: &writer.source.disconnect,
-                presence: None,
-                private_tx: &writer.private,
-                revocations: &writer.source.revocations,
-                live_bridge: None,
-                agents: Box::leak(Box::default()),
-                positions: None,
-                compactor: None,
-                member_limits: None,
-                resumes: Box::leak(Box::default()),
-                lag: Box::leak(Box::default()),
-            };
-            Box::pin(finish_replay_write(
-                ReplayWrite {
-                    ticket: Some(ticket),
-                    reply: None,
-                    replaying: true,
-                },
-                &writer.recipient,
-                &session,
-                &std::sync::atomic::AtomicUsize::new(1),
-                &mut private_rx,
-                &mut write,
-            ))
-            .await
-        });
-        let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read);
-        assert_eq!(
-            tilo_test_env::within(
-                "private reply stalled behind replay owner capacity",
-                reader.read_next()
-            )
-            .await
-            .unwrap(),
-            Some(reply)
-        );
-        assert!(!task.is_finished());
-        // Reach preparation while the original session is still current;
-        // otherwise its initial authorization can refuse before reaching this gate.
-        tilo_test_env::within("first replay batch did not reach its gate", batch_reached)
-            .await
-            .unwrap();
-        if replace_session {
-            let (replacement, _rx) = mpsc::channel(32);
-            fixture.workspace.lock().await.add_subscriber(Subscriber {
-                device_public_key: device,
-                tx: replacement,
-                disconnect: fixture.source.disconnect.clone(),
-            });
-        }
-        // The original session is fenced before the prepared batch can pass
-        // its write-side authority recheck or write any state frame.
-        drop(release_batch);
-        drop(release);
-        tilo_test_env::within("admitted owner queue did not drain", async {
-            for receipt in queued {
-                crate::persistence::receipt(receipt).await.unwrap();
-            }
-        })
-        .await;
-        let result = tilo_test_env::within("task to complete", task)
-            .await
-            .unwrap();
-        if replace_session {
-            assert!(result.is_err());
-            assert_eq!(fixture.store.count_pending(&device).unwrap(), 1);
-            assert!(reader.read_next().await.unwrap().is_none());
-        } else {
-            result.unwrap();
-            assert!(matches!(
-                reader.read_next().await.unwrap(),
-                Some(EnvelopeV2::State(Envelope::Delta { .. }))
-            ));
-            assert!(matches!(
-                reader.read_next().await.unwrap(),
-                Some(EnvelopeV2::State(Envelope::Ready { .. }))
-            ));
-            assert_eq!(fixture.store.count_pending(&device).unwrap(), 0);
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_its_lane() {
-    let room = uuid::Uuid::from_u128(7);
-    let room_id = crate::room_workspace_id(&room.to_string()).unwrap();
-    let fixture = Arc::new(Fixture::with_workspace_id(room_id));
-    let (_, ticket, _, _) = fixture.subscribe_ticket().await;
-    let (source_private, _source_private_rx) = mpsc::channel(1);
-    let (recipient_private, _recipient_private_rx) = mpsc::channel(1);
-    {
-        let mut runtime = fixture.workspace.lock().await;
-        runtime.action_targets.insert(
-            fixture.source.peer.device_public_key,
-            ActionTarget {
-                broker_host: None,
-                broker_protocol: false,
-                room,
-                peer: fixture.source.peer.clone(),
-                state_tx: fixture.source.tx.clone(),
-                tx: source_private,
-            },
-        );
-        runtime.action_targets.insert(
-            fixture.recipient.device_public_key,
-            ActionTarget {
-                broker_host: None,
-                broker_protocol: false,
-                room,
-                peer: fixture.recipient.clone(),
-                state_tx: fixture.recipient_tx.clone(),
-                tx: recipient_private,
-            },
-        );
-    }
-    let (private_tx, mut private_rx) = mpsc::channel(1);
-    let (reply, _reply_rx) = mpsc::channel(1);
-    let action = DirectedAction {
-        room,
-        request_id: uuid::Uuid::from_u128(8),
-        source: fixture.source.peer.device_public_key,
-        target: fixture.recipient.device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
-    };
-    let delivery = PrivateDelivery {
-        action: action.clone(),
-        signed: Box::new(
-            SignedDirectedAction::sign(&action, unix_now_ns(), &fixture.source_key).unwrap(),
-        ),
-        source: fixture.source.peer.clone(),
-        source_tx: fixture.source.tx.clone(),
-        reply,
-        source_disconnect: fixture.source.disconnect.clone(),
-    };
-    let root = fixture.store.root().to_path_buf();
-    let (release_read, read_reached) =
-        crate::store::test_barrier::install(&root, "membership-read");
-    let (release_pending, lane_pending) =
-        crate::store::test_barrier::install(&root, "delivery-membership-lane-pending");
-    let writer = fixture.clone();
-    let task = tokio::spawn(async move {
-        let session = SessionCtx {
-            workspaces: &writer.registry,
-            autobind: None,
-            outbound: &writer.recipient_tx,
-            state_outbound: None,
-            connection_live: None,
-            own_user_public_key: &writer.source.own_user,
-            own_device_cert: &writer.source.peer.cert,
-            own_device_public_key: &writer.source.peer.cert.device_public_key,
-            own_device_signing_key: None,
-            app_serving: None,
-            metrics: &writer.metrics,
-            trust_policy: &writer.source.policy,
-            disconnect: &writer.source.disconnect,
-            presence: None,
-            private_tx: &writer.private,
-            revocations: &writer.source.revocations,
-            live_bridge: None,
-            agents: Box::leak(Box::default()),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-            resumes: Box::leak(Box::default()),
-            lag: Box::leak(Box::default()),
-        };
-        let source = StateSource::new(&writer.recipient, &session);
-        let authority = ticket.authority.clone();
-        let replay = async {
-            let _ticket = ticket;
-            authorize_replay(&writer.workspace, &source, &authority).await
-        };
-        let mut wire = Vec::new();
-        let result = replay_direct_wait(
-            replay,
-            &writer.recipient,
-            &session,
-            &mut private_rx,
-            &mut wire,
-        )
-        .await;
-        (result, wire)
-    });
-
-    read_reached.await.unwrap();
-    private_tx
-        .send(PrivateOutbound::Delivery(delivery))
-        .await
-        .unwrap();
-    lane_pending.await.unwrap();
-    drop(release_pending);
-    drop(release_read);
-
-    let mut task = task;
-    let joined = tokio::time::timeout(tilo_test_env::hang_bound(), &mut task).await;
-    let (result, wire) = if let Ok(joined) = joined {
-        joined.unwrap()
-    } else {
-        task.abort();
-        let _ = task.await;
-        panic!("private delivery stopped replay from releasing its authorization lane");
-    };
-    result.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice());
-    assert!(matches!(
-        reader.read_next().await.unwrap(),
-        Some(EnvelopeV2::CertifiedSignedDelivered { action: delivered, .. })
-            if SignedDirectedAction::action(&delivered) == &action
-    ));
-    assert!(reader.read_next().await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() {
-    struct GatedWrite {
-        started: Option<tokio::sync::oneshot::Sender<()>>,
-        release: tokio::sync::oneshot::Receiver<()>,
-        bytes: Vec<u8>,
-    }
-    impl tokio::io::AsyncWrite for GatedWrite {
-        fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            bytes: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
-            use std::{future::Future as _, task::Poll};
-
-            if let Some(started) = self.started.take() {
-                self.bytes.push(bytes[0]);
-                let _ = started.send(());
-                return Poll::Ready(Ok(1));
-            }
-            match std::pin::Pin::new(&mut self.release).poll(cx) {
-                Poll::Ready(Ok(())) => {
-                    self.bytes.extend_from_slice(bytes);
-                    Poll::Ready(Ok(bytes.len()))
-                }
-                Poll::Ready(Err(_)) => {
-                    Poll::Ready(Err(std::io::Error::other("private write release dropped")))
-                }
-                Poll::Pending => Poll::Pending,
-            }
-        }
-
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    let fixture = Arc::new(Fixture::new());
-    let (private_tx, mut private_rx) = mpsc::channel(1);
-    let frame = EnvelopeV2::ActionsReady {
-        room: uuid::Uuid::from_u128(9),
-        capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
-    };
-    private_tx
-        .send(PrivateOutbound::Reply(frame.clone()))
-        .await
-        .unwrap();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
-    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
-    let writer = fixture.clone();
-    let task = tokio::spawn(async move {
-        let session = SessionCtx {
-            workspaces: &writer.registry,
-            autobind: None,
-            outbound: &writer.recipient_tx,
-            state_outbound: None,
-            connection_live: None,
-            own_user_public_key: &writer.source.own_user,
-            own_device_cert: &writer.source.peer.cert,
-            own_device_public_key: &writer.source.peer.cert.device_public_key,
-            own_device_signing_key: None,
-            app_serving: None,
-            metrics: &writer.metrics,
-            trust_policy: &writer.source.policy,
-            disconnect: &writer.source.disconnect,
-            presence: None,
-            private_tx: &writer.private,
-            revocations: &writer.source.revocations,
-            live_bridge: None,
-            agents: Box::leak(Box::default()),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-            resumes: Box::leak(Box::default()),
-            lag: Box::leak(Box::default()),
-        };
-        let operation = async move {
-            complete_rx.await.unwrap();
-            completed_tx.send(()).unwrap();
-            Err::<(), _>(crate::persistence::error("replay failed"))
-        };
-        let mut wire = GatedWrite {
-            started: Some(started_tx),
-            release: release_rx,
-            bytes: Vec::new(),
-        };
-        let result = replay_direct_wait(
-            operation,
-            &writer.recipient,
-            &session,
-            &mut private_rx,
-            &mut wire,
-        )
-        .await;
-        (result, wire.bytes)
-    });
-
-    started_rx.await.unwrap();
-    complete_tx.send(()).unwrap();
-    completed_rx.await.unwrap();
-    assert!(
-        !task.is_finished(),
-        "replay error interrupted an active private wire frame"
-    );
-    release_tx.send(()).unwrap();
-    let (result, bytes) = task.await.unwrap();
-    assert!(result.is_err());
-    let mut reader = SessionReader::new(bytes.as_slice());
-    assert_eq!(reader.read_next().await.unwrap(), Some(frame));
-    assert!(reader.read_next().await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -2324,13 +1904,11 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
-            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             presence: None,
-            private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
@@ -2659,7 +2237,7 @@ async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
 
 fn access_request_frame(fixture: &Fixture, authored_at_ns: u64) -> Envelope {
     let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-        room: "room".into(),
+        workspace: "room".into(),
         request: Box::new(
             collab_types::MlsAccessRequestV1::signed(
                 collab_types::ChannelId::new(),

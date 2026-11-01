@@ -86,7 +86,8 @@ fn topology_unchanged(previous: Option<&str>, graph: &AudioGraph) -> bool {
 /// else does: there is no timer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyEvent {
-    /// The device graph changed, or the watch just started (the baseline).
+    /// The device graph, or the set of running capture streams, changed, or
+    /// the watch just started (the baseline).
     GraphChanged,
     /// The watch lost `PipeWire`: poll until it can watch again.
     WatchLost,
@@ -123,6 +124,9 @@ trait PolicyEnv {
     /// When the policy must reconcile again although nothing changed.
     fn next_retry(&self) -> Option<Instant>;
     fn device_event(&mut self, event: DeviceEvent);
+    /// The graph was read again: whatever publishes a reading of it should
+    /// read it again too.
+    fn reading_changed(&mut self);
     /// (Re)start the native graph watch; `false` when `PipeWire` cannot be
     /// watched.
     fn watch_graph(&mut self) -> bool;
@@ -309,6 +313,7 @@ impl PolicyWorker {
         }
         self.last_graph = Some(graph);
         self.reconcile(env);
+        env.reading_changed();
     }
 
     fn reconcile(&mut self, env: &mut impl PolicyEnv) {
@@ -366,6 +371,7 @@ struct LiveEnv {
     daemon_watch: Option<settings_store::watch::SettingsWatch>,
     events: Sender<PolicyEvent>,
     device_events: Box<dyn FnMut(DeviceEvent)>,
+    reading_changed: Box<dyn FnMut()>,
     pause_players: Box<dyn FnMut() -> bool>,
     policy: PersistentAudioPolicy,
 }
@@ -403,16 +409,28 @@ impl PolicyEnv for LiveEnv {
         (self.device_events)(event);
     }
 
+    fn reading_changed(&mut self) {
+        (self.reading_changed)();
+    }
+
     fn watch_graph(&mut self) -> bool {
         // One watch at a time: join a lost one before connecting again.
         self.graph_watch = None;
         let events = self.events.clone();
-        self.graph_watch = media::audio_watch::watch(move |event| {
-            let _ = events.send(match event {
-                GraphWatchEvent::Changed => PolicyEvent::GraphChanged,
-                GraphWatchEvent::Lost => PolicyEvent::WatchLost,
-            });
-        })
+        let changed = events.clone();
+        // A capture stream starting or stopping is not a device change, but
+        // it does change the reading the session shows of who is recording.
+        self.graph_watch = media::audio_watch::watch_and_capture(
+            move |event| {
+                let _ = events.send(match event {
+                    GraphWatchEvent::Changed => PolicyEvent::GraphChanged,
+                    GraphWatchEvent::Lost => PolicyEvent::WatchLost,
+                });
+            },
+            move |_running| {
+                let _ = changed.send(PolicyEvent::GraphChanged);
+            },
+        )
         .inspect_err(
             |error| tracing::debug!(target: "tilo::audio_policy", %error, "audio graph watch"),
         )
@@ -467,6 +485,7 @@ impl PolicyEnv for LiveEnv {
 /// plays when a private output goes away.
 pub fn serve(
     device_events: impl FnMut(DeviceEvent) + 'static,
+    reading_changed: impl FnMut() + 'static,
     pause_players: impl FnMut() -> bool + 'static,
     events: Sender<PolicyEvent>,
     received: &Receiver<PolicyEvent>,
@@ -477,6 +496,7 @@ pub fn serve(
         daemon_watch: None,
         events,
         device_events: Box::new(device_events),
+        reading_changed: Box::new(reading_changed),
         pause_players: Box::new(pause_players),
         policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
     };
@@ -952,6 +972,7 @@ mod tests {
         fn device_event(&mut self, event: DeviceEvent) {
             self.sounds.push(event);
         }
+        fn reading_changed(&mut self) {}
         fn watch_graph(&mut self) -> bool {
             self.graph_watchable
         }

@@ -276,47 +276,47 @@ mod tests {
     fn cached_heads_save_status_tracks_current_document_and_durability() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let id = RecordId::minted();
-        let storage_key = key("test", "room", &id);
+        let storage_key = key("test", "workspace", &id);
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         let older = cache.pending_writes().remove(0);
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         cache.acknowledge(&older, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saved
         );
         doc.put(automerge::ROOT, "value", 2).unwrap();
         let pending = doc.pending_ops();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         cache.acknowledge(&older, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saving
         );
         let newer = cache.pending_writes().remove(0);
         cache.acknowledge(&newer, Err("quota".into())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Failed("quota".into())
         );
         cache.acknowledge(&newer, Ok(())).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Saved
         );
         cache.put(storage_key, vec![1, 2, 3], None).unwrap();
         assert_eq!(
-            save_status(&cache, "test", "room", &id, &doc),
+            save_status(&cache, "test", "workspace", &id, &doc),
             RecordSaveStatus::Failed("cached document is corrupt".into())
         );
     }
@@ -324,10 +324,10 @@ mod tests {
     fn separate_registries_share_one_cache_owner() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let a = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let b = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         assert!(a.same_owner(&b));
     }
@@ -335,7 +335,7 @@ mod tests {
     fn portable_convenience_admission_never_seeds_existing_or_uses_filesystem() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         assert!(matches!(
@@ -355,7 +355,7 @@ mod tests {
         assert!(storage.starts_with("portable:"));
         drop(store);
         let restored = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         restored.open_existing_record_checked(&checkout).unwrap();
         assert!(restored.is_ready(&checkout.id));
@@ -364,12 +364,12 @@ mod tests {
     fn corrupt_hydrated_record_is_retained_and_cannot_be_recreated() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
-        let key = key("so.tilo.test", "room", &checkout.id);
+        let key = key("so.tilo.test", "workspace", &checkout.id);
         cache
             .hydrate(key.clone(), vec![1, 2, 3], Some(vec![42]))
             .unwrap();
         let store = RecordOwners::portable(cache.clone())
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         assert!(store.open_existing_record_checked(&checkout).is_err());
         assert!(store.create_record(&checkout).is_err());
@@ -380,7 +380,7 @@ mod tests {
     fn initializer_cannot_replace_the_reserved_actor() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let store = RecordOwners::portable(cache)
-            .open("so.tilo.test", "room")
+            .open("so.tilo.test", "workspace")
             .unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();

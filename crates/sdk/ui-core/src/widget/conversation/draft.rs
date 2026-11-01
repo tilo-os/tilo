@@ -13,7 +13,7 @@
 //! boundary, prefixed "Draft: ".
 //!
 //! Persistence is the app's: a draft belongs on the person's own record
-//! (their room, their other devices), never in the shared conversation. This
+//! (theirs, on their other devices), never in the shared conversation. This
 //! module holds the rule set, not the storage.
 
 use std::collections::BTreeMap;

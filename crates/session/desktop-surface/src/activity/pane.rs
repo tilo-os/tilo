@@ -3772,7 +3772,7 @@ fn describe_principal(p: &Principal) -> String {
         Principal::App(a) => a.clone(),
         Principal::Agent(a) => t_args("activity-capability-agent", &[("agent", a.into())]),
         Principal::Token(_) => t("activity-capability-invite-token"),
-        Principal::Room(_) => t("activity-capability-this-workspace"),
+        Principal::Workspace(_) => t("activity-capability-this-workspace"),
     }
 }
 

@@ -25,7 +25,7 @@ use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 
 const MAIL: &str = "so.tilo.lang.mail";
 
@@ -90,12 +90,12 @@ impl PeerTransport for Connection {
             }
             CollabRequest::Document { mutation, .. } => {
                 let record = self.route.record.as_deref().unwrap_or("");
-                let room = self.route.cluster_id.to_string();
+                let workspace = self.route.cluster_id.to_string();
                 let mut envelope = collab_types::SignedOp::new_unsigned(
                     mutation.encode().map_err(|error| error.to_string())?,
-                    collab_types::document_artifact_id(&self.route.app_id, &room, record),
+                    collab_types::document_artifact_id(&self.route.app_id, &workspace, record),
                     collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-                    collab_types::document_attestation_id(&self.route.app_id, &room, record),
+                    collab_types::document_attestation_id(&self.route.app_id, &workspace, record),
                     collab_types::OpKind::Change,
                     std::time::SystemTime::UNIX_EPOCH,
                     0,
@@ -180,8 +180,8 @@ fn wake() -> tilolang_tilo::background::Waker {
     Arc::new(|| {})
 }
 
-fn member(bus: &Rc<Bus>, room: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
-    let route = tilolang_host::route_of(&bundle.meta, room, person);
+fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
+    let route = tilolang_host::route_of(&bundle.meta, workspace, person);
     let (inbox, sent): (Inbox, Sent) = (Rc::default(), Rc::default());
     let mut manager = CollaborationManager::with_peer_transport(Connection {
         bus: Rc::clone(bus),
@@ -199,7 +199,7 @@ fn member(bus: &Rc<Bus>, room: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
+    let record = InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(MAIL).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -207,7 +207,7 @@ fn member(bus: &Rc<Bus>, room: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -
     let hosted = Hosted::with_record(
         Spec {
             app: MAIL.to_owned(),
-            room: room.to_string(),
+            workspace: workspace.to_string(),
             instance: 1,
             person: person.to_owned(),
         },
@@ -329,10 +329,10 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let bundle = Arc::new(mail());
     assert!(bundle.meta.own_records, "Mail declares `records: .own`");
-    let room = uuid::Uuid::new_v4();
+    let workspace = uuid::Uuid::new_v4();
     let bus = Rc::new(Bus::default());
-    let mut ada = member(&bus, room, ADA, &bundle);
-    let mut bo = member(&bus, room, BO, &bundle);
+    let mut ada = member(&bus, workspace, ADA, &bundle);
+    let mut bo = member(&bus, workspace, BO, &bundle);
 
     // Each member's Mail is on their own record of the workspace, which only their devices are
     // admitted to; an app that shares its records stays on the workspace's record of the app.
@@ -350,13 +350,13 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         include_str!("../../../../apps/tl/counter/app.ids"),
     );
     assert_eq!(
-        tilolang_host::route_of(&counter.meta, room, ADA),
-        RouteSpec::app("so.tilo.lang.counter", room),
+        tilolang_host::route_of(&counter.meta, workspace, ADA),
+        RouteSpec::app("so.tilo.lang.counter", workspace),
         "a shared app's record is the workspace's"
     );
     assert_eq!(
-        tilolang_host::route_of(&bundle.meta, room, "ada"),
-        RouteSpec::app(MAIL, room),
+        tilolang_host::route_of(&bundle.meta, workspace, "ada"),
+        RouteSpec::app(MAIL, workspace),
         "someone without a root identity is a member of no workspace: nobody else reads theirs"
     );
 

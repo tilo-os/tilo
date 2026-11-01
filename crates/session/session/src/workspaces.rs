@@ -420,7 +420,7 @@ struct Stored {
 
 /// The list's stable id for `room`: the room's collaboration topic.
 fn entry_id(room: RoomId) -> u64 {
-    tilo_network_actor::room_topic_id(room)
+    tilo_network_actor::workspace_topic_id(room)
 }
 
 /// The list's entries that carry a valid room, in the person's order.
@@ -1035,7 +1035,7 @@ impl crate::Shared {
         engine.bind(workspace, room);
         let asked = sync.enroll(crate::sync::Enrolling {
             workspace,
-            room,
+            workspace_id: room,
             invitation: joined.invitation.clone(),
         });
         match asked {
@@ -1058,13 +1058,13 @@ impl crate::Shared {
         };
         let mut settled = false;
         for enrolled in sync.take_enrolled() {
-            let key = enrolled.room.to_string();
+            let key = enrolled.workspace_id.to_string();
             let name = self
                 .handle
                 .read(|tree| {
                     tree.workspaces
                         .iter()
-                        .find(|workspace| workspace.room() == enrolled.room)
+                        .find(|workspace| workspace.room() == enrolled.workspace_id)
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
@@ -1072,7 +1072,7 @@ impl crate::Shared {
                 if let Some(engine) = &self.engine {
                     engine.unbind(enrolled.workspace);
                 }
-                self.release_workspace(enrolled.room);
+                self.release_workspace(enrolled.workspace_id);
             }
             self.directory_store.enrolled(&key, &name, &enrolled.result);
             settled = true;

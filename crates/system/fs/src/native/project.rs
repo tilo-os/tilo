@@ -161,7 +161,7 @@ fn record_key(e: &TreeEntry) -> Option<[u8; 16]> {
 /// arrive, before applying what it can in version order.
 const HOLD_LIMIT: Duration = Duration::from_secs(60);
 
-/// Directory at the room's root where versions are prepared before they
+/// Directory at the workspace's root where versions are prepared before they
 /// are renamed into place. Its name, like every staging name, is never
 /// captured.
 pub const STAGING_AREA: &str = ".tilo-staging-area";

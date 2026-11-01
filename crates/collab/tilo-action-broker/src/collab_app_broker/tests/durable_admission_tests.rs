@@ -59,7 +59,7 @@ fn durable_fixture(
         let mut tree = WorkspaceTree::default();
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(71),
-            "Durable room",
+            "Durable workspace",
         );
         workspace.set_owner(principal_id_for_root(root_key.verifying_key().to_bytes()));
         tree.workspaces.push(workspace);
@@ -723,7 +723,7 @@ fn invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplica
 }
 
 #[test]
-fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
+fn invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely() {
     for disconnected in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (mut fixture, caller, request) = durable_fixture(root.path(), None);
@@ -747,7 +747,7 @@ fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
             .lock()
             .unwrap()
             .insert(71);
-        let original_room = fixture
+        let original_workspace = fixture
             .state
             .surfaces
             .lock()
@@ -780,7 +780,7 @@ fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
             .get_mut(&71)
             .unwrap()
             .route
-            .cluster_id = original_room;
+            .cluster_id = original_workspace;
         let admitted = fixture
             .state
             .start_verified_invocation(&caller, &request, None)
@@ -795,52 +795,6 @@ fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
         assert!(cancelled.cancellation_requested);
         // A durable cancellation request acknowledges receipt only; it
         // does not assert that the running external effect stopped.
-        use tilo_delivery_protocol::{
-            peer_actions::{ActionMessage, DirectedAction},
-            transport_v2,
-        };
-        let host = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let cancel = DirectedAction {
-            room: uuid::Uuid::parse_str(&caller.room).unwrap(),
-            request_id: uuid::Uuid::new_v4(),
-            source: [52; 32],
-            target: host.verifying_key().to_bytes(),
-            message: ActionMessage::Cancel {
-                invocation: request.invocation,
-            },
-        };
-        // The broker's reply path answers exactly this cancel: same
-        // room and request, reversed direction, the same invocation.
-        let acknowledgement = crate::peer_actions::bounded_reply(
-            &cancel,
-            ActionMessage::CancellationRequested {
-                invocation: request.invocation,
-            },
-        );
-        assert_eq!(
-            acknowledgement,
-            DirectedAction {
-                room: cancel.room,
-                request_id: cancel.request_id,
-                source: cancel.target,
-                target: cancel.source,
-                message: ActionMessage::CancellationRequested {
-                    invocation: request.invocation,
-                },
-            }
-        );
-        // And it survives the private lane the relay carries, signed.
-        assert!(cancel.validate() && acknowledgement.validate());
-        let reply = transport_v2::EnvelopeV2::SignedDirected(
-            tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
-                &acknowledgement,
-                tilo_clock::unix_now_ns(),
-                &host,
-            )
-            .unwrap(),
-        );
-        let encoded = transport_v2::encode(&reply).unwrap();
-        assert_eq!(transport_v2::decode(&encoded[4..]).unwrap(), reply);
         if disconnected {
             fixture.state.remove_connection(71);
         } else {
@@ -894,8 +848,8 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
         fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
             false
         }
-        fn note_acted_on(&self, app: &str, room: &str) {
-            self.0.lock().unwrap().push((app.into(), room.into()));
+        fn note_acted_on(&self, app: &str, workspace: &str) {
+            self.0.lock().unwrap().push((app.into(), workspace.into()));
         }
     }
     tokio::task::LocalSet::new()
@@ -912,7 +866,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
                 delivered: invocation_delivery_notice(
                     &services,
                     "so.tilo.notes".into(),
-                    "room-7".into(),
+                    "workspace-7".into(),
                 ),
             };
             assert!(recording.0.lock().unwrap().is_empty());
@@ -929,7 +883,7 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
             stream.next().await.unwrap();
             assert_eq!(
                 *recording.0.lock().unwrap(),
-                vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                vec![("so.tilo.notes".to_owned(), "workspace-7".to_owned())]
             );
             assert!(
                 invocation_delivery_notice(&HostServices::default(), "a".into(), "r".into())

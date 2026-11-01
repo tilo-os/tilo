@@ -16,7 +16,7 @@ impl StatePeer {
         self.lookup_exact_document_parts(
             *envelope.author.as_bytes(),
             app,
-            &self.core.room,
+            &self.core.workspace,
             record,
             envelope,
             now,
@@ -102,7 +102,7 @@ impl StatePeer {
         }
         let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
         if !admissions.iter().any(|entry| {
-            entry.room() == self.core.room
+            entry.workspace() == self.core.workspace
                 && entry.app() == app
                 && entry.record() == record
                 && entry.author() == author
@@ -168,7 +168,8 @@ mod tests {
     fn local_exact_retry_recognizes_recorded_envelope_without_mutation_or_freshness_reset() {
         let (peer, envelope, _, _, now) = admitted();
         let expected =
-            DocumentAdmission::from_op(peer.room(), "test.app", "tab:1", &envelope).unwrap();
+            DocumentAdmission::from_op(peer.workspace_id(), "test.app", "tab:1", &envelope)
+                .unwrap();
         let before = peer.durable().unwrap();
         for time in [now, now + Duration::from_secs(3600)] {
             assert_eq!(

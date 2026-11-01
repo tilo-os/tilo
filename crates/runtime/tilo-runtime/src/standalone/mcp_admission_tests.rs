@@ -9,7 +9,7 @@ struct Fixture {
     /// tests leave the thread scoped to a profile whose registry names no
     /// identity, and reading custody from disk needs one.
     _profile: tilo_paths::ProfileScope,
-    room: RoomId,
+    workspace: RoomId,
     ended: Arc<SessionAdmission>,
     other: Arc<SessionAdmission>,
 }
@@ -21,8 +21,8 @@ impl Fixture {
         // reach the machine's own identity store.
         let profile = tilo_paths::scope_profile(std::env::temp_dir());
 
-        let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
-        let (joined, directory) = Joined::test_hosting(room).await;
+        let workspace = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let (joined, directory) = Joined::test_hosting(workspace).await;
         let joined =
             Arc::try_unwrap(joined).unwrap_or_else(|_| panic!("fixture holds no sessions"));
         let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
@@ -30,7 +30,7 @@ impl Fixture {
         );
         let admit = || {
             joined
-                .admit_mcp_execution(&room.to_string(), &actor)
+                .admit_mcp_execution(&workspace.to_string(), &actor)
                 .unwrap()
         };
         let (ended, other) = (admit(), admit());
@@ -38,7 +38,7 @@ impl Fixture {
             joined,
             directory,
             _profile: profile,
-            room,
+            workspace,
             ended,
             other,
         }
@@ -47,7 +47,7 @@ impl Fixture {
     /// The registry's live admissions, then one of them ends normally before
     /// they are rechecked.
     fn snapshot_then_end_one(&self) -> Vec<Arc<SessionAdmission>> {
-        let admissions = self.joined.executions.admissions(self.room).unwrap();
+        let admissions = self.joined.executions.admissions(self.workspace).unwrap();
         assert_eq!(admissions.len(), 2);
         self.ended.caller().retire_execution();
         admissions
@@ -119,7 +119,7 @@ impl Fixture {
         .unwrap();
         self.joined.install_custody_paths(paths);
         self.joined
-            .admit_mcp_execution(&self.room.to_string(), &actor(&self.joined))
+            .admit_mcp_execution(&self.workspace.to_string(), &actor(&self.joined))
             .unwrap()
     }
 }
@@ -144,13 +144,13 @@ fn identity_paths(root: &std::path::Path) -> IdentityPaths {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_execution_ending_after_the_snapshot_does_not_refuse_the_room() {
+async fn an_execution_ending_after_the_snapshot_does_not_refuse_the_workspace() {
     let fixture = Fixture::new().await;
     let admissions = fixture.snapshot_then_end_one();
     fixture
         .joined
         .recheck_admissions(&admissions)
-        .expect("another execution ending normally cannot refuse current room custody");
+        .expect("another execution ending normally cannot refuse current workspace custody");
     assert!(fixture.other.caller().execution_is_live());
     fixture.other.check(&fixture.joined).unwrap();
     assert_eq!(
@@ -166,7 +166,7 @@ async fn an_execution_ending_after_the_snapshot_cannot_hide_changed_custody() {
     let fixture = Fixture::new().await;
     let admissions = fixture.snapshot_then_end_one();
     // The device certificate the runs were admitted with no longer verifies:
-    // a confirmed change of the pinned material, while the room and the
+    // a confirmed change of the pinned material, while the workspace and the
     // other run's certificate stay as they were.
     fixture.install_device_cert_label("unsigned label");
     assert_eq!(
@@ -227,7 +227,11 @@ async fn custody_that_cannot_be_read_keeps_the_run() {
     execution
         .check(&fixture.joined)
         .expect("custody that reads again admits the same run");
-    let snapshot = fixture.joined.executions.admissions(fixture.room).unwrap();
+    let snapshot = fixture
+        .joined
+        .executions
+        .admissions(fixture.workspace)
+        .unwrap();
     fixture
         .joined
         .recheck_admissions(&snapshot)

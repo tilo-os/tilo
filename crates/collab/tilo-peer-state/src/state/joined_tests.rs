@@ -1,10 +1,10 @@
-//! A replica built from a join's answer takes the room's roster as the
-//! room's evidence: a guest whose certificate expired since is still in it,
+//! A replica built from a join's answer takes the workspace's roster as the
+//! workspace's evidence: a guest whose certificate expired since is still in it,
 //! and is still refused whenever it acts.
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 
 fn certificate(root: &SigningKey, device: &SigningKey, expires_at_ns: Option<u64>) -> DeviceCert {
     let mut certificate = DeviceCert {
@@ -41,7 +41,7 @@ fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still
 
     assert!(
         StatePeer::new(
-            ROOM,
+            WORKSPACE,
             authority.clone(),
             roster.clone(),
             RevocationList::new(),
@@ -50,8 +50,8 @@ fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still
         .is_err(),
         "a replica the device builds itself admits only current certificates"
     );
-    let peer = StatePeer::joined(ROOM, authority, roster, RevocationList::new(), now)
-        .expect("the room's roster is its evidence, an expired guest included");
+    let peer = StatePeer::joined(WORKSPACE, authority, roster, RevocationList::new(), now)
+        .expect("the workspace's roster is its evidence, an expired guest included");
     assert!(
         peer.certificate(&guest.device_public_key, now).is_err(),
         "the expired guest's expiry is still checked when it is used"
@@ -70,7 +70,7 @@ fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate(
     let expired_authority = certificate(&host_root, &host_device, Some(now_ns(now) - 1));
     assert!(
         StatePeer::joined(
-            ROOM,
+            WORKSPACE,
             expired_authority.clone(),
             vec![expired_authority],
             RevocationList::new(),
@@ -89,7 +89,7 @@ fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate(
     forged.device_label = "someone else".into();
     assert!(
         StatePeer::joined(
-            ROOM,
+            WORKSPACE,
             authority.clone(),
             vec![authority, forged],
             RevocationList::new(),
@@ -101,7 +101,7 @@ fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate(
 }
 
 #[test]
-fn a_relayed_document_is_decided_by_the_rooms_governance_without_being_taken_in() {
+fn a_relayed_document_is_decided_by_the_workspaces_governance_without_being_taken_in() {
     let (mut peer, _, member, _, now) = crate::admission_tests::seeded();
     let held = peer.document("test.app", "tab:1").unwrap();
     let message = peer

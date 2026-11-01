@@ -30,7 +30,7 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
 #[test]
 fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
     let (peer, _, _, cert, now) = seeded();
-    crate::room::POLICY_READS.with(|count| count.set(0));
+    crate::workspace::POLICY_READS.with(|count| count.set(0));
     let expected = peer.permissions(cert.device_public_key, now).unwrap();
     for _ in 0..100 {
         let actual = peer
@@ -45,7 +45,7 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
         assert_eq!(actual.person, expected.person);
     }
     assert!(
-        crate::room::POLICY_READS.with(std::cell::Cell::get) <= 1,
+        crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
         "unchanged policy data is decoded at most once"
     );
 }
@@ -109,10 +109,10 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     use automerge::ReadDoc;
     use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (key, cert, _, other, now) = fixtures();
-    let room_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut doc = crate::room::candidate(
+    let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::workspace::candidate(
         None,
-        &seed_room(room_id, &cert, &[cert.clone(), other.clone()]).unwrap(),
+        &seed_workspace(workspace_id, &cert, &[cert.clone(), other.clone()]).unwrap(),
     )
     .unwrap();
     doc.put(ROOT, "owner", "another-person").unwrap();
@@ -129,7 +129,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     let hold = Grant::new(
         "hold",
         Subject::Person(person.clone()),
-        TreePath::room(room_id),
+        TreePath::room(workspace_id),
         KindSet::UNDOABLE,
         Answer::Deny,
         Subject::person("another-person"),
@@ -147,7 +147,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         .map(|c| c.raw_bytes().to_vec())
         .collect();
     let mut peer = StatePeer::new(
-        room_id,
+        workspace_id,
         cert.clone(),
         vec![cert.clone(), other],
         RevocationList::new(),
@@ -156,7 +156,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     .unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: changes,
+            workspace_changes: changes,
             documents: vec![],
         },
         &key,
@@ -167,18 +167,18 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         peer.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
     );
-    let room_node = TreePath::room(room_id);
+    let workspace_node = TreePath::room(workspace_id);
     assert!(
         !peer
             .permissions(cert.device_public_key, now)
             .unwrap()
-            .allows(&room_node, ActionKind::Undoable, now)
+            .allows(&workspace_node, ActionKind::Undoable, now)
     );
     assert!(
         peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
             .unwrap()
             .allows(
-                &room_node,
+                &workspace_node,
                 ActionKind::Undoable,
                 now + Duration::from_secs(2)
             )
@@ -193,7 +193,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     peer.receive(
         cert.device_public_key,
         NeighbourMsg::SyncResp {
-            room: room_id.into(),
+            room: workspace_id.into(),
             changes,
         },
         now,
@@ -211,9 +211,9 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
 #[test]
 fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_action() {
     let (a, ac, _, bc, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut native = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -224,7 +224,7 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     document.put(ROOT, "value", "native").unwrap();
     document.commit_edit("fixture", "value");
     let seed = SeedState {
-        room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+        workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
         documents: vec![SeedDocument {
             app_id: "test.app".into(),
             record_id: "tab:1".into(),
@@ -233,8 +233,14 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
         }],
     };
     native.install_seed(seed, &a, now).unwrap();
-    let mut browser =
-        StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
+    let mut browser = StatePeer::new(
+        workspace,
+        ac.clone(),
+        vec![ac, bc],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
     let app = native
         .publication_mut()
         .signed_snapshots(&a, now)
@@ -248,7 +254,11 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     );
     assert!(browser.rows().is_empty());
     browser
-        .receive(a.verifying_key().to_bytes(), native.room_message(), now)
+        .receive(
+            a.verifying_key().to_bytes(),
+            native.workspace_message(),
+            now,
+        )
         .unwrap();
     assert_eq!(browser.rows(), native.rows());
     assert!(
@@ -259,7 +269,7 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     );
     let restored = StatePeer::restore(
         &browser.durable().unwrap(),
-        room,
+        workspace,
         native.owner_certificates()[0].clone(),
         vec![native.owner_certificates()[0].clone()],
         RevocationList::new(),
@@ -269,11 +279,11 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     assert_eq!(restored.rows(), browser.rows());
 }
 #[test]
-fn source_room_signature_and_aged_checkpoint_fail_closed() {
+fn source_workspace_signature_and_aged_checkpoint_fail_closed() {
     let (a, ac, _, bc, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut native = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -286,7 +296,8 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     native
         .install_seed(
             SeedState {
-                room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
+                    .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
                     record_id: "tab:1".into(),
@@ -299,7 +310,7 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
         )
         .unwrap();
     let mut receiver = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac, bc.clone()],
         RevocationList::new(),
@@ -307,7 +318,11 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     )
     .unwrap();
     receiver
-        .receive(a.verifying_key().to_bytes(), native.room_message(), now)
+        .receive(
+            a.verifying_key().to_bytes(),
+            native.workspace_message(),
+            now,
+        )
         .unwrap();
     let message = native
         .publication_mut()
@@ -339,14 +354,14 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     );
     assert!(receiver.rows().is_empty());
 }
-/// [`seeded`], with the room owned by another person and the fixture's
+/// [`seeded`], with the workspace owned by another person and the fixture's
 /// person an Editor of it: a member whose grants a governor can narrow.
 pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut doc = crate::room::candidate(
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::workspace::candidate(
         None,
-        &seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+        &seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
     )
     .unwrap();
     doc.put(ROOT, "owner", "another-person").unwrap();
@@ -357,13 +372,13 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
         automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
     )
     .unwrap();
-    let room_changes = doc
+    let workspace_changes = doc
         .get_changes(&[])
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
     let mut native = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac, bc.clone()],
         RevocationList::new(),
@@ -373,7 +388,7 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
     native
         .install_seed(
             SeedState {
-                room_changes,
+                workspace_changes,
                 documents: vec![],
             },
             &a,
@@ -417,7 +432,7 @@ pub(crate) fn add_editor(
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: owner,
             role: MemberRole::Editor,
             nonce: [53; 16],
@@ -459,9 +474,9 @@ pub(crate) fn add_editor(
 
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut native = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -474,7 +489,8 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
     native
         .install_seed(
             SeedState {
-                room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
+                    .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
                     record_id: "tab:1".into(),
@@ -523,7 +539,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],
@@ -645,7 +661,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
 
     let mut restored = StatePeer::restore(
         &peer.durable().unwrap(),
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -708,16 +724,16 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .contains("already redeemed"),
         "invite A remains spent after invite B updates the same original device"
     );
-    let NeighbourMsg::SyncResp { changes, room } = restored.room_message() else {
+    let NeighbourMsg::SyncResp { changes, room } = restored.workspace_message() else {
         panic!("unexpected fixture shape")
     };
-    let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
-    let before = room_doc.get_heads();
-    room_doc.set_actor(automerge::ActorId::from(
+    let mut workspace_doc = crate::workspace::candidate(None, &changes).unwrap();
+    let members = workspace_doc.get(ROOT, "members").unwrap().unwrap().1;
+    let before = workspace_doc.get_heads();
+    workspace_doc.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    room_doc
+    workspace_doc
         .put(
             &members,
             hex::encode(guest_cert.user_public_key),
@@ -726,12 +742,12 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             ),
         )
         .unwrap();
-    room_doc.commit_edit("fixture", "fixture");
+    workspace_doc.commit_edit("fixture", "fixture");
     restored
         .receive_from(
             TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
-                changes: room_doc
+                changes: workspace_doc
                     .get_changes(&before)
                     .into_iter()
                     .map(|change| change.raw_bytes().to_vec())
@@ -846,7 +862,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 10,
-            room: base.room().into(),
+            room: base.workspace_id().into(),
             issuer: base.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [70; 16],
@@ -911,7 +927,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     receiver
         .receive_from(
             TransportOrigin::RelayDelta(authority),
-            left.room_message(),
+            left.workspace_message(),
             now,
         )
         .unwrap();
@@ -919,7 +935,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     let error = receiver
         .receive_from(
             TransportOrigin::RelayDelta(authority),
-            right.room_message(),
+            right.workspace_message(),
             now,
         )
         .unwrap_err();
@@ -941,10 +957,10 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         sign_join_proof, verify_join_proof,
     };
     let (mut base, authority_key, delegate_key, _, now) = seeded();
-    let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
+    let NeighbourMsg::SyncResp { changes, room } = base.workspace_message() else {
         panic!("unexpected fixture shape")
     };
-    let mut legacy = crate::room::candidate(None, &changes).unwrap();
+    let mut legacy = crate::workspace::candidate(None, &changes).unwrap();
     let before = legacy.get_heads();
     legacy.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
@@ -990,7 +1006,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     sign_device_cert(&mut guest, &guest_root).unwrap();
     let grant = |nonce, issuer| InviteGrant {
         workspace_id: 11,
-        room: base.room().into(),
+        room: base.workspace_id().into(),
         issuer,
         role: MemberRole::Editor,
         nonce: [nonce; 16],
@@ -1042,20 +1058,20 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     merged
         .receive_from(
             TransportOrigin::RelayDelta(authority),
-            left.room_message(),
+            left.workspace_message(),
             now,
         )
         .unwrap();
     merged
         .receive_from(
             TransportOrigin::RelayDelta(authority),
-            right.room_message(),
+            right.workspace_message(),
             now,
         )
         .unwrap();
     let mut restored = StatePeer::restore(
         &merged.durable().unwrap(),
-        merged.room(),
+        merged.workspace_id(),
         merged.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -1087,10 +1103,14 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
 #[test]
 fn concurrent_receipts_for_one_invite_converge_in_either_order() {
     let (base, authority_key, _, _, now) = seeded();
-    let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
+    let NeighbourMsg::SyncResp {
+        changes,
+        room: workspace,
+    } = base.workspace_message()
+    else {
         panic!("unexpected fixture shape")
     };
-    let mut document = crate::room::candidate(None, &changes).unwrap();
+    let mut document = crate::workspace::candidate(None, &changes).unwrap();
     let base_heads = document.get_heads();
     let mut left = document.fork();
     let mut right = document.fork();
@@ -1129,20 +1149,20 @@ fn concurrent_receipts_for_one_invite_converge_in_either_order() {
             .into_iter()
             .map(|change| change.raw_bytes().to_vec())
             .collect(),
-        room: room.clone(),
+        room: workspace.clone(),
     };
     let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
     let receive = |first: NeighbourMsg, second: NeighbourMsg| {
         let mut receiver = base.clone();
         receiver.receive_from(from, first, now).unwrap();
         receiver.receive_from(from, second, now).unwrap();
-        receiver.room_message()
+        receiver.workspace_message()
     };
     let governed = |message: NeighbourMsg| {
         let NeighbourMsg::SyncResp { changes, .. } = message else {
-            panic!("room message is a SyncResp")
+            panic!("workspace message is a SyncResp")
         };
-        crate::room::governance_of(Some(&crate::room::candidate(None, &changes).unwrap()))
+        crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
     };
     let one = governed(receive(message(left.clone()), message(right.clone())));
     let other = governed(receive(message(right), message(left)));
@@ -1155,7 +1175,7 @@ fn retained_relay_replay_accepts_certified_document_after_live_freshness_window(
     let (mut governor, authority, _, browser_cert, authored_at) = seeded();
     let replayed_at = authored_at + Duration::from_secs(301);
     let mut browser = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         vec![browser_cert],
         RevocationList::new(),
@@ -1194,7 +1214,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
         .bootstrap_messages(&a, now)
         .unwrap();
     let mut fresh = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc.clone()],
         RevocationList::new(),
@@ -1233,7 +1253,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let checkpoint = fresh.durable().unwrap();
     let mut reload = StatePeer::restore(
         &checkpoint,
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1268,7 +1288,7 @@ fn state_on_presence_cannot_install_governance_or_advance_watermarks() {
         .bootstrap_messages(&a, now)
         .unwrap();
     let mut fresh = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1307,7 +1327,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
         .bootstrap_messages(&a, now)
         .unwrap();
     let mut fresh = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1359,14 +1379,18 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
         .publication_mut()
         .bootstrap_messages(&a, now)
         .unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = messages[0].clone() else {
+    let NeighbourMsg::SyncResp {
+        changes,
+        room: workspace,
+    } = messages[0].clone()
+    else {
         panic!("unexpected fixture shape")
     };
-    let mut doc = room::candidate(None, &changes).unwrap();
+    let mut doc = workspace::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
     doc.commit_edit("fixture", "fixture");
     let legacy = NeighbourMsg::SyncResp {
-        room: room.clone(),
+        room: workspace.clone(),
         changes: doc
             .get_changes(&[])
             .into_iter()
@@ -1374,7 +1398,7 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
             .collect(),
     };
     let mut receiver = StatePeer::new(
-        &room,
+        &workspace,
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1399,21 +1423,25 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
             .deferred
     );
     assert!(receiver.rows().is_empty());
-    let mut candidate = room::candidate(None, &changes).unwrap();
+    let mut candidate = workspace::candidate(None, &changes).unwrap();
     let mut rows = coverage::entries(&candidate).unwrap();
     let entry = rows.values_mut().next().unwrap();
     entry.sequence = 0;
     let regressed = entry.clone();
     coverage::put(&mut candidate, regressed).unwrap();
     assert!(
-        coverage::monotonic(Some(&room::candidate(None, &changes).unwrap()), &candidate).is_err()
+        coverage::monotonic(
+            Some(&workspace::candidate(None, &changes).unwrap()),
+            &candidate
+        )
+        .is_err()
     );
 }
 #[test]
 fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
     let (mut native, a, _, bc, now) = seeded();
     let mut receiver = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1460,7 +1488,7 @@ fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
 fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
     let (mut native, a, _, bc, now) = seeded();
     let mut receiver = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc.clone()],
         RevocationList::new(),
@@ -1510,7 +1538,7 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
     assert!(outcome.metadata_changed);
     let mut restored = StatePeer::restore(
         &receiver.durable().unwrap(),
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1567,7 +1595,7 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
         .bootstrap_messages(&key, created)
         .unwrap();
     let mut receiver = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![native.owner_certificates()[0].clone(), browser_cert],
         RevocationList::new(),
@@ -1615,7 +1643,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -1653,7 +1681,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     assert!(receiver.certificates().contains(&bc));
     let restored = StatePeer::restore(
         &receiver.durable().unwrap(),
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -1691,7 +1719,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     );
     let mut restored = StatePeer::restore(
         &receiver.durable().unwrap(),
-        native.room(),
+        native.workspace_id(),
         native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1731,7 +1759,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
     for existing in [false, true] {
         let (mut native, a, b, bc, now) = seeded();
         let mut receiver = StatePeer::new(
-            native.room(),
+            native.workspace_id(),
             native.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -1757,8 +1785,8 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
             .publication_mut()
             .bootstrap_messages(&a, now)
             .unwrap();
-        // Install exactly the room we will drain again: the existing path then
-        // has no changed room heads, only the deferred metadata obligation.
+        // Install exactly the workspace we will drain again: the existing path then
+        // has no changed workspace heads, only the deferred metadata obligation.
         if existing {
             receiver
                 .receive_from(
@@ -1833,7 +1861,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         }
         let mut restored = StatePeer::restore(
             &receiver.durable().unwrap(),
-            native.room(),
+            native.workspace_id(),
             native.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
@@ -1862,7 +1890,7 @@ fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
     let unchanged = bytes.clone();
     let error = StatePeer::restore(
         &bytes,
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
@@ -1909,7 +1937,7 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
     let mut receiver = StatePeer::restore(
         &receiver.durable().unwrap(),
-        receiver.room(),
+        receiver.workspace_id(),
         receiver.owner_certificates()[0].clone(),
         vec![author_cert],
         RevocationList::new(),
@@ -1952,7 +1980,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     let outcome = existing
         .receive_from(
             TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-            governor.room_message(),
+            governor.workspace_message(),
             now,
         )
         .unwrap();
@@ -1987,7 +2015,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     );
     let restored = StatePeer::restore(
         &existing.durable().unwrap(),
-        existing.room(),
+        existing.workspace_id(),
         existing.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -2039,7 +2067,11 @@ fn expired_known_identity_does_not_block_governed_join() {
     assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
     assert!(
         existing
-            .receive(a.verifying_key().to_bytes(), governor.room_message(), later)
+            .receive(
+                a.verifying_key().to_bytes(),
+                governor.workspace_message(),
+                later
+            )
             .unwrap()
             .metadata_changed
     );
@@ -2052,7 +2084,7 @@ fn expired_known_identity_does_not_block_governed_join() {
     assert!(existing.permissions(next.device_public_key, later).is_ok());
     let restored = StatePeer::restore(
         &existing.durable().unwrap(),
-        existing.room(),
+        existing.workspace_id(),
         existing.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -2069,7 +2101,7 @@ fn expired_known_identity_does_not_block_governed_join() {
         "expired historical certificates restore but never regain current access"
     );
     let mut empty = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         next.clone(),
         vec![],
         RevocationList::new(),
@@ -2078,7 +2110,11 @@ fn expired_known_identity_does_not_block_governed_join() {
     .unwrap();
     assert!(
         empty
-            .receive(a.verifying_key().to_bytes(), governor.room_message(), later)
+            .receive(
+                a.verifying_key().to_bytes(),
+                governor.workspace_message(),
+                later
+            )
             .is_err(),
         "previously unknown expired certificate cannot be imported"
     );
@@ -2116,7 +2152,7 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
     let future = make(95, now_ns + 1_000_000_000, None);
     let error = StatePeer::restore(
         &peer.durable().unwrap(),
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![future],
         RevocationList::new(),
@@ -2129,7 +2165,7 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
     let backwards = make(96, now_ns, Some(now_ns));
     let error = StatePeer::restore(
         &peer.durable().unwrap(),
-        peer.room(),
+        peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![backwards],
         RevocationList::new(),
@@ -2141,10 +2177,6 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
 }
 
 #[test]
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `room` are the domain's own names"
-)]
 fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
     let later = now + Duration::from_secs(2);
@@ -2167,9 +2199,9 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
         signature: [0; 64],
     };
     sign_device_cert(&mut authority, &root).unwrap();
-    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let workspace = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     let mut peer = StatePeer::new(
-        room,
+        workspace,
         authority.clone(),
         vec![authority.clone()],
         RevocationList::new(),
@@ -2178,7 +2210,7 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
     .unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+            workspace_changes: seed_workspace(workspace, &authority, &[authority.clone()]).unwrap(),
             documents: vec![],
         },
         &authority_key,
@@ -2188,7 +2220,7 @@ fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
 
     let restored = StatePeer::restore(
         &peer.durable().unwrap(),
-        room,
+        workspace,
         authority.clone(),
         vec![],
         RevocationList::new(),
@@ -2213,10 +2245,10 @@ fn governed_import_is_atomic_even_for_direct_admission() {
     valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
     sign_device_cert(&mut valid, &root).unwrap();
     source.admit_certificate(valid, &a, now).unwrap();
-    let NeighbourMsg::SyncResp { changes, room } = source.room_message() else {
+    let NeighbourMsg::SyncResp { changes, room } = source.workspace_message() else {
         panic!("unexpected fixture shape")
     };
-    let mut candidate = room::candidate(None, &changes).unwrap();
+    let mut candidate = workspace::candidate(None, &changes).unwrap();
     let (_, identities) = candidate.get(ROOT, "peer_identities_v1").unwrap().unwrap();
     candidate
         .put(
@@ -2255,9 +2287,9 @@ fn governed_import_is_atomic_even_for_direct_admission() {
 )]
 fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let (a, ac, b, bc, now) = fixtures();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut native = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -2270,7 +2302,8 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     native
         .install_seed(
             SeedState {
-                room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
+                    .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
                     record_id: "tab:1".into(),
@@ -2283,7 +2316,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
         )
         .unwrap();
     let mut browser = StatePeer::new(
-        room,
+        workspace,
         ac.clone(),
         vec![ac.clone(), bc.clone()],
         RevocationList::new(),
@@ -2339,7 +2372,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     );
     let bytes = browser.durable().unwrap();
     let mut browser =
-        StatePeer::restore(&bytes, room, ac, vec![bc], RevocationList::new(), now).unwrap();
+        StatePeer::restore(&bytes, workspace, ac, vec![bc], RevocationList::new(), now).unwrap();
     crate::state::CHECKPOINT_DECODES.with(|count| count.set(0));
     for _ in 0..100 {
         let fork = browser.clone();
@@ -2447,7 +2480,7 @@ fn guest_redemption(
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [nonce; 16],
@@ -2547,7 +2580,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     );
 }
 
-/// The governor records when the room admitted a person, once: a role
+/// The governor records when the workspace admitted a person, once: a role
 /// change keeps it, so the numbers namesakes are told apart by never shift,
 /// and removal forgets it.
 #[test]
@@ -2556,11 +2589,11 @@ fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
     let (_, root) = add_editor(&mut peer, &authority_key, now);
     let person = hex::encode(root);
     let joined = |peer: &StatePeer| {
-        let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
+        let NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message() else {
             panic!("unexpected fixture shape")
         };
-        let doc = crate::room::candidate(None, &changes).unwrap();
-        crate::room::extract_governed_fields(&doc)
+        let doc = crate::workspace::candidate(None, &changes).unwrap();
+        crate::workspace::extract_governed_fields(&doc)
             .1
             .joined
             .get(&person)

@@ -7,7 +7,7 @@ use crate::BrokerError;
 /// apps it starts before releasing their launcher.
 struct LaunchedHere {
     app: String,
-    room: String,
+    workspace: String,
 }
 impl crate::services::LauncherServices for LaunchedHere {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
@@ -22,17 +22,17 @@ impl crate::services::LauncherServices for LaunchedHere {
     ) -> Result<(), String> {
         Err("this broker launches nothing".into())
     }
-    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        pid == std::process::id() && app == self.app && room == self.room
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        pid == std::process::id() && app == self.app && workspace == self.workspace
     }
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         _window_instance: Option<u64>,
     ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
-        Ok(self.attest_process(pid, app, room).then_some(
+        Ok(self.attest_process(pid, app, workspace).then_some(
             crate::services::AuthenticatedApplicationLaunch {
                 creation: None,
                 continuation_instance: None,
@@ -50,7 +50,7 @@ fn launched_app_connection(
     directories: &Rc<LocalActionDirectoryRegistry>,
     peer: u64,
     app: &str,
-    room: &str,
+    workspace: &str,
 ) -> (
     runtime_collab::CollabClient,
     tokio::task::JoinHandle<Result<(), BrokerError>>,
@@ -61,7 +61,7 @@ fn launched_app_connection(
     let handoff = serde_json::to_vec(&serde_json::json!({
         "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
         "app_id": app,
-        "workspace_id": room,
+        "workspace_id": workspace,
     }))
     .unwrap();
     client
@@ -129,7 +129,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
             let (app, _server, _client) = launched_app_connection(
@@ -191,7 +191,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 let journal = rig.state.journal.lock().unwrap();
                 let journal = journal.as_ref().unwrap().as_ref().unwrap();
                 let key = InvocationKey {
-                    room: env.route.cluster_id.clone(),
+                    workspace: env.route.cluster_id.clone(),
                     host: journal.host(),
                     invocation: tilo_actions::InvocationId(report.invocation),
                     owner: InvocationOwner::AuthenticatedLocal {
@@ -210,7 +210,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 assert_eq!(record.intent["app_id"], env.route.app_id);
             }
 
-            // Another app's route in the same room, which this app declares
+            // Another app's route in the same workspace, which this app declares
             // no read of: the connection may not join it, and no worker
             // speaks for it.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
@@ -257,7 +257,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
             services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
             let person = tilo_action_policy::Subject::Person(principal_id_for_root(
@@ -380,7 +380,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
             let mut services = env.membership.services();
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
             let (window, _server, _client) = launched_app_connection(
@@ -530,18 +530,18 @@ impl crate::services::LauncherServices for RenamedHere {
     ) -> Result<(), String> {
         self.launched.launch(app, workspace, record, place)
     }
-    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        self.launched.attest_process(pid, app, room)
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.launched.attest_process(pid, app, workspace)
     }
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         window_instance: Option<u64>,
     ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
         self.launched
-            .authenticated_launch(pid, app, room, window_instance)
+            .authenticated_launch(pid, app, workspace, window_instance)
     }
     fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
         self.earlier.clone()
@@ -568,7 +568,7 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
             services.launcher = Some(Arc::new(RenamedHere {
                 launched: LaunchedHere {
                     app: RENAMED.to_owned(),
-                    room: env.route.cluster_id.clone(),
+                    workspace: env.route.cluster_id.clone(),
                 },
                 earlier,
             }));
@@ -618,7 +618,7 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
             let mut services = env.membership.services();
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: RENAMED.to_owned(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
             }));
             let rig = Rig::with_services(&env, services).await;
             let (claiming, _server, _client) = launched_app_connection(

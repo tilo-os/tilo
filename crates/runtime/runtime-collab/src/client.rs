@@ -377,43 +377,46 @@ impl CollabClient {
         }
     }
 
-    /// Where the room `channel_id` names stands for apps on this device.
+    /// Where the workspace `channel_id` names stands for apps on this device.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the connection fails.
-    pub async fn room_status(&self, channel_id: &str) -> Result<crate::RoomStatus, NotAvailable> {
-        self.room(channel_id, None).await
+    pub async fn workspace_status(
+        &self,
+        channel_id: &str,
+    ) -> Result<crate::WorkspaceStatus, NotAvailable> {
+        self.workspace(channel_id, None).await
     }
 
-    /// Where the room stands once it is no longer `seen`.
+    /// Where the workspace stands once it is no longer `seen`.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the connection fails.
-    pub async fn await_room(
+    pub async fn await_workspace(
         &self,
         channel_id: &str,
-        seen: &crate::RoomStatus,
-    ) -> Result<crate::RoomStatus, NotAvailable> {
-        self.room(channel_id, Some(seen.clone())).await
+        seen: &crate::WorkspaceStatus,
+    ) -> Result<crate::WorkspaceStatus, NotAvailable> {
+        self.workspace(channel_id, Some(seen.clone())).await
     }
 
-    async fn room(
+    async fn workspace(
         &self,
         channel_id: &str,
-        seen: Option<crate::RoomStatus>,
-    ) -> Result<crate::RoomStatus, NotAvailable> {
+        seen: Option<crate::WorkspaceStatus>,
+    ) -> Result<crate::WorkspaceStatus, NotAvailable> {
         match self
             .client
-            .call(Operation::Room {
+            .call(Operation::Workspace {
                 channel: channel_id.to_owned(),
                 seen,
             })
             .await
             .map_err(failure)?
         {
-            Reply::Room(status) => Ok(status),
+            Reply::Workspace(status) => Ok(status),
             other => Err(unexpected(&other)),
         }
     }

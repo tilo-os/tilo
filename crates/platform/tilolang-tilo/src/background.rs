@@ -1,4 +1,4 @@
-//! Work that reads a whole room off the frame path: a package's index built from the record, and
+//! Work that reads a whole workspace off the frame path: a package's index built from the record, and
 //! publication's first trees read from a [`crate::store::Snapshot`], each on a thread of its own;
 //! a frame after their end takes the result in.
 

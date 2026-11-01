@@ -8,7 +8,7 @@ use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 const SECRET: &str = "a sentence only key holders may read";
@@ -16,7 +16,7 @@ const SECRET: &str = "a sentence only key holders may read";
 struct Fixture {
     /// A durable replica holding the seeded record and no channel key.
     host: StatePeer,
-    /// The room's governing device, which holds the owner role.
+    /// The workspace's governing device, which holds the owner role.
     owner: SigningKey,
     /// The owner's second device.
     other: SigningKey,
@@ -52,16 +52,26 @@ fn fixture() -> Fixture {
         .checked_add(Duration::from_secs(2000))
         .unwrap();
     let roster = vec![authority.clone(), other_cert, editor_cert.clone()];
-    let mut room = room::candidate(None, &seed_room(ROOM, &authority, &roster).unwrap()).unwrap();
-    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
-    put_member(&mut room, &caps, editor_cert.user_public_key, Role::Editor).unwrap();
-    let room_changes = room
+    let mut workspace = workspace::candidate(
+        None,
+        &seed_workspace(WORKSPACE, &authority, &roster).unwrap(),
+    )
+    .unwrap();
+    let caps = workspace.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(
+        &mut workspace,
+        &caps,
+        editor_cert.user_public_key,
+        Role::Editor,
+    )
+    .unwrap();
+    let workspace_changes = workspace
         .get_changes(&[])
         .iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
     let mut native = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         authority.clone(),
         roster.clone(),
         RevocationList::new(),
@@ -74,7 +84,7 @@ fn fixture() -> Fixture {
     native
         .install_seed(
             SeedState {
-                room_changes,
+                workspace_changes,
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
                     record_id: RECORD.into(),
@@ -86,8 +96,14 @@ fn fixture() -> Fixture {
             now,
         )
         .unwrap();
-    let mut host =
-        StatePeer::new(ROOM, authority.clone(), roster, RevocationList::new(), now).unwrap();
+    let mut host = StatePeer::new(
+        WORKSPACE,
+        authority.clone(),
+        roster,
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
     host.select_admission_v5().unwrap();
     for message in native
         .publication_mut()
@@ -124,7 +140,7 @@ impl Fixture {
     fn restore(&self, bytes: &[u8]) -> Result<StatePeer, String> {
         StatePeer::restore(
             bytes,
-            ROOM,
+            WORKSPACE,
             self.authority.clone(),
             vec![],
             RevocationList::new(),
@@ -134,11 +150,11 @@ impl Fixture {
 }
 
 fn channel() -> collab_types::ChannelId {
-    collab_types::document_channel_id(APP, ROOM, RECORD)
+    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
 }
 
 fn artifact() -> collab_types::ArtifactId {
-    collab_types::document_artifact_id(APP, ROOM, RECORD)
+    collab_types::document_artifact_id(APP, WORKSPACE, RECORD)
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
@@ -182,7 +198,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
     NeighbourMsg::AppDocument {
         peer: peer_handle(op.author.as_bytes()),
         app_id: APP.into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(op),
     }
@@ -200,7 +216,7 @@ fn signed(
         payload,
         artifact(),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         kind,
         now,
         seq,
@@ -252,7 +268,7 @@ fn write(
 
 /// `key`'s sealed checkpoint of `peer`'s record: the whole record as the key
 /// holder saved it, the first thing a host keeps at the head of a sealed
-/// channel and replays to a device joining the room.
+/// channel and replays to a device joining the workspace.
 fn checkpoint(
     peer: &StatePeer,
     keys: &ChannelContentKeys,
@@ -616,7 +632,7 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
     );
 }
 
-/// A public room's chat as its governor kept it after hard stops, opened
+/// A public workspace's chat as its governor kept it after hard stops, opened
 /// with the channel's keys: the record's base, the last member snapshot,
 /// the governor's own write, then two visitors' writes that build on a
 /// change of a third visitor's snapshot the governor had taken in and lost
@@ -640,7 +656,7 @@ fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns()
             Vec::new(),
             artifact(),
             Ed25519PublicKey::from_bytes([u8::try_from(seq).unwrap(); 32]),
-            collab_types::document_attestation_id(APP, ROOM, RECORD),
+            collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
             OpKind::Change,
             now,
             seq,
@@ -673,7 +689,7 @@ fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns()
         assert_eq!(
             sealed_compaction::merge_sealed(&document, &mut read_write).unwrap_err(),
             "sealed history does not merge into a complete record",
-            "as the room service refused to start on it"
+            "as the workspace service refused to start on it"
         );
         sealed_compaction::open_sealed(&document, &mut read_write).unwrap()
     };
@@ -711,7 +727,7 @@ fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns()
     );
 }
 
-/// The record's own writers fold its sealed history, not only the room's
+/// The record's own writers fold its sealed history, not only the workspace's
 /// governor: a device the record admits as a writer of it holds the channel
 /// keys, so compacting is part of writing it. A replica without the keys
 /// takes the checkpoint in, and the writes after it.
@@ -726,7 +742,7 @@ fn a_records_writer_compacts_the_history_it_holds() {
         admit(&mut f.host, &f.other, write, now);
     }
     let mut replica = f.host.clone();
-    // The room's editor is one of the record's writers.
+    // The workspace's editor is one of the record's writers.
     let editor = f.editor.clone();
     let compaction = mint(&mut f.host, &keys, &editor, now).unwrap();
     assert_eq!(
@@ -773,7 +789,7 @@ fn a_records_writer_compacts_the_history_it_holds() {
 /// device publishes its own checkpoint and the record goes on. Nothing else
 /// takes part.
 #[test]
-fn a_member_writes_past_its_bound_without_a_room_host() {
+fn a_member_writes_past_its_bound_without_a_workspace_host() {
     let mut f = fixture();
     let now = f.now;
     let keys = f.keys();
@@ -865,7 +881,7 @@ fn forged_compactions_are_refused() {
     refused(&mut f.host, &f.owner, message(impostor), now);
 
     let mut other_record = envelope_of(&forged(&f.host, &f.owner, &valid, now));
-    other_record.artifact = collab_types::document_artifact_id(APP, ROOM, "tab:2");
+    other_record.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
     collab_types::sign_op(&mut other_record, &f.owner).unwrap();
     refused(&mut f.host, &f.owner, message(other_record), now);
 
@@ -927,7 +943,7 @@ fn a_compaction_founds_a_route_a_replica_holds_none_of() {
     let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
 
     let mut fresh = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         f.authority.clone(),
         vec![],
         RevocationList::new(),
@@ -936,7 +952,7 @@ fn a_compaction_founds_a_route_a_replica_holds_none_of() {
     .unwrap();
     fresh.select_admission_v5().unwrap();
     fresh
-        .receive_from(origin(&f.owner), f.host.room_message(), now)
+        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
     assert!(
         fresh.document(APP, RECORD).is_none(),
@@ -959,7 +975,7 @@ fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
     let saved = checkpoint(&f.host, &keys, &f.owner, now);
 
     let mut fresh = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         f.authority.clone(),
         vec![],
         RevocationList::new(),
@@ -968,7 +984,7 @@ fn a_sealed_checkpoint_founds_the_route_its_deltas_change() {
     .unwrap();
     fresh.select_admission_v5().unwrap();
     fresh
-        .receive_from(origin(&f.owner), f.host.room_message(), now)
+        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
         .unwrap();
     // A change whose checkpoint this replica never saw waits for one.
     let waited = fresh
@@ -1207,7 +1223,7 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     );
 }
 
-/// Many records each short of their own bound fill the room's exact
+/// Many records each short of their own bound fill the workspace's exact
 /// admission index all the same: once it is half full, every sealed history
 /// worth folding is due, and compacting it frees the index.
 #[test]
@@ -1235,7 +1251,7 @@ fn a_half_full_admission_index_makes_every_sealed_history_due() {
             .exact_admissions
             .insert(&crate::admission::DocumentAdmission {
                 key: crate::admission::AdmissionKey {
-                    room: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     app: APP.into(),
                     record: "elsewhere".into(),
                     author: [9; 32],
@@ -1289,7 +1305,7 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
     assert_eq!(
         mutation.last().map(envelope_of),
         Some(compaction.clone()),
-        "behind the room change that carries the record's receipt"
+        "behind the workspace change that carries the record's receipt"
     );
     let bootstrap = host
         .clone()
@@ -1331,7 +1347,7 @@ fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
     let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
     admit(&mut host, &f.editor, sealed.clone(), now);
     let watermark = |peer: &StatePeer| {
-        crate::durability::entries(peer.admitted_room().unwrap())
+        crate::durability::entries(peer.admitted_workspace().unwrap())
             .unwrap()
             .get(&crate::coverage::route_key(APP, RECORD))
             .and_then(|receipt| {
@@ -1751,7 +1767,7 @@ fn sealer(
     keys: &ChannelContentKeys,
     record: &str,
 ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-    let artifact = collab_types::document_artifact_id(APP, ROOM, record);
+    let artifact = collab_types::document_artifact_id(APP, WORKSPACE, record);
     move |plaintext| {
         keys.seal_content(artifact, ContentRetention::Delta, plaintext)
             .map_err(|error| error.to_string())
@@ -1814,7 +1830,7 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
     let f = fixture();
     let record = "tab:2";
     let group = ChannelGroup::create(
-        collab_types::document_channel_id(APP, ROOM, record),
+        collab_types::document_channel_id(APP, WORKSPACE, record),
         MemberKey::generate("owner").unwrap(),
     )
     .unwrap();

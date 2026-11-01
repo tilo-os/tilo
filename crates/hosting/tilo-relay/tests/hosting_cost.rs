@@ -45,7 +45,7 @@ use std::time::{Instant, SystemTime};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use neighbour_wire::Retention;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_relay::{Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -367,7 +367,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     owner
         .install_seed(
             SeedState {
-                room_changes: seed_room(ROOM, &author.cert, &certificates).unwrap(),
+                workspace_changes: seed_workspace(ROOM, &author.cert, &certificates).unwrap(),
                 documents: ROUTES
                     .iter()
                     .zip(1u8..)

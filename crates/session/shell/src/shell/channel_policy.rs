@@ -391,7 +391,7 @@ fn channel_record(
     channel: ChannelId,
     route: Option<&ChannelRoute>,
 ) -> Option<tilo_action_policy::TreePath> {
-    let room = &workspace.policy.room;
+    let room = &workspace.policy.workspace;
     collab_types::named_record_of_channel(&workspace.policy.grants, room, channel)
         .or_else(|| {
             route
@@ -481,7 +481,7 @@ mod tests {
             .find(|workspace| workspace.room() == room)
             .unwrap();
         let route = ChannelRoute::new("so.tilo.notes", "plan");
-        (route.channel(&workspace.policy.room), route)
+        (route.channel(&workspace.policy.workspace), route)
     }
 
     fn endpoint(cert: &tilo_user_identity::DeviceCert) -> String {
@@ -603,7 +603,7 @@ mod tests {
         entry.set_owner(person(&owner));
         entry.admit(person(&bob), Role::Editor);
         entry.admit(person(&carol), Role::Viewer);
-        let room_id = entry.policy.room.clone();
+        let room_id = entry.policy.workspace.clone();
         entry.grant(crate::shell::service_members::service_membership(
             &room_id,
             &service,
@@ -690,7 +690,7 @@ mod tests {
         entry.set_owner(person(&owner));
         entry.admit(person(&bob), Role::Editor);
         entry.admit(person(&carol), Role::Viewer);
-        let room_id = entry.policy.room.clone();
+        let room_id = entry.policy.workspace.clone();
         entry.grant(crate::shell::service_members::service_membership(
             &room_id,
             &service,

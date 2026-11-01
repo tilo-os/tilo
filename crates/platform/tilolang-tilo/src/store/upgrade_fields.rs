@@ -1,8 +1,8 @@
 //! A build whose field changed from `Text` to `RichText`: the records keep their words.
 //!
-//! A running app keeps its records in the room, and a new build of it may keep a field as rich
+//! A running app keeps its records in the workspace, and a new build of it may keep a field as rich
 //! text where the old one kept plain text (`crate::upgrade::compare` lets that one type change
-//! take over in place). The text a record holds there is not lost: when the room's origin opens
+//! take over in place). The text a record holds there is not lost: when the workspace's origin opens
 //! the record, every record of such a type — and every item of it — has the plain text it holds
 //! there turned into rich text: the same characters, a paragraph per line, no marks, as an
 //! ordinary change of the record. The record keeps its id and its items keep theirs; a value
