@@ -424,6 +424,7 @@ impl Finish {
         Self {
             set: self.set.clone(),
             params,
+            shader: self.shader.clone(),
         }
     }
 }
