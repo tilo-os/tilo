@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
-use tilo_action_policy::share::is_of_share;
+use tilo_action_policy::{Role, share::is_of_share};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig};
 use tilo_desktop::desktop_actions::WINDOW_KIND;
@@ -124,6 +124,19 @@ fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
     )
 }
 
+/// `desk` under the governance the room's devices agree on: `owner` owns its
+/// workspace, and each of `members` holds their role there — the policy
+/// every member's messages are admitted by.
+fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> DesktopTree {
+    for workspace in &mut desk.workspaces {
+        workspace.policy.owner = Some(owner.to_owned());
+        for (person, role) in members {
+            workspace.policy.members.insert(person.clone(), *role);
+        }
+    }
+    desk
+}
+
 /// One device of the room: its session, its plane, and the messages its
 /// plane would have sent.
 struct Member {
@@ -133,12 +146,25 @@ struct Member {
 }
 
 fn member(seed: u8, desk: DesktopTree) -> Member {
-    member_minting_under(seed, desk, Options::default().salt)
+    member_as(seed, desk, Options::default().salt, None)
+}
+
+/// One device of the room whose plane takes part as the person its
+/// certificate names: a member whose messages the workspace's policy is
+/// asked about.
+fn member_of(seed: u8, desk: DesktopTree) -> Member {
+    member_as(seed, desk, Options::default().salt, Some(person(seed)))
 }
 
 /// One device of the room whose ids are minted under `salt`: a session with
 /// an identity mints under the salt its own key derives.
 fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
+    member_as(seed, desk, salt, None)
+}
+
+/// One device of the room, taking part as `person` (their root key, hex)
+/// when it says one: what a session with a device identity is on this plane.
+fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> Member {
     let (sync, said) = Client::planeless(
         device(seed),
         OwnPresence {
@@ -148,7 +174,10 @@ fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
         Vec::new(),
         Reachability::default(),
     );
-    let sync = Rc::new(sync);
+    let sync = Rc::new(match person {
+        Some(person) => sync.taking_part_as(&person),
+        None => sync,
+    });
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -168,6 +197,13 @@ fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
         sync,
         said,
     }
+}
+
+/// `from` said `msg` on `to`'s plane in the room: what the plane carries
+/// between the two devices.
+fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
+    let ws = to.sync.room_topic(ROOM).expect("the room's topic");
+    to.sync.hear(said(from, ws, msg));
 }
 
 /// One message `from` said, as the room's topic would have carried it.
@@ -355,6 +391,36 @@ fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
             event,
         },
     });
+}
+
+/// The start of a stream `from` shares: its own window, of `app`, shown as
+/// `tab` of the room.
+fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
+    NeighbourMsg::SurfaceStreamStart {
+        surface,
+        source_peer: from.sync.peer(),
+        width: 64,
+        height: 64,
+        codec: "h264".to_owned(),
+        ts: 0,
+        sender_monotonic_ns_at_send: 0,
+        colorimetry: None,
+        hdr_static_metadata: None,
+        bit_depth: 8,
+        app_id: APP.to_owned(),
+        tab,
+    }
+}
+
+/// One encoded unit of `from`'s stream of `surface`.
+fn stream_frame(from: &Member, surface: u64, seq: u64) -> NeighbourMsg {
+    NeighbourMsg::SurfaceFrame {
+        surface,
+        source_peer: from.sync.peer(),
+        encoded_h264: vec![0, 0, 0, 1, 0x65, 1],
+        ts: 0,
+        seq,
+    }
 }
 
 /// A client with one toplevel of a solid colour: a person's window on a
@@ -877,6 +943,194 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
     );
 }
 
+/// The width and height of the stream `viewer` received, in its own pixels:
+/// the middle of the picture the host sends.
+#[track_caller]
+fn received_centre(viewer: &Member) -> (f64, f64) {
+    let reading = shares(&viewer.session);
+    let stream = rows(&reading, "received")
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("the shared window arrived: {reading}"));
+    let side = |name: &str| stream[name].as_f64().unwrap_or(0.0);
+    (side("width") / 2.0, side("height") / 2.0)
+}
+
+/// The host streams `viewer` the window of `tab`, and `viewer`'s desk shows
+/// it: one member of the room viewing another's window.
+#[track_caller]
+fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Member, tab: u64) {
+    until(host, window, viewer, |host, viewer, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| {
+                viewers
+                    .iter()
+                    .any(|watcher| watcher["peer"].as_u64() == Some(viewer.sync.peer()))
+            })
+    });
+    let wanted = tab.to_string();
+    until(host, window, viewer, |_, viewer, _| {
+        rows(&shares(&viewer.session), "received")
+            .first()
+            .is_some_and(|stream| stream["tab"].as_str() == Some(wanted.as_str()))
+    });
+}
+
+/// A member the workspace's policy narrowed to reading is streamed the window
+/// it asks to view, and carries nothing that would change the workspace: the
+/// stream it starts and the input it sends are refused at the plane.
+#[test]
+fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let host_person = person(0x31);
+    let viewer_person = person(0x32);
+    let mut host = member_of(
+        0x31,
+        governed(
+            own_desk(),
+            &host_person,
+            &[(viewer_person.clone(), Role::Viewer)],
+        ),
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    share(&mut host, APP, tab);
+    let mut viewer = member_of(
+        0x32,
+        governed(
+            showing(host.sync.publisher(), APP, tab),
+            &host_person,
+            &[(viewer_person, Role::Viewer)],
+        ),
+    );
+    // Each device's certificate is how the other knows who is here.
+    heard(&host, 0x32, "Phone");
+    heard(&viewer, 0x31, "Framework");
+
+    // Asking to view is what reading covers: the host streams it the window.
+    watch(&mut viewer, tab);
+    viewing(&mut host, &mut window, &mut viewer, tab);
+
+    // What it sends to change anything is refused, however well formed: a
+    // stream of its own never reaches the host's desk.
+    tell(&host, &viewer, stream_start(&viewer, 991, 4));
+    tell(&host, &viewer, stream_frame(&viewer, 991, 1));
+    settle(&mut host, &mut window, &mut viewer);
+    assert!(
+        rows(&shares(&host.session), "received").is_empty(),
+        "a member that may only read shares no window: {}",
+        shares(&host.session)
+    );
+
+    // Nor does its input, even once the person lets the members viewing the
+    // window control it.
+    allow_input(&mut host, tab, true);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| {
+                viewers
+                    .iter()
+                    .any(|viewer| viewer["can_control"].as_bool() == Some(true))
+            })
+    });
+    let centre = received_centre(&viewer);
+    move_pointer(&viewer, &host, tab, centre.0, centre.1);
+    settle(&mut host, &mut window, &mut viewer);
+    assert!(
+        window
+            .as_ref()
+            .is_some_and(|window| !window.seen.pointer_inside && window.seen.motions.is_empty()),
+        "the member's input does not reach the window"
+    );
+}
+
+/// A member the workspace's policy lets edit is carried: the window it shares
+/// reaches the host's desk, and its input reaches the host's window.
+#[test]
+fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let host_person = person(0x41);
+    let member_person = person(0x42);
+    let mut host = member_of(
+        0x41,
+        governed(
+            own_desk(),
+            &host_person,
+            &[(member_person.clone(), Role::Editor)],
+        ),
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    share(&mut host, APP, tab);
+    let mut member = member_of(
+        0x42,
+        governed(
+            showing(host.sync.publisher(), APP, tab),
+            &host_person,
+            &[(member_person, Role::Editor)],
+        ),
+    );
+    heard(&host, 0x42, "Studio");
+    heard(&member, 0x41, "Framework");
+
+    watch(&mut member, tab);
+    viewing(&mut host, &mut window, &mut member, tab);
+
+    // Its own stream reaches the host's desk: the window it shares arrives
+    // with its frames.
+    tell(&host, &member, stream_start(&member, 991, 4));
+    tell(&host, &member, stream_frame(&member, 991, 1));
+    until(&mut host, &mut window, &mut member, |host, _, _| {
+        rows(&shares(&host.session), "received")
+            .first()
+            .is_some_and(|stream| {
+                stream["surface"].as_u64() == Some(991)
+                    && stream["units"]
+                        .as_array()
+                        .is_some_and(|units| !units.is_empty())
+            })
+    });
+    assert_eq!(
+        rows(&shares(&host.session), "received")
+            .first()
+            .and_then(|stream| { stream["from"].as_u64() }),
+        Some(member.sync.peer()),
+        "the window that arrived is the member's: {}",
+        shares(&host.session)
+    );
+
+    // And its input reaches the host's window once the person lets the
+    // members viewing it control it.
+    allow_input(&mut host, tab, true);
+    until(&mut host, &mut window, &mut member, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .and_then(|shared| shared["viewers"].as_array())
+            .is_some_and(|viewers| {
+                viewers
+                    .iter()
+                    .any(|viewer| viewer["can_control"].as_bool() == Some(true))
+            })
+    });
+    let centre = received_centre(&member);
+    move_pointer(&member, &host, tab, centre.0, centre.1);
+    until(&mut host, &mut window, &mut member, |_, _, client| {
+        client
+            .as_ref()
+            .is_some_and(|client| client.seen.pointer_inside)
+    });
+    assert!(
+        window
+            .as_ref()
+            .is_some_and(|window| window.seen.pointer_inside),
+        "the member's input reached the window"
+    );
+}
+
 /// A window one device shares shows on another device's desk because the
 /// room's governance says it is shared there: nobody names the tab on the
 /// other device.
@@ -999,11 +1253,22 @@ fn carry_governance(from: &Session, to: &Session) {
     to.handle().replace_tree(desk);
 }
 
+/// The person the device `seed` is a device of, in the hex everyone here
+/// knows them by: the root key its certificate is signed with.
+fn person(seed: u8) -> String {
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
 /// The device `seed` said who it is on `viewer`'s plane: the certificate a
 /// session says when it starts, which names the device it runs on.
 fn heard(viewer: &Member, seed: u8, label: &str) {
-    let cert = tilo_user_identity::DeviceCert {
-        user_public_key: [seed; 32],
+    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device(seed).as_bytes(),
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities {
@@ -1018,6 +1283,7 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
         expires_at_ns: None,
         signature: [0; 64],
     };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     let ws = viewer.sync.room_topic(ROOM).expect("the room's topic");
     viewer.sync.hear(NetEvent::Msg {
         ws,

@@ -44,6 +44,9 @@
 //!   session bus, portals, media players or display.
 //! - [`package_binary!`] finds a binary of the package under test where the
 //!   test run put it, which an archived run moves away from Cargo's path.
+//! - [`sibling_binary`] is the same for a binary of another package — an app or
+//!   a tool a test starts as a process of its own — and builds it when the run
+//!   did not.
 //! - [`in_own_process`] runs a test that changes what the whole process
 //!   sees, such as a held wall clock, in a process no other test shares.
 //! - [`held_wall_clock`] holds this thread's wall clock at the instant a
@@ -93,6 +96,7 @@
 //! mutates the variable without this crate.
 
 pub mod allocation;
+mod binary;
 #[cfg(unix)]
 mod bus;
 mod capability;
@@ -110,6 +114,7 @@ pub mod scenario;
 pub mod swtpm;
 mod wall;
 
+pub use binary::sibling_binary;
 #[cfg(unix)]
 pub use bus::PrivateBus;
 pub use capability::{Capability, Probe, capability_unavailable};
@@ -261,6 +266,9 @@ macro_rules! __scenario_name {
 /// archived nextest run relocated it (`NEXTEST_BIN_EXE_<name>`), else where
 /// Cargo built it (`CARGO_BIN_EXE_<name>`). A test that starts the build path
 /// directly finds nothing once the run moves its binaries.
+///
+/// A binary of *another* package has no such variable:
+/// [`sibling_binary`] builds it for the run.
 #[macro_export]
 macro_rules! package_binary {
     ($name:literal) => {

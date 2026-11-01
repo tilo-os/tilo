@@ -1,5 +1,5 @@
 //! A call's media frames: what one device's stream is, how its frames are
-//! sealed, and which devices may send them.
+//! sealed, which devices may send them, and the lane they travel on.
 //!
 //! A call lives in a channel, so everyone in it already holds the keys the
 //! channel's content is sealed with: the per-epoch content keys MLS derives
@@ -29,11 +29,17 @@
 //! an earlier epoch. A device removed from the channel holds no key for the
 //! epochs after its removal and so derives nothing for them ([`Refusal::NoKey`]).
 //!
-//! Nothing here does I/O. A carrier owns its connections, its datagrams and
-//! its jitter buffer, and hands this crate the bytes.
+//! Voice frames travel as the datagrams of a tilo-voice/1 bundle
+//! ([`audio::Microphone`], [`audio::heard`]) on the connections two devices
+//! open for one call ([`carrier`]): the endpoint those connections run on,
+//! and what a call does with a datagram it opens, are the caller's.
 
+pub mod audio;
+pub mod carrier;
 pub mod frame;
 pub mod roster;
 
+pub use audio::{Heard, Microphone, heard};
+pub use carrier::{ALPN, Calls, Failed, Hello, Peer};
 pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream};
 pub use roster::Roster;

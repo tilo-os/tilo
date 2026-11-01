@@ -108,9 +108,10 @@ pub(super) fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// The lock screen's binary, built with this package for the tests.
+/// The lock screen's binary: the app of its own package, which this run builds
+/// the first time a test locks into it.
 fn screen_binary() -> PathBuf {
-    tilo_test_env::package_binary!("tilo-lock-screen-test")
+    tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen")
 }
 
 /// A verifier the test answers, so the screen is seen saying it is checking

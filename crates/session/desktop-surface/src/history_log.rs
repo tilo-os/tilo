@@ -1,26 +1,24 @@
-//! History for a desktop kept as one shared record.
+//! History for a desktop kept as one document, and the older logs it came
+//! from.
 //!
-//! A host that saves (or replicates) its desktop as a shared desktop record
-//! ([`tilo_desktop_model::shared_record`]) stamps each change of it with
-//! when it was made and who made it ([`record`]). The history pane reads
-//! workspace documents, so [`workspace_history`] replays such a log into one: each
-//! change that moved a window of the workspace becomes one change of the workspace's
-//! projection, by the same actor at the same time, which the pane
-//! summarises ("opened", "closed", "renamed") and replays exactly as it does
-//! a native workspace's.
+//! A host that keeps its desktop as a shared desktop record
+//! ([`tilo_desktop_model::shared_record`]) stamps each change of it with when
+//! it was made and who made it ([`record`]); so does a host that keeps the
+//! desk's own document ([`tilo_desktop_model::desktop_doc`]). A desk an older
+//! build logged is read into that document once ([`desk_document`]), keeping
+//! the author and the time of every change it made, so the pane lists the
+//! same history it listed before.
 use std::collections::BTreeMap;
 
+use automerge::AutoCommit;
 use automerge::transaction::{CommitOptions, Transactable as _};
-use automerge::{AutoCommit, ROOT};
-use tilo_automerge::WriteTyped as _;
+use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{DesktopTree, RoomId, shared_record};
+use tilo_desktop_model::shared_record;
 
 /// A change written before changes named their action names its author
 /// after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
-/// The newest changes a workspace history replays; older ones stay in the log.
-pub const MAX_REPLAYED_CHANGES: usize = 600;
 
 /// The desktop a host value carries: `{ tree, records?, authors? }`, or a
 /// bare tree.
@@ -44,11 +42,7 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
     };
     match shared_record::write(log, &desktop) {
         Ok(true) => {
-            log.commit_with(
-                CommitOptions::default()
-                    .with_message(shared_record::change_message(Some(author)))
-                    .with_time(time),
-            );
+            commit(log, author, time);
             true
         }
         Ok(false) => false,
@@ -59,18 +53,14 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
     }
 }
 
-/// Save a changed log through the host's store. A refusal keeps it pending,
-/// including when the next attempt records no additional change.
-pub fn save_pending<E>(
-    log: &mut AutoCommit,
-    pending: &std::cell::Cell<bool>,
-    write: impl FnOnce(Vec<u8>) -> Result<(), E>,
-) -> Result<(), E> {
-    if pending.get() {
-        write(log.save())?;
-        pending.set(false);
-    }
-    Ok(())
+/// Commit what `doc` holds as one change, by `author` at `time` (seconds
+/// since the epoch), so the desk's history says who did it and when.
+pub fn commit(doc: &mut AutoCommit, author: &str, time: i64) {
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(shared_record::change_message(Some(author)))
+            .with_time(time),
+    );
 }
 
 /// The author a change of a desktop log names.
@@ -146,80 +136,95 @@ impl WorkspaceRename {
     }
 }
 
-/// A workspace document replayed from a desktop log, and who each of its actors
-/// writes for.
-pub struct WorkspaceHistory {
-    pub doc: AutoCommit,
-    /// Older desktop changes remain retained but exceed the replay budget.
-    pub truncated: bool,
-    /// Actor (hex) to the author its changes named.
-    pub authors: BTreeMap<String, String>,
-}
-
-/// Replay `log`'s newest [`MAX_REPLAYED_CHANGES`] changes into `room`'s
-/// layout, in causal order. A change that did not move a window of the workspace
-/// adds nothing.
-pub fn workspace_history(mut log: AutoCommit, room: RoomId) -> WorkspaceHistory {
+/// The desk an older build logged, read into the desk's one document
+/// ([`tilo_desktop_model::desktop_doc`]): every change of `log` becomes a
+/// change of the document (in causal order), by the author it named and at
+/// the time it was made, and `stored` — what the older build kept beside the
+/// log, which the log never recorded — becomes the newest change, by `actor`
+/// at `time`. A change that moved nothing of the desk adds nothing.
+///
+/// The names the old changes are known by go in with them, so the desktop's
+/// history names the same people it did before.
+pub fn desk_document(
+    log: &mut AutoCommit,
+    stored: Option<&SharedDesktop>,
+    actor: automerge::ActorId,
+    time: i64,
+) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    let mut authors = BTreeMap::new();
-    let changes = log.get_changes(&[]);
-    let skip = changes.len().saturating_sub(MAX_REPLAYED_CHANGES);
-    let mut declared = false;
-    for change in changes.into_iter().skip(skip) {
-        let Some(desktop) = shared_record::read(&log, Some(&[change.hash()])) else {
+    let names = names_in(log);
+    // The names go in with the first change they name: written before one,
+    // they would be a change of the desk of their own, at no time at all.
+    let mut wrote_names = false;
+    for change in log.get_changes(&[]) {
+        let Some(desktop) = shared_record::read(log, Some(&[change.hash()])) else {
             continue;
         };
-        let Some(workspace) = desktop
-            .tree
-            .workspaces
-            .into_iter()
-            .find(|w| w.room() == room)
-        else {
-            continue;
-        };
-        let actor = change.actor_id().clone();
-        if let Some(author) = change_author(change.message()) {
-            authors.entry(actor.to_hex_string()).or_insert(author);
+        doc.set_actor(actor_of(&change));
+        if !wrote_names && !names.is_empty() {
+            desktop_doc::set_author_names(&mut doc, &names);
+            wrote_names = true;
         }
+        desktop_doc::write_shared(&mut doc, &desktop.tree, &desktop.records, &desktop.authors);
+        doc.commit_with(CommitOptions::default().with_time(change.timestamp()));
+    }
+    if let Some(stored) = stored {
         doc.set_actor(actor);
-        if !declared {
-            let _ = doc.put(
-                ROOT,
-                tilo_desktop_model::projection::ROOM_ID_KEY,
-                room.to_string(),
-            );
-            declared = true;
+        desktop_doc::write_shared(&mut doc, &stored.tree, &stored.records, &stored.authors);
+        if doc.pending_ops() > 0 {
+            doc.commit_with(CommitOptions::default().with_time(time));
         }
-        let _ = doc.put_str_if_changed(
-            &ROOT,
-            tilo_desktop_model::projection::ROOM_NAME_KEY,
-            &workspace.name,
-        );
-        let _ = shared_record::write(
-            &mut doc,
-            &SharedDesktop {
-                tree: DesktopTree {
-                    active: workspace.id,
-                    workspaces: vec![workspace],
-                    ..DesktopTree::default()
-                },
-                records: desktop.records,
-                authors: desktop.authors,
-            },
-        );
-        let time = change.timestamp();
+    }
+    if doc.pending_ops() > 0 {
         doc.commit_with(CommitOptions::default().with_time(time));
     }
-    WorkspaceHistory {
-        doc,
-        authors,
-        truncated: skip != 0,
-    }
+    doc
+}
+
+/// The actor a change of an old log is attributed to in the document: the
+/// author it named, under one actor per author — the log wrote every change
+/// under one actor and named the author in the change itself, and the pane
+/// names an actor by the identity it reads.
+fn actor_of(change: &automerge::Change) -> automerge::ActorId {
+    change_author(change.message()).map_or_else(
+        || change.actor_id().clone(),
+        |author| automerge::ActorId::from(author.as_bytes()),
+    )
+}
+
+/// The names an old log's changes are by, by actor (hex).
+fn names_in(log: &mut AutoCommit) -> BTreeMap<String, String> {
+    log.get_changes(&[])
+        .into_iter()
+        .filter_map(|change| {
+            let author = change_author(change.message())?;
+            Some((
+                automerge::ActorId::from(author.as_bytes()).to_hex_string(),
+                author,
+            ))
+        })
+        .collect()
 }
 
 /// The name and colour presence shows for an author (the principal a
 /// desktop change names), when the host knows them.
 pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
+
+/// Who each actor of the desk's document `doc` writes for, by actor (hex):
+/// the names the document holds ([`desktop_doc::author_names`]) and those
+/// its changes name, so a pane names every change of the desk by its person.
+pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
+    let mut authors = desktop_doc::author_names(doc);
+    for change in doc.get_changes(&[]) {
+        let Some(author) = change_author(change.message()) else {
+            continue;
+        };
+        authors
+            .entry(change.actor_id().to_hex_string())
+            .or_insert(author);
+    }
+    authors
+}
 
 /// Name `authors`' actors in `directory`, as one participant per author.
 /// An author `person` knows reads as presence shows them, by the same
@@ -355,46 +360,69 @@ mod tests {
         );
     }
 
+    /// The desk an older build logged opens as the desk's one document, with
+    /// every change it made in it, by the same author and at the same time:
+    /// the pane lists the history the person saw before.
     #[test]
-    fn a_desktop_log_replays_as_the_rooms_history_with_its_authors_and_times() {
-        let (log, tree) = log();
-        let room = tree.workspaces[0].room();
-        let mut history = workspace_history(log, room);
-        assert_eq!(history.doc.get_changes(&[]).len(), 3);
-        let mut names: Vec<_> = history.authors.values().cloned().collect();
-        names.sort();
-        assert_eq!(names, ["Ada", "Grace"]);
-        let times: Vec<i64> = history
-            .doc
+    fn a_desktop_log_becomes_the_desks_document_with_its_authors_and_times() {
+        let (mut log, tree) = log();
+        let mut doc = desk_document(
+            &mut log,
+            None,
+            automerge::ActorId::from("ada".as_bytes()),
+            4_000,
+        );
+        let times: Vec<i64> = doc
             .get_changes(&[])
             .iter()
             .map(automerge::Change::timestamp)
             .collect();
         assert_eq!(times, [1_000, 2_000, 3_000]);
+        let names: Vec<String> = desktop_doc::author_names(&doc).into_values().collect();
+        assert_eq!(
+            names,
+            ["Ada", "Grace"],
+            "who changed it, as they were named"
+        );
 
-        let mut snapshot = ActivitySnapshot::new(tree, history.doc).unwrap();
+        // What the document holds is the desk the log last made.
+        let mut rebuilt = DesktopTree::default();
+        desktop_doc::rebuild(&doc, &mut rebuilt);
+        assert_eq!(rebuilt.active, tree.active);
+        assert_eq!(rebuilt.workspaces.len(), tree.workspaces.len());
+        assert_eq!(rebuilt.workspaces[0].name, tree.workspaces[0].name);
+        assert_eq!(rebuilt.workspaces[0].room(), tree.workspaces[0].room());
+        let windows = |desk: &DesktopTree| -> Vec<(u64, String)> {
+            desk.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| (tab.id, tab.title.clone()))
+                .collect()
+        };
+        assert_eq!(windows(&rebuilt), windows(&tree));
+
+        let authors = desktop_doc::author_names(&doc);
+        let mut snapshot = ActivitySnapshot::of_desktop(tree, doc);
         let mut pane = WorkspaceActivityPane::new();
-        register_authors(pane.authors_mut(), &history.authors, &|_| None);
+        register_authors(pane.authors_mut(), &authors, &|_| None);
         pane.begin_view(snapshot.active.raw());
         pane.refresh(&mut snapshot);
         let entries = pane.entries();
-        // Setup (first open) is omitted from the explorer feed; Grace's rename
-        // and Ada's close remain as Change rows.
         assert_eq!(entries.len(), 2, "{entries:?}");
         assert!(
             entries.iter().any(|entry| entry.author.name == "Grace"),
             "a peer's change is theirs: {entries:?}"
         );
         assert_eq!(
-            pane.replay_checkpoint_names(),
-            vec![
-                vec!["Studio".to_owned()],
-                vec!["Studio · shared".to_owned()],
-                vec!["Studio · shared".to_owned()],
-            ],
-            "every change replays as the room it changed"
+            pane.entries()
+                .iter()
+                .filter(|entry| entry.author.name == "Ada")
+                .count(),
+            1,
+            "and the person here's is theirs: {entries:?}"
         );
-        assert_eq!(pane.replay_unavailable_checkpoints(), 0);
     }
 
     /// A workspace's changes name their author by principal (a key); History
@@ -419,24 +447,65 @@ mod tests {
         assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
     }
 
+    /// Two peers each change the desk and merge: each reads the one desk
+    /// with both changes, and the pane lists each change by the person who
+    /// made it.
     #[test]
-    fn a_bounded_projection_reports_the_retained_tail_it_did_not_replay() {
+    fn a_merged_desk_lists_both_peers_changes_by_name() {
         let mut minter = IdMinter::new(7);
-        let mut tree = crate::seed_tree(&mut minter, "Studio", Vec::new());
-        let mut log = AutoCommit::new();
-        for i in 0..=MAX_REPLAYED_CHANGES {
-            tree.workspaces[0].name = format!("Studio {i}");
-            assert!(record(
-                &mut log,
-                &stored(&tree),
-                "Ada",
-                i64::try_from(i).unwrap()
-            ));
+        let notes = app(&mut minter, "Notes");
+        let tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+        let mut doc = AutoCommit::new();
+        desktop_doc::seed(&mut doc, &tree);
+        commit(&mut doc, "Ada", 1_000);
+        let mut peer = doc.fork();
+
+        let mut mine = tree.clone();
+        mine.workspaces[0].name = "Studio · mine".into();
+        desktop_doc::seed(&mut doc, &mine);
+        commit(&mut doc, "Ada", 2_000);
+
+        let mut theirs = tree.clone();
+        let sheets = app(&mut minter, "Sheets");
+        theirs.workspaces[0].strips[0]
+            .window_groups
+            .push(tilo_desktop_model::WindowGroup {
+                id: minter.mint(),
+                active_tab: sheets.id,
+                tabs: vec![sheets],
+                width: tilo_desktop_model::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        desktop_doc::seed(&mut peer, &theirs);
+        commit(&mut peer, "Grace", 3_000);
+
+        doc.merge_incoming(&mut peer).expect("merged");
+        peer.merge_incoming(&mut doc).expect("merged");
+        for desk in [doc, peer] {
+            let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), desk);
+            let authors = authors_of(&mut snapshot.doc);
+            let mut pane = WorkspaceActivityPane::new();
+            register_authors(pane.authors_mut(), &authors, &|_| None);
+            pane.begin_view(snapshot.active.raw());
+            pane.refresh(&mut snapshot);
+            let listed: Vec<(String, String)> = pane
+                .entries()
+                .iter()
+                .map(|entry| (entry.author.name.clone(), entry.summary.clone()))
+                .collect();
+            assert_eq!(listed.len(), 2, "{listed:?}");
+            assert!(
+                listed
+                    .iter()
+                    .any(|(author, summary)| author == "Grace" && summary.contains("Sheets")),
+                "the window the other peer opened is theirs: {listed:?}"
+            );
+            assert!(
+                listed.iter().any(|entry| entry.0 == "Ada"),
+                "the person's own change is theirs: {listed:?}"
+            );
         }
-        let mut history = workspace_history(log.clone(), tree.workspaces[0].room());
-        assert!(history.truncated);
-        assert_eq!(history.doc.get_changes(&[]).len(), MAX_REPLAYED_CHANGES);
-        assert_eq!(log.get_changes(&[]).len(), MAX_REPLAYED_CHANGES + 1);
     }
 
     #[test]
@@ -456,56 +525,34 @@ mod tests {
         assert_eq!(log.get_changes(&[]).len(), 1);
     }
 
+    /// A log kept away and read back makes the same document: what the pane
+    /// lists of the desk a person left is what they come back to.
     #[test]
-    fn a_refused_save_retries_the_same_history_without_a_new_change() {
-        let (mut log, tree) = log();
-        let pending = std::cell::Cell::new(true);
-        assert_eq!(
-            save_pending(&mut log, &pending, |_| Err("unavailable")),
-            Err("unavailable")
+    fn a_log_saved_and_read_back_makes_the_same_document() {
+        let (mut log, _tree) = log();
+        let saved = log.save();
+        let mut reloaded = AutoCommit::load(&saved).unwrap();
+        let mut here = desk_document(
+            &mut reloaded,
+            None,
+            automerge::ActorId::from("ada".as_bytes()),
+            4_000,
         );
-        assert!(pending.get());
-        assert!(!record(&mut log, &stored(&tree), "Ada", 4_000));
-        let mut saved = Vec::new();
-        save_pending(&mut log, &pending, |bytes| {
-            saved = bytes;
-            Ok::<_, &str>(())
-        })
-        .unwrap();
-        assert!(!pending.get());
-        let reloaded = AutoCommit::load(&saved).unwrap();
-        assert_eq!(
-            workspace_history(reloaded, tree.workspaces[0].room())
-                .doc
-                .get_changes(&[])
-                .len(),
-            3
-        );
-        save_pending(&mut log, &pending, |_| {
-            panic!("an acknowledged log is not saved twice")
-        })
-        .unwrap_or_else(|_: &str| panic!("no write was needed"));
+        assert_eq!(here.get_changes(&[]).len(), 3);
     }
 
     #[test]
-    fn another_room_and_values_that_are_no_desktop_add_nothing() {
-        let (log, _) = log();
-        assert_eq!(
-            workspace_history(log, RoomId::new())
-                .doc
-                .get_changes(&[])
-                .len(),
-            0
-        );
+    fn values_that_are_no_desktop_add_nothing() {
         let mut junk = AutoCommit::new();
-        junk.put(ROOT, "workspaces", "not a desktop").unwrap();
+        junk.put(automerge::ROOT, "workspaces", "not a desktop")
+            .unwrap();
         junk.commit();
-        assert_eq!(
-            workspace_history(junk, RoomId::new())
-                .doc
-                .get_changes(&[])
-                .len(),
-            0
+        let mut doc = desk_document(
+            &mut junk,
+            None,
+            automerge::ActorId::from("ada".as_bytes()),
+            1_000,
         );
+        assert_eq!(doc.get_changes(&[]).len(), 0);
     }
 }

@@ -35,15 +35,10 @@ const OPENING: Duration = Duration::from_secs(90);
 /// One display's refresh, while waiting for the keyboard to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The on-screen keyboard's app, built beside the session's own.
+/// The on-screen keyboard's app: an app of its own package, which this run
+/// builds the first time a test brings the keyboard up.
 fn keyboard_binary() -> PathBuf {
-    let binary = tilo_test_env::package_binary!("tilo-session").with_file_name("osk");
-    assert!(
-        binary.exists(),
-        "expected the on-screen keyboard at {}; build the workspace first",
-        binary.display()
-    );
-    binary
+    tilo_test_env::sibling_binary("osk", "osk")
 }
 
 /// A session on two displays that starts its on-screen keyboard as the

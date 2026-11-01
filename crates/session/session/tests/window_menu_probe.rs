@@ -78,16 +78,9 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The probe's binary: the session package's own, built beside it.
+/// The probe's binary: the probe this package's own tests start.
 fn probe_binary() -> PathBuf {
-    let binary =
-        tilo_test_env::package_binary!("tilo-session").with_file_name("tilo-surface-probe");
-    assert!(
-        binary.exists(),
-        "expected the probe at {}; build the workspace first",
-        binary.display()
-    );
-    binary
+    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker

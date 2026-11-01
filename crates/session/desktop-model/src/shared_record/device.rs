@@ -300,7 +300,7 @@ fn ids_of(workspace: &Workspace) -> HashSet<u64> {
 /// layout was a record of its own: in its `contents` map, and in a copy of
 /// the record kept at the workspace document's root.
 #[must_use]
-pub fn former_ids(doc: &impl ReadDoc) -> HashSet<u64> {
+pub fn former_ids(doc: &AutoCommit) -> HashSet<u64> {
     let mut ids = legacy_ids(doc);
     if let Some(desktop) = super::read(doc, None) {
         ids.extend(desktop.tree.workspaces.iter().flat_map(ids_of));
@@ -402,7 +402,7 @@ impl Kept<'_> {
 /// `kept` names that the record does not hold stays where it is. Returns
 /// whether anything changed; `false` with nothing done while the record
 /// holds no layout yet.
-pub fn fold(doc: &impl ReadDoc, workspace: &mut Workspace, device: &str, kept: &Kept<'_>) -> bool {
+pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Kept<'_>) -> bool {
     let Some((record, _)) =
         super::read(doc, None).and_then(|desktop| record_workspace(desktop, workspace.room()))
     else {

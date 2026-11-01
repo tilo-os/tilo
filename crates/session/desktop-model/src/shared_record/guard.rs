@@ -27,7 +27,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use crate::ids::TabId;
 use crate::ownership::{
-    DESKTOP_APP, DESKTOP_RECORD, SharedDesktop, Touched, claimed, foreign_acts, rebound_windows,
+    DESKTOP_APP, DESKTOP_RECORD, Touched, claimed, foreign_acts, rebound_windows,
 };
 
 /// Whether `(app, record)` is a workspace's shared desktop.
@@ -89,7 +89,7 @@ pub fn judge(
 ) -> Result<(), DesktopRefusal> {
     for change in doc.committed_document().get_changes(before) {
         let seen = super::read(doc, Some(change.deps())).unwrap_or_default();
-        let left = super::read(doc, Some(&[change.hash()])).unwrap_or_else(SharedDesktop::default);
+        let left = super::read(doc, Some(&[change.hash()])).unwrap_or_default();
         if let Some(window) = rebound_windows(&seen, &left).first() {
             return Err(DesktopRefusal::Rebound {
                 writer: writer.person.to_owned(),

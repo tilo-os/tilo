@@ -67,7 +67,7 @@ struct At<'a, D: ReadDoc> {
 }
 
 impl<D: ReadDoc> At<'_, D> {
-    fn get(&self, obj: &ObjId, key: &str) -> Option<(Value<'_>, ObjId)> {
+    fn get(&self, obj: &ObjId, key: impl Into<automerge::Prop>) -> Option<(Value<'_>, ObjId)> {
         match self.heads {
             Some(heads) => self.doc.get_at(obj, key, heads),
             None => self.doc.get(obj, key),
@@ -419,8 +419,56 @@ impl Parts {
 /// The shared desktop `doc` holds, now (`None`) or as of `heads`; `None`
 /// when it holds no workspace there.
 #[must_use]
-pub fn read(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    if crate::desktop_doc::holds(doc) {
+        return desk_of(doc, heads);
+    }
     Parts::of(&At { doc, heads }).assemble()
+}
+
+/// The desk the desk's own document ([`crate::desktop_doc`]) holds at
+/// `heads`, as [`read`] gives a record: read with the document's own reader,
+/// so a record that became the desk's document loses nothing of the desk.
+///
+/// A room's record is the record this module writes until a desk kept as one
+/// document is published over it, and every change after that builds on the
+/// document.
+fn desk_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    let desk = match heads {
+        Some(heads) => as_of(doc, heads),
+        None => doc.clone(),
+    };
+    let mut tree = DesktopTree::default();
+    crate::desktop_doc::rebuild(&desk, &mut tree);
+    if tree.workspaces.is_empty() {
+        return None;
+    }
+    Some(SharedDesktop {
+        tree,
+        records: crate::desktop_doc::records(&desk),
+        authors: crate::desktop_doc::window_authors(&desk),
+    })
+}
+
+/// `doc`'s changes up to `heads` as a document of their own, so that the
+/// desk's own reader can read the desk as it was then.
+fn as_of(doc: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit {
+    let mut wanted: Vec<automerge::Change> = Vec::new();
+    let mut pending: Vec<ChangeHash> = heads.to_vec();
+    let mut seen: HashSet<ChangeHash> = HashSet::new();
+    while let Some(hash) = pending.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let Some(change) = doc.get_change_by_hash(&hash) else {
+            continue;
+        };
+        pending.extend(change.deps().iter().copied());
+        wanted.push(change);
+    }
+    let mut out = AutoCommit::new();
+    let _ = tilo_automerge::ApplyIncoming::apply_incoming(&mut out, wanted);
+    out
 }
 
 /// `desktop` as [`read`] gives it back: only what the record keeps, so a
@@ -560,6 +608,18 @@ pub fn write(
     doc: &mut AutoCommit,
     desktop: &SharedDesktop,
 ) -> Result<bool, automerge::AutomergeError> {
+    // A record that became the desk's own document
+    // ([`crate::desktop_doc`]) keeps the same desk, so a writer that knows
+    // only this shape — a build from before the desk was one document —
+    // writes into it rather than beside it.
+    if crate::desktop_doc::holds(doc) {
+        return Ok(crate::desktop_doc::write_shared(
+            doc,
+            &desktop.tree,
+            &desktop.records,
+            &desktop.authors,
+        ));
+    }
     let held = held(doc);
     let want = wanted(desktop, &held);
     let mut changed = false;

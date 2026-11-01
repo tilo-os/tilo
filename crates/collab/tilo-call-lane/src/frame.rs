@@ -13,6 +13,16 @@ pub const OVERHEAD: usize = 28;
 /// Bytes of header before the ciphertext.
 const HEADER_LEN: usize = 12;
 
+/// The sequence the sealed `frame` names in its header: which frame of its
+/// sender's stream it is, as the tag authenticates it. `None` when `frame` is
+/// shorter than a seal's header.
+#[must_use]
+pub fn sequence(frame: &[u8]) -> Option<u32> {
+    let (_, rest) = frame.split_first_chunk::<8>()?;
+    let (seq, _) = rest.split_first_chunk::<4>()?;
+    Some(u32::from_le_bytes(*seq))
+}
+
 /// Why a frame was not sealed, or not opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
@@ -38,7 +48,7 @@ pub enum Refusal {
 }
 
 /// Which of a call's two lanes a frame travels on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Lane {
     /// Voice. Frames are 20 ms Opus pictures carried as datagrams, dropped
     /// rather than delayed.

@@ -142,9 +142,9 @@ impl SurfaceHost for People {
         self.host.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
         self.dismiss();
-        self.host.borrow_mut().pressed_elsewhere();
+        self.host.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -240,7 +240,10 @@ pub(crate) fn mount(
     };
     let mut host = WidgetHost::new(Box::new(panel), placement, false);
     host.set_theme((options.presentation)().theme);
-    let host = host.covering_outputs().with_keyboard(Rc::clone(&open));
+    let wants = Rc::clone(&open);
+    let host = host
+        .covering_outputs()
+        .with_keyboard(Rc::new(move || wants.get()));
     let people = Rc::new(RefCell::new(People {
         host: RefCell::new(host),
         shown,
@@ -284,8 +287,8 @@ impl SurfaceHost for Host {
         self.0.borrow_mut().pointer_axis(horizontal, vertical);
     }
 
-    fn pressed_elsewhere(&mut self) {
-        self.0.borrow_mut().pressed_elsewhere();
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        self.0.borrow_mut().pressed_elsewhere(x, y);
     }
 
     fn wants_keyboard(&self) -> bool {

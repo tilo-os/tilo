@@ -3158,7 +3158,14 @@ fn describe_room_changes(
             .or_insert_with(|| WorkspaceChange::read(doc, deps, hash));
         *tag = change.workspace;
         if let Some((summary, entry_kind)) = change.counts.describe() {
-            if entry.context.is_none() {
+            // A change that says what was done keeps its own words; one that
+            // only says the desk changed is read from its patches, which say
+            // which window opened or whose name changed.
+            let tells_its_own_story = entry
+                .context
+                .as_ref()
+                .is_some_and(|context| context.what.is_some());
+            if !tells_its_own_story {
                 entry.summary = summary;
             }
             entry.entry_kind = entry_kind;

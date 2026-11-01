@@ -191,8 +191,9 @@ fn alt_tab_walks_the_workspaces_windows_and_alt_up_goes_there() {
     with_chrome(&mut frame, |chrome| {
         assert!(chrome.switcher_active(), "Alt+Tab opens the switcher");
         assert_eq!(chrome.switcher_selected(), Some(30), "on the other window");
-        assert!(
-            chrome.wants_keyboard(),
+        assert_eq!(
+            chrome.overlays().target().slot(),
+            Some(tilo_desktop::overlays::Slot::Switcher),
             "the keys are the switcher's while it is up"
         );
     });
@@ -222,7 +223,7 @@ fn alt_tab_walks_the_workspaces_windows_and_alt_up_goes_there() {
 
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.switcher_active(), "Alt up closes the switcher");
-        assert!(!chrome.wants_keyboard());
+        assert!(chrome.overlays().target().slot().is_none());
     });
     desk.relayout();
     assert_eq!(in_front(&handle), Some(30), "and goes to that window");
@@ -254,7 +255,7 @@ fn alt_tab_then_enter_goes_to_the_window_it_shows() {
             !chrome.switcher_active(),
             "Enter closes the switcher where it stands"
         );
-        assert!(!chrome.wants_keyboard());
+        assert!(chrome.overlays().target().slot().is_none());
     });
     desk.relayout();
     assert_eq!(
@@ -336,6 +337,6 @@ fn a_lone_window_keeps_alt_tab() {
     press(&mut frame, Key::Named(NamedKey::Tab));
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.switcher_active(), "no switcher without two windows");
-        assert!(!chrome.wants_keyboard());
+        assert!(chrome.overlays().target().slot().is_none());
     });
 }

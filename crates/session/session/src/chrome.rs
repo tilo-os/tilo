@@ -16,6 +16,7 @@ use tilo_desktop::chrome::{
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
@@ -182,6 +183,14 @@ pub(crate) struct BarFeeds {
     /// The windows this session shares with its rooms, which the bar says
     /// are being shared while anyone views one.
     pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
+}
+
+/// What the chrome hands the session while it runs: the intents and asks its
+/// bar raises, over the feeds that keep the bar current.
+pub(crate) struct ChromeWiring {
+    pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    pub(crate) feeds: BarFeeds,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, the
@@ -557,13 +566,17 @@ impl crate::Session {
 pub(crate) fn host(
     handle: &DesktopHandle,
     options: &crate::Options,
-    intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    feeds: BarFeeds,
+    wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
     overview: &crate::mount::overview::Overview,
     emoji: &tilo_desktop::emoji_picker::EmojiLink,
+    overlays: &Overlays,
 ) -> WidgetHost {
+    let ChromeWiring {
+        intents,
+        asks,
+        feeds,
+    } = wiring;
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
@@ -593,9 +606,14 @@ pub(crate) fn host(
     .with_intents(intents)
     .with_asks(asks)
     .with_overview(overview.flight(), overview.open_flag())
-    .with_emoji(emoji.clone());
+    .with_emoji(emoji.clone())
+    .with_overlays(overlays.clone());
     chrome.set_shortcuts(options.config.shortcuts.clone());
-    let keyboard = chrome.keyboard();
+    // Keys come to the chrome while one of the surfaces it draws holds the
+    // keyboard: the stack says which, and it says the window's again as soon
+    // as the top surface closes.
+    let holds = overlays.clone();
+    let keyboard = Rc::new(move || holds.target().slot().is_some_and(Slot::is_chrome));
     let placement = SurfacePlacement {
         origin: (0, 0),
         size: (1, 1),

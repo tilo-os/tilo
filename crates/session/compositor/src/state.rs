@@ -936,6 +936,11 @@ impl State {
             self.buttons_down.insert(button);
         } else {
             self.buttons_down.remove(&button);
+            // Every surface hears the press end, before any of them acts on the
+            // button: a press and what it is still doing are over together.
+            for host in &mut self.hosts {
+                host.press_ended(self.pointer.x, self.pointer.y);
+            }
         }
         if self.drag_button(button, pressed, serial, time) {
             return;
@@ -944,7 +949,7 @@ impl State {
             let target = self.pointer_target;
             for (index, host) in self.hosts.iter_mut().enumerate() {
                 if target != PointerTarget::Host(index) {
-                    host.pressed_elsewhere();
+                    host.pressed_elsewhere(self.pointer.x, self.pointer.y);
                 }
             }
         }

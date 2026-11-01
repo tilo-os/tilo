@@ -82,6 +82,7 @@ mod owner_session;
 mod panels;
 mod people;
 mod plane;
+mod press_outside;
 pub mod portal_link;
 mod projection;
 mod projection_video;
@@ -102,6 +103,7 @@ mod wallpapers;
 mod window_motion;
 mod window_share;
 mod window_warmth;
+mod workspace_gate;
 mod workspace_settings;
 mod workspaces;
 
@@ -118,6 +120,7 @@ use tilo_desktop::desktop_host::{
     DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::osd::{Osd, OsdKind};
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
@@ -177,10 +180,6 @@ pub use tilo_onboarding_host::view::OnboardingView;
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
 
-/// How soon after a press outside quick settings closed it the bar's own
-/// toggle of it is that same press, not a new ask to open it.
-const DISMISS_GRACE: Duration = Duration::from_millis(300);
-
 /// How many times the session starts its lock screen for one lock before it
 /// lifts the lock: a screen whose app goes is started again, and one that
 /// keeps going is not staying up at all — the machine is better unlocked
@@ -189,13 +188,6 @@ const LOCK_SCREEN_TRIES: u32 = 3;
 
 /// How warm the night light makes the displays, in kelvin.
 const NIGHT_LIGHT_WARMTH: u32 = 3_400;
-
-/// Quick settings as the session shows it.
-struct QuickSettingsPanel {
-    open: Rc<Cell<bool>>,
-    /// When a press outside last closed it.
-    dismissed: Rc<Cell<Option<Instant>>>,
-}
 
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
@@ -222,7 +214,12 @@ struct Shared {
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    quick_settings: Option<QuickSettingsPanel>,
+    /// Whether this session shows quick settings at all: its panel is
+    /// mounted, and the bar's status keys open it.
+    quick_settings: bool,
+    /// What stands over the windows: its menus, quick settings, the picker
+    /// and the rest, and which of them holds the keyboard.
+    overlays: Overlays,
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     doors: Doors,
@@ -419,13 +416,14 @@ impl Shared {
         for ask in asks {
             match ask {
                 DesktopAsk::Intent(ChromeIntent::ToggleQuickSettings) => {
-                    if let Some(panel) = &self.quick_settings {
-                        let dismissed = panel
-                            .dismissed
-                            .take()
-                            .is_some_and(|at| at.elapsed() < DISMISS_GRACE);
-                        if !dismissed {
-                            panel.open.set(!panel.open.get());
+                    // The press that closed it is still being delivered: the
+                    // same press does not open it again.
+                    if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
+                    {
+                        if self.overlays.is_open(Slot::QuickSettings) {
+                            self.overlays.close(Slot::QuickSettings);
+                        } else {
+                            self.overlays.open(Slot::QuickSettings, None);
                         }
                     }
                 }
@@ -791,8 +789,8 @@ impl Shared {
     }
 
     fn show_quick_settings(&self) {
-        if let Some(panel) = &self.quick_settings {
-            panel.open.set(true);
+        if self.quick_settings {
+            self.overlays.open(Slot::QuickSettings, None);
         }
     }
 
@@ -801,8 +799,12 @@ impl Shared {
         let mut invocations = self.invocations.borrow_mut();
         match action {
             ShortcutAction::QuickSettings => {
-                if let Some(panel) = &self.quick_settings {
-                    panel.open.set(!panel.open.get());
+                if self.quick_settings {
+                    if self.overlays.is_open(Slot::QuickSettings) {
+                        self.overlays.close(Slot::QuickSettings);
+                    } else {
+                        self.overlays.open(Slot::QuickSettings, None);
+                    }
                 }
             }
             ShortcutAction::Notifications => {
@@ -1225,6 +1227,11 @@ impl Session {
             .ok()
         });
         let sync = start_collaboration(&options, media, engine.clone());
+        // What other members send here is the workspaces' to admit: their
+        // policies are read from the desk this session shows.
+        if let Some(sync) = &sync {
+            sync.attach_desk(handle.clone());
+        }
         // The person's private messages, carried by that same endpoint.
         let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with
@@ -1278,30 +1285,37 @@ impl Session {
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
+        // What stands over the windows, opened by the chrome's own widgets,
+        // by the session's verbs and by the views bound to them, and read by
+        // whoever asks through the door.
+        let overlays = Overlays::new();
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
-            Rc::clone(&intents),
-            Rc::clone(&asks),
-            chrome::BarFeeds {
-                signals: Rc::clone(&notice_signals),
-                readings: Rc::clone(&readings),
-                clock: Rc::clone(&clock),
-                notices: notices.clone(),
-                tray: tray.clone(),
-                fullscreen: Rc::clone(&fullscreen),
-                shares: Rc::clone(&window_shares),
+            chrome::ChromeWiring {
+                intents: Rc::clone(&intents),
+                asks: Rc::clone(&asks),
+                feeds: chrome::BarFeeds {
+                    signals: Rc::clone(&notice_signals),
+                    readings: Rc::clone(&readings),
+                    clock: Rc::clone(&clock),
+                    notices: notices.clone(),
+                    tray: tray.clone(),
+                    fullscreen: Rc::clone(&fullscreen),
+                    shares: Rc::clone(&window_shares),
+                },
             },
             sync.clone(),
             &overview,
             &emoji.link(),
+            &overlays,
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
 
         // The desk as the session publishes it, and the shell's bar over the
         // chrome, which reads it through the door.
-        let overlays = Rc::new(overlays::Overlays::new());
+        let desk_overlays = Rc::new(overlays::Overlays::new());
         let desk = || desk_resource::Desk {
             handle: handle.clone(),
             person: options.person.clone(),
@@ -1310,7 +1324,7 @@ impl Session {
             status_panel: options.quick_settings.is_some(),
             sync: sync.clone(),
             notices: notices.clone(),
-            overlays: Rc::clone(&overlays),
+            overlays: Rc::clone(&desk_overlays),
             tray: tray.clone(),
         };
         let desk_service = desk();
@@ -1328,8 +1342,13 @@ impl Session {
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
-        let (device, quick_settings) =
-            mount_device(&mut compositor, &mut doors, &mut options, &readings);
+        let (device, quick_settings) = mount_device(
+            &mut compositor,
+            &mut doors,
+            &mut options,
+            &readings,
+            &overlays,
+        );
 
         // The sheets, over the desktop and its panels.
         let mount::sheets::Sheets {
@@ -1369,9 +1388,6 @@ impl Session {
         // buttons, and a key of their own leads with the keyboard again.
         let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
         let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-        // Whether the shell's window menu is up: the keys that close it read
-        // it, and the verbs that open and close it are the ones writing here.
-        let menu_open = mount::shell::MenuOpen::default();
         let shortcut_guide = shortcut_guide::ShortcutGuide::new(
             guide_seat,
             Rc::clone(&shortcuts),
@@ -1392,7 +1408,7 @@ impl Session {
                     .as_ref()
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
-                menu: menu_open.clone(),
+                overlays: overlays.clone(),
             },
             options.scale,
         );
@@ -1545,7 +1561,7 @@ impl Session {
             )));
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
-        mount::shell::Shell::mount(&services, &handle, menu_open);
+        mount::shell::Shell::mount(&services, &handle, overlays.clone());
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));
@@ -1595,6 +1611,7 @@ impl Session {
             asks,
             intents,
             quick_settings,
+            overlays,
             doors,
             invocations,
             triggered,
@@ -1816,6 +1833,33 @@ impl Session {
             .land(&self.shared.handle, &self.compositor.outputs());
         self.displays
             .follow(&mut self.compositor, night_light, turned)
+    }
+
+    /// Place the surfaces over the desk on the displays as they are now: the
+    /// outputs' rectangles, and the one holding the pointer, which is the
+    /// display the person works on.
+    fn follow_overlays(&self) {
+        let outputs: Vec<ui::kurbo::Rect> = self
+            .compositor
+            .outputs()
+            .iter()
+            .filter(|output| output.enabled)
+            .filter_map(|output| output.rect)
+            .map(|(x, y, w, h)| {
+                ui::kurbo::Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x) + f64::from(w),
+                    f64::from(y) + f64::from(h),
+                )
+            })
+            .collect();
+        let (x, y) = self.compositor.pointer_location();
+        let focused = outputs
+            .iter()
+            .copied()
+            .find(|output| output.contains(ui::kurbo::Point::new(x, y)));
+        self.shared.overlays.set_displays(&outputs, focused);
     }
 
     /// Take the displays a fullscreen window owns from the compositor, so
@@ -2166,10 +2210,7 @@ impl Session {
     /// Whether quick settings is open.
     #[must_use]
     pub fn quick_settings_open(&self) -> bool {
-        self.shared
-            .quick_settings
-            .as_ref()
-            .is_some_and(|panel| panel.open.get())
+        self.shared.overlays.is_open(Slot::QuickSettings)
     }
 
     /// The input preferences the compositor runs with now.
@@ -2719,6 +2760,7 @@ impl Session {
         self.follow_controllers()?;
         self.follow_displays()?;
         self.follow_fullscreen();
+        self.follow_overlays();
         {
             self.shared.feed_agent_runs();
             let mut services = self.shared.services.borrow_mut();

@@ -7,15 +7,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_compositor::Compositor;
+use tilo_desktop::overlays::Overlays;
 
 use crate::controls::SessionControls;
 use crate::keys::{DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
-use crate::{
-    DeviceHost, Doors, OnboardingView, Options, PanelHost, QuickSettings, QuickSettingsPanel,
-    SessionCommand,
-};
+use crate::{DeviceHost, Doors, OnboardingView, Options, PanelHost, QuickSettings, SessionCommand};
 
 /// Quick settings as a popover under the bar, lent `panel`'s readings
 /// (which `readings` then holds too).
@@ -25,9 +23,8 @@ pub(crate) fn mount_quick_settings(
     panel: Rc<dyn PanelHost>,
     options: &Options,
     readings: &crate::panels::Readings,
-) -> Option<QuickSettingsPanel> {
-    let open = Rc::new(Cell::new(false));
-    let dismissed = Rc::new(Cell::new(None));
+    overlays: &Overlays,
+) -> bool {
     let panel = Rc::new(crate::panels::Tap {
         inner: panel,
         feed: Rc::clone(readings),
@@ -38,17 +35,16 @@ pub(crate) fn mount_quick_settings(
         Ok(app) => {
             let surface = Rc::new(RefCell::new(Popover::new(
                 app,
-                Rc::clone(&open),
-                Rc::clone(&dismissed),
+                overlays.clone(),
                 options.scale,
             )));
             compositor.add_host(Box::new(Held(Rc::clone(&surface))));
             doors.add(surface);
-            Some(QuickSettingsPanel { open, dismissed })
+            true
         }
         Err(error) => {
             tracing::warn!(%error, "quick settings not mounted");
-            None
+            false
         }
     }
 }
@@ -76,16 +72,16 @@ pub(crate) fn mount_setup(
 
 /// What the session's keys answer with besides the shortcut table: the
 /// controller the person last drove the desktop with, whether the keys
-/// being routed are that controller's own, and the display sheet Super+P
-/// puts up.
+/// being routed are that controller's own, the display sheet Super+P puts
+/// up, and the surfaces over the desk.
 pub(crate) struct KeyContext {
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     pub(crate) controller_keys: Rc<Cell<bool>>,
     pub(crate) displays: Option<tilo_sheets::Presentation>,
     /// Whether a desk widget has its card open, which Escape folds.
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
-    /// Whether the shell's window menu is up, which Escape closes.
-    pub(crate) menu: crate::mount::shell::MenuOpen,
+    /// What stands over the desk, which Escape closes from the top.
+    pub(crate) overlays: Overlays,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -102,7 +98,7 @@ pub(crate) fn mount_controls(
         controller_keys,
         displays,
         fold,
-        menu,
+        overlays,
     }: KeyContext,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
@@ -115,6 +111,9 @@ pub(crate) fn mount_controls(
     )))));
     let invocations = Invocations::default();
     let triggered = PressedChords::default();
+    // The press that falls outside a surface the session placed closes it,
+    // which only the input path knows the place of.
+    crate::press_outside::mount(compositor, &overlays);
     compositor.add_host(Box::new(SessionKeys::new(
         shortcuts,
         Presses {
@@ -123,7 +122,7 @@ pub(crate) fn mount_controls(
         },
         portal,
         guide,
-        DeskKeys::new(fold, menu),
+        DeskKeys::new(fold, overlays),
         displays,
         controller,
         controller_keys,
@@ -138,7 +137,8 @@ pub(crate) fn mount_device(
     doors: &mut Doors,
     options: &mut Options,
     readings: &crate::panels::Readings,
-) -> (Option<DeviceHost>, Option<QuickSettingsPanel>) {
+    overlays: &Overlays,
+) -> (Option<DeviceHost>, bool) {
     let (device, panel) = match options.quick_settings.take() {
         Some(QuickSettings::Device(make)) => {
             let waker = compositor.waker();
@@ -149,7 +149,8 @@ pub(crate) fn mount_device(
         Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
         None => (None, None),
     };
-    let quick_settings =
-        panel.and_then(|panel| mount_quick_settings(compositor, doors, panel, options, readings));
+    let quick_settings = panel.is_some_and(|panel| {
+        mount_quick_settings(compositor, doors, panel, options, readings, overlays)
+    });
     (device, quick_settings)
 }

@@ -33,6 +33,7 @@ pub mod here;
 pub mod intents;
 pub mod launchpad;
 pub mod osd;
+pub mod overlays;
 pub mod overview;
 pub mod overview_panel;
 pub mod overview_picture;

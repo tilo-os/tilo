@@ -10,6 +10,8 @@
 //! the document, decides when to commit, and stamps history.
 //!
 //! Shape: `{ active: uint, authors_v1?: {actor → author},
+//! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
+//! tab id → person},
 //! view_v1: json, workspaces: [ { id, name, room, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
@@ -29,7 +31,7 @@ use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
 use automerge::{
-    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
+    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
 use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
@@ -51,7 +53,7 @@ use crate::width::WindowWidth;
 use crate::workspace::{UserId, Workspace};
 
 const WORKSPACES_KEY: &str = "workspaces";
-const ACTIVE_KEY: &str = "active";
+pub(crate) const ACTIVE_KEY: &str = "active";
 const VIEW_KEY: &str = "view_v1";
 const LOCAL_KEY: &str = "local_v1";
 const AUTHORS_KEY: &str = "authors_v1";
@@ -61,10 +63,12 @@ const SANDBOX_KEY: &str = "sandbox";
 const PRESETS_KEY: &str = "presets_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const STRIPS_KEY: &str = "strips";
-const GROUPS_KEY: &str = "window_groups";
+pub(crate) const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
 const ARRANGEMENT_KEY: &str = "arrangement_v1";
 const CANVAS_KEY: &str = "canvas_v1";
+const RECORDS_KEY: &str = "window_records_v1";
+const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 
 /// The map key a named grant set is stored under: a digest of its
 /// case-folded name, so two spellings of one name share a slot.
@@ -1071,6 +1075,111 @@ pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap
 /// Record a workspace's owner.
 pub fn set_owner(doc: &mut AutoCommit, workspace_id: WorkspaceId, owner: &str) -> bool {
     workspace_entry(doc, workspace_id).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
+}
+
+/// Whether `doc` holds the desk this module writes: a root holding the
+/// workspace list. A document of another shape — a room document, or a
+/// shared desktop record written entry by entry before the desk was one
+/// document — is not one.
+#[must_use]
+pub fn holds(doc: &impl ReadDoc) -> bool {
+    matches!(
+        doc.get(&ROOT, WORKSPACES_KEY),
+        Ok(Some((Value::Object(ObjType::List), _)))
+    )
+}
+
+/// The record each window shows, by tab, for the windows bound to one: what
+/// a page keeps of which document a window is on, so the same windows come
+/// back on the records they showed and a peer's window opens the record it
+/// shows there. Each entry is its own, so two people binding their own
+/// windows at once keep both.
+#[must_use]
+pub fn records(doc: &AutoCommit) -> Vec<(TabId, String)> {
+    let Some(map) = obj(doc, &ROOT, RECORDS_KEY) else {
+        return Vec::new();
+    };
+    let mut held: Vec<(TabId, String)> = doc
+        .keys(&map)
+        .filter_map(|key| Some((key.parse().ok()?, doc.str_at(&map, &key)?)))
+        .collect();
+    held.sort_by_key(|(tab, _)| *tab);
+    held
+}
+
+/// Make [`records`] hold exactly `records`.
+pub fn set_records(doc: &mut AutoCommit, records: &[(TabId, String)]) {
+    let Some(map) = child_object(doc, &ROOT, RECORDS_KEY, ObjType::Map) else {
+        return;
+    };
+    let mut wanted = HashSet::new();
+    for (tab, record) in records {
+        let key = tab.to_string();
+        let _ = doc.put_str_if_changed(&map, &key, record);
+        wanted.insert(key);
+    }
+    let stale: Vec<String> = doc.keys(&map).filter(|key| !wanted.contains(key)).collect();
+    for key in stale {
+        let _ = doc.delete(&map, key.as_str());
+    }
+}
+
+/// Who made each strip and opened each window, by strip or tab id, as person
+/// ids: who may close, move or rename what is on a desk a room shares
+/// ([`crate::ownership`]). Each entry is its own, so the people writing
+/// their own windows at once keep what each of them said.
+#[must_use]
+pub fn window_authors(doc: &AutoCommit) -> crate::ownership::Authors {
+    let Some(map) = obj(doc, &ROOT, WINDOW_AUTHORS_KEY) else {
+        return crate::ownership::Authors::new();
+    };
+    doc.keys(&map)
+        .filter_map(|key| Some((key.parse().ok()?, doc.str_at(&map, &key)?)))
+        .collect()
+}
+
+/// Make [`window_authors`] hold exactly `authors`.
+pub fn set_window_authors(doc: &mut AutoCommit, authors: &crate::ownership::Authors) {
+    let Some(map) = child_object(doc, &ROOT, WINDOW_AUTHORS_KEY, ObjType::Map) else {
+        return;
+    };
+    let mut wanted = HashSet::new();
+    for (id, author) in authors {
+        let key = id.to_string();
+        let _ = doc.put_str_if_changed(&map, &key, author);
+        wanted.insert(key);
+    }
+    let stale: Vec<String> = doc.keys(&map).filter(|key| !wanted.contains(key)).collect();
+    for key in stale {
+        let _ = doc.delete(&map, key.as_str());
+    }
+}
+
+/// The root keys a room's desktop record kept when every window was its own
+/// entry there, before the desk was one document.
+const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
+
+/// Write a shared desktop — its workspaces, the record each window shows and
+/// who made each strip and opened each window — into `doc` as the desk
+/// document. A document that kept the desk the old way, an entry per window,
+/// becomes the desk document here, and the entries it kept are forgotten.
+/// Returns whether it wrote anything.
+pub fn write_shared(
+    doc: &mut AutoCommit,
+    tree: &DesktopTree,
+    records: &[(TabId, String)],
+    authors: &crate::ownership::Authors,
+) -> bool {
+    let before = doc.pending_ops();
+    seed(doc, tree);
+    set_records(doc, records);
+    set_window_authors(doc, authors);
+    for key in RECORD_KEYS {
+        if doc.get(&ROOT, key).ok().flatten().is_some() {
+            let _ = doc.delete(&ROOT, key);
+        }
+    }
+    doc.pending_ops() > before
 }
 
 fn upsert_blob(

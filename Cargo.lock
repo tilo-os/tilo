@@ -18127,10 +18127,20 @@ dependencies = [
 name = "tilo-call-lane"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "channel-crypto",
  "collab-types",
+ "iroh",
+ "opus",
+ "postcard",
+ "serde",
  "thiserror 2.0.21",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-moq",
  "tilo-seal",
+ "tilo-test-env",
+ "tokio",
  "workspace-hack",
 ]
 
