@@ -11,13 +11,14 @@
 /// session owns it, so there is nothing a shell view could write behind anyone's back.
 ///
 /// Each goes through the one capability the session takes for arranging, `session.arrange`,
-/// whose payload names the published action and its arguments as one line of JSON.
+/// whose payload names the published action and its arguments as one line of JSON. Each takes
+/// the person's arrangement, the resource it changes and its effect is queued on.
 ///
 /// Undo and redo of the arrangement are the record's own, on `shell:arrangement-record`.
 /// Opens `shows` (an app's id) into the strip `strip`, after the place `after` or last, as the
 /// new place `place`. What activating a reference does: a column after the one it came from
 /// (§3), which the caller names by choosing the strip and the place to follow.
-action open_into(strip: Text, place: Text, shows: Text, after: Text = "", shown_as: Text = "", record: Text = "") (icon: .plus, label: "Open beside") {
+action open_into(a: Arrangement, strip: Text, place: Text, shows: Text, after: Text = "", shown_as: Text = "", record: Text = "") (icon: .plus, label: "Open beside") {
     require strip != "" "Name the strip to open into"
     require place != "" "Name the new place"
     require shows != "" "Name the app it shows"
@@ -29,7 +30,7 @@ action open_into(strip: Text, place: Text, shows: Text, after: Text = "", shown_
 /// The text runs the one `find` the palette and an agent's `tilo` tool use, so a search here
 /// and a search there are the same search; the session resolves it into an entry naming the
 /// resource and its view, attributed and undoable, and `shows` follows from the resource's app.
-action place_found(text: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_pin, label: "Place what you find") {
+action place_found(a: Arrangement, text: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_pin, label: "Place what you find") {
     require text != "" "Type something to find and place"
     outside("session.arrange", "place-found \{\"text\":\"{text}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"\}")
 }
@@ -46,7 +47,7 @@ action place(a: Arrangement, resource: Text, x: Int, y: Int, shown_as: Text = ""
 
 /// Moves the place `place` into the row `row`, before the place `before` or last: within a row,
 /// or to another row, which is how a line of work moves whole (§3).
-action move_place(place: Text, row: Text, before: Text = "") (icon: .navigation, label: "Move", group: "Arrange") {
+action move_place(a: Arrangement, place: Text, row: Text, before: Text = "") (icon: .navigation, label: "Move", group: "Arrange") {
     require place != "" "Name the place to move"
     require row != "" "Name the row it goes into"
     outside("session.arrange", "move-place \{\"place\":\"{place}\",\"row\":\"{row}\",\"before\":\"{before}\"\}")
@@ -54,7 +55,7 @@ action move_place(place: Text, row: Text, before: Text = "") (icon: .navigation,
 
 /// Resizes the strip `strip` to `permille` of its row's usable width (333 narrow, 667 normal,
 /// 1000 wide), as the person drags its edge.
-action resize_strip(strip: Text, permille: Int) (icon: .columns_2, label: "Width", group: "Arrange") {
+action resize_strip(a: Arrangement, strip: Text, permille: Int) (icon: .columns_2, label: "Width", group: "Arrange") {
     require strip != "" "Name the strip to resize"
     require permille > 0 "A strip is wider than nothing"
     outside("session.arrange", "resize-strip \{\"strip\":\"{strip}\",\"permille\":{permille}\}")
@@ -62,14 +63,14 @@ action resize_strip(strip: Text, permille: Int) (icon: .columns_2, label: "Width
 
 /// Closes the place `place`: its window goes with it. The resource stays where it lives, and
 /// nobody else's arrangement changes (§4).
-destructive action close_place(place: Text) (icon: .x, label: "Close", group: "Arrange") {
+destructive action close_place(a: Arrangement, place: Text) (icon: .x, label: "Close", group: "Arrange") {
     require place != "" "Name the place to close"
     outside("session.arrange", "close-place \{\"place\":\"{place}\"\}")
 }
 
 /// Pins the place `place`, so an agent's arrangement leaves it alone (§5, "Moving what the
 /// person placed"), or unpins it.
-action pin_place(place: Text, pinned: Bool = true) (icon: .pin, label: "Pin", group: "Arrange") {
+action pin_place(a: Arrangement, place: Text, pinned: Bool = true) (icon: .pin, label: "Pin", group: "Arrange") {
     require place != "" "Name the place to pin"
     outside("session.arrange", "pin-place \{\"place\":\"{place}\",\"pinned\":{pinned}\}")
 }

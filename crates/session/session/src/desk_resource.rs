@@ -702,7 +702,7 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_history();
+            self.notices.clear_all();
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps } = &effect {

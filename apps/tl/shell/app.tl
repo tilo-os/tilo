@@ -351,19 +351,20 @@ view bar(d: Desk) {
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
-/// tasks and who is here, which run longest, below a wide one. The menu, the workspace, the
-/// clock and the status always keep their room. The bar decides by its width, so a part that
-/// gives way leaves no room behind; the bar's parts must never press into each other (the
-/// overview shows what gave way).
+/// tasks, which run longest, below a wide one. The menu, the workspace, the clock, the status
+/// and the person's own avatar always keep their room; of the people part, only the others here
+/// give way (`bar_part`). The bar decides by its width, so a part that gives way leaves no room
+/// behind; the bar's parts must never press into each other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
-    if part.slot == .tasks or part.slot == .people {
+    if part.slot == .tasks {
         return true
     }
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
 /// One part of the bar, drawn from what it is. The person's own avatar carries the question put
-/// to them: their answer or their putting it off, never a banner over their windows. The status
+/// to them: their answer or their putting it off, never a banner over their windows, so it
+/// stands on every bar; who else is here runs longest and shows on a wide bar alone. The status
 /// part leads with the running applications' tray items, each under the app's own words for it.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
@@ -392,8 +393,10 @@ view bar_part(d: Desk, part: BarPart) {
         }
     } else if part.slot == .people {
         row(gap: .tight, align: .center) {
-            for p in d.people {
-                person_chip(p)
+            if space.wide {
+                for p in d.people {
+                    person_chip(d, p)
+                }
             }
             if d.ask != "" {
                 ui.Button(d.ask, role: .bar) {
@@ -415,7 +418,7 @@ view bar_part(d: Desk, part: BarPart) {
         ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
     } else if part.slot == .agent {
         for a in d.agents {
-            agent_chip(a)
+            agent_chip(d, a)
         }
     } else if part.slot == .status {
         row(gap: .tight, align: .center) {
