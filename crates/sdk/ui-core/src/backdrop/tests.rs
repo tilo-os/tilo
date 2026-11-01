@@ -1294,3 +1294,84 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
         "the cells are the placeholder's flat ground: {row:?}"
     );
 }
+
+/// Under Liquid Glass: the stripes, the bar, a window at `window_x`, then
+/// `mark` (drawn over the window, under the panel) and the panel.
+fn liquid_desk(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let ground = theme.tokens.colors.surfaces.base;
+    let mut scene = stripes(256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, 256.0, 24.0), 0.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &bar,
+        SurfaceRole::Bar,
+        &theme,
+        ground,
+    );
+    let window = RoundedRect::from_rect(Rect::new(window_x, 30.0, window_x + 112.0, 186.0), 12.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &window,
+        SurfaceRole::Window,
+        &theme,
+        ground,
+    );
+    if let Some(mark) = mark {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(220, 30, 30),
+            None,
+            &mark,
+        );
+    }
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
+    (scene, BackdropFrame::from_single_scene(recording.finish()))
+}
+
+/// A frame whose backdrops have not changed shows every region from the
+/// sample it kept, with no pass; a region whose backdrop changed (a window
+/// moved, something drawn under the panel) is taken anew, the others kept,
+/// and the frame matches one rendered from scratch.
+#[test]
+fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
+    let (width, height) = (256, 192);
+    let mut renderer = OffscreenRenderer::new(width, height);
+    let show = |renderer: &mut OffscreenRenderer, (scene, frame): (Scene, BackdropFrame)| {
+        renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
+        let pixels = renderer.render(&scene, Color::BLACK);
+        (pixels, renderer.backdrop_stats())
+    };
+    let fresh = |desk: (Scene, BackdropFrame)| {
+        let mut renderer = OffscreenRenderer::new(width, height);
+        renderer.set_backdrop(Some(std::sync::Arc::new(desk.1)));
+        renderer.render(&desk.0, Color::BLACK)
+    };
+    let (first, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    assert_eq!((stats.substituted, stats.reused), (3, 0));
+    let (again, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    assert_eq!(
+        (stats.substituted, stats.reused),
+        (3, 3),
+        "an idle frame ran a pass"
+    );
+    assert_eq!(first, again);
+
+    // Something new under the panel only: the bar and the window keep
+    // their samples.
+    let mark = Some(Rect::new(120.0, 60.0, 180.0, 120.0));
+    let (marked, stats) = show(&mut renderer, liquid_desk(8.0, mark));
+    assert_eq!((stats.substituted, stats.reused), (3, 2));
+    assert_eq!(marked, fresh(liquid_desk(8.0, mark)));
+
+    // The window moves: the bar keeps its sample; the window, and the
+    // panel showing it, are taken anew.
+    let (moved, stats) = show(&mut renderer, liquid_desk(20.0, mark));
+    assert_eq!((stats.substituted, stats.reused), (3, 1));
+    assert_eq!(moved, fresh(liquid_desk(20.0, mark)));
+}

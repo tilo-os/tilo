@@ -1302,6 +1302,9 @@ pub struct BackdropStats {
     pub substituted: usize,
     /// Regions that stay opaque: off target, or their backdrop failed to render.
     pub skipped: usize,
+    /// Of the substituted, those shown from the sample they kept: nothing
+    /// below them changed since it was taken, so no pass ran.
+    pub reused: usize,
     /// CPU time spent encoding and submitting, in microseconds. The GPU
     /// work runs ahead of the frame's own render on the same queue.
     pub encode_us: u64,
@@ -1360,6 +1363,68 @@ pub struct BackdropBlur {
     outputs: Vec<Option<Texture>>,
     /// Placeholders currently substituted on the renderer.
     substituted: Vec<ImageData>,
+    /// What each region slot's output was taken of, so a region whose
+    /// backdrop has not changed shows it again without a pass.
+    taken: Vec<Option<Taken>>,
+}
+
+/// What a region's sample was taken of: everything the pass reads. Equal
+/// to a later frame's region, the sample is still what that region shows.
+struct Taken {
+    below: Scene,
+    rect: Rect,
+    size: (u32, u32),
+    target: (u32, u32),
+    numbers: [u64; 12],
+    colours: [[u32; 4]; 2],
+}
+
+impl Taken {
+    fn of(region: &BackdropRegion, target: (u32, u32), base: Color) -> Self {
+        let lens = region.refraction;
+        Self {
+            below: region.below.clone(),
+            rect: region.rect,
+            size: (region.image.width, region.image.height),
+            target,
+            numbers: [
+                region.blur_px,
+                region.cell_px,
+                lens.strength,
+                lens.band,
+                lens.radius,
+                lens.dispersion,
+                region.legible.dark,
+                region.legible.light,
+                f64::from(u8::from(region.sampling == Sampling::Blocky)),
+                0.0,
+                0.0,
+                0.0,
+            ]
+            .map(f64::to_bits),
+            colours: [region.ground, base].map(|colour| colour.components.map(f32::to_bits)),
+        }
+    }
+
+    /// Whether `region` shows what this sample was taken of.
+    fn holds(&self, other: &Self) -> bool {
+        self.rect == other.rect
+            && self.size == other.size
+            && self.target == other.target
+            && self.numbers == other.numbers
+            && self.colours == other.colours
+            && self.below.encoding_eq(&other.below)
+    }
+}
+
+/// Whether `below` draws any of `images`: another region's sample, taken
+/// anew this frame, which it shows through itself.
+fn shows_any(below: &Scene, images: &[ImageData]) -> bool {
+    !images.is_empty()
+        && below.encoding().resources.patches.iter().any(|patch| {
+            matches!(patch, vello_encoding::Patch::Image { image, .. }
+                if images.iter().any(|taken| taken.data.id() == image.data.id()))
+        })
 }
 
 impl BackdropBlur {
@@ -1461,6 +1526,7 @@ impl BackdropBlur {
             levels: Vec::new(),
             across: None,
             outputs: Vec::new(),
+            taken: Vec::new(),
             substituted: Vec::new(),
         }
     }
@@ -1503,15 +1569,59 @@ impl BackdropBlur {
             return stats;
         }
         queue.write_buffer(&self.passes, 0, &self.strided(&pass_bytes));
+        // Samples taken anew this frame: a region that shows one through
+        // itself is taken anew too.
+        let mut fresh: Vec<ImageData> = Vec::new();
         for (region, plan) in planned {
+            let slot = plan.slot;
+            let now = Taken::of(region, target, base);
+            if self.taken.len() <= slot {
+                self.taken.resize_with(slot.saturating_add(1), || None);
+            }
+            let unchanged = self
+                .taken
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|taken| taken.holds(&now))
+                && !shows_any(&region.below, &fresh);
+            if unchanged && self.show_kept(renderer, region, slot) {
+                stats.substituted = stats.substituted.saturating_add(1);
+                stats.reused = stats.reused.saturating_add(1);
+                continue;
+            }
             if self.render_one(device, queue, renderer, region, &plan, base) {
                 stats.substituted = stats.substituted.saturating_add(1);
+                fresh.push(region.image.clone());
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = Some(now);
+                }
             } else {
                 stats.skipped = stats.skipped.saturating_add(1);
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = None;
+                }
             }
         }
         stats.encode_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         stats
+    }
+
+    /// Show `slot`'s kept sample in place of `region`'s placeholder.
+    fn show_kept(&mut self, renderer: &mut Renderer, region: &BackdropRegion, slot: usize) -> bool {
+        let Some(Some(output)) = self.outputs.get(slot) else {
+            return false;
+        };
+        renderer.override_image(
+            &region.image,
+            Some(wgpu::TexelCopyTextureInfoBase {
+                texture: output.texture.clone(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            }),
+        );
+        self.substituted.push(region.image.clone());
+        true
     }
 
     /// Drop the substitutions of the last [`Self::prepare`], so later
