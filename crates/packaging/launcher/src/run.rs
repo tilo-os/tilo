@@ -2163,11 +2163,23 @@ fn splice_action_authority(
     if bytes.len() > MAX_PROJECTION_BYTES {
         return Err(invalid());
     }
-    let policy: AppActionAuthorityProjection =
-        serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    policy.validate().map_err(|_| invalid())?;
+    let policy: AppActionAuthorityProjection = serde_json::from_slice(&bytes).map_err(|error| {
+        RunError::InvalidServiceLaunch(format!(
+            "invalid host action authority binding: unreadable projection: {error}"
+        ))
+    })?;
+    policy.validate().map_err(|error| {
+        RunError::InvalidServiceLaunch(format!("invalid host action authority binding: {error}"))
+    })?;
     if policy.app_id != manifest.package_id || opts.workspace_id.as_deref() != Some(&policy.room) {
-        return Err(invalid());
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "invalid host action authority binding: it is for {} in room {}, the launch for {} \
+             in room {}",
+            policy.app_id,
+            policy.room,
+            manifest.package_id,
+            opts.workspace_id.as_deref().unwrap_or("(none)")
+        )));
     }
     let entry = pop_entry(argv)?;
     crate::sandbox::push_action_authority_bind(argv, path);

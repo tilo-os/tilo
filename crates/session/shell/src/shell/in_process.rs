@@ -359,6 +359,9 @@ impl InProcessApps {
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
         let component = self.mount_component(definition, room, tab, record, lend)?;
+        // Counted once an app is built: a call answered "the record is still
+        // opening" builds nothing and is asked again once it is open.
+        super::work_accounting::app_mounted();
         if component.capture_protected() {
             self.capture_protected
                 .borrow_mut()
@@ -375,7 +378,6 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
-        super::work_accounting::app_mounted();
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
                 Some(feedback) => {

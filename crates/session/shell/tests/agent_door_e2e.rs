@@ -39,11 +39,18 @@ impl Session {
 }
 
 fn spawn() -> Session {
-    let desktop =
-        crate::idle_wakeups::Desktop::start_with_door(crate::idle_wakeups::notes_desktop(), true);
-    desktop.wait_for("the restored Notes notebook", |targets| {
-        targets.iter().any(|name| name == "notes.first_note")
-    });
+    let desktop = crate::idle_wakeups::Desktop::start_with_door(
+        crate::idle_wakeups::notes_desktop(),
+        true,
+        // Tasks too: an admitted agent works in a task of its own there,
+        // which the door starts in the Tasks app's process.
+        &[
+            crate::idle_wakeups::first_party_apps::NOTES,
+            crate::idle_wakeups::first_party_apps::TASKS,
+        ],
+    );
+    // The saved Notes tab reopens as the Notes app's own window.
+    desktop.wait_for_app_window("so.tilo.notes");
     let session = Session { desktop };
     let deadline = tilo_test_env::hang_deadline();
     while !session.door().exists() {
@@ -54,7 +61,8 @@ fn spawn() -> Session {
 }
 
 /// Install a Viewer app in the session's own app store, as an install does:
-/// its manifest, then the registry naming it, written whole.
+/// its manifest, then the registry naming it beside the apps it already
+/// names, written whole.
 fn install_viewer(session: &Session) {
     let store = session.runtime_dir().join("data/tilo-apps");
     let package = store.join("e2e/org.example.viewer");
@@ -70,10 +78,11 @@ fn install_viewer(session: &Session) {
     .unwrap();
     let registry = package_store::Layout::new(&store).registry();
     let staged = registry.with_extension("toml.tmp");
+    let installed = std::fs::read_to_string(&registry).unwrap_or_default();
     std::fs::write(
         &staged,
         format!(
-            "[[entry]]\nid = \"org.example.viewer\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            "{installed}[[entry]]\nid = \"org.example.viewer\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
             package.display().to_string(),
             manifest.display().to_string(),
         ),
