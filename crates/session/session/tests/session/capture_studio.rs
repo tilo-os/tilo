@@ -386,12 +386,29 @@ fn bar_up(session: &mut Session, display: &str) -> Vec<u8> {
 /// clock, so the bar's own minute is not a change to wait out.
 #[track_caller]
 fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
-    pump(session, &mut [], |session, _| {
-        session
+    // What the studio says of the send stays up long enough to be read, and
+    // that time is the clock's: every frame here is read a little later than
+    // the one before, so the wait is the same number of frames on a quiet
+    // machine and on a loaded one.
+    let deadline = tilo_test_env::hang_deadline();
+    let mut at = tilo_clock::now();
+    loop {
+        at += Duration::from_millis(100);
+        tilo_clock::testing::with_monotonic_time(at, || {
+            session.step(Duration::from_millis(2)).expect("step");
+        });
+        let frame = session
             .compositor()
             .screenshot(display)
-            .is_ok_and(|frame| frame.rgba == desk)
-    });
+            .expect("a picture of the display");
+        if frame.rgba == desk {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the studio stayed on {display}"
+        );
+    }
 }
 
 /// The person draws from `from` to `to` with the pointer, as they do on the
