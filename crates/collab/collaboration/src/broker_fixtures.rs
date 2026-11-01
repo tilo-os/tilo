@@ -178,8 +178,8 @@ impl CollaborationManager {
     ) -> (Self, JoiningProbe) {
         let (answer, gate) = tokio::sync::oneshot::channel();
         let (room_status, status) = tokio::sync::watch::channel(Ok(room));
-        let broker = tests::FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(tests::Captures {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
                 committed_history_fixture: Some(history),
                 join_gates: std::collections::VecDeque::from([gate]),
                 room_status: Some(status),
@@ -203,9 +203,9 @@ impl CollaborationManager {
                     }),
                     _ => Err("the session serves no such request".into()),
                 })),
-                ..tests::Captures::default()
+                ..Captures::default()
             })),
-            ..tests::FakeBroker::default()
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = tests::stand_up_fake_broker(broker);
         let manager = Self::connect_in_background(
