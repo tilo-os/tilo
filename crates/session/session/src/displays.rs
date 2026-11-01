@@ -186,6 +186,13 @@ pub const KIND: &str = "session.displays";
 /// How far a brightness key moves a display, as a share of full brightness.
 pub const BRIGHTNESS_STEP: f32 = 0.1;
 
+/// The displays as a view of another language reads and changes them: the reading
+/// ([`Reading`]) as their fields and [`DisplaysAction`] as their verbs.
+#[must_use]
+pub fn surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Reading, DisplaysAction>("displays", "Displays")
+}
+
 /// What the displays resource offers: the arrangements, the display sheet,
 /// and every display's brightness.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -286,13 +293,18 @@ impl Backlights for Screens {
 
 /// The displays as one reads them now: which ones the session shows, how
 /// bright each is, and which one the person works on.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Reading {
     /// Every display the session shows, the built-in one first.
     pub displays: Vec<Display>,
     /// The connector of the display the person works on, when the desk names
     /// one of the displays shown.
     pub focused: Option<String>,
+    /// How bright the display a brightness key and `set-brightness` are about
+    /// is ([`Reading::brightness`]), when one can be dimmed: what a slider
+    /// over the displays shows.
+    #[serde(default)]
+    pub level: Option<f32>,
 }
 
 impl Reading {
@@ -313,7 +325,7 @@ impl Reading {
 }
 
 /// One display the session shows.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Display {
     /// Its DRM connector (`eDP-1`, `DP-2`), which its brightness is set by.
     pub connector: String,
@@ -372,7 +384,7 @@ impl Inner {
     /// is when this machine can set that.
     fn reading(&self) -> Reading {
         let levels = self.levels();
-        Reading {
+        let mut reading = Reading {
             displays: self
                 .shown
                 .iter()
@@ -391,7 +403,10 @@ impl Inner {
                 })
                 .collect(),
             focused: self.focused.clone(),
-        }
+            level: None,
+        };
+        reading.level = reading.brightness();
+        reading
     }
 
     /// The displays that can be dimmed now: the machine's, of those the

@@ -431,6 +431,9 @@ view bar_part(d: Desk, part: BarPart) {
                 }
             }
             bell(d)
+            ui.Button("Quick settings", icon: .settings, icon_only: true, role: .bar, toggled: .some(d.here == "quick-settings")) {
+                on press: device.show_surface(device.desk, "quick-settings")
+            }
         }
     }
 }

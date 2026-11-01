@@ -17,11 +17,40 @@ use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
 use ui::tilo_actions::Action as _;
 
-/// The compiled packages an instance loads: the app and what it uses, the app last.
-pub struct Packages(pub Rc<Vec<Compiled>>);
+/// The compiled packages an instance loads: the app and what it uses, the app last; and the
+/// platform's packages (the device's, Settings') whose published resources it reads.
+pub struct Packages(
+    pub Rc<Vec<Compiled>>,
+    pub Vec<tilolang_tilo::tilolang::PackageMeta>,
+);
 
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
+        // The platform's resources stand as a device that has none of them, read as each
+        // declares when nothing is published: a view over the sound or the battery lays out
+        // as it does on a computer without them.
+        for meta in &self.1 {
+            if let Err(error) = host.runtime().load_foreign(meta.clone()) {
+                eprintln!("tilolang layout-check: a platform package did not load: {error}");
+            }
+        }
+        for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+            if !self
+                .1
+                .iter()
+                .any(|meta| ty.starts_with(&format!("{}#", meta.app)))
+            {
+                continue;
+            }
+            match tilolang_tilo::runtime::ResourceRef::parse_id(published, ty) {
+                Some(target) => {
+                    if let Err(error) = host.runtime().set_reading(&target, "{}") {
+                        eprintln!("tilolang layout-check: `{published}` reads nothing: {error}");
+                    }
+                }
+                None => eprintln!("tilolang layout-check: `{published}` names no resource"),
+            }
+        }
         for compiled in self.0.iter() {
             if let Err(error) = host.load_compiled(compiled) {
                 eprintln!("tilolang layout-check: a package did not load: {error}");

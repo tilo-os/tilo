@@ -13,6 +13,8 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 settings-store = { path = "../../system/settings-store" }
 # A display's colour is part of what the session publishes of its displays.
 serde.workspace = true
+# The session publishes it with its displays, so it describes itself as a reading.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 vello.workspace = true
 workspace-hack = { version = "0.1" }
 

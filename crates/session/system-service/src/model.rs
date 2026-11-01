@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A power mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PowerMode {
     Saver,
@@ -48,7 +48,9 @@ impl From<PowerMode> for os_actions::PowerProfile {
 }
 
 /// The `power` resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Power {
     /// The modes this machine offers; empty without a power daemon.
