@@ -955,6 +955,10 @@ impl crate::Shared {
     /// kept from before this device had an identity is theirs all the same:
     /// one naming them as the login account at it is claimed for who they
     /// are now. A pass with nothing to claim writes nothing.
+    ///
+    /// Who each workspace has in it follows the same rule: what the
+    /// workspace's own governance here names is what the desk shows, so a
+    /// change another member's device made shows on this desk.
     pub(crate) fn own_workspaces(&self) {
         let borrowed = self
             .personal
@@ -978,6 +982,7 @@ impl crate::Shared {
         if changed {
             self.handle.replace_tree(tree);
         }
+        self.mirror_membership();
     }
 
     /// Who the governance of `room` names as its owner: the room's own, when

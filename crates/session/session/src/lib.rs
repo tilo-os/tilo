@@ -342,6 +342,10 @@ struct Shared {
     /// This device's rooms: what every workspace of the desk shows, and what
     /// a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
+    /// The engine revision the desk's copy of each workspace's people was
+    /// last taken from: what nothing new of a workspace's governance has
+    /// passed since.
+    membership_fed: Cell<Option<u64>>,
     /// This device's channels of those rooms' sealed records, and the devices
     /// each room admits: kept for as long as the session runs.
     _channels: Option<channels::Channels>,
@@ -1751,6 +1755,7 @@ impl Session {
             notice_fed: RefCell::new(None),
             sync,
             engine,
+            membership_fed: Cell::new(None),
             _channels: channels,
             personal,
             clipboard: Rc::new(mount::clipboard::Clipboard::new()),

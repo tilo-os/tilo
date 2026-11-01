@@ -5,11 +5,17 @@
 //! key, so every member admits it as it admits every change its people make
 //! ([`NativeWorkspaceOwner::commit_workspace_membership_command`]): a person
 //! added, a role set, someone removed, a grant made or taken away.
+//!
+//! And back: who the workspace's governance here has in it is what the desk's
+//! copy of the workspace shows, so a role another member set or a person they
+//! took in reaches the People tab without that member's device being here.
+
+use std::collections::BTreeMap;
 
 use crate::engine::Engine;
-use tilo_action_policy::Change;
+use tilo_action_policy::{Change, Role};
 use tilo_desktop_model::grants::PolicyEdit;
-use tilo_desktop_model::{RoomId, Workspace};
+use tilo_desktop_model::{RoomId, UserId, Workspace};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -115,10 +121,61 @@ impl<'a> Membership<'a> {
     }
 }
 
+impl crate::Shared {
+    /// Who each workspace on the desk has in it, as the workspace's own
+    /// governance here says: a role another member set, someone they took in
+    /// or removed, written into the desk's copy of the workspace, which is
+    /// what the People tab and every other list of the roster read. Nothing of
+    /// a workspace's state reaches this device without the engine admitting
+    /// it, so a revision that has not moved has nothing to show.
+    pub(crate) fn mirror_membership(&self) {
+        let Some(engine) = &self.engine else {
+            return;
+        };
+        let revision = engine.owner().revision();
+        if self.membership_fed.get() == Some(revision) {
+            return;
+        }
+        self.membership_fed.set(Some(revision));
+        let mut tree = self.handle.read(Clone::clone);
+        let mut changed = false;
+        for workspace in &mut tree.workspaces {
+            let Ok(people) = engine.people(&workspace.room().to_string()) else {
+                // A workspace this device holds no room of keeps the people
+                // the desk has of it.
+                continue;
+            };
+            changed |= mirror(workspace, &people);
+        }
+        if changed {
+            self.handle.replace_tree(tree);
+        }
+    }
+}
+
+/// Write `people` into `workspace` as the roster the workspace's governance
+/// names: the part each of them takes there, the owner aside, whom the desk's
+/// policy names on its own. Whether anything changed.
+fn mirror(workspace: &mut Workspace, people: &[crate::Person]) -> bool {
+    let owner = workspace.policy.owner.clone();
+    let members: BTreeMap<UserId, Role> = people
+        .iter()
+        .filter(|person| !person.removed)
+        .filter(|person| owner.as_deref() != Some(person.person.as_str()))
+        .map(|person| (person.person.clone(), Role::from(person.role)))
+        .collect();
+    if workspace.policy.members == members {
+        return false;
+    }
+    workspace.policy.members = members;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     //! The workspace's own governance takes the people the settings change,
-    //! and refuses what it refuses, whatever this desk holds.
+    //! and refuses what it refuses, whatever this desk holds; and what it has
+    //! of them is what the desk's copy shows.
 
     tilo_automerge_isolate::test_worker!();
 
@@ -135,6 +192,17 @@ mod tests {
 
     const ROOM: &str = testing::WORKSPACE;
 
+    /// The identity of the device certified as `cert`, signing with `key`.
+    fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> HostIdentity {
+        HostIdentity {
+            device_cert: cert.clone(),
+            device_signing_key: key.clone(),
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        }
+    }
+
     /// This device's engine, holding the workspace it governs, and the desk's
     /// own view of it with the person in it as its owner. `joiner` joins the
     /// workspace too, as their own device, and comes back as the person the
@@ -143,16 +211,13 @@ mod tests {
         let person_root = SigningKey::from_bytes(&[9; 32]);
         let person_key = SigningKey::from_bytes(&[10; 32]);
         let cert = testing::certificate(&person_root, &person_key, "This device");
-        let identity = HostIdentity {
-            device_cert: cert.clone(),
-            device_signing_key: person_key.clone(),
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
         let directory = tempfile::TempDir::new().expect("a state directory");
-        let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
-            .expect("this device's engine opens");
+        let engine = Engine::open(
+            identity(&cert, &person_key),
+            Some(directory.path()),
+            std::iter::empty(),
+        )
+        .expect("this device's engine opens");
         let governor = TestGovernor::empty_interactive(cert.clone(), person_key.clone(), ROOM)
             .expect("this device governs its workspace");
         let mut governor = testing::enroll_into(governor, engine.owner(), &person_key, &cert)
@@ -208,6 +273,192 @@ mod tests {
             .into_iter()
             .find(|held| held.person == person && !held.removed)
             .map(|held| held.role)
+    }
+
+    /// Two devices of one workspace: the owner's, which signs for the
+    /// workspace, and this desk's, both holding what the workspace admitted.
+    struct TwoDesks {
+        room: RoomId,
+        owner: Engine,
+        owner_cert: tilo_user_identity::DeviceCert,
+        desk: Engine,
+        desk_cert: tilo_user_identity::DeviceCert,
+        person: String,
+        now: std::time::SystemTime,
+        _states: (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+    }
+
+    /// The workspace's owner admits ada as their own device, and what that
+    /// changed reaches both devices' copies of the workspace, as the
+    /// workspace's host carries it.
+    fn the_owner_admitted_ada() -> TwoDesks {
+        let room = RoomId::parse(ROOM).expect("a workspace");
+        let now = std::time::SystemTime::now();
+        // The workspace's owner, whose own device signs for it.
+        let a_root = SigningKey::from_bytes(&[51; 32]);
+        let a_key = SigningKey::from_bytes(&[52; 32]);
+        let a_cert = testing::certificate(&a_root, &a_key, "The owner's laptop");
+        let governor = TestGovernor::empty_interactive(a_cert.clone(), a_key.clone(), ROOM)
+            .expect("the workspace's owner governs it");
+        let a_state = tempfile::TempDir::new().expect("a state directory");
+        let a_engine = Engine::open(
+            identity(&a_cert, &a_key),
+            Some(a_state.path()),
+            std::iter::empty(),
+        )
+        .expect("the owner's engine opens");
+        let mut governor = testing::enroll_into(governor, a_engine.owner(), &a_key, &a_cert)
+            .expect("the workspace is the owner's");
+        // The person at this desk joins it as their own device, and so does
+        // another member.
+        let b_root = SigningKey::from_bytes(&[53; 32]);
+        let b_key = SigningKey::from_bytes(&[54; 32]);
+        let b_cert = testing::certificate(&b_root, &b_key, "This desk");
+        let b_state = tempfile::TempDir::new().expect("this desk's state directory");
+        let b_engine = Engine::open(
+            identity(&b_cert, &b_key),
+            Some(b_state.path()),
+            [(WorkspaceId::of_room(room), room)],
+        )
+        .expect("this desk's engine opens");
+        governor = testing::enroll_into(governor, b_engine.owner(), &b_key, &b_cert)
+            .expect("the workspace admits this desk");
+        let her_root = SigningKey::from_bytes(&[55; 32]);
+        let her_key = SigningKey::from_bytes(&[56; 32]);
+        let her = testing::certificate(&her_root, &her_key, "ada");
+        let hers_at = tempfile::TempDir::new().expect("her state directory");
+        let hers = tilo_peer_state::owner::open_file(&hers_at.path().join("owner.json"))
+            .expect("her owner opens");
+        governor = testing::enroll_into(governor, &hers, &her_key, &her)
+            .expect("the workspace admits her device");
+        let admitted: Vec<neighbour_wire::NeighbourMsg> = governor
+            .outgoing()
+            .map(|(bytes, _)| postcard::from_bytes(bytes).expect("a workspace change"))
+            .collect();
+        for engine in [&a_engine, &b_engine] {
+            for message in &admitted {
+                engine
+                    .owner()
+                    .receive(
+                        room,
+                        tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                            a_cert.device_public_key,
+                        ),
+                        message.clone(),
+                        now,
+                    )
+                    .expect("a device takes the workspace as its host has it");
+            }
+        }
+        TwoDesks {
+            room,
+            owner: a_engine,
+            owner_cert: a_cert,
+            desk: b_engine,
+            desk_cert: b_cert,
+            person: hex::encode(her.user_public_key),
+            now,
+            _states: (a_state, b_state, hers_at),
+        }
+    }
+
+    /// What this desk holds of a workspace two devices share after the owner
+    /// raised ada from their own device: the people the workspace has here,
+    /// the owner, this desk's person, and ada, as the owner's change left her.
+    fn the_owner_raised_ada() -> (RoomId, Vec<crate::Person>, String, String, String) {
+        let desks = the_owner_admitted_ada();
+        assert_eq!(
+            role_of(&desks.desk, &desks.person),
+            Some(MemberRole::Editor),
+            "the workspace has her as an editor"
+        );
+
+        // The owner gives her moderation from their own device, and what they
+        // wrote reaches this desk.
+        Membership::of(&desks.owner, desks.room)
+            .commit(&Change::SetRole {
+                person: desks.person.clone(),
+                role: Role::Moderator,
+            })
+            .expect("the workspace takes the change");
+        let written = desks
+            .owner
+            .owner()
+            .with_outgoing(desks.room, desks.now, |_, outgoing| {
+                outgoing
+                    .entries()
+                    .map(|entry| {
+                        postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<neighbour_wire::NeighbourMsg>, String>>()
+            })
+            .expect("the owner's device published the change");
+        assert!(
+            !written.is_empty(),
+            "the owner's device published something"
+        );
+        for message in written {
+            desks
+                .desk
+                .owner()
+                .receive(
+                    desks.room,
+                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                        desks.owner_cert.device_public_key,
+                    ),
+                    message,
+                    desks.now,
+                )
+                .expect("this desk takes the change");
+        }
+        assert_eq!(
+            role_of(&desks.desk, &desks.person),
+            Some(MemberRole::Moderator),
+            "this desk's workspace has her as a moderator"
+        );
+        let people = desks.desk.people(ROOM).expect("the workspace's people");
+        (
+            desks.room,
+            people,
+            hex::encode(desks.owner_cert.user_public_key),
+            hex::encode(desks.desk_cert.user_public_key),
+            desks.person,
+        )
+    }
+
+    /// A role one member's device sets reaches another member's desk: what
+    /// this desk has of the workspace's people — the roster the People tab
+    /// shows — has her with it, though the device that set it is not here.
+    #[test]
+    fn a_role_another_member_sets_reaches_this_desks_people() {
+        let (room, people, owner, desk, person) = the_owner_raised_ada();
+        // What this desk had of the workspace's people before the change is
+        // the owner's and this person's; after it, what the workspace has.
+        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Test");
+        workspace.set_owner(owner.clone());
+        workspace.policy.members.insert(desk.clone(), Role::Editor);
+        assert!(
+            mirror(&mut workspace, &people),
+            "the people the workspace has are written into this desk's copy"
+        );
+        assert_eq!(
+            workspace.role_of(&person),
+            Some(Role::Moderator),
+            "the People tab shows her with the role the owner set"
+        );
+        assert_eq!(
+            workspace.role_of(&desk),
+            Some(Role::Editor),
+            "and this person as the workspace has her"
+        );
+        assert!(
+            !workspace.policy.members.contains_key(&owner),
+            "the owner is the workspace's owner, not one more of its members"
+        );
+        assert!(
+            !mirror(&mut workspace, &people),
+            "a desk already showing them is not written again"
+        );
     }
 
     /// A person named in the workspace's settings is given another role,
@@ -355,6 +606,151 @@ mod tests {
         assert!(
             before.is_some(),
             "the workspace had its owner to begin with"
+        );
+    }
+
+    /// This computer's identity, kept under a root of the test's own, and the
+    /// device certificate a session started here signs with.
+    fn this_computer(
+        env: &mut tilo_test_env::ScopedEnv,
+    ) -> (
+        tempfile::TempDir,
+        SigningKey,
+        tilo_user_identity::DeviceCert,
+    ) {
+        let root = tempfile::tempdir().expect("an identity root");
+        let paths = tilo_user_identity::IdentityPaths::under(root.path());
+        std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
+            .expect("this computer's key directory");
+        let person = SigningKey::from_bytes(&[0x61; 32]);
+        let device = SigningKey::from_bytes(&[0x62; 32]);
+        tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
+            .expect("this computer's device key");
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "The laptop".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+            .expect("this computer's certificate");
+        env.set("TILO_IDENTITY_ROOT", root.path());
+        (root, device, cert)
+    }
+
+    /// The desk this computer keeps under `state`.
+    fn session_keeping(state: &std::path::Path) -> crate::Session {
+        crate::Session::headless(
+            crate::Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                state: Some(state.to_path_buf()),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session")
+    }
+
+    /// A person another device of the workspace took in is on this desk's
+    /// copy of it, in the part the workspace gives them, when the desk comes
+    /// back: the People tab shows the workspace's people, not only those this
+    /// desk put there.
+    #[test]
+    fn the_people_another_device_admits_are_on_this_desks_people() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let (_identity, key, cert) = this_computer(&mut env);
+        let state = tempfile::tempdir().expect("a state directory");
+        // A frame brings the desk and its own workspace up.
+        let room = {
+            let mut session = session_keeping(state.path());
+            session
+                .step(std::time::Duration::from_millis(1))
+                .expect("a frame");
+            session
+                .handle()
+                .read(|tree| tree.workspaces.first().map(Workspace::room))
+                .expect("a workspace on the desk")
+        };
+        // The workspace, as this computer's device governs it, takes ada in:
+        // a change another member's device makes while this desk is away.
+        let now = std::time::SystemTime::now();
+        let her_root = SigningKey::from_bytes(&[0x63; 32]);
+        let her_key = SigningKey::from_bytes(&[0x64; 32]);
+        let her = testing::certificate(&her_root, &her_key, "ada");
+        {
+            let engine = Engine::open(
+                identity(&cert, &key),
+                Some(state.path()),
+                [(WorkspaceId::of_room(room), room)],
+            )
+            .expect("this computer's engine opens");
+            let governor =
+                TestGovernor::empty_interactive(cert.clone(), key.clone(), &room.to_string())
+                    .expect("this computer's device governs the workspace");
+            let mut governor = testing::enroll_into(governor, engine.owner(), &key, &cert)
+                .expect("the workspace is this computer's");
+            let hers_at = tempfile::TempDir::new().expect("her state directory");
+            let hers = tilo_peer_state::owner::open_file(&hers_at.path().join("owner.json"))
+                .expect("her owner opens");
+            governor = testing::enroll_into(governor, &hers, &her_key, &her)
+                .expect("the workspace admits her device");
+            for (bytes, _) in governor.outgoing() {
+                engine
+                    .owner()
+                    .receive(
+                        room,
+                        tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                            cert.device_public_key,
+                        ),
+                        postcard::from_bytes(bytes).expect("a workspace change"),
+                        now,
+                    )
+                    .expect("this computer's room takes the workspace's change");
+            }
+        }
+        let person = hex::encode(her.user_public_key);
+        // A new session of the same desk shows the workspace's people.
+        let mut session = session_keeping(state.path());
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+        let role = session
+            .handle()
+            .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(&person)));
+        assert_eq!(
+            role,
+            Some(Role::Editor),
+            "the desk's workspace has the person the workspace took in"
+        );
+        // The sheet shows her in the People tab.
+        session
+            .invoke(
+                tilo_desktop::desktop_actions::CHROME_RESOURCE,
+                "workspace-settings",
+                &serde_json::Map::new(),
+            )
+            .expect("settings opens on the workspace in front");
+        session
+            .step(std::time::Duration::from_millis(1))
+            .expect("a frame");
+        let row = session
+            .workspace_settings()
+            .expect("the session hosts workspace settings")
+            .settings()
+            .people
+            .people
+            .into_iter()
+            .find(|listed| listed.key == person)
+            .expect("the People tab lists her");
+        assert_eq!(
+            row.role_key.as_deref(),
+            Some("editor"),
+            "the People tab says which part the workspace gives her"
         );
     }
 }
