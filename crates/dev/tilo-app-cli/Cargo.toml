@@ -25,7 +25,7 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 hex.workspace = true
-# The shared web room's owner root and one-time admission tokens.
+# The shared web workspace's owner root and one-time admission tokens.
 getrandom.workspace = true
 libc.workspace = true
 image = { workspace = true, features = ["png"] }
