@@ -22,9 +22,9 @@ use tilo_actions::{ActionAddress, ActionContext, ActionOutput, DoorError, Resour
 use tilo_service::{Service, Started};
 use tilolang_runtime::value::ResourceRef;
 
-use crate::action::{ACTION_TYPE, DynAction};
+use crate::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
 use crate::host::Host;
-use crate::publish::{Planner, Publications, publish_package, resource_id};
+use crate::publish::{Planner, Publications, edit_action, publish_package, resource_id};
 
 /// The room record's tilolang records, published to the session.
 pub struct RecordService {
@@ -121,6 +121,42 @@ impl RecordService {
         Some(Json::Object(fields))
     }
 
+    /// The direct edit (a bound control's) of the field `arguments` name in the record or item
+    /// `resource`: what a view composed over its reading elsewhere sends when the person types
+    /// into it. A record publishes these edits; an item is edited in its record by its id there
+    /// ([`edit_action`]), as its own published resource carries only its type's actions.
+    /// `None` for a resource that is not one of these records'.
+    /// A flag (`flag`) may come as its text, as a door that knows no parameter type for it
+    /// hands it on.
+    fn direct_edit(
+        &self,
+        resource: &str,
+        flag: bool,
+        arguments: &Map<String, Json>,
+    ) -> Option<Result<DynAction, String>> {
+        use tilolang_runtime::store::Store as _;
+        let (app, path) = resource.strip_prefix("tl:")?.split_once(':')?;
+        let package = self.host.package(app)?;
+        let probe = ResourceRef::parse_id(path, String::new())?;
+        let ty = self.host.store().type_of(&probe).ok()?;
+        let schema = crate::schema::lookup(&ty)?;
+        let field = arguments
+            .get("field")
+            .and_then(Json::as_str)
+            .unwrap_or_default();
+        let mut value = arguments.get("value").cloned().unwrap_or(Json::Null);
+        if flag && let Some(said) = value.as_str() {
+            match said.parse::<bool>() {
+                Ok(set) => value = Json::Bool(set),
+                Err(_) => return Some(Err(format!("`{said}` is not a flag"))),
+            }
+        }
+        Some(
+            self.host
+                .with_schemas(|| edit_action(&package.meta, &schema.name, path, field, &value)),
+        )
+    }
+
     /// Commit `action` to the record as a step of the person seated here.
     fn commit(&mut self, action: &DynAction) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
@@ -212,13 +248,22 @@ impl Service for RecordService {
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
         let address = ActionAddress::new(resource, action);
-        let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
-        if encoded.type_id != ACTION_TYPE {
-            return Err(DoorError::Unknown(address));
-        }
-        let planned: DynAction = serde_json::from_slice(&encoded.payload)
-            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
+            self.direct_edit(resource, action == EDIT_FLAG_ACTION, arguments)
+                .ok_or_else(|| DoorError::Unknown(address.clone()))?
+                .map_err(DoorError::InvalidArguments)?
+        } else {
+            let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+            if encoded.type_id != ACTION_TYPE {
+                return Err(DoorError::Unknown(address));
+            }
+            serde_json::from_slice(&encoded.payload)
+                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
+        };
         self.commit(&planned).map_err(DoorError::Failed)?;
+        // What it made is published before it is answered, so the caller's next invocation
+        // reaches it: a record changed as a whole is built now, not off the frame.
+        self.publications.settle(&self.host, &self.planner);
         let made = self
             .host
             .take_returned(&planned.action_id)

@@ -566,6 +566,14 @@ impl Core {
         }
         let target = self.ref_arg(a.h(0)?)?;
         let at = &target.target;
+        // The history of a resource of an app this runtime does not run is kept where that app
+        // runs, and its reading carries none of it: nothing of it is held here.
+        if crate::foreign::is_foreign(at) {
+            return Ok(match imp {
+                Imp::VersionEnd => Value::none(),
+                _ => Value::List(Vec::new()),
+            });
+        }
         Ok(match imp {
             Imp::VersionEnd => {
                 let last = a.h(1)? != 0;
