@@ -120,34 +120,6 @@ pub(super) fn desired_legacy_shares(
     desired
 }
 
-/// The rooms in which this session hosts a legacy window the room is shown
-/// (every one while the room shares its layout, else those shared with it):
-/// their carriers are kept, so members that reach this device only through
-/// a room's relay view the windows there.
-pub(super) fn rooms_hosting_windows(
-    tree: &crate::shell::state::WorkspaceTree,
-) -> std::collections::BTreeSet<tilo_desktop_model::RoomId> {
-    let now_ms = tilo_clock::unix_now_ms();
-    tree.desktop
-        .workspaces
-        .iter()
-        .filter(|workspace| {
-            let shared_layout = !tree.room_layout(workspace.room()).is_personal();
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .any(|tab| {
-                    matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. })
-                        && (shared_layout
-                            || tree.streams_shared_window(workspace.room(), tab.id, now_ms))
-                })
-        })
-        .map(crate::shell::state::Workspace::room)
-        .collect()
-}
-
 /// Whether one of the person's other devices shows a legacy window this
 /// session hosts.
 pub(super) fn hosts_viewed_window(
@@ -540,11 +512,6 @@ mod tests {
             "to the member viewing it and the host"
         );
         assert_eq!(share.read_only, [601].into(), "the member only watches");
-        assert_eq!(
-            super::rooms_hosting_windows(&tree),
-            [room].into(),
-            "the room's carrier is kept for the shared window"
-        );
 
         policy.grants.clear();
         projection::project_workspace_policy(&mut doc, &policy).unwrap();
@@ -554,7 +521,6 @@ mod tests {
             desired_legacy_shares(&tree, true, &hosts, &nobody, &members).is_empty(),
             "once the share ends, nothing streams again"
         );
-        assert!(super::rooms_hosting_windows(&tree).is_empty());
     }
 
     /// The boundary for a Tilo app's window shared with a room whose layout

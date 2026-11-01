@@ -109,7 +109,6 @@ tilo-desktop = { path = "../desktop" }
 tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
-tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 bounded-command = { path = "../../system/bounded-command" }

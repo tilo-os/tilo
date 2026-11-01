@@ -553,7 +553,6 @@ impl ShellOverlayHost {
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             expanded_collaborator: None,
             followed_peer: None,
-            native_media: None,
             followed_tab: None,
             followed_session: None,
             followed_room: None,

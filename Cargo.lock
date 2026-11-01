@@ -15659,7 +15659,6 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-service",
  "tilo-model-client",
- "tilo-moq",
  "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",

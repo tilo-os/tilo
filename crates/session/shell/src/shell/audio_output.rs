@@ -284,7 +284,7 @@ impl AudioOutputService {
         Self::with_factory(
             lifecycle,
             Arc::new(|app, source| {
-                Box::pin(crate::network::native_media::prepare_playback(app, source))
+                Box::pin(crate::shell::audio_playback::prepare_playback(app, source))
             }),
         )
     }

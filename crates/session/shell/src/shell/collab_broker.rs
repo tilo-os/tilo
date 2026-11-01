@@ -52,7 +52,6 @@ pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_app_broker::LocalSessionAuthority,
     _personal_source: Option<Arc<NativePersonalSource>>,
-    native_media: Option<super::native_media::NativeMediaService>,
     tracker: Option<Arc<super::broker_services::NativeTrackerRuns>>,
     realtime_fabric: Option<crate::shell::collab_app_broker::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
@@ -75,10 +74,6 @@ impl BrokerHandle {
     /// The rooms' trackers, for following an issue's run in the shell.
     pub(crate) fn tracker(&self) -> Option<Arc<super::broker_services::NativeTrackerRuns>> {
         self.tracker.clone()
-    }
-
-    pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
-        self.native_media.clone()
     }
 
     /// This device's channel encryption service, for the identity service
@@ -831,60 +826,9 @@ impl DrainQueues {
     }
 }
 
-/// Give `service` its call factory, which needs the native owner. The broker
-/// is built on the compositor's loop, which must not wait for the owner's
-/// open, so a factory for an owner still opening is installed from a thread
-/// of its own once the open ends. Until then a call is refused as
-/// unavailable, never placed against a guessed owner.
-fn install_native_media_factory(
-    network: &Arc<ShellNetwork>,
-    service: &super::native_media::NativeMediaService,
-) {
-    fn install(
-        network: &ShellNetwork,
-        service: &super::native_media::NativeMediaService,
-        owner: Result<crate::shell::native_workspace_owner::NativeWorkspaceOwner, String>,
-    ) {
-        let factory = owner.and_then(|owner| {
-            network.runtime_handle().map(|runtime| {
-                crate::network::native_media::Factory::new(
-                    network.cmd_tx.clone(),
-                    owner,
-                    service.capture_broker(),
-                    runtime,
-                )
-            })
-        });
-        match factory {
-            Ok(factory) => {
-                service.install_factory(Arc::new(factory));
-            }
-            Err(error) => {
-                tracing::warn!(%error, "native media factory prerequisites unavailable");
-            }
-        }
-    }
-    match network.native_owner_status() {
-        crate::shell::network::NativeOwnerStatus::Open(owner) => {
-            install(network, service, Ok(owner));
-        }
-        crate::shell::network::NativeOwnerStatus::Opening
-        | crate::shell::network::NativeOwnerStatus::Unavailable => {
-            let network = Arc::clone(network);
-            let service = service.clone();
-            let spawned = std::thread::Builder::new()
-                .name("native-media-factory".into())
-                .spawn(move || install(&network, &service, network.native_owner()));
-            if let Err(error) = spawned {
-                tracing::warn!(%error, "cannot wait for the native owner to install native media");
-            }
-        }
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
-    reason = "one ordered broker assembly: vaults, services, media, authority, then network attachment"
+    reason = "one ordered broker assembly: vaults, services, authority, then network attachment"
 )]
 #[allow(
     clippy::needless_pass_by_value,
@@ -1051,21 +995,6 @@ fn spawn_inner(
     if let Some((service, _)) = realtime_fabric.as_ref() {
         services.realtime = Some(Arc::clone(service));
     }
-    let native_media = peer_sync.and_then(|network| {
-        let (device, _) = network.local_device_fabric_identity()?;
-        let (_, bridge) = realtime_fabric.as_ref()?;
-        Some(super::native_media::NativeMediaService::new(
-            local_session.lifecycle(),
-            bridge.realtime_capture_broker()?,
-            device,
-        ))
-    });
-    if let Some(service) = native_media.as_ref() {
-        if let Some(network) = peer_sync {
-            install_native_media_factory(network, service);
-        }
-        services.native_media = Some(Arc::new(service.clone()));
-    }
     let authority = membership.as_ref().map(|tree| {
         Arc::new(super::broker_services::NativeWorkspaceAuthority(
             tree.clone(),
@@ -1115,7 +1044,6 @@ fn spawn_inner(
         inner,
         local_session,
         _personal_source: personal_source,
-        native_media,
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
         drain_quit,

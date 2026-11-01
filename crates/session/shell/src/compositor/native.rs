@@ -1801,8 +1801,8 @@ fn apply_app_cycle_tab(
 #[path = "native_hosted_windows.rs"]
 mod hosted_windows;
 use hosted_windows::{
-    desired_legacy_shares, hosts_viewed_window, remote_extents, rooms_hosting_windows,
-    shown_hosted_windows, shown_room_hosted_windows,
+    desired_legacy_shares, hosts_viewed_window, remote_extents, shown_hosted_windows,
+    shown_room_hosted_windows,
 };
 
 #[cfg(test)]
@@ -8345,11 +8345,6 @@ fn attach_collab_broker_bridges(
             .attach_app_action_broker(action_broker);
     }
     frame_builder.host_mut().attach_tracker(broker.tracker());
-    // The roster reads who is in which voice channel, and the call this
-    // device is in, from the session's calls.
-    if let Some(media) = broker.native_media_service() {
-        frame_builder.host_mut().set_native_media(media);
-    }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
             .host_mut()
@@ -13024,11 +13019,6 @@ pub fn run() {
                 for room in rooms {
                     net.follow_room_app_versions(room);
                 }
-                let generation = tree_handle.generation();
-                net.set_room_window_hosting(
-                    &rooms_hosting_windows(&tree_handle.read()),
-                    generation,
-                );
             }
             pump_phase!(
                 "legacy-share-reconcile",
@@ -13042,11 +13032,6 @@ pub fn run() {
             // once the encode cap allows, not when it next changes.
             let _ = state.flush_share_sessions();
             let inbound_legacy = net.take_inbound_legacy();
-            // A member that started showing a window through a room's relay
-            // starts at a keyframe of it as it stands.
-            for (peer, surface) in net.take_room_window_keyframes() {
-                state.start_share_reader(peer, surface);
-            }
             let inbound_legacy_count = inbound_legacy.len();
             pump_phase!(
                 "legacy-inbound",
@@ -13513,12 +13498,6 @@ pub fn run() {
                 attach_collab_broker_bridges(&mut frame_builder, broker);
                 #[cfg(feature = "agent-control")]
                 spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
-                if let (Some(portal), Some(service)) =
-                    (portal_backend.as_ref(), broker.native_media_service())
-                {
-                    service
-                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
-                }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 remote_capture_runtime = realtime_fabric_bridge
                     .as_ref()
@@ -14121,23 +14100,6 @@ pub fn run() {
                         }
                         Err(error) => {
                             tracing::warn!(%error, "portal: screen-share frame render failed");
-                        }
-                    }
-                }
-            }
-            // A call sharing this screen gets the composed desktop at its own
-            // pace, never the lock screen.
-            {
-                let share = crate::network::native_media::screen_share();
-                if session.is_locked() {
-                    share.withhold();
-                } else if share.wants_frame(std::time::Instant::now()) {
-                    match capture_executor
-                        .render_portal_screencast_frame(&mut frame_builder, &frame_paint.scene)
-                    {
-                        Ok((width, height, rgba)) => share.publish_rgba(width, height, rgba),
-                        Err(error) => {
-                            tracing::warn!(%error, "call screen-share frame render failed");
                         }
                     }
                 }

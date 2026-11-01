@@ -948,9 +948,6 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
-    /// The session's calls: who is in which voice channel, and the one this
-    /// device is in ([`Self::set_native_media`]).
-    native_media: Option<crate::shell::native_media::NativeMediaService>,
     followed_tab: Option<u64>,
     followed_session: Option<u64>,
     /// Room the active Follow command was sent to. Keeping this separate
