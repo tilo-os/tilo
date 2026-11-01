@@ -1944,7 +1944,6 @@ impl Session {
     /// The media service the apps reach through the session's plane, while
     /// it serves one: what a call joins through.
     #[cfg(test)]
-    #[cfg(test)]
     pub(crate) fn media_service(&self) -> Option<&tilo_native_media::NativeMediaService> {
         self.action_plane.as_ref()?.calls_service.as_ref()
     }

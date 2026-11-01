@@ -336,8 +336,13 @@ async fn open(
         .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
         .ok_or(Issue::Unavailable)?;
     let (granted, _) = access.access(room, channel);
-    let tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) = granted else {
-        return Err(Issue::Unavailable);
+    // Keys that are on their way still carry the call: it opens joining the
+    // channel, and the worker takes them when they arrive. Only a device the
+    // channel has no keys for at all leaves it uncarried.
+    let keys = match granted {
+        tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+        tilo_action_broker::channel_encryption::ChannelAccess::Waiting => None,
+        _ => return Err(Issue::Unavailable),
     };
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
@@ -362,12 +367,15 @@ async fn open(
             label: source.label.clone(),
         })
         .collect();
-    let microphone = tilo_call_lane::Microphone::new(&keys, own, REPEATS).ok();
-    let current = Current {
+    let microphone = keys
+        .as_ref()
+        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, REPEATS).ok());
+    let live = keys.is_some();
+    let current = keys.map(|keys| Current {
         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
         keys,
         roster,
-    };
+    });
     let shared = Arc::new(Shared {
         lane,
         endpoint,
@@ -389,7 +397,7 @@ async fn open(
         },
         call: target.channel.clone(),
         consents,
-        live: AtomicBool::new(false),
+        live: AtomicBool::new(live),
         closed: AtomicBool::new(false),
         deafened: AtomicBool::new(false),
         issue: Mutex::new(None),
@@ -494,7 +502,9 @@ struct Shared {
     workspace: String,
     /// The room's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
-    current: Mutex<Current>,
+    /// The channel's keys and roster, once this device holds them: the call
+    /// is up from then, and joining until.
+    current: Mutex<Option<Current>>,
     side: Mutex<Side>,
     /// The lanes this device opened or took, one per device in the call.
     peers: Mutex<Vec<tilo_call_lane::Peer>>,
@@ -548,7 +558,15 @@ impl Shared {
             });
             return Err(Issue::PermissionDenied);
         }
-        let keys = self.current.lock_recover().keys.clone();
+        let keys = {
+            let current = self.current.lock_recover();
+            current.as_ref().map(|current| current.keys.clone())
+        };
+        let Some(keys) = keys else {
+            // Nothing to seal a microphone with: the channel's keys are not
+            // here yet.
+            return Err(Issue::Unavailable);
+        };
         let still_current = {
             let call = Arc::downgrade(self);
             Arc::new(move || call.upgrade().is_some_and(|call| !call.closed()))
@@ -619,10 +637,14 @@ impl Shared {
             return;
         }
         let heard = {
-            let current = self.current.lock_recover();
-            tilo_call_lane::heard(&current.opener, sender, datagram)
+            let held = self.current.lock_recover();
+            let heard = held
+                .as_ref()
+                .map(|current| tilo_call_lane::heard(&current.opener, sender, datagram));
+            drop(held);
+            heard
         };
-        let Ok(frames) = heard else {
+        let Some(Ok(frames)) = heard else {
             return;
         };
         let now = Instant::now();
@@ -692,46 +714,81 @@ impl Shared {
     }
 
     /// Re-read what the room admits and what the channel's keys are: a
-    /// membership change reaches the call as it happens.
+    /// membership change reaches the call as it happens, and a channel whose
+    /// keys were still on their way when the call joined brings it up.
     fn refresh(&self) {
         let roster = self
             .admitted
             .as_ref()
             .map(|admitted| tilo_call_lane::Roster::new(admitted(&self.workspace)));
         let (granted, _) = self.access.access(self.room, self.channel);
-        let tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) = granted else {
-            *self.issue.lock_recover() = Some(Issue::TransportFailed);
-            return;
+        let keys = match granted {
+            tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+            // Keys still on their way keep a joining call joining.
+            tilo_action_broker::channel_encryption::ChannelAccess::Waiting => None,
+            // A channel this device may no longer read, or has no store for,
+            // carries no call: one that held its keys ends, and one that
+            // never did says it cannot be carried here.
+            _ => {
+                *self.issue.lock_recover() = Some(if self.live.load(Ordering::Acquire) {
+                    Issue::TransportFailed
+                } else {
+                    Issue::Unavailable
+                });
+                return;
+            }
         };
-        let remade = {
-            let mut current = self.current.lock_recover();
-            let mut remade = false;
-            if keys.epoch() != current.keys.epoch() {
-                current.keys = keys;
-                remade = true;
+        let mut rekeyed = false;
+        {
+            let mut held = self.current.lock_recover();
+            match (held.as_mut(), keys) {
+                (Some(current), Some(keys)) if keys.epoch() != current.keys.epoch() => {
+                    current.keys = keys;
+                    if let Some(roster) = roster {
+                        self.calls.set_roster(roster.clone());
+                        current.roster = roster;
+                    }
+                    current.opener =
+                        tilo_call_lane::Opener::new(current.keys.clone(), current.roster.clone());
+                    rekeyed = true;
+                }
+                (Some(current), _) => {
+                    if let Some(roster) =
+                        roster.filter(|roster| roster.devices().ne(current.roster.devices()))
+                    {
+                        self.calls.set_roster(roster.clone());
+                        current.roster = roster;
+                        current.opener = tilo_call_lane::Opener::new(
+                            current.keys.clone(),
+                            current.roster.clone(),
+                        );
+                    }
+                }
+                (None, Some(keys)) => {
+                    let roster = roster.unwrap_or_default();
+                    self.calls.set_roster(roster.clone());
+                    *held = Some(Current {
+                        opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
+                        keys,
+                        roster,
+                    });
+                    self.live.store(true, Ordering::Release);
+                }
+                (None, None) => {}
             }
-            if let Some(roster) =
-                roster.filter(|roster| roster.devices().ne(current.roster.devices()))
-            {
-                self.calls.set_roster(roster.clone());
-                current.roster = roster;
-                remade = true;
-            }
-            if remade {
-                current.opener =
-                    tilo_call_lane::Opener::new(current.keys.clone(), current.roster.clone());
-            }
-            remade
-        };
-        if remade {
+            drop(held);
+        }
+        if rekeyed {
+            let keys = self
+                .current
+                .lock_recover()
+                .as_ref()
+                .map(|current| current.keys.clone());
             let mut side = self.side.lock_recover();
             if side.microphone.is_some() {
-                side.microphone = tilo_call_lane::Microphone::new(
-                    &self.current.lock_recover().keys,
-                    self.own,
-                    REPEATS,
-                )
-                .ok();
+                side.microphone = keys.and_then(|keys| {
+                    tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok()
+                });
             }
         }
     }
@@ -956,15 +1013,17 @@ mod tests {
         }
     }
 
-    /// One channel's keys, as both devices of the call hold them.
-    fn keys(governor: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
+    /// One channel's keys, as the device `device` of a room `governor` runs
+    /// holds them: ready at once under the room's own device, and still on
+    /// their way under any other.
+    fn keys(device: u8, governor: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
         let directory = tempfile::tempdir().expect("a directory to keep channel state in");
         let broker = Arc::new(Mutex::new(BrokerChannels::default()));
         let encryption = ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: directory.path().join("channels"),
                 vault: VaultKey::new([governor; 32]),
-                device_key: ed25519_dalek::SigningKey::from_bytes(&[governor; 32]),
+                device_key: ed25519_dalek::SigningKey::from_bytes(&[device; 32]),
             },
             Box::new(Directory {
                 governor: key(governor),
@@ -1175,7 +1234,7 @@ mod tests {
         }
         bound(&laptop).await;
         bound(&desk).await;
-        let (keys, _kept) = keys(0x11, &[0x11, 0x22]);
+        let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);
         let right = carrier(&desk, &keys);
         assert_eq!(
@@ -1226,6 +1285,36 @@ mod tests {
         );
         wait_heard("a device that left is heard by no one", &right.probe, false).await;
         there.close();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_joins_while_the_channels_keys_are_still_on_their_way() {
+        let person = person_key();
+        // This desk's device is not the one its room is governed by, and its
+        // channel's keys have not reached it yet.
+        let laptop = device(&person, 0x22, "Laptop");
+        let desk = device(&person, 0x11, "Desk");
+        laptop.connect(desk.endpoint_addr());
+        desk.connect(laptop.endpoint_addr());
+        laptop.follow_desktop(&desk_tree());
+        desk.follow_desktop(&desk_tree());
+        laptop.hear(hello(0x11, "the other device"));
+        laptop.hear(presence(0x11, collab_types::PeerPresencePayload::Arrived));
+        laptop.hear(availability(0x11, Some(call_presence())));
+        bound(&laptop).await;
+        let (keys, _kept) = keys(0x22, 0x11, &[0x11, 0x22]);
+        let left = carrier(&laptop, &keys);
+        let mut here = left
+            .factory
+            .prepare(target())
+            .await
+            .expect("a call whose channel's keys are on their way");
+        assert_eq!(
+            here.tick(Instant::now()),
+            Ok(State::Joining),
+            "a call waits for the channel's keys instead of ending"
+        );
+        here.close();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
