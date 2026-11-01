@@ -347,9 +347,9 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     // it advertises via `xdg_toplevel::set_app_id`), not the display label.
     let editor_key = AppKind::Other("Editor".into()).app_id();
     assert_eq!(
-        editor_key, "org.tilo.Editor",
-        "the Editor app-id must be a real reverse-DNS app-id, not the \
-         display label 'Editor'"
+        editor_key, "so.tilo.code-editor",
+        "the Editor app-id must be its package's reverse-DNS app-id, not \
+         the display label 'Editor'"
     );
     // `grants()` derives the per-app view from the capability list, so it is
     // bound before borrowing out of it.
