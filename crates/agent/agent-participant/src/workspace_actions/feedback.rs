@@ -87,7 +87,7 @@ pub(super) fn answer(
         .ok_or_else(|| unavailable("feedback source mismatch"))?;
     if caller
         .workspace()
-        .is_some_and(|room| room != destination.room)
+        .is_some_and(|workspace| workspace != destination.room)
     {
         return Err(unavailable("feedback caller workspace mismatch"));
     }
