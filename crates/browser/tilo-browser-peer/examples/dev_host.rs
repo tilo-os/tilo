@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Prints one JSON line (`origin`, `userPublicKey`, `certificateSha256`,
-//! `room`) for the page's `connectPeer`, then serves until interrupted. The
+//! `workspace`) for the page's `connectPeer`, then serves until interrupted. The
 //! page's browser must accept the self-signed HTTPS certificate (trust it
 //! once, or start a test browser with `--ignore-certificate-errors`);
 //! WebTransport pins it by hash.
@@ -36,7 +36,7 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 fn enrol(
     root: &SigningKey,
@@ -110,7 +110,7 @@ async fn main() {
             "origin": web.origin,
             "userPublicKey": hex::encode(user),
             "certificateSha256": web.certificate_sha256,
-            "room": ROOM,
+            "room": WORKSPACE,
         })
     );
 

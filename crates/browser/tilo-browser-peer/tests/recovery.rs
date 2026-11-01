@@ -1,5 +1,5 @@
 //! `SessionHealth` recovery against a real host: refreshing the shared state
-//! re-requests the room's checkpoints (also after the host restarted), and
+//! re-requests the workspace's checkpoints (also after the host restarted), and
 //! failures the page reports for its store, surfaces and assets are scoped
 //! and cleared.
 
@@ -17,7 +17,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
@@ -27,7 +27,7 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use support::{enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refresh_asks_the_restarted_host_for_the_room_again() {
+async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -47,7 +47,7 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&peer]).await;
     let tree = DocumentMutation::Snapshot(b"desktop tree".to_vec());
     peer.publish(route(), &tree).unwrap();
@@ -112,11 +112,11 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     // Wait for the join's own `Ready` event, not a ready phase: the join
     // is a command the session takes up later, so the phase can read
-    // ready (connected, no room waiting) before the room is even asked
-    // for, and the session marks the room ready before it emits the
+    // ready (connected, no workspace waiting) before the workspace is even asked
+    // for, and the session marks the workspace ready before it emits the
     // event. Either way that `Ready` would land after the drain below.
     wait_for("the room's Ready", || async {
         peer.drain()
@@ -129,7 +129,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     .await;
     ready(&[&peer]).await;
     // Any status change bumps the generation (each envelope's contact
-    // time does); a reconnect is what subscribes the room anew.
+    // time does); a reconnect is what subscribes the workspace anew.
     let _ = peer.drain();
     peer.retry_now().unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

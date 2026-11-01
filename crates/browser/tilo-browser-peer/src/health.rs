@@ -187,7 +187,7 @@ pub enum RecoveryRequest {
     Reauthenticate,
     /// Commit the page store's failed writes again.
     RetrySaving,
-    /// Ask the host for the rooms' shared state again.
+    /// Ask the host for the workspaces' shared state again.
     RefreshCheckpoint,
     /// Recreate a desktop surface's GPU device, surface and renderer.
     RetryDesktop {
@@ -294,7 +294,7 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
             ("identity", "error", vec![RecoveryRequest::Reauthenticate])
         }
         // The host no longer admits this person, or another host answers
-        // now: the page joins again through the room's door, which no
+        // now: the page joins again through the workspace's door, which no
         // request to this session can do. A revoked device never comes back.
         "not-admitted" | "host-changed" | "device-revoked" => ("identity", "error", Vec::new()),
         "storage-transaction-failed" => ("record", "error", vec![RecoveryRequest::RetrySaving]),
@@ -311,12 +311,12 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
 impl PeerSnapshot {
     /// Derive the snapshot from a session status.
     pub fn from_status(status: &PeerStatus) -> Self {
-        let waiting_rooms = status.rooms.values().filter(|ready| !**ready).count();
+        let waiting_workspaces = status.rooms.values().filter(|ready| !**ready).count();
         let connected = status.phase == TransportPhase::Connected;
         let phase = match status.phase {
             TransportPhase::Closed => "closed",
             TransportPhase::Failed => "failed",
-            TransportPhase::Connected if waiting_rooms == 0 => "ready",
+            TransportPhase::Connected if waiting_workspaces == 0 => "ready",
             TransportPhase::Connected => "admitting",
             TransportPhase::Connecting => "authenticating",
             TransportPhase::Reconnecting | TransportPhase::Offline => "incomplete",
@@ -391,12 +391,12 @@ impl PeerSnapshot {
                         "failed"
                     } else if !connected {
                         "waiting"
-                    } else if waiting_rooms > 0 {
+                    } else if waiting_workspaces > 0 {
                         "syncing"
                     } else {
                         "ready"
                     },
-                    pending_prerequisites: waiting_rooms,
+                    pending_prerequisites: waiting_workspaces,
                 },
                 records,
                 capabilities: Capabilities {

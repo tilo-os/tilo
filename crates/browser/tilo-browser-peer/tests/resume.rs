@@ -1,6 +1,6 @@
 //! A browser that reconnects — a new session, or a restarted host — resumes
-//! each room from the host-authenticated position it last received: the host
-//! replays only what it missed instead of the room's retained history.
+//! each workspace from the host-authenticated position it last received: the host
+//! replays only what it missed instead of the workspace's retained history.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,7 +15,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::atomic::Ordering;
@@ -59,7 +59,7 @@ async fn resumed(peer: &PeerHandle) {
 }
 
 /// Have `author` publish `marker` and return what `peer` received before
-/// it: the room delivers in commit order, so anything replayed on the new
+/// it: the workspace delivers in commit order, so anything replayed on the new
 /// session arrives ahead of the marker.
 async fn before_marker(
     peer: &PeerHandle,
@@ -111,8 +111,10 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         observer.key,
     );
-    author.join_placed(support::ROOM, "Workspace").unwrap();
-    observer.join_placed(support::ROOM, "Workspace").unwrap();
+    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    observer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     observer.open_route(route()).unwrap();
     ready(&[&author, &observer]).await;
 
@@ -173,7 +175,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         fresh.key,
     );
-    fresh.join_placed(support::ROOM, "Workspace").unwrap();
+    fresh.join_placed(support::WORKSPACE, "Workspace").unwrap();
     fresh.open_route(route()).unwrap();
     assert_eq!(receive(&fresh, HISTORY + 4).await.len(), HISTORY + 4);
     eprintln!(

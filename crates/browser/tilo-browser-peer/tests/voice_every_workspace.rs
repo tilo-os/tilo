@@ -2,10 +2,10 @@
 //! a host, two of its devices open a voice channel's call and are granted
 //! the carrier, hearing each other:
 //!
-//! - a room the host governs (a room service's room, such as the Lounge);
-//! - a room the host governs that a guest was invited into;
+//! - a workspace the host governs (a workspace service's workspace, such as the Lounge);
+//! - a workspace the host governs that a guest was invited into;
 //! - a workspace of the host's owner, which the host only carries for them
-//!   (it syncs across their devices through it, and no room governs it
+//!   (it syncs across their devices through it, and no workspace governs it
 //!   here).
 //!
 //! A new kind of workspace belongs in [`KINDS`]; one without calls fails.
@@ -34,16 +34,16 @@ use tilo_relay_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
-use support::{Device, TestHost, enrol, start_room_host, wait_for};
+use support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
 /// The kinds of workspace a person can be in on a host.
 #[derive(Clone, Copy, Debug)]
 enum Kind {
-    /// A room the host governs, entered by its owner's devices.
+    /// A workspace the host governs, entered by its owner's devices.
     Governed,
-    /// A room the host governs, which a guest was invited into.
+    /// A workspace the host governs, which a guest was invited into.
     Invited,
-    /// A workspace of the host's owner, which the host carries but no room
+    /// A workspace of the host's owner, which the host carries but no workspace
     /// governs here.
     Carried,
 }
@@ -97,7 +97,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let phone = enrol(&alice, "alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
 
     for (index, kind) in KINDS.into_iter().enumerate() {
@@ -105,17 +105,17 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
         // Two devices in the workspace, and the voice channel they open.
         let (workspace_id, first, second, channel) = match kind {
             Kind::Governed | Kind::Invited => {
-                let room = relay
+                let workspace = relay
                     .rooms()
                     .unwrap()
                     .create(&format!("{kind:?}"))
                     .await
                     .unwrap();
-                enter(&relay, &laptop.cert, &room.room).await;
+                enter(&relay, &laptop.cert, &workspace.room).await;
                 let (owner, channel) = create_voice_channel(
                     address.clone(),
-                    room.workspace_id,
-                    &room.room,
+                    workspace.workspace_id,
+                    &workspace.room,
                     &host.cert,
                     &laptop,
                 )
@@ -124,17 +124,17 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                 let other = if matches!(kind, Kind::Invited) {
                     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
                     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-                    invite(&relay, &laptop.cert, &room.room, &bob, &bob_laptop).await;
-                    session(address.clone(), room.workspace_id, &bob_laptop).await
+                    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+                    session(address.clone(), workspace.workspace_id, &bob_laptop).await
                 } else {
-                    enter(&relay, &phone.cert, &room.room).await;
-                    session(address.clone(), room.workspace_id, &phone).await
+                    enter(&relay, &phone.cert, &workspace.room).await;
+                    session(address.clone(), workspace.workspace_id, &phone).await
                 };
-                (room.workspace_id, owner, other, channel)
+                (workspace.workspace_id, owner, other, channel)
             }
             Kind::Carried => {
                 // Her devices sync her workspace through her host: it takes
-                // it on for them, and governs no room for it.
+                // it on for them, and governs no workspace for it.
                 let workspace_id = 0x0077_6e00_0000_0001;
                 let first = session(address.clone(), workspace_id, &laptop).await;
                 let second = session(address.clone(), workspace_id, &phone).await;

@@ -1,16 +1,16 @@
-//! Each joined room as its governance admits it: the page holds its rooms
-//! in the same joined-room owner native devices hold theirs in
+//! Each joined workspace as its governance admits it: the page holds its workspaces
+//! in the same joined-workspace owner native devices hold theirs in
 //! ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), kept in the page's
 //! storage through its [`PeerStore`].
 //!
-//! The host sends a subscriber the room's bootstrap ahead of its replay
+//! The host sends a subscriber the workspace's bootstrap ahead of its replay
 //! ([`tilo_relay_protocol::Envelope::RoomBootstrap`]): the workspace-join
-//! contract's membership answer, the room's governing authority, roster and
-//! revocations. The owner holds the room on that answer, vouched for by the
+//! contract's membership answer, the workspace's governing authority, roster and
+//! revocations. The owner holds the workspace on that answer, vouched for by the
 //! host the page authenticated to
 //! ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]), and admits
 //! every governance message the host relays through it: members'
-//! certificates and the room document. What the room's governance says is
+//! certificates and the workspace document. What the workspace's governance says is
 //! read off that replica: whether it shares its members' layout, who its
 //! members are, who takes part in its channels, and whether a member's
 //! write reaches the page's apps. The replica decides each document as
@@ -18,7 +18,7 @@
 //! route, its claims against the app surface it names) and keeps none: the
 //! page's apps hold their records.
 //!
-//! A room's replica is the only source of what its governance says: a
+//! A workspace's replica is the only source of what its governance says: a
 //! workspace with no governance yet (no bootstrap received) admits no
 //! member's write and names no channel participants. A page places its
 //! person's own workspaces on their host before joining them
@@ -47,12 +47,12 @@ use tilo_peer_state::document_frame::DocumentRoute;
 /// refused leaves the owner fenced for the rest of the session, as a
 /// native owner is after an uncertain write: the next session starts from
 /// what the store holds.
-struct PageRooms {
+struct PageWorkspaces {
     store: Arc<dyn PeerStore>,
     healthy: AtomicBool,
 }
 
-impl Store for PageRooms {
+impl Store for PageWorkspaces {
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
     }
@@ -81,66 +81,66 @@ impl Store for PageRooms {
     }
 }
 
-/// The rooms this page joined, by workspace.
+/// The workspaces this page joined, by workspace.
 pub(crate) struct Replicas {
     /// This device.
     device: DeviceCert,
     owner: NativeWorkspaceOwner,
-    rooms: BTreeMap<u64, RoomId>,
+    workspaces: BTreeMap<u64, RoomId>,
 }
 
 impl Replicas {
-    /// The rooms of `device`, as `store` last kept them. A record that no
+    /// The workspaces of `device`, as `store` last kept them. A record that no
     /// longer restores is let go: the host's bootstraps and replays bring
-    /// its rooms back.
+    /// its workspaces back.
     pub(crate) fn new(device: DeviceCert, store: Arc<dyn PeerStore>) -> Self {
         let now = SystemTime::now();
         let kept = store
             .load_rooms()
             .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
-        let rooms = Arc::new(PageRooms {
+        let workspaces = Arc::new(PageWorkspaces {
             store,
             healthy: AtomicBool::new(true),
         });
         let owner = kept
-            .and_then(|kept| NativeWorkspaceOwner::restore(rooms.clone(), kept, now).ok())
+            .and_then(|kept| NativeWorkspaceOwner::restore(workspaces.clone(), kept, now).ok())
             .filter(|owner| {
-                owner.storage().held().all(|(room, _)| {
+                owner.storage().held().all(|(workspace, _)| {
                     owner
-                        .with_current(room, |view| Ok(view.device() == &device))
+                        .with_current(workspace, |view| Ok(view.device() == &device))
                         .unwrap_or(false)
                 })
             });
-        let owner = owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(rooms));
-        let rooms = owner
+        let owner = owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(workspaces));
+        let workspaces = owner
             .storage()
             .held()
-            .map(|(room, workspace)| (workspace.0, room))
+            .map(|(workspace, held)| (held.0, workspace))
             .collect();
         Self {
             device,
             owner,
-            rooms,
+            workspaces,
         }
     }
 
-    fn with_room<T>(
+    fn with_workspace<T>(
         &self,
         workspace_id: u64,
         read: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
     ) -> Option<Result<T, String>> {
-        let room = self.rooms.get(&workspace_id)?;
-        Some(self.owner.with_current(*room, read))
+        let workspace = self.workspaces.get(&workspace_id)?;
+        Some(self.owner.with_current(*workspace, read))
     }
 
-    /// Hold `workspace_id`'s room on the bootstrap the host sent (`bytes`,
+    /// Hold `workspace_id`'s workspace on the bootstrap the host sent (`bytes`,
     /// a postcard membership answer); returns whether the replica is new.
-    /// A replica of the same room and authority stays: a resumed
+    /// A replica of the same workspace and authority stays: a resumed
     /// subscription replays only what it has not received.
     ///
     /// # Errors
-    /// The bootstrap is not a membership answer for this device and room,
-    /// or the room it names does not build.
+    /// The bootstrap is not a membership answer for this device and workspace,
+    /// or the workspace it names does not build.
     pub(crate) fn bootstrap(
         &mut self,
         workspace_id: u64,
@@ -150,23 +150,23 @@ impl Replicas {
         let installed = self
             .owner
             .install_vouched(workspace_id, bytes, &self.device, now)?;
-        if let Some((room, _)) = self
+        if let Some((workspace, _)) = self
             .owner
             .storage()
             .held()
             .find(|(_, workspace)| workspace.0 == workspace_id)
         {
-            self.rooms.insert(workspace_id, room);
+            self.workspaces.insert(workspace_id, workspace);
         }
         Ok(installed)
     }
 
     /// Admit `message`, governance `author` sent to `workspace_id`;
-    /// `retained` while the host replays the room. Returns whether it
-    /// changed what the room's governance says.
+    /// `retained` while the host replays the workspace. Returns whether it
+    /// changed what the workspace's governance says.
     ///
     /// # Errors
-    /// No replica of the room is held, or its governance refuses the
+    /// No replica of the workspace is held, or its governance refuses the
     /// message.
     pub(crate) fn admit(
         &self,
@@ -176,22 +176,22 @@ impl Replicas {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let Some(room) = self.rooms.get(&workspace_id) else {
+        let Some(workspace) = self.workspaces.get(&workspace_id) else {
             return Err("the workspace has no governance".into());
         };
         let report = self
             .owner
-            .receive(*room, origin(author, retained), message, now)?;
+            .receive(*workspace, origin(author, retained), message, now)?;
         Ok(report.changed || report.metadata_changed)
     }
 
     /// Decide `message`, a document `author` wrote to `workspace_id`;
-    /// `retained` while the host replays the room. `Ok(true)` lets it reach
-    /// the page's apps, `Ok(false)` holds it until the room's governance
+    /// `retained` while the host replays the workspace. `Ok(true)` lets it reach
+    /// the page's apps, `Ok(false)` holds it until the workspace's governance
     /// can decide it.
     ///
     /// # Errors
-    /// The room's governance refuses it.
+    /// The workspace's governance refuses it.
     pub(crate) fn decide_document(
         &self,
         workspace_id: u64,
@@ -200,21 +200,21 @@ impl Replicas {
         message: &NeighbourMsg,
         now: SystemTime,
     ) -> Result<bool, String> {
-        // Held until the room's bootstrap arrives.
-        self.with_room(workspace_id, |view| {
+        // Held until the workspace's bootstrap arrives.
+        self.with_workspace(workspace_id, |view| {
             view.peer()
                 .decide_relayed_document(origin(author, retained), message, now)
         })
         .unwrap_or(Ok(false))
     }
 
-    /// `workspace_id`'s room, whether its governance keeps each member's
+    /// `workspace_id`'s workspace, whether its governance keeps each member's
     /// layout their own, and the members it lists by person id.
     pub(crate) fn layout(
         &self,
         workspace_id: u64,
     ) -> Option<(String, RoomLayout, Option<BTreeSet<String>>)> {
-        self.with_room(workspace_id, |view| {
+        self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
             let doc = peer.admitted_workspace();
             Ok((
@@ -227,21 +227,21 @@ impl Replicas {
     }
 
     /// The devices that may sign and be added to `route`'s channel: those
-    /// the room's governance lets read its record, the host the room was
-    /// joined through and this device. `None` while the room's governance does not answer for
+    /// the workspace's governance lets read its record, the host the workspace was
+    /// joined through and this device. `None` while the workspace's governance does not answer for
     /// the route.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         let workspace_id = route.workspace_id().ok()?;
         let channel = Channels::channel(route);
         let record = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        self.with_room(workspace_id, |view| {
+        self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
             let readers = peer
                 .governance()
                 .channel_readers(SystemTime::now(), channel, Some(&record))
                 .ok()
                 .flatten()
-                .ok_or("the room does not answer for the route")?;
+                .ok_or("the workspace does not answer for the route")?;
             let mut participants: BTreeSet<Ed25519PublicKey> = readers
                 .into_iter()
                 .map(Ed25519PublicKey::from_bytes)
@@ -255,14 +255,14 @@ impl Replicas {
         .ok()
     }
 
-    /// One line per room for diagnostics: the host it was joined through.
+    /// One line per workspace for diagnostics: the host it was joined through.
     pub(crate) fn describe(&self) -> String {
-        self.rooms
+        self.workspaces
             .keys()
             .filter_map(|workspace_id| {
-                self.with_room(*workspace_id, |view| {
+                self.with_workspace(*workspace_id, |view| {
                     Ok(format!(
-                        "room {}: joined through {}",
+                        "workspace {}: joined through {}",
                         view.peer().workspace_id(),
                         hex::encode(&view.workspace_host().device_public_key[..4])
                     ))
@@ -282,8 +282,8 @@ fn origin(author: [u8; 32], retained: bool) -> TransportOrigin {
     }
 }
 
-/// Decide every room's members' writes against the app surfaces of the
-/// apps this page runs: set once, before the page restores its rooms.
+/// Decide every workspace's members' writes against the app surfaces of the
+/// apps this page runs: set once, before the page restores its workspaces.
 #[cfg(feature = "toolkit")]
 pub(crate) fn decide_with_page_surfaces() {
     static ONCE: std::sync::Once = std::sync::Once::new();

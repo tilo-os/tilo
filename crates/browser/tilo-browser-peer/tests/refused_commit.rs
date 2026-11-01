@@ -1,6 +1,6 @@
-//! A change the room refuses is not kept as if it were shared: the host
+//! A change the workspace refuses is not kept as if it were shared: the host
 //! answers the author's commit with a refusal, the record that made it
-//! withdraws it, and the app that made it is told which action the room
+//! withdraws it, and the app that made it is told which action the workspace
 //! refused and why, in words for a person, exactly as for an action refused
 //! on the device.
 
@@ -26,7 +26,7 @@ use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{ROOM, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
+use support::{WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -110,8 +110,8 @@ async fn answer(peer: &PeerHandle) -> Answer {
     .await
 }
 
-/// `app` withdrew note `pinned`, the one whose `changes` the room refused
-/// for `reason`, and was told the room refused its verb.
+/// `app` withdrew note `pinned`, the one whose `changes` the workspace refused
+/// for `reason`, and was told the workspace refused its verb.
 fn withdrawn_as_refused(
     app: &mut TestApp<BoardApp>,
     pinned: usize,
@@ -127,7 +127,7 @@ fn withdrawn_as_refused(
     );
     let withdrawn_text = format!("note {pinned}");
 
-    // The page withdraws what the room refused, and the app hears of it as
+    // The page withdraws what the workspace refused, and the app hears of it as
     // a refusal of the verb it invoked, for the note it would have pinned.
     assert!(app.refused_by_room(changes, plain_reason(reason)).unwrap());
     assert_eq!(app.state().notes.len(), pinned, "the refused note is gone");
@@ -148,8 +148,8 @@ fn withdrawn_as_refused(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
-    // Alice's host governs the room and holds guests to a change budget;
-    // Bob was invited through the room and came in on his browser.
+    // Alice's host governs the workspace and holds guests to a change budget;
+    // Bob was invited through the workspace and came in on his browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let (bob, _) = UserIdentity::generate("Bob", 1);
@@ -170,14 +170,14 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         }),
     )
     .await;
-    let room = host
+    let board = host
         .relay
         .rooms()
         .unwrap()
-        .create_room("Board", Some(ROOM))
+        .create_room("Board", Some(WORKSPACE))
         .await
         .unwrap();
-    assert_eq!(room.workspace_id, workspace());
+    assert_eq!(board.workspace_id, workspace());
     let route = route();
     let creator = channel_crypto::ChannelPeer::create_now(
         None,
@@ -192,7 +192,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
             &host,
             &alice,
             &host_device,
-            &room.room,
+            &board.room,
             bob.verifying_key().to_bytes(),
         )
         .await,

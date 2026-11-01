@@ -1,6 +1,6 @@
 //! A call between the owner's native device and an invited person's
-//! browser in a room the relay governs. The native side is the shell's own
-//! path: the joined-room owner holds the room, its relay session carries the
+//! browser in a workspace the relay governs. The native side is the shell's own
+//! path: the joined-workspace owner holds the workspace, its relay session carries the
 //! call, and a [`Participation`] starts the call, keeps the governor's grant
 //! and authorizes its voice carrier. Both get their grants from the relay
 //! and hear each other over its `moq-lite` carrier.
@@ -47,15 +47,15 @@ use call::{
     CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite, issue,
     until,
 };
-use support::{TestHost, enrol, start_room_host};
+use support::{TestHost, enrol, start_workspace_host};
 
-/// A person's native device holding a room through the joined-room owner,
+/// A person's native device holding a workspace through the joined-workspace owner,
 /// as the shell does, with its call participations.
 struct Native {
     identity: HostIdentity,
     endpoint: iroh::Endpoint,
     owner: NativeWorkspaceOwner,
-    room: RoomId,
+    workspace: RoomId,
     workspace_id: u64,
     scope: Arc<Scope>,
     session: RelayCoeditSession,
@@ -91,13 +91,14 @@ impl Native {
         .await
         .unwrap();
         owner.install(&enrollment, SystemTime::now()).unwrap();
-        let room = RoomId::parse(&enrollment.bootstrap().room).unwrap();
-        let (scope, session) = Self::dial(&owner, room, &identity, &endpoint, workspace_id).await;
+        let workspace = RoomId::parse(&enrollment.bootstrap().room).unwrap();
+        let (scope, session) =
+            Self::dial(&owner, workspace, &identity, &endpoint, workspace_id).await;
         Self {
             identity,
             endpoint,
             owner,
-            room,
+            workspace,
             workspace_id,
             scope,
             session,
@@ -105,16 +106,16 @@ impl Native {
         }
     }
 
-    /// Connect to the relay the room's current pin names, as the shell's
+    /// Connect to the relay the workspace's current pin names, as the shell's
     /// actor does whenever that pin changes.
     async fn dial(
         owner: &NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         identity: &HostIdentity,
         endpoint: &iroh::Endpoint,
         workspace_id: u64,
     ) -> (Arc<Scope>, RelayCoeditSession) {
-        let connect = Connect::new(owner.clone(), room).unwrap();
+        let connect = Connect::new(owner.clone(), workspace).unwrap();
         let (hint, device, revocations, continuity) = connect.material(identity).unwrap();
         let session = tilo_peer_state::owner::session::dial(
             endpoint.clone(),
@@ -132,7 +133,7 @@ impl Native {
         )
     }
 
-    /// Admit the room's deltas and hand the governor's call answers to the
+    /// Admit the workspace's deltas and hand the governor's call answers to the
     /// participations, as the shell's actor does, until `done`.
     async fn receive_until(&mut self, what: &str, done: impl Fn(&Self) -> bool + Send + Sync) {
         tilo_test_env::within(what, async {
@@ -146,7 +147,7 @@ impl Native {
                         let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                         let governor = self
                             .owner
-                            .with_current(self.room, |view| Ok(view.workspace_host().device_public_key))
+                            .with_current(self.workspace, |view| Ok(view.workspace_host().device_public_key))
                             .unwrap();
                         match self
                             .scope
@@ -157,7 +158,7 @@ impl Native {
                             Err(error) if error.contains("pin changed") => {
                                 (self.scope, self.session) = Self::dial(
                                     &self.owner,
-                                    self.room,
+                                    self.workspace,
                                     &self.identity,
                                     &self.endpoint,
                                     self.workspace_id,
@@ -195,7 +196,7 @@ impl Native {
             // Until the governor admits the channel, it refuses to start.
             let call = Participation::open(
                 self.owner.clone(),
-                self.room,
+                self.workspace,
                 &channel,
                 &self.session,
                 |_| Ok(()),
@@ -208,15 +209,15 @@ impl Native {
             .await;
             if let Some(grant) = call.grant() {
                 // Opening the channel started its call: the governor grants
-                // the participation directly, while the room's media policy
+                // the participation directly, while the workspace's media policy
                 // naming the call reaches this replica as a later delta.
-                // That changes the room's security basis, which pauses the
+                // That changes the workspace's security basis, which pauses the
                 // participation's carrier (the shell then opens a new one);
-                // hold the room's current policy before the first carrier.
-                self.receive_until("the room's policy names the call", |native| {
+                // hold the workspace's current policy before the first carrier.
+                self.receive_until("the workspace's policy names the call", |native| {
                     native
                         .owner
-                        .with_current(native.room, |view| {
+                        .with_current(native.workspace, |view| {
                             Ok(view
                                 .peer()
                                 .validated_media_policy()?
@@ -241,32 +242,32 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let desk = enrol(&alice, "alice-desk", DeviceCapabilities::primary());
     let page = enrol(&bob, "bob-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
 
-    // Alice's room on her relay; her native device holds it as its owner,
+    // Alice's workspace on her relay; her native device holds it as its owner,
     // and Bob's person is invited.
-    let room = relay.rooms().unwrap().create("Standup").await.unwrap();
-    enter(&relay, &laptop.cert, &room.room).await;
-    enter(&relay, &desk.cert, &room.room).await;
-    let own = issue(&relay, &laptop.cert, &room.room, &alice).await;
+    let workspace = relay.rooms().unwrap().create("Standup").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.room).await;
+    enter(&relay, &desk.cert, &workspace.room).await;
+    let own = issue(&relay, &laptop.cert, &workspace.room, &alice).await;
     let directory = tempfile::tempdir().unwrap();
     let mut native = Native::join(
         directory.path(),
         laptop.cert.clone(),
         laptop.key.clone(),
         &join::encode_invitation_text(&own.signed_invitation),
-        room.workspace_id,
+        workspace.workspace_id,
     )
     .await;
-    invite(&relay, &laptop.cert, &room.room, &bob, &page).await;
+    invite(&relay, &laptop.cert, &workspace.room, &bob, &page).await;
 
     // The chat gets a voice channel; Alice's native device starts its call
     // and the governor grants her the first participation.
     let (_replica, voice) = create_voice_channel(
         address.clone(),
-        room.workspace_id,
-        &room.room,
+        workspace.workspace_id,
+        &workspace.room,
         &host.cert,
         &desk,
     )
@@ -275,7 +276,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
         .receive_until("Alice's native device admits the voice channel", |native| {
             native
                 .owner
-                .with_current(native.room, |view| Ok(view.peer().document(CHAT, "")))
+                .with_current(native.workspace, |view| Ok(view.peer().document(CHAT, "")))
                 .unwrap()
                 .is_some()
         })
@@ -302,7 +303,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     .unwrap();
     page_link
         .send(Envelope::Subscribe {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     browser(&mut page_link, |envelope| match envelope {
@@ -313,7 +314,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     .await;
     page_link
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: alone.call,
             participation: None,
         })
@@ -385,7 +386,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
             ended.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }));
-    native.owner.invalidate_identity(native.room);
+    native.owner.invalidate_identity(native.workspace);
     assert_eq!(alice_carrier.status(), Status::Closed);
     assert!(capture_stopped.load(std::sync::atomic::Ordering::SeqCst));
     assert!(call.inspect_current(|_, _| Ok(())).is_err());

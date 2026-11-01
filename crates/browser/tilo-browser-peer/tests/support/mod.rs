@@ -32,7 +32,7 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 /// A test's scratch directory for a host's or a participant's state, removed
 /// with it. It is in memory where the system has one
@@ -55,7 +55,7 @@ pub fn scratch_dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
-/// The test hosts' devices. A governed room's host writes the first state
+/// The test hosts' devices. A governed workspace's host writes the first state
 /// of each record a member starts; the tests read what members wrote.
 static HOSTS: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
@@ -71,22 +71,22 @@ pub fn members_document(event: &PeerEvent) -> bool {
 }
 
 pub fn workspace() -> u64 {
-    tilo_relay_protocol::room_workspace_id(ROOM).unwrap()
+    tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap()
 }
 
-/// Have `relay` govern [`ROOM`], the person's workspace, unless it does,
+/// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
 /// and admit `device` to it as its owner: what a page asks of its host
 /// before it joins ([`PeerHandle::join_placed`]), done here for a peer
-/// that reaches the host without its rooms route.
+/// that reaches the host without the route that administers them.
 pub async fn place(relay: &Relay, device: &DeviceCert) {
-    let rooms = relay.rooms().unwrap();
-    if rooms.summary(ROOM).await.is_err()
-        && let Err(error) = rooms.create_room("Workspace", Some(ROOM)).await
+    let workspaces = relay.rooms().unwrap();
+    if workspaces.summary(WORKSPACE).await.is_err()
+        && let Err(error) = workspaces.create_room("Workspace", Some(WORKSPACE)).await
     {
         // Another peer of the test may have placed it meanwhile.
-        assert!(rooms.summary(ROOM).await.is_ok(), "{error}");
+        assert!(workspaces.summary(WORKSPACE).await.is_ok(), "{error}");
     }
-    rooms.enter(ROOM, device).await.unwrap();
+    workspaces.enter(WORKSPACE, device).await.unwrap();
 }
 
 pub struct Device {
@@ -136,7 +136,7 @@ pub async fn start_host_plain(
 
 /// [`start_host_plain`], whose operator trust policy lets the people
 /// `guests` (user roots) connect. Connecting is not membership: a guest
-/// enters a room only through its invitation ([`door`], [`redeem`]).
+/// enters a workspace only through its invitation ([`door`], [`redeem`]).
 pub async fn start_host_admitting(
     root: &SigningKey,
     host: &Device,
@@ -148,7 +148,7 @@ pub async fn start_host_admitting(
     start_host_limiting(root, host, state, web_listen, plain_listen, guests, None).await
 }
 
-/// [`start_host_admitting`], holding room guests to the change and content
+/// [`start_host_admitting`], holding workspace guests to the change and content
 /// budgets `limits`, as a public host does.
 pub async fn start_host_limiting(
     root: &SigningKey,
@@ -181,7 +181,7 @@ pub struct HostSettings<'a> {
     pub plain_listen: Option<SocketAddr>,
     /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
-    /// The change and content budgets room guests are held to.
+    /// The change and content budgets workspace guests are held to.
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
@@ -244,11 +244,11 @@ pub async fn start_host_serving(
     TestHost { relay, web }
 }
 
-/// A host that governs rooms rather than one pinned workspace, serving
+/// A host that governs workspaces rather than one pinned workspace, serving
 /// browsers on an ephemeral port. With `keep_web_identity` its development
 /// certificate is stored under `state`, so a restarted host presents the
 /// same one.
-pub async fn start_room_host(
+pub async fn start_workspace_host(
     root: &SigningKey,
     host: &Device,
     state: &Path,
@@ -415,7 +415,7 @@ pub async fn ready(peers: &[&PeerHandle]) {
     .await;
 }
 
-/// Wait until a participant of the room admitted `peer` to the note's channel.
+/// Wait until a participant of the workspace admitted `peer` to the note's channel.
 pub async fn admitted(peer: &PeerHandle) {
     let note = format!("route {}/{} ", route().app_id, route().record);
     wait_for("a participant to admit the page", || {
@@ -432,7 +432,7 @@ pub async fn admitted(peer: &PeerHandle) {
 pub fn route() -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.notes".into(),
-        cluster_id: ROOM.into(),
+        cluster_id: WORKSPACE.into(),
         record: "note-1".into(),
     }
 }
@@ -484,7 +484,7 @@ impl tilo_browser_peer::HttpClient for Recording {
 }
 
 /// The next document `peer` opened on `route`, leaving every other event
-/// pending: a room also carries records the test did not write, such as the
+/// pending: a workspace also carries records the test did not write, such as the
 /// shared desktop every workspace is seeded with.
 pub async fn next_document_on(
     peer: &PeerHandle,
@@ -522,21 +522,21 @@ pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> D
     .await
 }
 
-/// The room's one-time pre-admission for `person`, as the room service's
-/// door asks the room for it: the owner's grant for a token's digest,
+/// The workspace's one-time pre-admission for `person`, as the workspace service's
+/// door asks the workspace for it: the owner's grant for a token's digest,
 /// issued as an invitation only `person` redeems. Returns the invitation
 /// and the token.
 pub async fn door(
     host: &TestHost,
     owner: &SigningKey,
     owner_host: &Device,
-    room: &str,
+    workspace: &str,
     person: [u8; 32],
 ) -> (Vec<u8>, Vec<u8>) {
     let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
-        room: room.to_owned(),
+        room: workspace.to_owned(),
         role: RoomRole::Editor,
         token_sha256,
         label: "Guest".into(),
@@ -566,7 +566,7 @@ pub async fn door(
 }
 
 /// Redeem `door` for `cert`'s device over the host's join exchange, as a
-/// page asks to join with its invitation: the room admits it as an editor.
+/// page asks to join with its invitation: the workspace admits it as an editor.
 pub async fn redeem(
     host: &TestHost,
     (invitation, token): (Vec<u8>, Vec<u8>),
@@ -596,7 +596,7 @@ pub async fn redeem(
     );
 }
 
-/// Let `cert`'s device in through `door`, then start its page in the room.
+/// Let `cert`'s device in through `door`, then start its page in the workspace.
 pub async fn enter(
     host: &TestHost,
     door: (Vec<u8>, Vec<u8>),
@@ -613,11 +613,11 @@ pub async fn enter(
         key.clone(),
     );
     peer.join(workspace_id).unwrap();
-    in_room(&peer, workspace_id).await;
+    in_workspace(&peer, workspace_id).await;
     peer
 }
 
-pub async fn in_room(peer: &PeerHandle, workspace_id: u64) {
+pub async fn in_workspace(peer: &PeerHandle, workspace_id: u64) {
     ready(&[peer]).await;
     wait_for("the governed room to let the page in", || async {
         (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())

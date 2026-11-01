@@ -1,5 +1,5 @@
 //! A voice channel shows who is in its call the moment that changes: a
-//! device that asked the room for its calls is told the list again when
+//! device that asked the workspace for its calls is told the list again when
 //! someone joins or leaves, without asking again.
 
 #![allow(
@@ -26,9 +26,9 @@ use tilo_relay_protocol::voice::{CallOperation, CallSummary, Directions, Showing
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
-use support::{Device, TestHost, enrol, start_room_host, wait_for};
+use support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
-/// `device`'s own session with the room, subscribed.
+/// `device`'s own session with the workspace, subscribed.
 async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
     let client = RelayCoeditSession::join(
         RelayClient::connect_to_pinned_host(
@@ -71,33 +71,33 @@ fn in_call(list: &[CallSummary], channel: &str) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn whoever_watches_a_rooms_calls_is_told_each_join_and_leave_unasked() {
+async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let room = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &room.room).await;
+    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.room).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
-        room.workspace_id,
-        &room.room,
+        workspace.workspace_id,
+        &workspace.room,
         &host.cert,
         &laptop,
     )
     .await;
     let owner = owner.into_client();
 
-    // Bob looks at the room's voice channels once.
+    // Bob looks at the workspace's voice channels once.
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &room.room, &bob, &bob_laptop).await;
-    let bob_link = session(address.clone(), room.workspace_id, &bob_laptop).await;
+    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     bob_link
         .send(Envelope::VoiceCalls {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     let first = native(&bob_link, listed).await;
@@ -111,12 +111,12 @@ async fn whoever_watches_a_rooms_calls_is_told_each_join_and_leave_unasked() {
             record_id: String::new(),
             channel_id: channel.clone(),
         };
-        async move { operate(owner, room.workspace_id, 1, open).await.ok() }
+        async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }
     })
     .await;
     owner
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: None,
         })
@@ -136,7 +136,7 @@ async fn whoever_watches_a_rooms_calls_is_told_each_join_and_leave_unasked() {
     // Alice leaves: Bob is told the call is empty.
     owner
         .send(Envelope::VoiceLeave {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: grant.participation,
         })
@@ -163,14 +163,14 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let room = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &room.room).await;
+    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.room).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
-        room.workspace_id,
-        &room.room,
+        workspace.workspace_id,
+        &workspace.room,
         &host.cert,
         &laptop,
     )
@@ -179,11 +179,11 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
 
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &room.room, &bob, &bob_laptop).await;
-    let bob_link = session(address.clone(), room.workspace_id, &bob_laptop).await;
+    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     bob_link
         .send(Envelope::VoiceCalls {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     native(&bob_link, listed).await;
@@ -195,12 +195,12 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
             record_id: String::new(),
             channel_id: channel.clone(),
         };
-        async move { operate(owner, room.workspace_id, 1, open).await.ok() }
+        async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }
     })
     .await;
     owner
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: None,
         })
@@ -228,7 +228,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     };
     owner
         .send(Envelope::VoiceShow {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: grant.participation,
             showing: camera,
@@ -256,7 +256,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     };
     owner
         .send(Envelope::VoiceShow {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: grant.participation,
             showing: screen,
@@ -270,7 +270,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     // Nobody says what another participation shows.
     bob_link
         .send(Envelope::VoiceShow {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: grant.participation,
             showing: Showing::default(),
@@ -278,7 +278,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
         .unwrap();
     bob_link
         .send(Envelope::VoiceCalls {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     let after = native(&bob_link, listed).await;
@@ -300,7 +300,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     for showing in [muted, deafened, screen] {
         owner
             .send(Envelope::VoiceShow {
-                workspace_id: room.workspace_id,
+                workspace_id: workspace.workspace_id,
                 call: opened.call,
                 participation: grant.participation,
                 showing,
@@ -317,7 +317,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     // sees him muted and showing nothing.
     bob_link
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: None,
         })
@@ -325,7 +325,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     let bob_grant = native(&bob_link, granted).await;
     operate(
         &owner,
-        room.workspace_id,
+        workspace.workspace_id,
         2,
         CallOperation::SetDenial {
             call: opened.call,
@@ -345,7 +345,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     .await;
     bob_link
         .send(Envelope::VoiceShow {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: bob_grant.participation,
             showing: Showing {
@@ -356,7 +356,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
         .unwrap();
     bob_link
         .send(Envelope::VoiceCalls {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     let silenced = Showing {

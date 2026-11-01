@@ -1,4 +1,4 @@
-//! How long a message takes from one page to another in the same room when
+//! How long a message takes from one page to another in the same workspace when
 //! both reach the host over HTTPS, as two browsers do: from the moment the
 //! sender's page publishes a change to the moment the other page holds it.
 //! The pages' own frames are not in it; this is the carrier and the host.
@@ -17,7 +17,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
@@ -56,7 +56,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     let (a, b) = (page(&sender), page(&receiver));
     let b_events = b.events();
     for peer in [&a, &b] {
-        peer.join_placed(support::ROOM, "Workspace").unwrap();
+        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     }
     ready(&[&a, &b]).await;
 

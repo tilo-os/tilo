@@ -42,12 +42,12 @@ blake3.workspace = true
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
 # The browser is a channel member device, as native peers are.
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
-# Each joined room's replica: the room's governance as native devices
+# Each joined workspace's replica: the workspace's governance as native devices
 # admit it, held in the engine's owner native devices hold theirs in
 # (`replica`), its record kept as JSON in the page's store.
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
-# Whether a joined room shares its members' layout, read off its replica's
-# room document.
+# Whether a joined workspace shares its members' layout, read off its replica's
+# workspace document.
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
 serde_json.workspace = true
 

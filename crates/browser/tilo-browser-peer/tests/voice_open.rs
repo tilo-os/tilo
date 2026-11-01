@@ -27,9 +27,9 @@ use tilo_relay_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
-use support::{Device, TestHost, enrol, start_room_host, wait_for};
+use support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
-/// `device`'s own session with the room, subscribed.
+/// `device`'s own session with the workspace, subscribed.
 async fn session(address: iroh::EndpointAddr, workspace_id: u64, device: &Device) -> RelayClient {
     let client = RelayCoeditSession::join(
         RelayClient::connect_to_pinned_host(
@@ -61,14 +61,14 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
-    let room = relay.rooms().unwrap().create("Lounge").await.unwrap();
-    enter(&relay, &laptop.cert, &room.room).await;
+    let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &workspace.room).await;
     let (owner, channel) = create_voice_channel(
         address.clone(),
-        room.workspace_id,
-        &room.room,
+        workspace.workspace_id,
+        &workspace.room,
         &host.cert,
         &laptop,
     )
@@ -80,22 +80,26 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
         channel_id: channel.clone(),
     };
 
-    // Bob, a guest of Alice's room, joins its voice channel: the call
+    // Bob, a guest of Alice's workspace, joins its voice channel: the call
     // starts for him, though only the owner may end or moderate it.
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
-    invite(&relay, &laptop.cert, &room.room, &bob, &bob_laptop).await;
-    let bob_link = session(address.clone(), room.workspace_id, &bob_laptop).await;
+    invite(&relay, &laptop.cert, &workspace.room, &bob, &bob_laptop).await;
+    let bob_link = session(address.clone(), workspace.workspace_id, &bob_laptop).await;
     let opened = wait_for("the governor to learn the voice channel", || {
         let bob_link = &bob_link;
         let open = open();
-        async move { operate(bob_link, room.workspace_id, 1, open).await.ok() }
+        async move {
+            operate(bob_link, workspace.workspace_id, 1, open)
+                .await
+                .ok()
+        }
     })
     .await;
     assert!(opened.active, "joining a voice channel starts its call");
     let refused = operate(
         &bob_link,
-        room.workspace_id,
+        workspace.workspace_id,
         2,
         CallOperation::End {
             call: opened.call,
@@ -106,7 +110,9 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     assert!(refused.is_err(), "a guest cannot end the call");
 
     // Alice opening the channel's call finds the same call, unchanged.
-    let again = operate(&owner, room.workspace_id, 3, open()).await.unwrap();
+    let again = operate(&owner, workspace.workspace_id, 3, open())
+        .await
+        .unwrap();
     assert_eq!((again.call, again.epoch), (opened.call, opened.epoch));
 
     // Twelve devices in one call: no participant limit.
@@ -117,13 +123,13 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
             &format!("alice-device-{index}"),
             DeviceCapabilities::primary(),
         );
-        enter(&relay, &device.cert, &room.room).await;
-        links.push(session(address.clone(), room.workspace_id, &device).await);
+        enter(&relay, &device.cert, &workspace.room).await;
+        links.push(session(address.clone(), workspace.workspace_id, &device).await);
     }
     let mut joined = Vec::new();
     for link in &links {
         link.send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: None,
         })
@@ -143,7 +149,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     // A device joining afresh replaces its own participation: still twelve.
     links[1]
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: opened.call,
             participation: None,
         })

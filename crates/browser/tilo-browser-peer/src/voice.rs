@@ -1,7 +1,7 @@
-//! This session's part in the calls of the rooms it joined.
+//! This session's part in the calls of the workspaces it joined.
 //!
 //! The host governs each call (see [`tilo_relay_protocol::voice`]); the
-//! session keeps at most one participation per room alive for its consumer:
+//! session keeps at most one participation per workspace alive for its consumer:
 //! it joins, repeats the join with its participation every
 //! [`HEARTBEAT`](tilo_relay_protocol::voice::HEARTBEAT) and after every
 //! reconnect, joins afresh once when the host forgot the participation
@@ -20,14 +20,14 @@ use tilo_relay_protocol::voice::{CallState, CallSummary, Showing, VoiceGrant};
 pub enum VoiceEvent {
     /// The answer to [`crate::PeerHandle::voice_calls`].
     Calls {
-        /// The room's workspace.
+        /// The workspace.
         workspace_id: u64,
         /// Its calls, or why it lists none.
         result: Result<Vec<CallSummary>, String>,
     },
     /// The answer to [`crate::PeerHandle::voice_call`] `request`.
     CallResult {
-        /// The room's workspace.
+        /// The workspace's workspace.
         workspace_id: u64,
         /// The request's id.
         request: [u8; 16],
@@ -37,14 +37,14 @@ pub enum VoiceEvent {
     /// The participation's current grant: the first after a join, then
     /// whenever the roster, the directions or the token change.
     Granted {
-        /// The room's workspace.
+        /// The workspace's workspace.
         workspace_id: u64,
         grant: Box<VoiceGrant>,
     },
     /// The participation ended: the call ended, the device may no longer
     /// take part, or the host refused the join.
     Ended {
-        /// The room's workspace.
+        /// The workspace's workspace.
         workspace_id: u64,
         call: [u8; 32],
         /// Why.
@@ -68,14 +68,14 @@ struct Joined {
     showing: Showing,
 }
 
-/// The participations of this session, one per room at most.
+/// The participations of this session, one per workspace at most.
 #[derive(Default)]
 pub(crate) struct Participations {
     joined: HashMap<u64, Joined>,
 }
 
 impl Participations {
-    /// Join `call` of `workspace_id`, leaving the room's previous call.
+    /// Join `call` of `workspace_id`, leaving the workspace's previous call.
     /// Returns what to send, in order.
     pub(crate) fn join(&mut self, workspace_id: u64, call: [u8; 32]) -> Vec<Envelope> {
         if self
@@ -289,11 +289,11 @@ mod tests {
     use super::*;
     use tilo_relay_protocol::voice::Directions;
 
-    const ROOM: u64 = 7;
+    const WORKSPACE: u64 = 7;
 
     fn grant(call: [u8; 32], participation: [u8; 32]) -> Envelope {
         Envelope::VoiceGranted {
-            workspace_id: ROOM,
+            workspace_id: WORKSPACE,
             grant: Box::new(VoiceGrant {
                 call,
                 epoch: 1,
@@ -315,7 +315,7 @@ mod tests {
 
     fn refused(call: [u8; 32]) -> Envelope {
         Envelope::VoiceRefused {
-            workspace_id: ROOM,
+            workspace_id: WORKSPACE,
             call,
             reason: "the participation ended; join afresh".into(),
         }
@@ -325,7 +325,7 @@ mod tests {
     fn a_granted_participation_beats_and_resumes_with_its_id() {
         let mut calls = Participations::default();
         assert!(matches!(
-            calls.join(ROOM, [1; 32]).as_slice(),
+            calls.join(WORKSPACE, [1; 32]).as_slice(),
             [Envelope::VoiceJoin {
                 participation: None,
                 ..
@@ -345,7 +345,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            calls.leave(ROOM),
+            calls.leave(WORKSPACE),
             Some(Envelope::VoiceLeave {
                 participation: [9, ..],
                 ..
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn a_forgotten_participation_joins_afresh_once_then_ends() {
         let mut calls = Participations::default();
-        calls.join(ROOM, [1; 32]);
+        calls.join(WORKSPACE, [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
         let (event, reply) = calls.inbound(&refused([1; 32])).unwrap();
         assert!(event.is_none());
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn a_page_that_stood_still_joins_afresh_once_for_all_its_refused_beats() {
         let mut calls = Participations::default();
-        calls.join(ROOM, [1; 32]);
+        calls.join(WORKSPACE, [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
         // Three beats out at once; the host forgot the participation.
         for _ in 0..3 {
@@ -423,11 +423,11 @@ mod tests {
     #[test]
     fn joining_another_call_leaves_the_first() {
         let mut calls = Participations::default();
-        calls.join(ROOM, [1; 32]);
+        calls.join(WORKSPACE, [1; 32]);
         calls.inbound(&grant([1; 32], [9; 32]));
-        assert!(calls.join(ROOM, [1; 32]).is_empty(), "already in it");
+        assert!(calls.join(WORKSPACE, [1; 32]).is_empty(), "already in it");
         assert!(matches!(
-            calls.join(ROOM, [2; 32]).as_slice(),
+            calls.join(WORKSPACE, [2; 32]).as_slice(),
             [
                 Envelope::VoiceLeave { call: [1, ..], .. },
                 Envelope::VoiceJoin {

@@ -1,7 +1,7 @@
-//! A page that only watches a public room, as its spectator: it reads what
-//! the members seal in the room's records with the keys the room's node
+//! A page that only watches a public workspace, as its spectator: it reads what
+//! the members seal in the workspace's records with the keys the workspace's node
 //! hands it, and writes nothing, not even a request for a channel's access.
-//! In a room that is not public it gets no keys and opens nothing.
+//! In a workspace that is not public it gets no keys and opens nothing.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,14 +29,16 @@ use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{TestHost, admitted, enrol, next_document_on, start_peer, start_room_host, wait_for};
+use support::{
+    TestHost, admitted, enrol, next_document_on, start_peer, start_workspace_host, wait_for,
+};
 
-async fn rooms(link: &HttpsLink, request: RoomsRequest) -> Room {
+async fn workspaces(link: &HttpsLink, request: RoomsRequest) -> Room {
     match carrier::rooms(link.client().as_ref(), link.session(), &request)
         .await
         .unwrap()
     {
-        RoomsReply::Room(room) => room,
+        RoomsReply::Room(workspace) => workspace,
         other => panic!("expected a room, got {other:?}"),
     }
 }
@@ -105,9 +107,9 @@ async fn watching_page(root: &SigningKey, host: &DeviceCert, paths: Arc<Paths>) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
+async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    // A room service's node, which takes part in its rooms' channels.
+    // A workspace service's node, which takes part in its workspaces' channels.
     let host = enrol(
         &alice,
         "rooms",
@@ -115,7 +117,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     );
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let https: Arc<dyn HttpClient> =
         support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let owner = HttpsLink::connect(
@@ -127,14 +129,14 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     )
     .await
     .unwrap();
-    let created = rooms(
+    let created = workspaces(
         &owner,
         RoomsRequest::Create {
             name: "Plaza".into(),
         },
     )
     .await;
-    rooms(
+    workspaces(
         &owner,
         RoomsRequest::Enter {
             room: created.room.clone(),
@@ -143,7 +145,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     .await;
     let workspace_id = created.workspace_id;
 
-    // The spectator person is a viewer of the room, as its host makes it.
+    // The spectator person is a viewer of the workspace, as its host makes it.
     let RoomsReply::Invitation {
         signed_invitation, ..
     } = carrier::rooms(
@@ -186,7 +188,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         .unwrap(),
         JoinReply::Waiting
     );
-    rooms(
+    workspaces(
         &owner,
         RoomsRequest::Admit {
             room: created.room.clone(),
@@ -261,7 +263,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     let status = watcher.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
-    // Alice also holds the room's shared desktop record, which the room was
+    // Alice also holds the workspace's shared desktop record, which the workspace was
     // seeded with; the page's edit would have arrived on the note's route.
     assert!(
         alice_page.drain().iter().all(
@@ -270,7 +272,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         "the watching page wrote to Alice"
     );
 
-    // In a room that is not public a watching page reads the room but none
+    // In a workspace that is not public a watching page reads the workspace but none
     // of what its members seal.
     relay
         .admit_spectators(workspace_id, spectators(false))
@@ -293,13 +295,13 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     })
     .await;
     // One request per sealed record the page holds (the note, and the
-    // room's shared desktop it was seeded with), each refused.
+    // workspace's shared desktop it was seeded with), each refused.
     let refused = paths.asked("/channel-keys");
     assert!(
         !refused.is_empty() && refused.iter().all(|status| *status == 403),
         "{refused:?}"
     );
-    // The room's own seed of its shared desktop is no member's sealed
+    // The workspace's own seed of its shared desktop is no member's sealed
     // writing; what a member sealed (the note, and any sealed desktop
     // change) the page never opens.
     let opened: Vec<_> = sealed_off

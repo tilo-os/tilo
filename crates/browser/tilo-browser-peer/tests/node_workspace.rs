@@ -27,7 +27,7 @@
 
 mod support;
 
-// This binary re-execs as the automerge worker (the node's rooms use it).
+// This binary re-execs as the automerge worker (the node's workspaces use it).
 tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
@@ -106,7 +106,7 @@ fn dev_tls(state: &Path) -> TlsSource {
     }
 }
 
-async fn rooms(peer: &PeerHandle, request: RoomsRequest) -> RoomsReply {
+async fn workspaces(peer: &PeerHandle, request: RoomsRequest) -> RoomsReply {
     let (reply, answer) = tokio::sync::oneshot::channel();
     peer.rooms_then(
         request,
@@ -302,7 +302,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     ready(&[&ada]).await;
 
     // The company workspace, governed by the node, with Ada as its owner.
-    let RoomsReply::Room(acme) = rooms(
+    let RoomsReply::Room(acme) = workspaces(
         &ada,
         RoomsRequest::Create {
             name: "Acme".into(),
@@ -312,7 +312,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     else {
         panic!("no workspace");
     };
-    let entered = rooms(
+    let entered = workspaces(
         &ada,
         RoomsRequest::Enter {
             room: acme.room.clone(),
@@ -376,7 +376,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // Bo is invited; the invitation names who sent it.
     let RoomsReply::Invitation {
         signed_invitation, ..
-    } = rooms(
+    } = workspaces(
         &ada,
         RoomsRequest::Invite {
             room: acme.room.clone(),
@@ -432,7 +432,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .await
     .unwrap();
     assert_eq!(asked, JoinReply::Waiting);
-    let RoomsReply::Requests(waiting) = rooms(
+    let RoomsReply::Requests(waiting) = workspaces(
         &ada,
         RoomsRequest::Requests {
             room: acme.room.clone(),
@@ -446,7 +446,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         panic!("{waiting:?}");
     };
     assert_eq!(bo_request.name, "Bo");
-    let admitted = rooms(
+    let admitted = workspaces(
         &ada,
         RoomsRequest::Admit {
             room: acme.room.clone(),
@@ -503,7 +503,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     grant.signature = root.sign(grant.digest().unwrap().to_vec()).await.unwrap();
     let RoomsReply::Invitation {
         signed_invitation, ..
-    } = rooms(
+    } = workspaces(
         &ada,
         RoomsRequest::PreAdmit {
             request_id: [3; 32],
@@ -552,7 +552,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         matches!(&admitted, JoinReply::Admitted { name, role: RoomRole::Editor, .. } if name == "Acme"),
         "{admitted:?}"
     );
-    let RoomsReply::Notices(notices) = rooms(
+    let RoomsReply::Notices(notices) = workspaces(
         &ada,
         RoomsRequest::Notices {
             room: acme.room.clone(),
@@ -582,7 +582,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         1,
         "Cy read the room on the first session after she redeemed the invitation"
     );
-    let removed = rooms(
+    let removed = workspaces(
         &ada,
         RoomsRequest::Remove {
             room: acme.room.clone(),

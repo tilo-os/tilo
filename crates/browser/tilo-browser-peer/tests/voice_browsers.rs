@@ -91,7 +91,7 @@ fn ensure_moq_library(repository: &std::path::Path) {
 }
 
 struct Page {
-    room: String,
+    workspace: String,
     peer: PeerHandle,
     last: Mutex<Option<VoiceGrant>>,
 }
@@ -104,24 +104,24 @@ impl Page {
             .filter_map(|event| match event {
                 PeerEvent::Voice(VoiceEvent::Granted { grant, .. }) => {
                     *self.last.lock().unwrap() = Some((*grant).clone());
-                    Some(json!({"room": self.room, "kind": "granted", "grant": grant_json(&grant)}))
+                    Some(json!({"room": self.workspace, "kind": "granted", "grant": grant_json(&grant)}))
                 }
                 PeerEvent::Voice(VoiceEvent::CallResult { request, result, .. }) => Some(match result {
-                    Ok(state) => json!({"room": self.room, "kind": "callResult", "request": hex::encode(request), "call": {
+                    Ok(state) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
                         "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
                         "allowed": {"publish": state.allowed.publish, "subscribe": state.allowed.subscribe},
                     }}),
-                    Err(error) => json!({"room": self.room, "kind": "callResult", "request": hex::encode(request), "error": error}),
+                    Err(error) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
                 }),
                 PeerEvent::Voice(VoiceEvent::Ended { call, reason, .. }) => {
-                    Some(json!({"room": self.room, "kind": "ended", "call": hex::encode(call), "reason": reason}))
+                    Some(json!({"room": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}))
                 }
                 PeerEvent::Voice(VoiceEvent::Calls {result, ..}) => Some(match result {
-                    Ok(calls) => json!({"room": self.room, "kind": "calls", "calls": calls.iter().map(|call| json!({
+                    Ok(calls) => json!({"room": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
                         "call": hex::encode(call.state.call), "epoch": call.state.epoch, "active": call.state.active,
                         "app": call.app_id, "record": call.record_id, "channel": call.channel_id,
                     })).collect::<Vec<_>>()}),
-                    Err(error) => json!({"room": self.room, "kind": "calls", "error": error}),
+                    Err(error) => json!({"room": self.workspace, "kind": "calls", "error": error}),
                 }),
                 _ => None,
             })
@@ -141,16 +141,16 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     // beats once the browsers run.
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
     ensure_moq_library(&repository);
-    let room = call::GovernedCall::start().await;
-    let (_, bob_device) = room.invite("bob-browser").await;
-    let (_, carol_device) = room.invite("carol-browser").await;
+    let governed = call::GovernedCall::start().await;
+    let (_, bob_device) = governed.invite("bob-browser").await;
+    let (_, carol_device) = governed.invite("carol-browser").await;
     let page = |device: support::Device| {
         Arc::new(Page {
-            room: room.room.clone(),
+            workspace: governed.cluster_id.clone(),
             peer: support::start_peer(
-                Host::Https(room.https()),
+                Host::Https(governed.https()),
                 device.cert,
-                room.host.cert.clone(),
+                governed.host.cert.clone(),
                 device.key,
             ),
             last: Mutex::new(None),
@@ -158,17 +158,18 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     };
     let bob = page(bob_device);
     let carol = page(carol_device);
-    bob.peer.join(room.workspace_id).unwrap();
-    carol.peer.join(room.workspace_id).unwrap();
+    bob.peer.join(governed.workspace_id).unwrap();
+    carol.peer.join(governed.workspace_id).unwrap();
     support::ready(&[&bob.peer, &carol.peer]).await;
-    room.owner
+    governed
+        .owner
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
-            call: room.call.call,
+            workspace_id: governed.workspace_id,
+            call: governed.call.call,
             participation: None,
         })
         .unwrap();
-    let alice = call::native(&room.owner, |event| match event {
+    let alice = call::native(&governed.owner, |event| match event {
         Envelope::VoiceGranted { grant, .. } => Some(*grant),
         _ => None,
     })
@@ -185,11 +186,11 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let server_marks = marks.clone();
     let server_bob = bob.clone();
     let server_carol = carol.clone();
-    let call_id = hex::encode(room.call.call);
-    let room_id = room.room.clone();
-    let channel_id = room.channel.clone();
-    let workspace = room.workspace_id;
-    let call = room.call.call;
+    let call_id = hex::encode(governed.call.call);
+    let workspace_cluster = governed.cluster_id.clone();
+    let channel_id = governed.channel.clone();
+    let workspace = governed.workspace_id;
+    let call = governed.call.call;
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
         let text = |body: String| Some(Reply::status(200).body(body));
@@ -197,7 +198,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
             return text(call_id.clone());
         }
         if path == "/api/room" {
-            return text(room_id.clone());
+            return text(workspace_cluster.clone());
         }
         // The chat's voice channel the governed call is on: its id is the
         // chat's own, minted when the workspace was made.
@@ -284,7 +285,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         loop {
             tokio::select! {
                 result = browser.wait() => break result.unwrap(),
-                event = room.owner.recv() => {
+                event = governed.owner.recv() => {
                     if let Some(Envelope::VoiceRefused {reason, ..}) = &event {
                         panic!("the relay refused Alice's heartbeat: {reason}");
                     }
@@ -314,7 +315,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
                         retry_at = std::time::Instant::now().checked_add(Duration::from_millis(250)).unwrap();
                     }
                     if timestamp.is_multiple_of(240_000) {
-                        room.owner.send(Envelope::VoiceJoin {workspace_id: room.workspace_id, call: room.call.call, participation: Some(alice.participation)}).unwrap();
+                        governed.owner.send(Envelope::VoiceJoin {workspace_id: governed.workspace_id, call: governed.call.call, participation: Some(alice.participation)}).unwrap();
                     }
                     let _ = native.enable_publication();
                     let _ = native.try_send(CapturedOpus {timestamp_48k: timestamp, duration_samples: 960, payload: vec![0xf8, 0xff, 0xfe], captured_at: std::time::Instant::now()});
@@ -338,7 +339,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
             .iter()
             .find_map(|mark| mark.strip_prefix(&prefix))
             .unwrap();
-        let namespace = format!("{}/{participation}", hex::encode(room.call.call));
+        let namespace = format!("{}/{participation}", hex::encode(governed.call.call));
         assert!(
             native_received.get(&namespace).copied().unwrap_or_default() > 100,
             "the production native carrier heard too few {who} microphone frames"
@@ -361,5 +362,5 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     bob.peer.close();
     carol.peer.close();
     drop(server);
-    room.shutdown().await;
+    governed.shutdown().await;
 }

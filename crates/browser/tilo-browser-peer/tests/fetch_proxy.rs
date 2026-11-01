@@ -145,7 +145,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
         matches!(refused, Err(tilo_net::NetError::Connect { .. })),
         "{refused:?}"
     );
-    // The counters a room host's metrics page appends.
+    // The counters a workspace host's metrics page appends.
     let metrics = state.path().join("metrics.d/fetch-proxy.prom");
     wait_for("the fetch proxy's counters", || {
         let text = std::fs::read_to_string(&metrics).unwrap_or_default();

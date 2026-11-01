@@ -2,7 +2,7 @@
 
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use neighbour_wire::NeighbourMsg;
@@ -172,7 +172,9 @@ async fn native_window_scenario() {
         host_device.cert.clone(),
         browser_device.key,
     );
-    browser.join_placed(support::ROOM, "Workspace").unwrap();
+    browser
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&browser]).await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     browser
@@ -432,7 +434,9 @@ async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes
         host_device.cert.clone(),
         browser_device.key,
     );
-    browser.join_placed(support::ROOM, "Workspace").unwrap();
+    browser
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&browser]).await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     browser
