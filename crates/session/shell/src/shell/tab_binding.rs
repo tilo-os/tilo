@@ -389,6 +389,22 @@ pub fn open_app_process(
     Some(tab_id)
 }
 
+/// Whether a tab asks to be drawn by the session as an app that runs as its
+/// own process: whether [`reopen_app_tabs_as_processes`] has anything to do.
+/// Reads only, so a caller takes the tree for writing only when it does.
+pub fn has_app_tabs_to_reopen(tree: &WorkspaceTree) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| {
+            matches!(&tab.tile, TileContent::AppPlaceholder { kind, .. }
+                if own_process_package(kind).is_some())
+        })
+}
+
 /// Turn every tab of a packaged first-party app that asks to be drawn by
 /// the session (a tree saved while the session drew those apps itself, or a
 /// tab a peer that draws its apps itself opened) into the app's own window
