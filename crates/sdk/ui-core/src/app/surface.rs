@@ -797,15 +797,26 @@ impl App {
         crate::motion::own(self.motion_owner(), || self.surface_next_frame_own())
     }
 
-    /// [`Self::surface_next_frame`], asked as this app.
-    fn surface_next_frame_own(&self) -> Option<crate::time::Instant> {
-        let now = crate::time::now();
-        let moving = self.root_widget.needs_animation_frame()
+    /// Whether something in the app moves at `now`: a widget's motion, a
+    /// frame a motion asked for, or a press or hover still settling. A host
+    /// draws it again while it does, as a window of its own is redrawn.
+    pub fn surface_moving(&self, now: crate::time::Instant) -> bool {
+        crate::motion::own(self.motion_owner(), || self.surface_moving_own(now))
+    }
+
+    /// [`Self::surface_moving`], asked as this app.
+    fn surface_moving_own(&self, now: crate::time::Instant) -> bool {
+        self.root_widget.needs_animation_frame()
             || crate::motion::frames_wanted(now)
             || self
                 .presence_ctx
-                .interaction_animation_demand(now, &self.theme);
-        if moving {
+                .interaction_animation_demand(now, &self.theme)
+    }
+
+    /// [`Self::surface_next_frame`], asked as this app.
+    fn surface_next_frame_own(&self) -> Option<crate::time::Instant> {
+        let now = crate::time::now();
+        if self.surface_moving_own(now) {
             // Due this very frame: a host takes its own `now` before asking
             // and draws when the answer is at or behind it, so the deadline
             // sits just behind the clock instead of on it.
