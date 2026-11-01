@@ -13,7 +13,6 @@
 //! (`desktop:osd/show`), as any caller would.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use taffy::{NodeId, Style, TaffyTree};
@@ -24,6 +23,7 @@ use tilo_actions::{
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextWeight};
+use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
 use ui::widget::{TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};

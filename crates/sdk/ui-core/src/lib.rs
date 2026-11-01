@@ -337,6 +337,9 @@ pub mod snap;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
+/// The actions socket a session hands a surface app is a descriptor: only a
+/// Unix process receives one.
+#[cfg(unix)]
 pub mod surface_peer;
 pub mod surface_services;
 pub mod sysdirs;

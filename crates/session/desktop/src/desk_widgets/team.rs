@@ -15,11 +15,10 @@
 //! [`status_line`] is the one reading of that; the People popover uses it
 //! too.
 
-use std::time::SystemTime;
-
 use crate::collaborators::{LineSource, RosterRow, RosterStatus};
 use tilo_desktop_model::DesktopTree;
 use ui::presence::PresenceCtx;
+use ui::time::SystemTime;
 
 /// Most people the open card lists before "and N more".
 pub const MAX_ROWS: usize = 6;

@@ -85,6 +85,21 @@ fn file_uri(path: &Path) -> Option<url::Url> {
     }
 }
 
+/// The path a `file://` URI names, on a target that has a file system and the
+/// local paths `url` converts to one; `None` on a target without either
+/// (`wasm32-unknown-unknown`), where no URI names a local file.
+fn file_path(url: &url::Url) -> Option<PathBuf> {
+    #[cfg(any(unix, windows, target_os = "wasi"))]
+    {
+        url.to_file_path().ok()
+    }
+    #[cfg(not(any(unix, windows, target_os = "wasi")))]
+    {
+        let _ = url;
+        None
+    }
+}
+
 /// The mime type a file manager's copy of files travels as when it also says
 /// whether the copy is a cut, first line `copy` or `cut` and the URI list
 /// after it.
@@ -127,7 +142,7 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+            .filter_map(|line| file_path(&url::Url::parse(line).ok()?))
             .collect(),
         cut,
     }

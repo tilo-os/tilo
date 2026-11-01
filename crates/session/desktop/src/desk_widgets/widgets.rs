@@ -362,7 +362,7 @@ impl DeskWidgets {
     fn members(&self, presence: &PresenceCtx) -> Vec<TeamMember> {
         let user = self.user.as_str();
         self.handle
-            .read(|tree| team::members(tree, user, user, presence, std::time::SystemTime::now()))
+            .read(|tree| team::members(tree, user, user, presence, ui::time::wall()))
     }
 
     /// The displays the desk covers, each by its monitor's stable identity
