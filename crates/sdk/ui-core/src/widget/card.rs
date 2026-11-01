@@ -26,7 +26,7 @@
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
-use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent, repeat};
+use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -566,19 +566,28 @@ impl Widget for Card {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let m = CardMetrics::new(theme);
+        // The body (a media card's caption) is at least as tall as what it holds, and grows
+        // in a row taller than the card. Its floor is its max-content height, which is the
+        // height an open card lays it out at (its `fr` takes the body's max-content where
+        // the card's height is open): measured under a min-content constraint (a hugging
+        // grid's rows, a column shrinking what it holds to its minimum), the card is then
+        // as tall as it is laid out. A min-content floor measured a body holding layers
+        // without them, as a layers' cell takes no room under that constraint, so the card
+        // stood past the grid that measured it.
+        let body = || minmax(max_content(), fr(1.0_f32));
         let mut tracks = Vec::new();
         if self.media_first {
             // The art keeps its own height; a row taller than this card
             // grows its caption, so the art never stretches.
             tracks.push(min_content());
             if self.has_header {
-                tracks.push(minmax(min_content(), fr(1.0_f32)));
+                tracks.push(body());
             }
         } else {
             if self.has_header {
                 tracks.push(min_content());
             }
-            tracks.push(minmax(min_content(), fr(1.0_f32)));
+            tracks.push(body());
         }
         if self.has_footer {
             tracks.push(min_content());
