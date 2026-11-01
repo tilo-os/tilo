@@ -46,8 +46,30 @@ scenario "an afternoon at the desk" {
     seed_notices(d)
 }
 
-/// The overview of that desk: the strips of the workspace in front, their windows as places,
-/// and a search typed across the other workspaces.
+/// The overview of that desk: the strips of the workspace in front, their windows as places.
+scenario "the overview" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:31 PM"
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "overview"
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
+    d.rooms.insert(Room(key: "studio", name: "Studio", current: true, members: "Ada, Mia, Fieldwork", present: 2, activity: "Mia edited Release planning"))
+    d.rooms.insert(Room(key: "home", name: "Home", members: "Ada", present: 0, activity: "Your notes from the weekend"))
+    d.windows.insert(Win(key: "w1", title: "Release planning", origin_app: "Notes", icon: "notebook", strip: "Drafts", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Launch checklist", origin_app: "Tasks", icon: "list_checks", strip: "Drafts", workspace: "Studio", recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Screenshots for the docs", origin_app: "Gallery", icon: "layout_grid", strip: "Drafts", workspace: "Studio", recency: 3, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w6", title: "Q3 budget", origin_app: "Sheets", icon: "table", strip: "Money", workspace: "Studio", recency: 6, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w9", title: "Inbox", origin_app: "Mail", icon: "mail", strip: "Mail", workspace: "Studio", recency: 9, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w15", title: "Supplier quotes", origin_app: "Sheets", icon: "table", strip: "Money", workspace: "Home", recency: 15, focused: false, preview: "live"))
+}
+
+/// The same overview opened while the person's last search still stands: what that search
+/// found across the other workspaces.
 scenario "the overview, searching" {
     let d = root Desk
     d.person = "Ada Lovelace"

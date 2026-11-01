@@ -32,7 +32,7 @@ view person_chip(p: Person) {
 
 /// An agent here, as its presence: a chip that opens its menu.
 view agent_chip(a: Agent) {
-    ui.MenuButton(a.name, icon: .bot, role: .plain) {
+    ui.MenuButton(a.name, icon: .bot, role: .bar) {
         ui.MenuItem("What it is doing", icon: .list) {
             on choose: show_agent(a.key)
         }

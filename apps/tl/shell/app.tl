@@ -351,12 +351,12 @@ view bar(d: Desk) {
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
-/// tasks and who is here, which run longest, below a wide one. The menu, the workspace, the
-/// clock and the status always keep their room. The bar decides by its width, so a part that
-/// gives way leaves no room behind; the bar's parts must never press into each other (the
-/// overview shows what gave way).
+/// tasks, the agents and who is here, which run longest, below a wide one. The menu, the
+/// workspace, the clock and the status always keep their room. The bar decides by its width, so
+/// a part that gives way leaves no room behind; the bar's parts must never press into each
+/// other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
-    if part.slot == .tasks or part.slot == .people {
+    if part.slot == .tasks or part.slot == .agent or part.slot == .people {
         return true
     }
     return not roomy and (part.slot == .strip or part.slot == .app_menu)

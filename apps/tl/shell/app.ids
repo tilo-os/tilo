@@ -429,6 +429,7 @@ scenario "the macos preset" = 2vl3c6el
 scenario "the minimal preset" = ggge5flm
 scenario "the notification centre" = gtwiekra
 scenario "the notification centre, all read" = wfypkhni
+scenario "the overview" = izq6dreq
 scenario "the overview, searching" = zgakesdz
 scenario "the switcher, twenty windows" = rosjmuvh
 scenario "the switcher, two windows" = pmsasp3b
