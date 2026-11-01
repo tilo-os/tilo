@@ -1384,7 +1384,9 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   swipe 88 (`swipe_commit`).
 - Readable width 720 (`readable_width`) for forms and pages of facts; reading
   measure 640 (`reading_measure`) for long-form text; a chooser beside its
-  label 224 (`chooser_width`).
+  label 224 (`chooser_width`); a text field nothing else sizes (in a row that
+  wraps, or one that hugs its items) stands 160 wide (`field_min_width`),
+  grown with the text, never 0.
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
 - Panel row / Control height 44 (`panel_row_height`); Selector height 28
   (`selector_height`).

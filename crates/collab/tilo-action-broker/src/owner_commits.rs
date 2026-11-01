@@ -130,7 +130,11 @@ impl OwnerCommitService for NativeOwnerCommits {
             let now = std::time::SystemTime::now();
             if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
                 custody.check_custody(&owner, room)?;
-                return owner.commit_document(request, now);
+                let receipt = owner.commit_document(request, now)?;
+                // What the owner committed leaves for the workspace's peers
+                // from its custody, the one copy every write goes through.
+                custody.schedule_publication(room);
+                return Ok(receipt);
             }
             // A receipt is this device's own, recorded in its person's slice
             // of the workspace with its own key and published as its own
