@@ -2794,9 +2794,14 @@ impl MailApp {
         }
     }
 
-    /// Ask for the page before the oldest message of the open folder, once:
-    /// the list has scrolled to its end and the server has more.
-    pub(crate) fn load_older(&mut self) {
+    /// The older pages this window would ask its servers for now: each
+    /// account of the open listing whose folder this device has a window of,
+    /// which its server has not said is whole ([`Self::has_older`]), and
+    /// whose page is not already on its way.
+    fn older_pages_wanted(&self) -> Vec<(AccountConfig, Folder, crate::sync::Window)> {
+        if self.state().engine.is_none() {
+            return Vec::new();
+        }
         // Every inbox together asks each account for its older page.
         let wanted: Vec<(AccountConfig, Folder, Option<crate::sync::Window>)> = {
             let st = self.shared.borrow();
@@ -2817,14 +2822,22 @@ impl MailApp {
                 })
                 .collect()
         };
-        for (account, folder, known) in wanted {
-            let Some(known) = known else {
-                continue;
-            };
+        wanted
+            .into_iter()
+            .filter_map(|(account, folder, known)| {
+                let known = known?;
+                let key = (account.email.clone(), folder);
+                (self.has_older.get(&key) != Some(&false) && !self.older_pending.contains_key(&key))
+                    .then_some((account, folder, known))
+            })
+            .collect()
+    }
+
+    /// Ask for the page before the oldest message of the open folder, once:
+    /// the list has scrolled to its end and the server has more.
+    pub(crate) fn load_older(&mut self) {
+        for (account, folder, known) in self.older_pages_wanted() {
             let key = (account.email.clone(), folder);
-            if self.has_older.get(&key) == Some(&false) || self.older_pending.contains_key(&key) {
-                continue;
-            }
             let posted = self.state().post_engine(EngineRequest::fetch_wanting(
                 account,
                 folder,
@@ -4635,9 +4648,16 @@ impl Widget for MailApp {
         // Keep syncing while a connect/fetch reply is outstanding or a status
         // waits for `sync` to show it, then idle rather than busy-loop once
         // results have arrived.
+        // `wants_older` is what the list last painted wanting (`MessageList`:
+        // the end of the rows is on screen), a standing condition rather than
+        // news: on its own it would ask for a pass on every frame, and a pass
+        // paints the end again. It asks for one only while a page is really
+        // left to ask a server for, which is what `load_older` then does.
+        let older_left =
+            self.shared.borrow().wants_older.get() && !self.older_pages_wanted().is_empty();
         (self.state().awaiting_engine && !self.workers_wake())
             || self.shared.borrow().status.is_some()
-            || self.shared.borrow().wants_older.get()
+            || older_left
             || self.nav.needs_idle_sync()
     }
 
