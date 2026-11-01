@@ -51,6 +51,7 @@ mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
 mod device_actions;
+mod devices;
 mod dictation;
 mod directory;
 mod display_confirm;
@@ -135,6 +136,7 @@ pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
+pub use devices::RESOURCE as DEVICES_RESOURCE;
 pub use engine::Person;
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
@@ -322,10 +324,11 @@ struct Shared {
     observed: RefCell<Option<Vec<(usize, u64)>>>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
-    /// The daemon's notifications on the desktop.
-    notifications: RefCell<notifications::SessionNotifications>,
+    /// The daemon's notifications on the desktop, as the session publishes
+    /// the centre they are kept in.
+    notifications: Rc<RefCell<notifications::SessionNotifications>>,
     /// The notification centre as the quick settings panel was last fed it.
-    notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
+    notice_fed: RefCell<Option<tilo_quick_settings::hosted::NotificationCentre>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace's room,
@@ -573,17 +576,34 @@ impl Shared {
 
     /// Feed the panel's notification centre when it changed: the retained
     /// notifications, why fresh banners are held and whether a Clear all can
-    /// be undone.
+    /// be undone, as the centre's service publishes them.
     fn feed_notifications(&self) {
         let Some(device) = &self.device else {
             return;
         };
-        let view = self.notifications.borrow().view();
-        if self.notice_view.borrow().as_ref() == Some(&view) {
+        let Some(reading) = self.services.borrow().read(notifications::RESOURCE) else {
+            return;
+        };
+        let centre = match serde_json::from_value::<tilo_quick_settings::hosted::NotificationCentre>(
+            reading,
+        ) {
+            Ok(centre) => centre,
+            Err(error) => {
+                tracing::warn!(%error, "the notification centre's reading did not parse");
+                return;
+            }
+        };
+        let mut fed = self.notice_fed.borrow_mut();
+        if fed.as_ref() == Some(&centre) {
             return;
         }
-        *self.notice_view.borrow_mut() = Some(view.clone());
-        device.update(|state| state.notifications = view);
+        let view = centre.view(ui::time::unix_now_ms());
+        let count = centre.count;
+        *fed = Some(centre);
+        device.update(|state| {
+            state.notifications = view;
+            state.notification_count = count;
+        });
     }
 
     /// Show workspace settings for the workspace in front.
@@ -1608,7 +1628,7 @@ impl Session {
             session_actions: options.session_actions,
             observed: RefCell::new(None),
             places_seen: RefCell::default(),
-            notifications: RefCell::new(notifications::SessionNotifications::new(
+            notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
                 options
                     .desktop
                     .as_ref()
@@ -1618,10 +1638,10 @@ impl Session {
                 notification_policy,
                 notice_signals,
                 options.power.clone(),
-            )),
+            ))),
             asker,
             agent_door: RefCell::new(agent_door),
-            notice_view: RefCell::new(None),
+            notice_fed: RefCell::new(None),
             sync,
             engine,
             _channels: channels,
@@ -1651,6 +1671,28 @@ impl Session {
                 Rc::clone(&shared.clipboard),
                 Rc::clone(&shared.commands),
             )));
+        // What people said to this person is personal too: the centre
+        // publishes its rows itself, as a reading only a granted caller
+        // reads, and the dismiss and act verbs the panel invokes.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(notifications::Served::new(Rc::clone(
+                &shared.notifications,
+            ))));
+        // The person's devices are what their other machines say of
+        // themselves, which is nobody's personal content: their reading is
+        // published for any app that may read the session's resources.
+        if let (Some(fabric), Some(device)) = (shared.fabric.clone(), shared.device.clone()) {
+            shared
+                .services
+                .borrow_mut()
+                .add(Box::new(devices::Served::new(
+                    fabric,
+                    device,
+                    Rc::clone(&shared.devices.chosen),
+                )));
+        }
         // The broker decides a granted reading when the app asks, which is
         // before this loop's first pass: what the services declare is read
         // here, with every service mounted, so a connection that arrives as

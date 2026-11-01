@@ -7,13 +7,15 @@
 //! answers goes on to `mount`'s own modules, and one nothing answers is
 //! logged rather than dropped without trace.
 
+use serde_json::{Map, Value};
+use tilo_actions::ActionAddress;
 use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::Command;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::{DeviceHost, SessionRequest};
 use tilo_sheets::Seat as _;
 
-use crate::{GENERATION, SessionCommand, Shared};
+use crate::{GENERATION, SessionCommand, Shared, notifications};
 
 /// The settings app, which quick settings opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
@@ -107,7 +109,8 @@ pub(crate) fn answer(shared: &Shared) {
             SessionRequest::Effect(QsEffect::OpenNotification { notification }) => {
                 close(shared);
                 let room = shared.active_room();
-                match shared.notifications.borrow().open(notification) {
+                let activation = shared.notifications.borrow().open(notification);
+                match activation {
                     tilo_desktop_surface::notifications::HistoryActivation::OpenApp {
                         app_id,
                         ..
@@ -118,30 +121,6 @@ pub(crate) fn answer(shared: &Shared) {
                     ),
                     other => tracing::debug!(?other, "notification chosen"),
                 }
-            }
-            SessionRequest::Effect(QsEffect::DismissNotification { notification }) => {
-                shared
-                    .notifications
-                    .borrow()
-                    .dismiss(Some(notification), None);
-            }
-            SessionRequest::Effect(QsEffect::DismissNotificationGroup { group }) => {
-                shared.notifications.borrow().dismiss(None, Some(&group));
-            }
-            SessionRequest::Effect(QsEffect::RunNotificationAction {
-                notification,
-                action,
-            }) => {
-                shared
-                    .notifications
-                    .borrow()
-                    .run_action(notification, &action);
-            }
-            SessionRequest::Effect(QsEffect::ClearNotifications) => {
-                shared.notifications.borrow().clear();
-            }
-            SessionRequest::Effect(QsEffect::UndoClearNotifications) => {
-                shared.notifications.borrow().undo_clear();
             }
             SessionRequest::Effect(QsEffect::SetDoNotDisturb { on }) => {
                 // The switch is persisted, so the settings app and the
@@ -174,6 +153,7 @@ pub(crate) fn answer(shared: &Shared) {
             other if super::media::follow(shared, &other) => {}
             other if super::displays::follow(shared, &other) => {}
             other if super::devices::follow(shared, &other) => {}
+            other if follow_centre(shared, &other) => {}
             other => {
                 tracing::debug!(?other, "quick settings asks what the session cannot do yet");
             }
@@ -186,4 +166,43 @@ pub(crate) fn answer(shared: &Shared) {
     shared.music.set(playing.as_ref().map(crate::desk::playing));
     shared.feed_notifications();
     shared.feed_clipboard();
+}
+
+/// Carry out what the panel asked of a notification kept in the centre: the
+/// centre's own verbs, which the panel reads the result of in the same
+/// reading. Whether this was one of them; `false` leaves it to the rest of
+/// what the session follows.
+fn follow_centre(shared: &Shared, request: &SessionRequest) -> bool {
+    let SessionRequest::Effect(effect) = request else {
+        return false;
+    };
+    let mut arguments = Map::new();
+    let action = match effect {
+        QsEffect::DismissNotification { notification } => {
+            arguments.insert("notification".into(), Value::from(*notification));
+            "dismiss"
+        }
+        QsEffect::DismissNotificationGroup { group } => {
+            arguments.insert("group".into(), Value::from(group.clone()));
+            "dismiss"
+        }
+        QsEffect::RunNotificationAction {
+            notification,
+            action,
+        } => {
+            arguments.insert("notification".into(), Value::from(*notification));
+            arguments.insert("action".into(), Value::from(action.clone()));
+            "act"
+        }
+        QsEffect::ClearNotifications => "clear",
+        QsEffect::UndoClearNotifications => "undo-clear",
+        _ => return false,
+    };
+    let address = ActionAddress::new(notifications::RESOURCE, action);
+    if let Err(error) = shared.doors.invoke(&address, &arguments) {
+        // The centre's reading is what the panel lists, so a dismiss that
+        // did not happen is still there on the next pass.
+        tracing::debug!(%error, %action, "the centre did not change");
+    }
+    true
 }

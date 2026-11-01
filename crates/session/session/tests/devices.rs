@@ -567,6 +567,19 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
     );
+    let published: tilo_quick_settings::hosted::DevicesReading = serde_json::from_value(
+        harness
+            .session
+            .read(tilo_session::DEVICES_RESOURCE)
+            .expect("the session publishes its devices"),
+    )
+    .expect("a reading");
+    assert_eq!(
+        published.rows(),
+        state.device_rows,
+        "the panel lists the reading the session publishes"
+    );
+    assert_eq!(published.count(), 2, "the reading counts this device too");
 }
 
 /// The person's session on their other devices: locking the laptop locks this
