@@ -588,6 +588,14 @@ impl Widget for Panel {
         self.follow(hit, &mut shown);
     }
 
+    /// The roster and the pointers of people working on this desk change
+    /// without an event reaching the panel: while either shows, every frame
+    /// reads them again. Closed with nobody's pointer on the desk, it shows
+    /// nothing and asks for no frame.
+    fn needs_redraw(&self) -> bool {
+        self.open.get() || !self.shown.borrow().pointers.is_empty()
+    }
+
     fn name(&self) -> &'static str {
         "PeoplePanel"
     }
