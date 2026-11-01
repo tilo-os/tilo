@@ -246,6 +246,9 @@ pub struct PeerRead {
     pub frames_held: u32,
     /// Pictures dropped because a paint was held.
     pub frames_dropped: u64,
+    /// The colour of the display the tile stands on, which its pictures are
+    /// prepared for.
+    pub display: DisplayCapabilities,
 }
 
 impl PeerRead {
@@ -319,6 +322,11 @@ pub struct PeerSurface {
     since: Instant,
     revision: u64,
     decoder: VideoDecoder,
+    /// What the stream's pictures are, so a change of display re-plans the
+    /// tone-map.
+    colorimetry: Colorimetry,
+    /// The colour of the display this tile stands on.
+    display: DisplayCapabilities,
     /// The tone-map an HDR stream runs through before it becomes a picture;
     /// `None` when its pixels are already what this display shows.
     tonemap: Option<HdrTonemapConfig>,
@@ -337,9 +345,12 @@ pub struct PeerSurface {
 }
 
 impl PeerSurface {
-    /// The tile for `start`, decoding its stream at `display`'s colour.
-    fn new(start: &PeerStreamStart, tab: TabId, display: DisplayCapabilities) -> Self {
+    /// The tile for `start`. Its pictures are prepared for SDR until the
+    /// desktop says which display the tab stands on, which it does in the
+    /// pass the tile is made in.
+    fn new(start: &PeerStreamStart, tab: TabId) -> Self {
         let colorimetry = start.colorimetry.unwrap_or_default();
+        let display = DisplayCapabilities::sdr_default();
         let tonemap = tonemap_for(colorimetry, display);
         // A codec this build cannot decode still shows the window and its
         // name: the stream stays in `Started`, and its units decode nothing.
@@ -377,6 +388,8 @@ impl PeerSurface {
             since: ui::time::now(),
             revision: 1,
             decoder,
+            colorimetry,
+            display,
             tonemap,
             chain: UnitChain::default(),
             last_seq: 0,
@@ -397,6 +410,23 @@ impl PeerSurface {
     #[must_use]
     pub fn surface(&self) -> SurfaceId {
         self.surface
+    }
+
+    /// The colour of the display this tile stands on: the pictures it
+    /// decodes from now on are prepared for it.
+    #[must_use]
+    pub fn display(&self) -> DisplayCapabilities {
+        self.display
+    }
+
+    /// The tile moved to a display showing `display`, or that display's
+    /// colour changed: pictures decoded from now on are prepared for it.
+    fn set_display(&mut self, display: DisplayCapabilities) {
+        if self.display == display {
+            return;
+        }
+        self.display = display;
+        self.tonemap = tonemap_for(self.colorimetry, display);
     }
 
     /// The device sharing it.
@@ -438,6 +468,7 @@ impl PeerSurface {
             picture_seq: self.picture_seq,
             frames_held: self.frames_held,
             frames_dropped: self.frames_dropped,
+            display: self.display,
         }
     }
 
@@ -909,6 +940,7 @@ fn flag(
 
 /// The shared surfaces this desktop shows, by tab, and which tab each
 /// stream's units go to.
+#[derive(Default)]
 pub struct PeerSurfaces {
     tiles: HashMap<TabId, Rc<RefCell<PeerSurface>>>,
     /// Which tile a stream's units belong to.
@@ -916,42 +948,18 @@ pub struct PeerSurfaces {
     /// The revision of each tile the desktop last built, so a picture that
     /// arrived since is built into the tile again.
     built: HashMap<TabId, u64>,
-    /// The colour this desktop's display shows, which HDR streams are
-    /// tone-mapped to.
-    display: DisplayCapabilities,
     /// Where a picture that comes out late wakes the host.
     wake: Option<PictureWake>,
 }
 
-impl Default for PeerSurfaces {
-    fn default() -> Self {
-        Self::new(DisplayCapabilities::sdr_default())
-    }
-}
-
 impl PeerSurfaces {
-    /// A registry for a desktop whose display shows `display`'s colour.
-    #[must_use]
-    pub fn new(display: DisplayCapabilities) -> Self {
-        Self {
-            tiles: HashMap::new(),
-            streams: HashMap::new(),
-            built: HashMap::new(),
-            display,
-            wake: None,
+    /// The tile in `tab` stands on a display showing `display`: its
+    /// pictures are prepared for that display from now on. The tab the
+    /// desktop gives no such tile has nothing to change.
+    pub fn set_tile_display(&mut self, tab: TabId, display: DisplayCapabilities) {
+        if let Some(tile) = self.tiles.get(&tab) {
+            tile.borrow_mut().set_display(display);
         }
-    }
-
-    /// The colour this desktop's display shows.
-    #[must_use]
-    pub fn display(&self) -> DisplayCapabilities {
-        self.display
-    }
-
-    /// The display changed: HDR streams from now on are tone-mapped to it.
-    /// Shares already showing keep the colour they arrived with.
-    pub fn set_display(&mut self, display: DisplayCapabilities) {
-        self.display = display;
     }
 
     /// Wake `wake` when a pushed picture comes out, so it is collected without
@@ -974,7 +982,7 @@ impl PeerSurfaces {
                 !tiles.contains_key(&tab)
             })?
         };
-        let mut tile = PeerSurface::new(start, tab, self.display);
+        let mut tile = PeerSurface::new(start, tab);
         tile.decoder.set_picture_wake(self.wake.clone());
         let revision = tile.revision();
         self.streams.insert((start.peer, start.surface), tab);
@@ -1684,11 +1692,33 @@ impl super::DesktopHandle {
         peers.borrow_mut().set_picture_wake(wake);
     }
 
-    /// The colour this desktop's display shows: shared windows arriving from
-    /// now on are tone-mapped to it.
-    pub fn set_peer_display(&self, display: DisplayCapabilities) {
+    /// Every tab a shared window's tile stands in.
+    #[must_use]
+    pub fn peer_surface_tabs(&self) -> Vec<TabId> {
         let peers = Rc::clone(&self.shared.borrow().peers);
-        peers.borrow_mut().set_display(display);
+        peers.borrow().tabs()
+    }
+
+    /// The monitor of the display the tile in `tab` stands on, while the
+    /// desk spreads over several; `None` when one picture is shown on every
+    /// output, or the tile stands nowhere.
+    #[must_use]
+    pub fn peer_surface_display(&self, tab: TabId) -> Option<String> {
+        self.read(|tree| {
+            if !tree.is_partitioned() {
+                return None;
+            }
+            let group = super::route_of(tree, tab)?.group;
+            let display = tree.outputs.display_of(group)?;
+            tree.outputs.monitor_of(display).map(str::to_owned)
+        })
+    }
+
+    /// The tile in `tab` stands on a display showing `display`'s colour:
+    /// the pictures it decodes from now on are prepared for it.
+    pub fn set_peer_display(&self, tab: TabId, display: DisplayCapabilities) {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        peers.borrow_mut().set_tile_display(tab, display);
     }
 }
 

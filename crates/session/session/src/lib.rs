@@ -2756,9 +2756,11 @@ impl Session {
         // plane brought, and the frames of the ones on screen.
         {
             let sync = self.shared.sync.clone();
+            let displays = &self.displays_service;
             self.shared.window_shares.borrow_mut().step(
                 &mut self.compositor,
                 &self.shared.handle,
+                displays,
                 sync.as_deref(),
                 std::time::Instant::now(),
             );

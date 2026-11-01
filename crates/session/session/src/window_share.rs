@@ -366,6 +366,7 @@ impl WindowShares {
         &mut self,
         compositor: &mut Compositor,
         desk: &DesktopHandle,
+        displays: &crate::displays::Displays,
         sync: Option<&Client>,
         now: Instant,
     ) {
@@ -392,6 +393,7 @@ impl WindowShares {
         // A stream that reached this device before the desk held the tab of
         // its window is decoded there from this pass on.
         self.show_streams(desk);
+        land_displays(desk, displays);
         self.renegotiate(sync);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
@@ -1399,6 +1401,16 @@ fn tab_title(tree: &DesktopTree, tab: TabId) -> (String, String) {
             (shown.title.clone(), sharer)
         })
         .unwrap_or_default()
+}
+
+/// Point every shared window's tile at the colour of the display it stands
+/// on, so its pictures are prepared for that panel, and follow it when the
+/// window moves to another display.
+fn land_displays(desk: &DesktopHandle, displays: &crate::displays::Displays) {
+    for tab in desk.peer_surface_tabs() {
+        let monitor = desk.peer_surface_display(tab);
+        desk.set_peer_display(tab, displays.colour(monitor.as_deref()));
+    }
 }
 
 /// The tab `tab` as the desk shows it.

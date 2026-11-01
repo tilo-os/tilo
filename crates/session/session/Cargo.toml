@@ -38,6 +38,8 @@ dev-session = []
 # The surface apps' sockets are handed to their children as descriptors.
 libc.workspace = true
 tilo-compositor = { path = "../compositor" }
+# Each display's colour, as the compositor reads it from the sink.
+tilo-color-pipeline = { path = "../color-pipeline" }
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }

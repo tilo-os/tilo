@@ -1212,9 +1212,12 @@ impl Compositor {
         self.configure_from_clients();
     }
 
-    /// Every known output, on or off.
+    /// Every known output, on or off, with the colour each shows.
     pub fn outputs(&self) -> Vec<output::OutputInfo> {
-        self.data.state.output_infos()
+        let backend = &*self.data.backend;
+        self.data
+            .state
+            .output_infos(|output| backend.output_colour(output))
     }
 
     /// The monitors of the displays a fullscreen window owns: the bar there

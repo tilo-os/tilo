@@ -18321,6 +18321,7 @@ version = "0.1.0"
 dependencies = [
  "neighbour-wire",
  "os-actions",
+ "serde",
  "settings-store",
  "tilo-ui",
  "tilo-vello",
@@ -21570,6 +21571,7 @@ dependencies = [
  "tilo-capture-studio",
  "tilo-cli-kit",
  "tilo-clock",
+ "tilo-color-pipeline",
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-copy-lint",
