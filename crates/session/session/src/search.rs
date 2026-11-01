@@ -83,7 +83,7 @@ pub trait AppActions {
 }
 
 /// What the session's search reaches beyond the desktop.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct SearchOptions {
     /// The Tilo apps installed here, the machine's own and the apps a
     /// person can get, as they are now.

@@ -1474,12 +1474,17 @@ impl Session {
         // The one search text typed on the canvas places through: the
         // session search's own, the same `find` the palette and an agent's
         // `tilo` tool run.
+        // The search is made further down, from what the session mounts in
+        // between; it is in place before the session runs any action.
+        let session_search: Rc<std::cell::OnceCell<Rc<SessionSearch>>> = Rc::default();
         let find: arrangement::Find = {
-            let search = Rc::new(SessionSearch::new(
-                options.search.clone(),
-                options.apps.clone(),
-            ));
-            Rc::new(move |needle: &str| search.find(needle))
+            let search = Rc::clone(&session_search);
+            Rc::new(move |needle: &str| {
+                search
+                    .get()
+                    .map(|search| search.find(needle))
+                    .unwrap_or_default()
+            })
         };
         doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
             Rc::clone(&arrangement),
@@ -1821,6 +1826,7 @@ impl Session {
             app_sheets::AppSheets::new(add_app, uninstall, Rc::clone(&services), notices.clone());
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        session_search.get_or_init(|| Rc::clone(&search));
         let asker = questions::Asker::new(
             questions,
             portal.clone(),
