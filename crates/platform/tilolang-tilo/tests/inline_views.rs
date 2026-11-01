@@ -112,21 +112,21 @@ fn unread_room() -> Room {
     let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
     let shown = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    let shown_module = host
+    let shown_hash = host
         .runtime()
         .load_foreign_package(&shown.wasm, shown.meta.clone())
         .unwrap();
-    let showing =
+    let composing =
         tilolang::compile_package(CALLER, &IdsLock::new(), std::slice::from_ref(&shown.meta))
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    let showing_module = tilolang_runtime::Runtime::module_hash(&showing.wasm);
-    host.load_compiled(&showing).unwrap();
+    let composing_hash = tilolang_runtime::Runtime::module_hash(&composing.wasm);
+    host.load_compiled(&composing).unwrap();
     Room {
         host,
-        callee: shown_module,
-        caller: showing_module,
+        callee: shown_hash,
+        caller: composing_hash,
         callee_meta: shown.meta,
-        caller_meta: showing.meta,
+        caller_meta: composing.meta,
     }
 }
 

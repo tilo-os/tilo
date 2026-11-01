@@ -1996,7 +1996,6 @@ type = "gui"
         use crate::shell::launcher as shell_launcher;
         use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
         use std::fmt::Write as _;
-        use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
@@ -2035,12 +2034,11 @@ type = "gui"
         std::fs::create_dir_all(&config).unwrap();
         let log = base.join("launched.log");
         let bin = base.join("tilo-launcher");
-        std::fs::write(
+        tilo_test_env::stand_in(
             &bin,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+            &format!("printf '%s\\n' \"$*\" >> '{}'\n", log.display()),
         )
         .unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_APPS_DATA_DIR", &apps)
             .set("TILO_LAUNCHER_BIN", &bin)

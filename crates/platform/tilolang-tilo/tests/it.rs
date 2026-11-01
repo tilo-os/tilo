@@ -35,6 +35,7 @@ mod outcomes;
 mod policy;
 mod publication;
 mod records;
+mod records_service;
 mod reflection;
 mod rich_text;
 #[cfg(feature = "room")]

@@ -2856,5 +2856,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
+        // Its apps' display goes with it, and so do they: the apps outlive
+        // no session, whoever else still holds what started them.
+        if let Some(launch) = &self.shared.launch {
+            launch.end_running();
+        }
     }
 }

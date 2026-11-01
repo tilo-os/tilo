@@ -535,3 +535,40 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
         Some(&Value::Text("c-terminal".to_owned()))
     );
 }
+
+#[test]
+fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "resources standing as content");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // The scenario's strip stands on the canvas, so its places do: four notes as their editor,
+    // and the terminal in its well.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        4,
+        "each note stands as its editor: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "{wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
+    );
+}
