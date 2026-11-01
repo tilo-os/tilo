@@ -28,7 +28,7 @@ mod tests {
         sign_device_cert(&mut cert, &root).unwrap();
         let workspace = uuid::Uuid::from_u128(33).to_string();
         let roster = vec![cert.clone()];
-        let changes = tilo_peer_state::seed_room(&workspace, &cert, &roster).unwrap();
+        let changes = tilo_peer_state::seed_workspace(&workspace, &cert, &roster).unwrap();
         let mut doc = AutoCommit::new();
         for bytes in changes {
             doc.apply_incoming([automerge::Change::from_bytes(bytes).unwrap()])
@@ -51,7 +51,7 @@ mod tests {
         .unwrap();
         peer.install_seed(
             tilo_peer_state::SeedState {
-                room_changes: doc
+                workspace_changes: doc
                     .get_changes(&[])
                     .into_iter()
                     .map(|c| c.raw_bytes().to_vec())
@@ -127,7 +127,7 @@ mod tests {
             "general revision is not the strict private persistence gate"
         );
         let empty = tilo_peer_state::StatePeer::new(
-            source.room(),
+            source.workspace_id(),
             source.owner_certificates()[0].clone(),
             source.certificates(),
             RevocationList::new(),

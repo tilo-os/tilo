@@ -671,7 +671,9 @@ impl GovernedRoom {
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.room() != self.peer.room() || candidate.owner() != self.peer.owner() {
+        if candidate.workspace_id() != self.peer.workspace_id()
+            || candidate.owner() != self.peer.owner()
+        {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the room as it stands, not
@@ -705,7 +707,7 @@ impl GovernedRoom {
             && self
                 .admissions_since_base
                 .as_ref()
-                .is_some_and(|clean| self.peer.room_heads().as_ref() == Some(clean));
+                .is_some_and(|clean| self.peer.workspace_heads().as_ref() == Some(clean));
         let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
@@ -723,7 +725,7 @@ impl GovernedRoom {
                     _ => None,
                 })
                 .collect::<std::collections::BTreeSet<_>>();
-            rebased = joined && candidate.rebase_room()?;
+            rebased = joined && candidate.rebase_workspace()?;
             record.outgoing = candidate
                 .publication_mut()
                 .durable_bootstrap_messages(key, now, generation)?
@@ -772,7 +774,7 @@ impl GovernedRoom {
         } else {
             appended_admission
         };
-        self.admissions_since_base = clean.then(|| self.peer.room_heads()).flatten();
+        self.admissions_since_base = clean.then(|| self.peer.workspace_heads()).flatten();
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -797,7 +799,7 @@ impl GovernedRoom {
     }
 }
 
-use tilo_peer_state::workspace_membership::valid_room_name as valid_name;
+use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
 
 /// Keep exact admission evidence in the governor's copy of the room. A
 /// member of a room whose channels are sealed writes its records sealed,
@@ -809,10 +811,10 @@ use tilo_peer_state::workspace_membership::valid_room_name as valid_name;
 /// A room committed before this selection takes it on its next commit.
 ///
 /// The copy also writes under the host's own actor
-/// ([`tilo_peer_state::room_host_actor`]): a device hosting its own rooms
+/// ([`tilo_peer_state::workspace_host_actor`]): a device hosting its own rooms
 /// never writes one room from two documents under one actor.
 fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
-    peer.write_as_room_host();
+    peer.write_as_workspace_host();
     peer.select_admission_v5()
         .map_err(|error| format!("room exceeds exact admission bounds: {error}"))
 }
@@ -1334,7 +1336,7 @@ impl Rooms {
         let state = self.room(room).await.map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         if governed.record.name == name
-            && governed.peer.governance().room_name().as_deref() == Some(name)
+            && governed.peer.governance().workspace_name().as_deref() == Some(name)
         {
             return Ok(governed.summary());
         }
@@ -1343,7 +1345,7 @@ impl Rooms {
         let mut candidate = governed.peer.clone();
         candidate
             .governance_mut()
-            .author_room_name(name, key, now)?;
+            .author_workspace_name(name, key, now)?;
         let prior = std::mem::replace(&mut governed.record.name, name.to_owned());
         let collaboration = governed.collaboration().clone();
         if let Err(error) = governed.commit(candidate, key, now, |_, _| Ok(collaboration)) {
@@ -1671,7 +1673,7 @@ impl Rooms {
             {
                 let baseline = room
                     .peer()
-                    .admitted_room()
+                    .admitted_workspace()
                     .ok_or("room governance missing")?
                     .clone()
                     .save();
@@ -2005,13 +2007,13 @@ impl Rooms {
             if public
                 && !room
                     .peer()
-                    .admitted_room()
+                    .admitted_workspace()
                     .is_some_and(|before| layout_scope::leaves_layout(before, changes))
             {
                 return Ok(());
             }
             let missing =
-                unbuildable_windows::missing_history(room.peer().admitted_room(), changes)?;
+                unbuildable_windows::missing_history(room.peer().admitted_workspace(), changes)?;
             if missing > 0 {
                 return Err(self.unbuildable_windows(room.room(), missing));
             }
@@ -2469,7 +2471,7 @@ impl Rooms {
         let host = &self.inner.host;
         let workspace_id = room.workspace_id();
         host.records.settled(workspace_id).await;
-        let Some((channel, _)) = neighbour_wire::retention(&room.peer().room_message(), true)
+        let Some((channel, _)) = neighbour_wire::retention(&room.peer().workspace_message(), true)
         else {
             return Err("the room's document has no retention channel".into());
         };
@@ -2603,7 +2605,7 @@ pub(crate) fn member_bootstrap(
             JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
                 version: 1,
                 device_cert: device.clone(),
-                room: peer.room().to_owned(),
+                room: peer.workspace_id().to_owned(),
                 workspace_id,
                 host: host.clone(),
                 certified_roster: peer.certificates(),
@@ -2623,7 +2625,7 @@ pub(crate) fn member_bootstrap(
                 collab_types::Role::Moderator => MemberRole::Moderator,
                 _ => MemberRole::Viewer,
             },
-            room: peer.room().to_owned(),
+            room: peer.workspace_id().to_owned(),
             workspace_id,
             host: host.clone(),
             certified_roster: peer.certificates(),

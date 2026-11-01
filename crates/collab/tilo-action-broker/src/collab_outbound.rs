@@ -97,7 +97,7 @@ impl PeerPublisher {
     pub fn requires_owner_for(&self, workspace: &str) -> bool {
         self.owner_commit
             .as_ref()
-            .is_some_and(|owner| owner.requires_room(workspace))
+            .is_some_and(|owner| owner.requires_workspace(workspace))
     }
     /// Whether `workspace`'s effect receipts are the installed owner's to
     /// commit ([`tilo_peer_state::owner_commit::OwnerCommitService::records_effects`]).

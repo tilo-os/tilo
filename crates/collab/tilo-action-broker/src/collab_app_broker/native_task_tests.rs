@@ -51,7 +51,7 @@ struct Native {
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
 fn workspace_id() -> tilo_desktop_model::RoomId {
-    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap()
+    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
 impl WorkspaceAuthority for Native {
     fn with_tree(
@@ -71,7 +71,7 @@ impl WorkspaceAuthority for Native {
         self.owner.with_current(workspace_id(), |view| {
             let doc = view
                 .peer()
-                .admitted_room()
+                .admitted_workspace()
                 .ok_or("native document unavailable")?;
             let mut workspace = tilo_desktop_model::Workspace::in_room(
                 tilo_desktop_model::WorkspaceId(1),
@@ -128,7 +128,7 @@ impl CertificateAuthority for Native {
     }
 }
 impl OwnerCommitService for Native {
-    fn requires_room(&self, requested: &str) -> bool {
+    fn requires_workspace(&self, requested: &str) -> bool {
         requested == workspace_id().to_string()
     }
     fn health(&self) -> Result<(), String> {
@@ -201,7 +201,7 @@ impl crate::services::AppActionGrants for Native {
 
 impl WorkspaceMemberships for Native {
     fn requires_workspace(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_room(self, requested)
+        OwnerCommitService::requires_workspace(self, requested)
     }
     fn health(&self) -> Result<(), String> {
         self.owner.health()
@@ -212,16 +212,16 @@ impl WorkspaceMemberships for Native {
 }
 impl TrackerRuns for Native {
     fn requires_workspace(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_room(self, requested)
+        OwnerCommitService::requires_workspace(self, requested)
     }
     fn runs(&self, requested: &str) -> Result<Vec<TrackerRun>, String> {
-        if !OwnerCommitService::requires_room(self, requested) {
+        if !OwnerCommitService::requires_workspace(self, requested) {
             return Err("foreign tracker workspace".into());
         }
         Ok(self.runs.lock().unwrap().clone())
     }
     fn check_agent(&self, requested: &str, run: &TrackerRun) -> Result<(), String> {
-        if !OwnerCommitService::requires_room(self, requested) {
+        if !OwnerCommitService::requires_workspace(self, requested) {
             return Err("foreign tracker workspace".into());
         }
         self.owner.with_current(workspace_id(), |view| {
@@ -238,7 +238,7 @@ impl TrackerRuns for Native {
         run: &TrackerRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String> {
-        if !OwnerCommitService::requires_room(self, requested) {
+        if !OwnerCommitService::requires_workspace(self, requested) {
             return Err("foreign tracker workspace".into());
         }
         self.owner.with_current(workspace_id(), |view| {
@@ -1215,7 +1215,7 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
                 .owner
                 .with_current(workspace_id(), |view| {
                     let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                        view.peer().admitted_room().unwrap(),
+                        view.peer().admitted_workspace().unwrap(),
                     );
                     assert_eq!(effects.len(), 1);
                     assert_eq!(effects[0].actor, "agent:scribe");

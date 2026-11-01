@@ -1277,7 +1277,7 @@ impl WorkspaceTree {
         peer: &tilo_peer_state::StatePeer,
         host: &tilo_user_identity::DeviceCert,
     ) {
-        let Some(document) = peer.admitted_room() else {
+        let Some(document) = peer.admitted_workspace() else {
             return;
         };
         // Whoever hosts the room, a person's device or a relay, its host
@@ -2503,13 +2503,13 @@ impl WorkspaceTree {
 
     /// The device revocations the room document of `room` records, against
     /// which a saved shortcut's proof is judged each time it arms
-    /// ([`tilo_peer_state::room::proven_saver`]). `None` when this device
+    /// ([`tilo_peer_state::workspace::proven_saver`]). `None` when this device
     /// holds no document of the room: nothing saved there arms.
     #[must_use]
     pub fn room_revocations(&self, room: RoomId) -> Option<tilo_user_identity::RevocationList> {
         self.room_docs
             .get(&room)
-            .map(tilo_peer_state::room::room_revocations)
+            .map(tilo_peer_state::workspace::workspace_revocations)
     }
 
     /// Record that `claim.device` takes a fire time of one of the shortcuts

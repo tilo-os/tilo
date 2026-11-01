@@ -94,7 +94,7 @@ pub(super) fn layout_write(room: &str, body: &[u8]) -> Option<LayoutWrite> {
 /// Whether `changes`, a member's batch to the room document `before`,
 /// leave its shared layout as it stood at the batch's own dependencies.
 pub(super) fn leaves_layout(before: &automerge::AutoCommit, changes: &[Vec<u8>]) -> bool {
-    let Ok((at, after)) = tilo_peer_state::room::membership::position(before, changes) else {
+    let Ok((at, after)) = tilo_peer_state::workspace::membership::position(before, changes) else {
         return false;
     };
     let layout = |doc: &automerge::AutoCommit| {
@@ -165,7 +165,7 @@ impl Rooms {
     pub(super) async fn learn_layouts(&self) {
         let rooms = self.inner.rooms.lock().await.clone();
         for (room, state) in rooms {
-            let layout = state.lock().await.peer().governance().room_layout();
+            let layout = state.lock().await.peer().governance().workspace_layout();
             self.inner.layouts.set(&room, layout);
         }
     }
@@ -198,7 +198,7 @@ impl Rooms {
         let chosen = {
             let state = self.room(room).await?;
             let governed = state.lock().await;
-            governed.peer().governance().room_layout_choice()
+            governed.peer().governance().workspace_layout_choice()
         };
         if chosen.is_some() {
             return Ok(());
@@ -235,7 +235,7 @@ impl Rooms {
             let mut candidate = governed.peer().clone();
             let changed = candidate
                 .governance_mut()
-                .author_room_layout(layout, &host.key, now)
+                .author_workspace_layout(layout, &host.key, now)
                 .map_err(CollaborationError::new)?;
             if changed {
                 governed
@@ -387,7 +387,7 @@ impl Rooms {
         let governed = state.lock().await;
         governed
             .peer()
-            .admitted_room()
+            .admitted_workspace()
             .is_some_and(|before| leaves_layout(before, &changes))
     }
 

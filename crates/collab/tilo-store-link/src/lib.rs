@@ -237,7 +237,7 @@ pub fn room_cursors(owner: &NativeWorkspaceOwner, room: RoomId) -> Result<Vec<Cu
 }
 
 fn cursors_of(peer: &StatePeer) -> Vec<Cursor> {
-    let room = peer.room().to_owned();
+    let room = peer.workspace_id().to_owned();
     peer.replay_floors()
         .into_iter()
         .map(|(app, record, author, seq)| Cursor {

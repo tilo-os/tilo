@@ -24,7 +24,7 @@ use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::direct::DirectSync;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 use tilo_store_link::{StoreSession, cursors, workspace_of};
 use tilo_store_node::{ALPN, Appetite, Cursor, FixedAccess, Lineage, Store, StoreNode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -129,7 +129,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     document.commit_edit("fixture", "value");
     a.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &a_cert, &roster).unwrap(),
+            workspace_changes: seed_workspace(ROOM, &a_cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: RECORD.into(),
@@ -240,7 +240,7 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     .unwrap();
     b.select_admission_v5().unwrap();
     // Its join answer: the room's governance, without a record's history.
-    let NeighbourMsg::SyncResp { changes, room } = a.read(StatePeer::room_message) else {
+    let NeighbourMsg::SyncResp { changes, room } = a.read(StatePeer::workspace_message) else {
         panic!("the room's answer is its governance");
     };
     b.receive_from(

@@ -246,7 +246,7 @@ fn a_grant_given_where_its_room_is_hosted_is_in_force_before_the_call() {
         .iter_mut()
         .find(|workspace| workspace.room() == room)
         .expect("the room's workspace");
-    tilo_peer_state::room::adopt_room(workspace, &document, &[]);
+    tilo_peer_state::workspace::adopt_workspace(workspace, &document, &[]);
     drop(held);
     assert_eq!(
         receipts_by(&tree, room, &person),

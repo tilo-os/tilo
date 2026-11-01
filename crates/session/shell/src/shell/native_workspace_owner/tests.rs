@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
+use tilo_peer_state::owner::testing::{APP, WORKSPACE, raw_fixture, raw_fixture_at};
 use tilo_peer_state::owner::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 struct Fixture {
@@ -40,7 +40,7 @@ pub(super) fn prepare_enrollment(
         .desktop
         .workspaces
         .iter()
-        .find(|slot| slot.room() == intent.room())
+        .find(|slot| slot.room() == intent.workspace())
         .map(|slot| slot.id)
         .ok_or("enrollment requires an explicit existing local slot")?;
     owner.prepare_enrollment_into(intent, Some(local), now)
@@ -60,7 +60,7 @@ fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
 fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     let mut tree = WorkspaceTree::bootstrap_default();
     let id = tree.desktop.active;
-    assert!(tree.stand_in_room(id, RoomId::parse(ROOM).unwrap()));
+    assert!(tree.stand_in_room(id, RoomId::parse(WORKSPACE).unwrap()));
     tree.persist_path = Some(path.into());
     tree.shared()
 }
@@ -147,7 +147,7 @@ fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document
     persist::wait_for_saves();
     let stored = tilo_peer_state::owner::read_file(&owner_file(&path)).unwrap();
     assert_eq!(stored.revision(), owner.revision());
-    assert!(stored.holds(RoomId::parse(ROOM).unwrap()));
+    assert!(stored.holds(RoomId::parse(WORKSPACE).unwrap()));
     let tree = tree.read();
     assert_eq!(tree.native_authority.revision(), owner.revision());
     assert!(
@@ -198,7 +198,7 @@ fn native_owner_commits_exact_chat_and_reopens() {
     let owner =
         open(tree.clone()).expect("native owner must attach to the actual state-file writer");
     let fixture = fixture(&owner);
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     owner.install(&fixture.enrollment, fixture.now).unwrap();
     owner
         .with_current(room, |view| {
@@ -270,19 +270,26 @@ fn a_lapsed_proof_is_dropped_and_only_its_own_attempt() {
     let owner = open(tree.clone()).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
     let id = prepare_enrollment(&owner, &intent, now).unwrap();
-    let other = tilo_peer_state::owner::testing::pending_id(id.room(), id.generation() + 1);
-    assert!(owner.drop_lapsed_enrollment(id.room(), &other).is_err());
-    assert!(owner.pending_enrollment(id.room()).unwrap().is_some());
-    assert!(owner.drop_lapsed_enrollment(id.room(), &id).unwrap());
-    assert!(owner.pending_enrollment(id.room()).unwrap().is_none());
-    assert!(!owner.drop_lapsed_enrollment(id.room(), &id).unwrap());
+    let other = tilo_peer_state::owner::testing::pending_id(id.workspace(), id.generation() + 1);
+    assert!(
+        owner
+            .drop_lapsed_enrollment(id.workspace(), &other)
+            .is_err()
+    );
+    assert!(owner.pending_enrollment(id.workspace()).unwrap().is_some());
+    assert!(owner.drop_lapsed_enrollment(id.workspace(), &id).unwrap());
+    assert!(owner.pending_enrollment(id.workspace()).unwrap().is_none());
+    assert!(!owner.drop_lapsed_enrollment(id.workspace(), &id).unwrap());
     drop(owner);
     drop(tree);
     let mut loaded = persist::load_tree_from(&path).unwrap();
     loaded.persist_path = Some(path);
     let reopened = open(loaded.shared()).unwrap();
     assert!(
-        reopened.pending_enrollment(id.room()).unwrap().is_none(),
+        reopened
+            .pending_enrollment(id.workspace())
+            .unwrap()
+            .is_none(),
         "the drop is durable"
     );
 }
@@ -295,7 +302,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
     let owner = open(tree.clone()).unwrap();
     let (intent, bootstrap, _, _, now) = raw_fixture();
     let id = prepare_enrollment(&owner, &intent, now).unwrap();
-    let durable = owner.pending_enrollment(id.room()).unwrap().unwrap();
+    let durable = owner.pending_enrollment(id.workspace()).unwrap().unwrap();
     assert_eq!(durable.intent_bytes(), intent.durable_bytes().unwrap());
     drop(owner);
     drop(tree);
@@ -308,15 +315,15 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
         retried, id,
         "expired challenge cannot create a different retry proof"
     );
-    assert!(owner.cancel_enrollment(id.room(), &id).unwrap());
-    let cancelled = owner.pending_enrollment(id.room()).unwrap().unwrap();
+    assert!(owner.cancel_enrollment(id.workspace(), &id).unwrap());
+    let cancelled = owner.pending_enrollment(id.workspace()).unwrap().unwrap();
     assert_eq!(cancelled.intent_bytes(), durable.intent_bytes());
     assert_eq!(cancelled.status(), PendingEnrollmentStatus::Cancelled);
     let late = tilo_peer_state::owner::testing::finalize(intent, id.clone(), bootstrap).unwrap();
     assert!(owner.install(&late, now).is_err());
-    assert!(owner.with_current(id.room(), |_| Ok(())).is_err());
+    assert!(owner.with_current(id.workspace(), |_| Ok(())).is_err());
     assert!(
-        owner.contains_room(id.room()),
+        owner.contains_workspace(id.workspace()),
         "cancelled unresolved room must never fall back to legacy"
     );
 }
@@ -337,8 +344,13 @@ fn native_pending_not_published_failure_returns_no_send_authority() {
         .is_err()
     );
     assert_eq!(record(&path), before);
-    assert!(owner.pending_enrollment(intent.room()).unwrap().is_none());
-    assert!(!owner.contains_room(intent.room()));
+    assert!(
+        owner
+            .pending_enrollment(intent.workspace())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!owner.contains_workspace(intent.workspace()));
     prepare_enrollment(&owner, &intent, now).unwrap();
 }
 
@@ -352,7 +364,7 @@ fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
     let fixture = fixture(&owner);
     owner.install(&fixture.enrollment, fixture.now).unwrap();
     let before = record(&path);
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     assert!(
         with_failure(Checkpoint::BeforePublish, || owner.receive(
             room,
@@ -398,7 +410,7 @@ fn native_uncertain_publication_fences_owner_ui_and_live_listener_until_reopen()
         let owner = open(tree.clone()).unwrap();
         let fixture = fixture(&owner);
         owner.install(&fixture.enrollment, fixture.now).unwrap();
-        let room = RoomId::parse(ROOM).unwrap();
+        let room = RoomId::parse(WORKSPACE).unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
         let _subscription = owner.observe_fences(Arc::new(move |got, _| {
@@ -445,7 +457,7 @@ fn native_stale_ui_snapshot_cannot_erase_admitted_state() {
     for message in fixture.messages.into_iter().skip(1) {
         owner
             .receive(
-                RoomId::parse(ROOM).unwrap(),
+                RoomId::parse(WORKSPACE).unwrap(),
                 TransportOrigin::RetainedRelayDelta(fixture.governor),
                 message,
                 fixture.now,
@@ -522,7 +534,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
     let owner = open(tree_at(&path)).unwrap();
     let fixture = fixture(&owner);
     owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     for message in fixture.messages.into_iter().skip(1) {
         owner
             .receive(
@@ -557,7 +569,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
         panic!("actual signed app mutation expected")
     };
     let request = OwnerCommitRequest {
-        room: ROOM.into(),
+        workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
@@ -584,7 +596,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
         owner
             .commit_document(
                 OwnerCommitRequest {
-                    room: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     operation: CommitOperation::Document {
                         app: APP.into(),
                         record: String::new(),
@@ -626,7 +638,7 @@ pub(crate) fn test_enrolled_owner() -> (
     let owner = open(tree_at(&path)).unwrap();
     let fixture = fixture(&owner);
     owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     for message in fixture.messages.into_iter().skip(1) {
         owner
             .receive(
@@ -658,7 +670,7 @@ pub(crate) fn test_owner_before_enrollment() -> (
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     tree.write().pending_placements.insert(room);
     let owner = open(tree).unwrap();
     let fixture = fixture(&owner);
@@ -680,7 +692,7 @@ fn fresh_slot(
     // The workspace an enrollment installs into is the room's own, made for
     // the join; installing changes no workspace's room.
     let mut native = WorkspaceTree::bootstrap_default();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     let local = native
         .join_room("Joining", room)
         .expect("a room is joined as a workspace of its own");
@@ -709,7 +721,7 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
     );
     let enrolled = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrolled, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     assert_eq!(tree.read().room_of(local), Some(room));
     owner
         .with_current(room, |view| {
@@ -738,13 +750,13 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
     assert_eq!(tree.read().room_of(local), Some(replaced));
     assert_eq!(
         owner
-            .pending_enrollment(pending.room())
+            .pending_enrollment(pending.workspace())
             .unwrap()
             .unwrap()
             .id(),
         &pending
     );
-    assert!(owner.with_current(pending.room(), |_| Ok(())).is_err());
+    assert!(owner.with_current(pending.workspace(), |_| Ok(())).is_err());
 }
 #[test]
 fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
@@ -765,14 +777,14 @@ fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
     assert_eq!(record(&path), before);
     assert_eq!(
         owner
-            .pending_enrollment(pending.room())
+            .pending_enrollment(pending.workspace())
             .unwrap()
             .unwrap()
             .id(),
         &pending
     );
     owner.install(&enrolled, now).unwrap();
-    assert_eq!(tree.read().room_of(local), Some(pending.room()));
+    assert_eq!(tree.read().room_of(local), Some(pending.workspace()));
 }
 
 #[test]
@@ -789,7 +801,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
         .collect();
     let complete = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&complete, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     // The historical governance is admitted on Complete's evidence: the
     // room's call policy is there, bound to the room's Chat. Joining takes
     // governance alone, so the Chat checkpoint the binding names is not part
@@ -837,7 +849,7 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
     let (tree, local, _) = fresh_slot(&path);
     let owner = open(tree).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
-    let room = intent.room();
+    let room = intent.workspace();
     assert!(
         with_failure(Checkpoint::AfterPublish, || owner.prepare_enrollment_into(
             &intent,
@@ -847,7 +859,7 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
         .is_err()
     );
     assert!(
-        owner.contains_room(room),
+        owner.contains_workspace(room),
         "possibly published pending intent cannot revert to legacy"
     );
     assert!(owner.with_current(room, |_| Ok(())).is_err());
@@ -962,7 +974,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let published_state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&observed_state).unwrap()).unwrap();
     assert!(
-        published_state["rooms"][ROOM].is_object(),
+        published_state["rooms"][WORKSPACE].is_object(),
         "actual publisher must observe acknowledged final owner state"
     );
     std::fs::remove_file(&observed_acl).unwrap();
@@ -983,7 +995,7 @@ fn fixture_workspace(owner: &NativeWorkspaceOwner) -> crate::shell::state::Works
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room() == RoomId::parse(ROOM).unwrap())
+        .find(|workspace| workspace.room() == RoomId::parse(WORKSPACE).unwrap())
         .cloned()
         .expect("the room's workspace")
 }

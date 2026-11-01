@@ -43,7 +43,9 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{self, MemberRole, TransportHint};
 use tilo_peer_state::join_answer::JoinAnswer;
-use tilo_peer_state::owner::{ApplicationRecord, NativeWorkspaceOwner, OwnerJoinRooms, open_file};
+use tilo_peer_state::owner::{
+    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file,
+};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_relay_session::workspace_join::{WorkspaceJoinClient, WorkspaceJoinProtocol};
@@ -284,7 +286,10 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(
             WORKSPACE_JOIN_ALPN,
-            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(a.clone(), a_key.clone()))),
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinWorkspaces::new(
+                a.clone(),
+                a_key.clone(),
+            ))),
         )
         .spawn();
     let mut a_session = StoreSession::join(
@@ -368,7 +373,7 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     // A lets B invite, and B takes that governance in, before A goes away.
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: a_cert.clone(),
@@ -404,7 +409,10 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     let _b_router = iroh::protocol::Router::builder(b_endpoint.clone())
         .accept(
             WORKSPACE_JOIN_ALPN,
-            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(b.clone(), b_key.clone()))),
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinWorkspaces::new(
+                b.clone(),
+                b_key.clone(),
+            ))),
         )
         .spawn();
     let c = open_file(&directory.path().join("c.json")).unwrap();
@@ -498,7 +506,10 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(
             WORKSPACE_JOIN_ALPN,
-            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(a.clone(), a_key.clone()))),
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinWorkspaces::new(
+                a.clone(),
+                a_key.clone(),
+            ))),
         )
         .spawn();
     let mut a_session = StoreSession::join(
@@ -568,7 +579,7 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     // The guest may hand the share on, as the sharer allows before it goes.
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: a_cert.clone(),
@@ -601,7 +612,10 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     let _b_router = iroh::protocol::Router::builder(b_endpoint.clone())
         .accept(
             WORKSPACE_JOIN_ALPN,
-            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(b.clone(), b_key.clone()))),
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinWorkspaces::new(
+                b.clone(),
+                b_key.clone(),
+            ))),
         )
         .spawn();
     let c = open_file(&directory.path().join("c.json")).unwrap();
@@ -712,7 +726,7 @@ fn document_write(message: NeighbourMsg) -> Result<OwnerCommitRequest, String> {
         return Err("a document publish is a document write".into());
     };
     Ok(OwnerCommitRequest {
-        room: cluster_id,
+        workspace: cluster_id,
         operation: CommitOperation::Document {
             app: APP.into(),
             record: RECORD.into(),

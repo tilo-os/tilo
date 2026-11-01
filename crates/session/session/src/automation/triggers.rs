@@ -213,7 +213,7 @@ pub struct Armed {
 
 /// Every shortcut in `workspaces` with triggers that the person this device
 /// acts for in its room (`local_person`) saved, by the proof of a device of
-/// theirs ([`tilo_peer_state::room::proven_saver`]) that holds at `now_ns`
+/// theirs ([`tilo_peer_state::workspace::proven_saver`]) that holds at `now_ns`
 /// against the room's revocations (`revocations`, `None` for a room this
 /// device holds no document of). A `saved_by` without such a proof, or one
 /// for another room, never arms.
@@ -240,7 +240,8 @@ pub fn armed(
         let person = local_person(workspace);
         let room = workspace.room().to_string();
         for shortcut in triggered {
-            if tilo_peer_state::room::proven_saver(&room, &shortcut, &revocations, now_ns).as_ref()
+            if tilo_peer_state::workspace::proven_saver(&room, &shortcut, &revocations, now_ns)
+                .as_ref()
                 == Some(&person)
             {
                 armed.push(Armed {

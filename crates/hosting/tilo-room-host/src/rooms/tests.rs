@@ -1152,7 +1152,7 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
         let state = rooms.room(&created.room).await.unwrap();
         let governed = state.lock().await;
         assert_eq!(
-            governed.peer().governance().room_name().as_deref(),
+            governed.peer().governance().workspace_name().as_deref(),
             Some("Plaza")
         );
         governed.path.clone()
@@ -1162,7 +1162,7 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     let restored = GovernedRoom::open(path, &cert, &key, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
-        restored.peer().governance().room_name().as_deref(),
+        restored.peer().governance().workspace_name().as_deref(),
         Some("Plaza")
     );
 }
@@ -1382,7 +1382,7 @@ fn install_bot(
             paused: false,
         },
         program: program.into(),
-        device: Some(bot_device(id, peer.room(), seed)),
+        device: Some(bot_device(id, peer.workspace_id(), seed)),
     }));
     assert_eq!(
         peer.workspace_mut().apply_workspace_membership_command(
@@ -1978,7 +1978,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
         let room = state.lock().await;
         let doc = room
             .peer()
-            .admitted_room()
+            .admitted_workspace()
             .expect("a created room has a room document")
             .clone();
         (room.record.generation, doc)
@@ -2014,7 +2014,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
             room.record.generation > generation,
             "the governor committed the window as the room's next generation"
         );
-        let mut admitted = room.peer().admitted_room().unwrap().clone();
+        let mut admitted = room.peer().admitted_workspace().unwrap().clone();
         drop(room);
         for hash in &hashes {
             assert!(
@@ -2066,14 +2066,14 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
         let state = rooms.room(&room).await.unwrap();
         let governed = state.lock().await;
         let mut written = governed.peer().clone();
-        let heads = written.room_heads().unwrap();
+        let heads = written.workspace_heads().unwrap();
         written
             .governance_mut()
             .remove_member(guest.user_public_key, &writer_key, SystemTime::now())
             .unwrap();
-        let changes = written.room_changes_since(&heads);
+        let changes = written.workspace_changes_since(&heads);
         let leaves =
-            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes);
+            layout_scope::leaves_layout(governed.peer().admitted_workspace().unwrap(), &changes);
         drop(governed);
         assert!(leaves, "a removal is no layout");
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
@@ -2108,7 +2108,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
         let state = rooms.room(&room).await.unwrap();
         let governed = state.lock().await;
         let leaves =
-            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes);
+            layout_scope::leaves_layout(governed.peer().admitted_workspace().unwrap(), &changes);
         drop(governed);
         assert!(!leaves, "opening windows changes the layout");
     }
@@ -2163,7 +2163,7 @@ async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: 
     let mut doc = {
         let state = rooms.room(room).await.unwrap();
         let governed = state.lock().await;
-        governed.peer().admitted_room().unwrap().clone()
+        governed.peer().admitted_workspace().unwrap().clone()
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
@@ -2184,7 +2184,7 @@ async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: 
 async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
     let state = rooms.room(room).await.unwrap();
     let governed = state.lock().await;
-    titles_in(governed.peer().admitted_room().unwrap())
+    titles_in(governed.peer().admitted_workspace().unwrap())
 }
 
 /// Two strangers in a public room: A opens two terminals, and B is never
@@ -2236,7 +2236,7 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
             governed.record.generation, generation,
             "the governor committed nothing of A's windows"
         );
-        let shared = governed.peer().admitted_room().unwrap();
+        let shared = governed.peer().admitted_workspace().unwrap();
         assert!(
             tilo_desktop_model::shared_record::read(shared, None)
                 .into_iter()
@@ -2322,7 +2322,7 @@ async fn windows_closed(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u1
     let mut doc = {
         let state = rooms.room(room).await.unwrap();
         let governed = state.lock().await;
-        governed.peer().admitted_room().unwrap().clone()
+        governed.peer().admitted_workspace().unwrap().clone()
     };
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
@@ -2550,7 +2550,7 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
         let state = rooms.room(&room).await.unwrap();
         let governed = state.lock().await;
         assert_eq!(
-            governed.peer().governance().room_layout(),
+            governed.peer().governance().workspace_layout(),
             tilo_desktop_model::projection::RoomLayout::Personal,
             "every member's device reads that the room is personal"
         );

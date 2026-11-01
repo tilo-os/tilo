@@ -25,7 +25,9 @@ pub(super) fn hosts_on(device: &Device, room: RoomId) -> usize {
         .ok()
         .and_then(|owner| {
             owner
-                .with_current(room, |view| Ok(view.peer().governance().room_hosts().len()))
+                .with_current(room, |view| {
+                    Ok(view.peer().governance().workspace_hosts().len())
+                })
                 .ok()
         })
         .unwrap_or(0)

@@ -154,7 +154,7 @@ impl Joined {
             live_changed: Notify::new(),
             this: this.clone(),
         });
-        for room in joined.owner.rooms() {
+        for room in joined.owner.workspaces() {
             joined.hold_session(room);
         }
         Ok(joined)
@@ -205,7 +205,7 @@ impl Joined {
     /// it and every capability in it.
     pub(super) fn workspaces(&self) -> Vec<Workspace> {
         self.owner
-            .rooms()
+            .workspaces()
             .into_iter()
             .filter_map(|room| self.current_room(room).ok().map(|(workspace, _)| workspace))
             .collect()
@@ -214,7 +214,7 @@ impl Joined {
     /// One joined room as [`Self::workspaces`] describes it, built alone:
     /// asking about one room never rebuilds every other joined room.
     pub(super) fn workspace(&self, room: RoomId) -> Option<Workspace> {
-        if !self.owner.rooms().contains(&room) {
+        if !self.owner.workspaces().contains(&room) {
             return None;
         }
         self.current_room(room).ok().map(|(workspace, _)| workspace)
@@ -222,7 +222,7 @@ impl Joined {
 
     /// Whether this profile has joined any room.
     pub(super) fn is_empty(&self) -> bool {
-        self.owner.rooms().is_empty()
+        self.owner.workspaces().is_empty()
     }
 
     // Use the same current custody check as an enrolled relay session. Merely
@@ -239,10 +239,10 @@ impl Joined {
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?
                 .person;
-            let document = view.peer().admitted_room().ok_or("no admitted room")?;
+            let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
             let mut workspace =
-                Workspace::in_room(WorkspaceId(view.workspace()), room, String::new());
-            tilo_peer_state::room::adopt_room(&mut workspace, document, &[]);
+                Workspace::in_room(WorkspaceId(view.workspace_id()), room, String::new());
+            tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))
         })
@@ -276,7 +276,7 @@ impl Joined {
         self.owner
             .with_current(room, |view| {
                 Ok(collab_types::Ed25519PublicKey::from_bytes(
-                    view.room_host().device_public_key,
+                    view.workspace_host().device_public_key,
                 ))
             })
             .ok()
@@ -353,7 +353,7 @@ impl Joined {
     }
 
     async fn run_session(&self, session: RelayCoeditSession, scope: Arc<Scope>, wake: &Notify) {
-        let room = scope.room();
+        let room = scope.workspace();
         let session = Arc::new(session);
         let host = scope.host().host.device_public_key;
         self.set_live(room, Some((Arc::clone(&session), host)));
@@ -495,8 +495,10 @@ impl Joined {
         // fold: it writes its own checkpoint where the room's host used to.
         let compacted = scope.compact(
             &self.custody,
-            &mut |write| keys.open_history_write(scope.room(), write),
-            &mut |app, record, snapshot| keys.seal_checkpoint(scope.room(), app, record, snapshot),
+            &mut |write| keys.open_history_write(scope.workspace(), write),
+            &mut |app, record, snapshot| {
+                keys.seal_checkpoint(scope.workspace(), app, record, snapshot)
+            },
         );
         match compacted {
             Ok(0) => {}
@@ -504,7 +506,7 @@ impl Joined {
             Err(error) => tracing::debug!(%error, "joined room sealed history stays uncompacted"),
         }
         let result = scope.publish_renewing(session, &self.custody, &mut |sealed| {
-            keys.renew_sealed(scope.room(), sealed)
+            keys.renew_sealed(scope.workspace(), sealed)
         });
         if let Err(error) = result {
             tracing::debug!(%error, "joined room publication remains in durable custody");
@@ -515,7 +517,7 @@ impl Joined {
     /// reaches this device's apps on its route. Answers whether the room's
     /// host should replay what it retains ([`tilo_peer_state::ReceiveOutcome::replay_wanted`]).
     fn admit(&self, input: Input) -> bool {
-        let room = input.room();
+        let room = input.workspace();
         let Some((input, report)) = Input::admit_batch(vec![input], &self.custody).inputs.pop()
         else {
             return false;
@@ -573,16 +575,16 @@ impl Joined {
 impl OwnerCommitService for Joined {
     /// Every room this profile joined, and the rooms the desktop session
     /// governs here, whose writes are refused.
-    fn requires_room(&self, room: &str) -> bool {
+    fn requires_workspace(&self, room: &str) -> bool {
         RoomId::parse(room)
-            .is_some_and(|room| self.owner.contains_room(room) || self.refused.contains(&room))
+            .is_some_and(|room| self.owner.contains_workspace(room) || self.refused.contains(&room))
     }
 
     /// A room hosted here keeps its effect receipts in the profile's own
     /// workspace record.
     fn records_effects(&self, room: &str) -> bool {
         RoomId::parse(room).is_some_and(|room| {
-            self.owner.contains_room(room) && !self.hosted_here(room)
+            self.owner.contains_workspace(room) && !self.hosted_here(room)
                 || self.refused.contains(&room)
         })
     }
@@ -596,7 +598,7 @@ impl OwnerCommitService for Joined {
         request: OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> CommitFuture {
-        let room = RoomId::parse(&request.room);
+        let room = RoomId::parse(&request.workspace);
         if room.is_some_and(|room| self.refused.contains(&room)) {
             return Box::pin(std::future::ready(Err(
                 "the desktop session's workspace is read only in the runtime".into(),
@@ -653,7 +655,7 @@ pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<RoomId>> {
     let record =
         tilo_peer_state::owner::owner_file_of(&profile.join(super::workspace::DESKTOP_WORKSPACE));
     tilo_peer_state::owner::read_file(&record)
-        .map(|storage| storage.rooms().collect())
+        .map(|storage| storage.workspaces().collect())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 

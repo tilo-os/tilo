@@ -156,7 +156,7 @@ struct HostedRoom {
 impl HostedRoom {
     async fn start(dir: &std::path::Path) -> Self {
         let governing = TestGovernor::new();
-        let governor = governing.room_host().clone();
+        let governor = governing.workspace_host().clone();
         let governor_key = governing.governor_key().clone();
         let host = governing.host().clone();
         let host_key = governing.host_key().clone();
@@ -167,11 +167,16 @@ impl HostedRoom {
             .bind()
             .await
             .unwrap();
-        let room = RoomId::parse(governing.room()).unwrap();
+        let room = RoomId::parse(governing.workspace()).unwrap();
         let topic = room_topic(room).unwrap();
         let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
-        let baseline = governing.peer().admitted_room().unwrap().clone().save();
+        let baseline = governing
+            .peer()
+            .admitted_workspace()
+            .unwrap()
+            .clone()
+            .save();
         tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
@@ -693,7 +698,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     };
     let receipt = joined
         .commit(OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
@@ -755,7 +760,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     collab_types::sign_op(&mut envelope, &device_key).unwrap();
     joined
         .commit(OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
                 record: String::new(),
@@ -1379,7 +1384,7 @@ fn signed_write(
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     tilo_peer_state::owner_commit::OwnerCommitRequest {
-        room,
+        workspace: room,
         operation: CommitOperation::Document {
             app: app.into(),
             record: RECORD.into(),
@@ -1397,7 +1402,7 @@ async fn the_profile_room_is_placed_once_on_its_own_host_and_held() {
     assert!(joined.hosted_here(room));
     assert!(joined.workspace(room).is_some());
     joined.place(room, "Home").await.unwrap();
-    assert_eq!(joined.owner.rooms(), vec![room]);
+    assert_eq!(joined.owner.workspaces(), vec![room]);
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
@@ -1405,7 +1410,7 @@ async fn the_profile_room_is_placed_once_on_its_own_host_and_held() {
         joined.action_room(&actor, &room.to_string()).unwrap(),
         room.to_string()
     );
-    assert!(joined.requires_room(&room.to_string()));
+    assert!(joined.requires_workspace(&room.to_string()));
     assert!(
         !joined.records_effects(&room.to_string()),
         "the profile keeps its own room's effect records"
@@ -1458,7 +1463,7 @@ async fn writes_to_a_room_the_desktop_session_governs_are_refused() {
         ),
     )
     .unwrap();
-    assert!(joined.requires_room(&room.to_string()));
+    assert!(joined.requires_workspace(&room.to_string()));
     let refused = joined
         .commit(signed_write(
             room,

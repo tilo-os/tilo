@@ -21,9 +21,9 @@ impl ShellNetwork {
         self.check_native_custody(&owner, room)?;
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(view.room_host().device_public_key, SystemTime::now())
+                .permissions(view.workspace_host().device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?;
-            Ok((view.device().clone(), view.room_host().clone()))
+            Ok((view.device().clone(), view.workspace_host().clone()))
         })
     }
     pub(crate) fn initialize_native_application(
@@ -38,7 +38,7 @@ impl ShellNetwork {
             .as_ref()
             .ok_or("native custody unavailable")?;
         let (certificate, _) = owner.with_current(room, |view| {
-            identity.current_native_material(view.workspace())
+            identity.current_native_material(view.workspace_id())
         })?;
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
@@ -138,7 +138,7 @@ impl ShellNetwork {
     /// member's sealed write, which only the record's channel members open.
     /// Returns whether `input` was one of them.
     fn dispatch_channel_traffic(&self, input: &native_ingress::Input) -> bool {
-        let room = input.room();
+        let room = input.workspace();
         match input.message() {
             NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
@@ -234,7 +234,7 @@ impl ShellNetwork {
             .with_current(room, |view| {
                 let now = SystemTime::now();
                 let own = view.device().device_public_key;
-                let governor = view.room_host().device_public_key;
+                let governor = view.workspace_host().device_public_key;
                 Ok(view
                     .peer()
                     .certificates()
@@ -328,7 +328,10 @@ impl ShellNetwork {
         self.opened_native_owner().is_some_and(|owner| {
             owner
                 .with_current(room, |view| {
-                    Ok(view.room_host().capabilities.takes_part_in_room_channels())
+                    Ok(view
+                        .workspace_host()
+                        .capabilities
+                        .takes_part_in_room_channels())
                 })
                 .unwrap_or(false)
         })
@@ -473,7 +476,7 @@ impl ShellNetwork {
         admitted: tilo_peer_state::owner::session::Admitted,
     ) {
         let tilo_peer_state::owner::session::Admitted { inputs, changed } = admitted;
-        let room = inputs.first().map(|(input, _)| input.room());
+        let room = inputs.first().map(|(input, _)| input.workspace());
         for (input, report) in inputs {
             self.complete_native_input(input, changed, report);
         }
@@ -496,7 +499,7 @@ impl ShellNetwork {
         let report = match report {
             Ok(report) => report,
             Err(error) if error == tilo_peer_state::HELD_FOR_SURFACE => {
-                tracing::debug!(room = %input.room(), "native relay input held for its app surface");
+                tracing::debug!(room = %input.workspace(), "native relay input held for its app surface");
                 // A surface this device has no copy of is a newer build of
                 // the app: its update brings it.
                 if let NeighbourMsg::AppDocument {
@@ -510,15 +513,15 @@ impl ShellNetwork {
                 return;
             }
             Err(error) => {
-                tracing::warn!(%error,room=%input.room(),"native relay admission denied");
+                tracing::warn!(%error,room=%input.workspace(),"native relay admission denied");
                 return;
             }
         };
         if report.summary().replay_wanted {
-            self.request_native_replay(input.room());
+            self.request_native_replay(input.workspace());
         }
         tracing::debug!(
-            room = %input.room(),
+            room = %input.workspace(),
             author = %hex::encode(&input.author()[..4]),
             kind = input.message().kind(),
             retained = input.retained(),

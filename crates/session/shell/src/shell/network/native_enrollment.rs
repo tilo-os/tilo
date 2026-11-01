@@ -157,7 +157,7 @@ impl ShellNetwork {
                 .with_current(room, |view| {
                     Ok((
                         view.device().device_public_key,
-                        view.room_host().device_public_key,
+                        view.workspace_host().device_public_key,
                     ))
                 })
                 .ok()

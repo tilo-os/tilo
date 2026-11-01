@@ -441,7 +441,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .and_then(|shortcut| shortcut.decode().ok())
     });
     assert_eq!(
-        tilo_peer_state::room::proven_saver(
+        tilo_peer_state::workspace::proven_saver(
             &acme.room,
             &held,
             &RevocationList::new(),

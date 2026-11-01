@@ -4036,7 +4036,7 @@ impl AppBrokerState {
                     tilo_clock::unix_now_i64(),
                 );
                 let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    room: pending.cluster_id.clone(),
+                    workspace: pending.cluster_id.clone(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                         invocation: update.invocation().0,
                         redacted: serde_json::to_vec(&receipt)

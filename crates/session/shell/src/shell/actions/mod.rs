@@ -1614,7 +1614,7 @@ pub(crate) fn fence_native_selection(
         .pending_enrollment_for_slot(local)
         .map_err(ActionError::Refused)?
     {
-        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+        native_identity::fence(&owner, pending.id().workspace(), selected.as_ref())
             .map_err(ActionError::Refused)?;
     }
     Ok(())

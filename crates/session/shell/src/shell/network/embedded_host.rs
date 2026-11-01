@@ -153,7 +153,7 @@ fn waiting(
 
 impl ShellNetwork {
     /// This device's room host, while it is open.
-    pub(crate) fn room_host(&self) -> Option<Arc<RoomHost>> {
+    pub(crate) fn workspace_host(&self) -> Option<Arc<RoomHost>> {
         self.embedded_host.host.as_ref()?.get()
     }
 
@@ -163,14 +163,14 @@ impl ShellNetwork {
     /// governed access: a removed person's devices stay in the document as
     /// signed history, and count for nothing here.
     pub(super) fn hosts_other_members(&self) -> bool {
-        if self.room_host().is_none() {
+        if self.workspace_host().is_none() {
             return false;
         }
         let Some(owner) = self.opened_native_owner() else {
             return false;
         };
         let own = *self.local_peer_id.as_bytes();
-        owner.rooms().into_iter().any(|room| {
+        owner.workspaces().into_iter().any(|room| {
             owner
                 .with_current(room, |view| {
                     let hosted_here = view
@@ -234,7 +234,7 @@ impl ShellNetwork {
     /// the disk on the network's runtime ([`Self::wait_on`]): call it from
     /// a thread that may block, never from a task.
     pub(super) fn local_host(&self) -> Result<Arc<RoomHost>, String> {
-        if let Some(host) = self.room_host() {
+        if let Some(host) = self.workspace_host() {
             return Ok(host);
         }
         let (host, opened) = self.wait_on(self.host_opening()?.open())??;

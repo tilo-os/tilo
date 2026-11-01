@@ -575,7 +575,7 @@ fn needs_reachability(
     // is a peer. A native room's names are no reason: its document keeps a
     // removed member's devices as signed history, so who may still dial is
     // its membership, read below and in `ShellNetwork::hosts_other_members`.
-    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let native: std::collections::BTreeSet<_> = tree.native_authority.workspaces().collect();
     let shared = tree
         .rooms()
         .into_iter()
@@ -589,7 +589,7 @@ fn needs_reachability(
         Some("a room shared with a peer")
     } else if tree
         .native_authority
-        .rooms()
+        .workspaces()
         .any(|room| !tree.native_authority.hosted_on(room, local_device))
     {
         // A room hosted on this device keeps it reachable only while
@@ -4478,7 +4478,7 @@ impl ShellNetwork {
                 .filter(|(id, room)| {
                     tree.room_docs
                         .get(room)
-                        .is_some_and(|doc| tilo_peer_state::room::invitation_redeemed(doc, id))
+                        .is_some_and(|doc| tilo_peer_state::workspace::invitation_redeemed(doc, id))
                 })
                 .map(|(id, _)| id)
                 .collect()

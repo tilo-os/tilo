@@ -33,7 +33,11 @@ fn person_bridge_refuses_replica_fallback_without_private_transport() {
         super::super::super::native_workspace_owner::test_enrolled_owner();
     let certificate = owner
         .with_current(room, |view| {
-            assert_ne!(view.device(), view.room_host(), "fixture must be a replica");
+            assert_ne!(
+                view.device(),
+                view.workspace_host(),
+                "fixture must be a replica"
+            );
             Ok(view.device().clone())
         })
         .unwrap();
@@ -224,7 +228,8 @@ fn private_owner_fixture() -> (
     let mut governor =
         tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
             .unwrap();
-    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+    let room =
+        crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
     enroll_contact(&owner, &mut governor, room, std::time::SystemTime::now());
     (directory, owner, room, certificate)
 }
@@ -243,7 +248,7 @@ fn enroll_contact(
     );
     let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.workspace_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -276,7 +281,7 @@ fn enroll_contact(
             .receive(
                 room,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.room_host().device_public_key,
+                    governor.workspace_host().device_public_key,
                 ),
                 message,
                 now,
@@ -288,7 +293,7 @@ fn enroll_contact(
             .direct_contacts(
                 room,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.room_host().clone(),
+                    caller: governor.workspace_host().clone(),
                 },
                 now
             )

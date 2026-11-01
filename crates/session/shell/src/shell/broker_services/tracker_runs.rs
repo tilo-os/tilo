@@ -450,7 +450,7 @@ impl TrackerRuns for NativeTrackerRuns {
     /// door) is its own decision, not a side effect of reading the tracker:
     /// it stays as it was.
     fn confines_agents_to_tasks(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_workspace(&self.owner, room)
     }
 
     /// Keep the newest snapshot of each run's turn: a later epoch, a later

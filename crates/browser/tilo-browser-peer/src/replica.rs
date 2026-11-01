@@ -61,7 +61,7 @@ impl Store for PageRooms {
         !self.healthy()
     }
 
-    fn slot_room(&self, _slot: tilo_desktop_model::WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceId) -> Option<RoomId> {
         None
     }
 
@@ -216,9 +216,9 @@ impl Replicas {
     ) -> Option<(String, RoomLayout, Option<BTreeSet<String>>)> {
         self.with_room(workspace_id, |view| {
             let peer = view.peer();
-            let doc = peer.admitted_room();
+            let doc = peer.admitted_workspace();
             Ok((
-                peer.room().to_owned(),
+                peer.workspace_id().to_owned(),
                 doc.map(room_layout).unwrap_or_default(),
                 doc.and_then(room_members),
             ))
@@ -247,7 +247,7 @@ impl Replicas {
                 .map(Ed25519PublicKey::from_bytes)
                 .collect();
             participants.insert(Ed25519PublicKey::from_bytes(
-                view.room_host().device_public_key,
+                view.workspace_host().device_public_key,
             ));
             participants.insert(Ed25519PublicKey::from_bytes(self.device.device_public_key));
             Ok(participants)
@@ -263,8 +263,8 @@ impl Replicas {
                 self.with_room(*workspace_id, |view| {
                     Ok(format!(
                         "room {}: joined through {}",
-                        view.peer().room(),
-                        hex::encode(&view.room_host().device_public_key[..4])
+                        view.peer().workspace_id(),
+                        hex::encode(&view.workspace_host().device_public_key[..4])
                     ))
                 })?
                 .ok()

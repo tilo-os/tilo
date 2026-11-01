@@ -64,7 +64,7 @@ mod durable_local_matrix {
             let origin = clock.new_origin();
             let mut workspace = crate::test_support::Workspace::in_room(
                 crate::test_support::WorkspaceId(84),
-                tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap(),
+                tilo_desktop_model::RoomId::parse(owner.peer().workspace_id()).unwrap(),
                 "Durable actual RPC",
             );
             // Someone the workspace grants everything until 50 seconds after the

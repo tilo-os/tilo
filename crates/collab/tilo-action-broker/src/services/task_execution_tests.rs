@@ -3,7 +3,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles::AgentPreset};
 use tilo_automerge::ApplyIncoming;
-use tilo_peer_state::{SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 fn certificate(root: u8, device: u8) -> DeviceCert {
@@ -142,7 +142,7 @@ fn admitted_fixture(
     let roster = vec![governor.clone(), starter.clone()];
     let mut doc = AutoCommit::new();
     doc.apply_incoming(
-        seed_room(workspace, &governor, &roster)
+        seed_workspace(workspace, &governor, &roster)
             .unwrap()
             .into_iter()
             .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
@@ -159,7 +159,7 @@ fn admitted_fixture(
     let mut peer = StatePeer::new(workspace, governor, roster, RevocationList::new(), now).unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: doc
+            workspace_changes: doc
                 .get_changes(&[])
                 .into_iter()
                 .map(|change| change.raw_bytes().to_vec())
@@ -529,7 +529,7 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
         assert!(denied.contains("not allowed"), "{denied}");
 
         let policy = tilo_desktop_model::projection::room_policy_of(
-            peer.admitted_room().unwrap(),
+            peer.admitted_workspace().unwrap(),
             workspace,
         );
         let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))

@@ -94,7 +94,7 @@ impl Joined {
         room: RoomId,
         name: &str,
     ) -> Result<(), String> {
-        if self.owner.contains_room(room) {
+        if self.owner.contains_workspace(room) {
             return Ok(());
         }
         let invitation = self

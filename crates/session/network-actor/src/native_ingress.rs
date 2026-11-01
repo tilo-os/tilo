@@ -175,7 +175,7 @@ impl ActorState {
         let Some(identity) = self.host_identity.clone() else {
             return event;
         };
-        let room = input.room();
+        let room = input.workspace();
         match tokio::task::spawn_blocking(move || {
             let before = input.generation().ok();
             input.admit(&identity)?;
@@ -251,7 +251,8 @@ impl ActorState {
         // In the room's log too: a device shut down before a host kept it
         // still holds it when it starts again.
         if let (Some(record), Some(route)) = (record, self.native_routes.entries.get(&ws)) {
-            self.sealed_records.hold(ws, route.connect.room(), record);
+            self.sealed_records
+                .hold(ws, route.connect.workspace(), record);
         }
         if let Some(session) = native_session(&self.host_sessions, ws)
             && let Err(error) = session.commit(op, &payload)
@@ -276,7 +277,7 @@ impl ActorState {
         }
         if let Some(route) = self.native_routes.entries.get(&ws) {
             self.sealed_records
-                .kept(ws, route.connect.room(), op, empty);
+                .kept(ws, route.connect.workspace(), op, empty);
         }
         self.tell_unsynced(ws);
     }
@@ -315,7 +316,7 @@ impl ActorState {
             route
                 .connect
                 .owner()
-                .unadmitted_writes(route.connect.room())
+                .unadmitted_writes(route.connect.workspace())
                 .unwrap_or(0)
         };
         if crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed))
@@ -334,7 +335,7 @@ impl ActorState {
         self.tell_unsynced(ws);
     }
     pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
-        let ws = crate::room_topic_id(connect.room());
+        let ws = crate::room_topic_id(connect.workspace());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
@@ -360,7 +361,7 @@ impl ActorState {
         match self
             .held_log
             .as_ref()
-            .map(|log| log.read(connect.room()))
+            .map(|log| log.read(connect.workspace()))
             .transpose()
         {
             Ok(Some(held)) if !held.is_empty() => {

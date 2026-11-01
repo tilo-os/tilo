@@ -199,7 +199,7 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
     let governor = owner
         .with_current(room, |view| {
             assert_ne!(view.device(), &viewer);
-            assert_ne!(view.room_host(), &viewer);
+            assert_ne!(view.workspace_host(), &viewer);
             assert_ne!(view.owner(), viewer.user_public_key);
             assert!(view.peer().certificates().contains(&viewer));
             assert!(
@@ -211,10 +211,10 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
             assert!(
                 view.peer()
                     .workspace()
-                    .check_workspace_administration(view.room_host().device_public_key, now)
+                    .check_workspace_administration(view.workspace_host().device_public_key, now)
                     .is_ok()
             );
-            Ok(view.room_host().clone())
+            Ok(view.workspace_host().clone())
         })
         .unwrap();
     assert!(matches!(
@@ -265,7 +265,7 @@ fn admit_viewer(
     use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse};
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let certificate = owner
-        .with_current(room, |view| Ok(view.room_host().clone()))
+        .with_current(room, |view| Ok(view.workspace_host().clone()))
         .unwrap();
     let mut governor = tilo_peer_state::owner::testing::governor::TestGovernor::empty_interactive(
         certificate,

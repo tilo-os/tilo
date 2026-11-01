@@ -219,7 +219,7 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or(ActionHostError::NotPermitted)?;
-        if tilo_peer_state::room::proven_saver(
+        if tilo_peer_state::workspace::proven_saver(
             workspace,
             &shortcut,
             &revocations,
@@ -448,7 +448,7 @@ impl AppBrokerState {
         let admission = if let Some(admission) = admission {
             admission
         } else {
-            if caller.room() != Some(workspace) {
+            if caller.workspace_id() != Some(workspace) {
                 return Err(ActionHostError::NotPermitted);
             }
             request = InvokeRequest {

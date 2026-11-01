@@ -80,7 +80,7 @@ impl NativeTaskActionRequirement {
         now: std::time::SystemTime,
     ) -> Result<(), String> {
         let doc = peer
-            .admitted_room()
+            .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
         let policy = tilo_desktop_model::projection::room_policy_of(doc, workspace);
         self.check_tracker_policy(&policy, workspace, run, now)

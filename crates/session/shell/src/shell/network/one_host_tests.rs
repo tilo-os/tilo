@@ -1058,8 +1058,8 @@ impl Device {
                 .with_current(room, |view| {
                     Ok(format!(
                         "{:?} {:?}",
-                        view.room_host().device_label,
-                        view.room_host().capabilities
+                        view.workspace_host().device_label,
+                        view.workspace_host().capabilities
                     ))
                 })
                 .ok()
@@ -1481,7 +1481,7 @@ impl Device {
 
     /// The rooms this device's own host serves; empty while it runs none.
     pub(crate) fn hosted_rooms(&self) -> Vec<RoomId> {
-        let Some(host) = self.net.as_ref().and_then(|net| net.room_host()) else {
+        let Some(host) = self.net.as_ref().and_then(|net| net.workspace_host()) else {
             return Vec::new();
         };
         let runtime = self.net().runtime_handle().unwrap();
@@ -1494,7 +1494,10 @@ impl Device {
 
     /// Where this device's own host keeps what it retains of its rooms.
     pub(crate) fn host_state_root(&self) -> PathBuf {
-        assert!(self.net().room_host().is_some(), "the device runs its host");
+        assert!(
+            self.net().workspace_host().is_some(),
+            "the device runs its host"
+        );
         super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
@@ -1576,7 +1579,7 @@ impl Device {
             .iter()
             .filter(|document| document.cluster_id == room_id && document.record_id == NOTE_RECORD)
             .count();
-        let retained = net.room_host().map_or_else(
+        let retained = net.workspace_host().map_or_else(
             || "no host".to_owned(),
             |host| {
                 let workspace = tilo_relay::room_workspace_id(&room_id).unwrap();

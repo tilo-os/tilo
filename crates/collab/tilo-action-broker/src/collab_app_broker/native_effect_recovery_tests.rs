@@ -18,11 +18,11 @@ struct NativeEffects {
 impl OwnerCommitService for NativeEffects {
     fn health(&self) -> Result<(), String> {
         let workspace =
-            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
         self.owner.with_current(workspace, |_| Ok(()))
     }
-    fn requires_room(&self, workspace: &str) -> bool {
-        workspace == tilo_peer_state::owner::testing::ROOM
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        workspace == tilo_peer_state::owner::testing::WORKSPACE
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
@@ -83,7 +83,7 @@ fn fixture() -> Fixture {
     );
     tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
         .unwrap();
-    let workspace_id = tilo_peer_state::owner::testing::ROOM;
+    let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
     let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(1),
         uuid::Uuid::parse_str(workspace_id).unwrap().into(),
@@ -239,7 +239,7 @@ async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
     f.owner
         .with_current(workspace, |view| {
             let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                view.peer().admitted_room().unwrap(),
+                view.peer().admitted_workspace().unwrap(),
             );
             assert_eq!(effects.len(), 1);
             assert_eq!(effects[0].completed_at, 100);

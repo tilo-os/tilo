@@ -2,7 +2,7 @@
 //! node of it. A share is grants they give: this device writes them into its
 //! replica of the room, signed with its own key, and publishes them as any
 //! room change; every receiver admits them as their sharer's
-//! ([`tilo_peer_state::room::share`]). What they may do at a node is the
+//! ([`tilo_peer_state::workspace::share`]). What they may do at a node is the
 //! room's policy, read here.
 use std::sync::Arc;
 
@@ -20,7 +20,10 @@ fn share_count(
     share: &str,
 ) -> Result<usize, String> {
     owner.with_current(room, |view| {
-        let room_doc = view.peer().admitted_room().ok_or("the room is absent")?;
+        let room_doc = view
+            .peer()
+            .admitted_workspace()
+            .ok_or("the room is absent")?;
         Ok(
             tilo_desktop_model::projection::room_policy_of(room_doc, &room.to_string())
                 .grants

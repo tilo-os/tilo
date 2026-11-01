@@ -246,8 +246,12 @@ fn seeded_owner(
     .unwrap();
     peer.install_seed(
         tilo_peer_state::SeedState {
-            room_changes: tilo_peer_state::seed_room(room, cert, std::slice::from_ref(cert))
-                .unwrap(),
+            workspace_changes: tilo_peer_state::seed_workspace(
+                room,
+                cert,
+                std::slice::from_ref(cert),
+            )
+            .unwrap(),
             documents,
         },
         key,

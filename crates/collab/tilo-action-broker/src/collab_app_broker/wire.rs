@@ -420,7 +420,7 @@ impl JoinedChannel {
             state
                 .commit_owner_request(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: route.cluster_id.clone(),
+                        workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
@@ -691,7 +691,7 @@ impl JoinedChannel {
                 state
                     .commit_owner_request(
                         tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            room: surface.route.cluster_id,
+                            workspace: surface.route.cluster_id,
                             operation:
                                 tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                                     invocation: update.invocation().0,

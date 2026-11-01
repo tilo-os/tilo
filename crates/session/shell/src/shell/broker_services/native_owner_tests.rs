@@ -71,12 +71,12 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             tree.sealed_rooms.remove(&room);
             tree.committed_record_rooms.insert(room);
         }
-        assert!(OwnerCommitService::requires_room(
+        assert!(OwnerCommitService::requires_workspace(
             &service,
             &room.to_string()
         ));
         let request = OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::Document {
                 app: app_id,
                 record: record_id,
@@ -89,10 +89,10 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         // owner commits, and a commit into it anyway is refused without
         // touching the state file.
         let unheld = uuid::Uuid::new_v4().to_string();
-        assert!(!OwnerCommitService::requires_room(&service, &unheld));
+        assert!(!OwnerCommitService::requires_workspace(&service, &unheld));
         let refused = service
             .commit(OwnerCommitRequest {
-                room: unheld,
+                workspace: unheld,
                 ..request.clone()
             })
             .await;

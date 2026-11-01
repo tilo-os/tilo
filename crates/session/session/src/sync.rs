@@ -1976,7 +1976,7 @@ async fn admit(
     identity: &HostIdentity,
     link: Option<&ChannelLink>,
 ) {
-    let Some(room) = inputs.first().map(native_ingress::Input::room) else {
+    let Some(room) = inputs.first().map(native_ingress::Input::workspace) else {
         return;
     };
     let identity = identity.clone();

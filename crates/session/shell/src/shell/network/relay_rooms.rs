@@ -145,13 +145,13 @@ pub(super) fn hosting_governor(
 ) -> Result<Option<iroh::EndpointId>, String> {
     let (hint, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
         .map_err(|error| error.to_string())?;
-    if hint.room != room.to_string() || &hint.host_device_certificate != view.room_host() {
+    if hint.room != room.to_string() || &hint.host_device_certificate != view.workspace_host() {
         return Err("the room's host differs from its current admitted governor".into());
     }
-    if &hint.host_device_certificate != view.room_host() {
+    if &hint.host_device_certificate != view.workspace_host() {
         return Ok(None);
     }
-    iroh::EndpointId::from_bytes(&view.room_host().device_public_key)
+    iroh::EndpointId::from_bytes(&view.workspace_host().device_public_key)
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -299,7 +299,7 @@ impl ShellNetwork {
         let identity = self.host_identity.as_ref()?;
         owner
             .with_current(room, |view| {
-                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                let (certificate, _) = identity.current_native_material(view.workspace_id())?;
                 if view.owner() != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
@@ -406,7 +406,7 @@ impl ShellNetwork {
             .as_ref()
             .ok_or("native identity unavailable")?;
         owner.with_current(room, |view| {
-            let (certificate, _) = identity.current_native_material(view.workspace())?;
+            let (certificate, _) = identity.current_native_material(view.workspace_id())?;
             if view.device() != &certificate {
                 return Err("the caller differs from admitted native custody".into());
             }
@@ -435,7 +435,7 @@ impl ShellNetwork {
                     .host_identity
                     .as_ref()
                     .ok_or("native identity unavailable")?;
-                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                let (certificate, _) = identity.current_native_material(view.workspace_id())?;
                 if view.device() != &certificate || caller != &certificate {
                     return Err("host operation caller differs from admitted native custody".into());
                 }
@@ -745,7 +745,7 @@ impl ShellNetwork {
             return crate::shell::personal_workspaces::HeldRooms::new();
         };
         owner
-            .rooms()
+            .workspaces()
             .into_iter()
             .filter_map(|room| {
                 let host = owner

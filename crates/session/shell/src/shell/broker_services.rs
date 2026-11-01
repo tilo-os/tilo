@@ -118,7 +118,7 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
-    fn requires_room(&self, room: &str) -> bool {
+    fn requires_workspace(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
@@ -173,8 +173,8 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
 }
 
 impl NativeOwnerCommitService {
-    /// The rooms' status, as this service's tree and network tell it.
-    fn rooms(&self) -> RoomStatusSource {
+    /// The workspaces' status, as this service's tree and network tell it.
+    fn workspaces(&self) -> RoomStatusSource {
         RoomStatusSource::new(self.tree.clone(), self.network.clone())
     }
 }
@@ -206,7 +206,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
         let now = std::time::SystemTime::now();
         owner.with_current(room_id, |view| {
-            if !view.hosted_here() || view.room_host() != &governor {
+            if !view.hosted_here() || view.workspace_host() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
             view.peer().workspace().check_checkpoint_writer(&key, now)?;
@@ -249,7 +249,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
                 .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
             owner.with_current(room, |view| {
-                if view.room_host() != &governor {
+                if view.workspace_host() != &governor {
                     return Err("checkpoint governor custody changed".into());
                 }
                 Ok(())
@@ -266,7 +266,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     fn workspace_status(&self, room: &str) -> runtime_collab::RoomStatus {
         super::state::RoomId::parse(room).map_or_else(runtime_collab::RoomStatus::default, |room| {
-            self.rooms().status(room)
+            self.workspaces().status(room)
         })
     }
 
@@ -276,12 +276,12 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         seen: runtime_collab::RoomStatus,
     ) -> tilo_action_broker::services::WorkspaceStatusFuture {
         match super::state::RoomId::parse(room) {
-            Some(room) => Box::pin(self.rooms().change(room, seen)),
+            Some(room) => Box::pin(self.workspaces().change(room, seen)),
             None => Box::pin(std::future::ready(runtime_collab::RoomStatus::default())),
         }
     }
     fn requires_workspace(&self, workspace: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, workspace)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_workspace(self, workspace)
     }
 
     /// The one app-access decision every opening of an app takes
@@ -439,7 +439,7 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             .unwrap_or_default()
     }
     fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
-        super::state::RoomId::parse(room).and_then(|room| self.0.read().room_revocations(room))
+        super::state::RoomId::parse(room).and_then(|room| self.0.read().workspace_revocations(room))
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -583,7 +583,7 @@ impl tilo_action_broker::services::ContentSink for SessionContentSink {
     }
 }
 
-/// Decide every change this session's rooms receive by its claim against
+/// Decide every change this session's workspaces receive by its claim against
 /// the app surface its op names: the one the installed app ships, or one
 /// read from the session's content store in the record's room and app; name,
 /// in the changes the session signs for an app it hosts, the surface that
@@ -767,7 +767,7 @@ impl NativeLauncher {
     /// `workspace`, decided now against the desk as it stands.
     fn place(&self, app: &str, workspace: &tilo_desktop_model::Workspace, place: &LaunchPlace) {
         let Some(tree) = &self.0 else { return };
-        let placement = super::placement::placement_at(&tree.read(), workspace.room(), place);
+        let placement = super::placement::placement_at(&tree.read(), workspace.workspace_id(), place);
         if let Some(placement) = placement {
             super::launcher::set_pending_placement(app, placement);
         }
@@ -784,7 +784,7 @@ impl NativeLauncher {
         place: &LaunchPlace,
     ) {
         let Some(tree) = &self.0 else { return };
-        let Some(placement) = super::placement::placement_at(&tree.read(), workspace.room(), place)
+        let Some(placement) = super::placement::placement_at(&tree.read(), workspace.workspace_id(), place)
         else {
             return;
         };
@@ -876,7 +876,7 @@ fn launch_host_application(
     if !content.hash.is_empty() {
         return Err("opening launch content in a host application is unsupported".into());
     }
-    super::host_apps::launch(desktop_id, Some(workspace.room().to_string()))
+    super::host_apps::launch(desktop_id, Some(workspace.workspace_id().to_string()))
         .map(drop)
         .map_err(|e| e.to_string())
 }
@@ -968,7 +968,7 @@ impl LauncherServices for NativeLauncher {
                     .ok_or_else(|| format!("{record} is not a record of {app}"))?;
                 super::launcher::launch_uri_in_room(
                     app,
-                    workspace.room(),
+                    workspace.workspace_id(),
                     workspace.launch_grants(tilo_clock::unix_now()),
                     &record.uri(),
                 )
@@ -996,7 +996,7 @@ impl LauncherServices for NativeLauncher {
                 return Err("a host application cannot name a Tilo package root".into());
             }
             return super::launch_readiness::observe(|| {
-                super::host_apps::launch(desktop_id, Some(workspace.room().to_string()))
+                super::host_apps::launch(desktop_id, Some(workspace.workspace_id().to_string()))
                     .map(drop)
                     .map_err(|error| error.to_string())
             });
@@ -1063,7 +1063,7 @@ impl LauncherServices for NativeLauncher {
             super::launcher::queue_observed_native_launch(
                 selected,
                 tree.clone(),
-                workspace.room(),
+                workspace.workspace_id(),
                 original,
             )
             .map_err(|error| error.to_string())
@@ -1146,7 +1146,7 @@ impl LauncherServices for NativeLauncher {
     fn close(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
         super::app_close::request(super::app_close::AppCloseRequest {
             app_id: app.to_string(),
-            room: workspace.room(),
+            room: workspace.workspace_id(),
         })
     }
 }
@@ -1272,7 +1272,7 @@ impl NativeShortcutLibrary {
                 {
                     return Err("a shortcut is saved from its saver's own device".into());
                 }
-                tilo_peer_state::room::sign_saved_shortcut(
+                tilo_peer_state::workspace::sign_saved_shortcut(
                     &room.to_string(),
                     &mut shortcut,
                     &device,
@@ -1337,7 +1337,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room() == room)
+                .find(|workspace| workspace.workspace_id() == room)
                 .map(|workspace| workspace.id)
             {
                 let _ = tree.append_workspace_effect_receipt(
@@ -1420,7 +1420,7 @@ impl NativeWorkspaceGovernance {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|workspace| workspace.workspace_id().to_string() == room)
             .map(crate::shell::state::Workspace::room)?;
         self.1.as_ref().map(|network| (network, room))
     }
@@ -1438,11 +1438,11 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     ) -> Vec<tilo_actions::ActionDescriptor> {
         // Describe from the shell's own authority, not the broker's snapshot.
         let tree = self.0.read();
-        let room = workspace.room();
+        let room = workspace.workspace_id();
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room() == room)
+            .find(|workspace| workspace.workspace_id() == room)
             .map(|workspace| {
                 tilo_actions::door::survey(&[
                     tilo_desktop::workspace_settings::governance_resource_with_access(
@@ -1466,7 +1466,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room().to_string() == request.workspace)
+            .position(|workspace| workspace.workspace_id().to_string() == request.workspace)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let workspace = tree
             .desktop
@@ -1494,7 +1494,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         if !workspace.may_govern_at(&person, operation.action_id(), tilo_clock::unix_now()) {
             return Err("the caller is not allowed to govern this workspace".into());
         }
-        if let Some((network, room)) = governor.filter(|(_, room)| *room == workspace.room()) {
+        if let Some((network, room)) = governor.filter(|(_, room)| *room == workspace.workspace_id()) {
             drop(tree);
             return write_governance_here(network, room, operation);
         }
@@ -1587,7 +1587,7 @@ fn decode_governance_operation(
 /// given for waits until then ([`super::network::ShellNetwork::put_grant_in_force`]).
 pub struct NativeAppActionGrants {
     tree: WorkspaceTreeHandle,
-    /// The way to the rooms' hosts; without one nothing is granted.
+    /// The way to the workspaces' hosts; without one nothing is granted.
     network: Option<Arc<super::network::ShellNetwork>>,
 }
 
@@ -1645,7 +1645,7 @@ impl NativeAppActionGrants {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room() == room)
+            .find(|workspace| workspace.workspace_id() == room)
             .cloned()
             .ok_or("the workspace is not on this device")?;
         drop(tree);
@@ -1666,7 +1666,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|workspace| workspace.workspace_id().to_string() == room)
             .is_some_and(|workspace| {
                 workspace.may_govern_at(
                     person,
@@ -1715,7 +1715,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|workspace| workspace.workspace_id().to_string() == room)
         else {
             return;
         };
@@ -2579,7 +2579,7 @@ mod tests {
         let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
         let certificate =
             tilo_peer_state::owner::testing::certificate(&root, &device, "clock test");
-        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::ROOM).unwrap();
+        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
         assert_eq!(
             authority
                 .authorize_with_policy_time(room_id, &certificate, &foreign_time)

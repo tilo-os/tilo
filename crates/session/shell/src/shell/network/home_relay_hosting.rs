@@ -28,7 +28,7 @@ impl ShellNetwork {
                 .map(|workspace| (workspace.room(), workspace.name.clone()))
                 .collect()
         };
-        let Some(host) = self.room_host() else {
+        let Some(host) = self.workspace_host() else {
             return Ok(HomeRelayHosting::default());
         };
         let mut relay = None;

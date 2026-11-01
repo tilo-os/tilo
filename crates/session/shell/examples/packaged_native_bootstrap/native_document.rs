@@ -15,7 +15,7 @@ impl Store for ReadOnlyStore {
         false
     }
 
-    fn slot_room(&self, _slot: WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: WorkspaceId) -> Option<RoomId> {
         None
     }
 
@@ -297,8 +297,8 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
     }
     let generation = owner.with_outgoing(room, now, |view, outgoing| {
         if enrollment {
-            if view.peer().room() != room_text
-                || view.peer().admitted_room().is_none()
+            if view.peer().workspace_id() != room_text
+                || view.peer().admitted_workspace().is_none()
                 || !view.hosted_here()
             {
                 return Err("exact current-device native owner is not admitted".into());

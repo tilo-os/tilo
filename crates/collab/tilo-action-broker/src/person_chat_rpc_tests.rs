@@ -75,7 +75,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();
             {
@@ -188,7 +188,7 @@ fn enroll_contact(
     );
     let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.workspace_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -223,7 +223,7 @@ fn enroll_contact(
             .receive(
                 workspace,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.room_host().device_public_key,
+                    governor.workspace_host().device_public_key,
                 ),
                 message,
                 now,
@@ -236,7 +236,7 @@ fn enroll_contact(
             .direct_contacts(
                 workspace,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.room_host().clone(),
+                    caller: governor.workspace_host().clone(),
                 },
                 now,
             )
@@ -289,7 +289,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             )
             .unwrap();
             let workspace_id =
-                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
             let peer = enroll_contact(&owner, &mut governor, workspace_id);
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();

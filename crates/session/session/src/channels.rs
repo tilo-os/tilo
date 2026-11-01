@@ -350,7 +350,7 @@ impl ChannelDirectory for Directory {
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
         self.engine
             .owner()
-            .with_current(room, |view| Ok(view.room_host().device_public_key))
+            .with_current(room, |view| Ok(view.workspace_host().device_public_key))
             .ok()
             .map(Ed25519PublicKey::from_bytes)
     }
@@ -402,12 +402,12 @@ impl ChannelDirectory for Directory {
             .engine
             .owner()
             .with_current(room, |view| {
-                let document = view.peer().admitted_room().ok_or("no admitted room")?;
-                let governance = tilo_peer_state::room::governance_of(Some(document));
+                let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
+                let governance = tilo_peer_state::workspace::governance_of(Some(document));
                 let certificates = governance
                     .identities
                     .values()
-                    .filter_map(|bytes| tilo_peer_state::room::identity_row(bytes).ok())
+                    .filter_map(|bytes| tilo_peer_state::workspace::identity_row(bytes).ok())
                     .filter_map(|row| row.device_cert.expires_at_ns)
                     .map(second);
                 let capabilities = governance
@@ -548,13 +548,13 @@ pub(crate) fn roster_of(engine: &Engine, room: RoomId) -> Result<Roster, String>
             .member_devices
             .into_iter()
             .collect();
-        let document = view.peer().admitted_room().ok_or("no admitted room")?;
+        let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
         let mut roster = BTreeMap::new();
-        for bytes in tilo_peer_state::room::governance_of(Some(document))
+        for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
             .values()
         {
-            let Ok(row) = tilo_peer_state::room::identity_row(bytes) else {
+            let Ok(row) = tilo_peer_state::workspace::identity_row(bytes) else {
                 continue;
             };
             let device = row.device_cert.device_public_key;

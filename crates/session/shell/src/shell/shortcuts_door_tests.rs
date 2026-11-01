@@ -994,7 +994,7 @@ fn assert_held_as_saved_by_the_owner(door: &Door, shortcut: Shortcut) {
     );
     assert_eq!(held.len(), 1, "the workspace holds the saved shortcut");
     assert_eq!(
-        tilo_peer_state::room::proven_saver(
+        tilo_peer_state::workspace::proven_saver(
             &door.room.to_string(),
             &held[0],
             &tilo_user_identity::RevocationList::new(),

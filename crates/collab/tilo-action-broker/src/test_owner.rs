@@ -135,7 +135,7 @@ impl SessionOwner {
         });
         peer.install_seed(
             SeedState {
-                room_changes: tilo_peer_state::seed_room(
+                workspace_changes: tilo_peer_state::seed_workspace(
                     &workspace,
                     &authority,
                     std::slice::from_ref(&authority),
@@ -238,7 +238,7 @@ impl SessionOwner {
     }
     pub fn status(&self) -> Status {
         Status {
-            workspace: self.peer.room().into(),
+            workspace: self.peer.workspace_id().into(),
             generation: self.generation,
             aggregate: *blake3::hash(&self.peer.durable().unwrap()).as_bytes(),
         }
@@ -265,7 +265,7 @@ impl SessionOwner {
             person: self.person.to_bytes(),
             key: self.key.to_bytes(),
             authority: self.device(),
-            workspace: peer.room().into(),
+            workspace: peer.workspace_id().into(),
             peer: peer.durable()?,
             generation,
         })
@@ -282,7 +282,7 @@ impl SessionOwner {
 
     fn apply(&mut self, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
-        if request.room != self.peer.room() {
+        if request.room != self.peer.workspace_id() {
             return Err("owner namespace unavailable".into());
         }
         let now = SystemTime::now();
@@ -309,7 +309,7 @@ impl SessionOwner {
                     return Err("effect receipt invocation mismatch".into());
                 }
                 let mut doc = candidate
-                    .admitted_room()
+                    .admitted_workspace()
                     .ok_or("owner governance missing")?
                     .clone();
                 doc.set_actor(automerge::ActorId::from(
