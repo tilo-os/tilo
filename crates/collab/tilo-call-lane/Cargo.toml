@@ -1,0 +1,32 @@
+[package]
+name = "tilo-call-lane"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "A call's media frames: what one device's stream is, how its frames are sealed under the channel's content keys, and which devices may send them."
+
+[lib]
+name = "tilo_call_lane"
+path = "src/lib.rs"
+
+# The seal, and nothing of the carrier: the peers a lane reaches, the endpoint
+# it runs on and the jitter buffer are the session's, not this crate's.
+[dependencies]
+# The channel's per-epoch content keys, and the per-stream keys derived from
+# them; key material never leaves that crate.
+channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+# The counter-nonce AEAD the frames are sealed with.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+thiserror.workspace = true
+
+[dev-dependencies]
+# The tests build real MLS groups, as a channel's members do.
+collab-types = { version = "0.1.0", path = "../collab-types" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

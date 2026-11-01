@@ -204,6 +204,7 @@ members = [
     "crates/collab/feedback",
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
+    "crates/collab/tilo-call-lane",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-lan-discovery",
     "crates/collab/tilo-store-link",

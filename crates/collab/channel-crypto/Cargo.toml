@@ -47,6 +47,8 @@ openmls_traits = "0.6"
 # the wire as TLS-serialised opaque blobs.
 
 thiserror.workspace = true
+# Per-stream media keys are a keyed hash of the epoch's content key.
+blake3.workspace = true
 serde.workspace = true
 postcard.workspace = true
 zeroize.workspace = true
