@@ -4,7 +4,8 @@
 # Built in two checks of their own: `wasm` compiles the modules, keyed by what that compile reads
 # and not by commit, so a change to the pages alone takes the last one; `bundle` assembles the
 # pages around them for this commit (the bundle records it). The image contexts take the bundle
-# as an output instead of each compiling every app to wasm again.
+# as an output instead of each compiling every app to wasm again, and it builds beside the
+# relay's native binaries rather than after them.
 # usage: web-desktop-bundle.sh wasm OUT | web-desktop-bundle.sh bundle OUT WASM_DIR
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

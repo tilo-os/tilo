@@ -149,8 +149,8 @@ def main():
                                     verb=verb, id=identifier)
                     grants.append(identifier)
                 frame = journey.launch()
-                room = journey.workspace()['room']
-                private = profile / 'data/tilo-rooms' / room / package
+                workspace = journey.workspace()['room']
+                private = profile / 'data/tilo-rooms' / workspace / package
                 def notification():
                     return next((n for n in journey.state()['chrome']['notifications']
                         if n['title'] == 'Android integration fixture'
@@ -204,7 +204,7 @@ def main():
                     'execution': 'headless production Tilo, actual ART, ' + args.architecture + ' software graphics',
                     'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
-                    'room': room, 'presented_frame': frame, 'notification': delivered,
+                    'workspace': workspace, 'presented_frame': frame, 'notification': delivered,
                     'fixture_document_read': True, 'fixture_document_write': True,
                     'read_only_write_denied': True, 'ungranted_sibling_denied': True,
                     'notification_delivery': True, 'notification_withdrawal': True,

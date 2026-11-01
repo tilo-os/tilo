@@ -533,6 +533,7 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     for kpi, unit in present.items():
         if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
             raise ValueError(f"{kpi}: expected samples in {unit}")
+    # The bench still spells the workspace fields of its report `rooms`.
     meta = {**env.get("meta", {}), "collaborators": str(collaborators), "rooms": str(report["rooms"]),
             "room_size": str(report["room_size"]), "window_s": str(report["window_s"]),
             "edits": str(report["edits"]), "presence": str(report["presence"]),
