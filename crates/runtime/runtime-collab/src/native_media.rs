@@ -444,12 +444,12 @@ pub struct Guest {
     pub id: String,
     /// Their name on that service: trimmed, 1..=80 characters.
     pub name: String,
-    /// BLAKE3 hex of their picture in the room's content store.
+    /// BLAKE3 hex of their picture in the workspace's content store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
     /// The service, lowercase: `discord`.
     pub service: String,
-    /// The room member the account is linked to (a person id): shown as
+    /// The workspace member the account is linked to (a person id): shown as
     /// that member, reached through `service`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<String>,

@@ -79,12 +79,12 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     RecordsArrived {
         records: Vec<String>,
     },
-    /// The room's hosts sent everything they hold of the on-demand record
-    /// on `route` (`neighbour_wire::record_sync`) this endpoint read, and it
-    /// was not among it, or no host of the room is connected: what reads it
-    /// shows it unavailable until it arrives, which its committed read
-    /// delivers as ever. Session-local; minted by the SDK endpoint from its
-    /// committed read.
+    /// The workspace's hosts sent everything they hold of the on-demand
+    /// record on `route` (`neighbour_wire::record_sync`) this endpoint read,
+    /// and it was not among it, or no host of the workspace is connected:
+    /// what reads it shows it unavailable until it arrives, which its
+    /// committed read delivers as ever. Session-local; minted by the SDK
+    /// endpoint from its committed read.
     RecordUnavailable {
         route: RouteSpec,
     },

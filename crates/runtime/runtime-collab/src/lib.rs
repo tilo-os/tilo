@@ -196,7 +196,7 @@ pub const TASK_AGENT_JOIN_PREFIX: &[u8] = b"tilo-collab-task-agent-join-v1\0";
 /// A task agent's join: the asking device's certificate (JSON, as in
 /// [`CertifiedJoinIdentity`]), the task delegation that device signed
 /// (`tilo_workspace_join::task_delegation::TaskDelegation::encode`), and the
-/// task key's signature over the room's join bytes, which proves the agent
+/// task key's signature over the workspace's join bytes, which proves the agent
 /// holds the key the delegation names.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,7 +289,7 @@ impl TaskAgentCredentials {
     }
 
     /// The presentation the agent joins with, given the task key's
-    /// signature `proof` over the room's join bytes.
+    /// signature `proof` over the workspace's join bytes.
     ///
     /// # Errors
     /// Postcard's serialization error.
@@ -1036,7 +1036,7 @@ pub struct ChannelContext {
     /// instance; the bytes are `ui::collaboration::handoff` JSON. Not a
     /// roster update either.
     pub handoff: Option<Vec<u8>>,
-    /// `Some` only on a session-local frame naming the room's verified
+    /// `Some` only on a session-local frame naming the workspace's verified
     /// delegated agents (possibly none). Not a roster update either.
     pub history_agents: Option<Vec<HistoryAgent>>,
     /// On a session-local frame: records of this application's trees a peer
@@ -1045,7 +1045,7 @@ pub struct ChannelContext {
     pub records_arrived: Vec<String>,
 }
 
-/// One delegated agent the session verified for a room: its person's root
+/// One delegated agent the session verified for a workspace: its person's root
 /// signed the delegation for exactly this device. Presentation only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryAgent {
@@ -1053,7 +1053,7 @@ pub struct HistoryAgent {
     pub device: [u8; 32],
     /// The root key of the person it acts for.
     pub person: [u8; 32],
-    /// That person's name as the room's governance records it.
+    /// That person's name as the workspace's governance records it.
     pub person_name: String,
     /// The delegation's stable agent id.
     pub agent_id: String,
