@@ -265,21 +265,6 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
 
 // ----- What a person sees: the presets, and when the chrome shows ---------------------------
 
-/// The `Desk` record the shell's root view reads: the package's unnamed root.
-fn desk(r: &Replica) -> Value {
-    let root = r
-        .host
-        .root_of_layer(
-            APP,
-            &tilolang_tilo::host::RootView {
-                root: Some("Desk".to_owned()),
-                view: None,
-            },
-        )
-        .expect("the desk's root is made");
-    Value::resource(&root)
-}
-
 /// The person's shell record: the package's named root, `root shell: Shell`.
 fn shell_ref(r: &Replica) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -390,7 +375,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         says(&desk_view(&r), "Notifications"),
         "the bar is back at rest"
     );
-    assert!(runs.len() >= 1, "the dock and the bar are runs");
+    assert!(!runs.is_empty(), "the dock and the bar are runs");
 }
 
 #[test]
@@ -497,7 +482,7 @@ fn scenario(r: &Replica, app: &str, name: &str) -> Value {
         .unwrap_or_else(|| panic!("{app} has no scenario {name:?}"))
         .action
         .clone();
-    let value = match r
+    match r
         .host
         .runtime()
         .invoke_action(&Principal::new("ada"), (action.as_str(), vec![]))
@@ -505,8 +490,7 @@ fn scenario(r: &Replica, app: &str, name: &str) -> Value {
     {
         InvokeOutcome::Done(value) => value,
         other => panic!("{name}: {other:?}"),
-    };
-    value
+    }
 }
 
 #[test]
