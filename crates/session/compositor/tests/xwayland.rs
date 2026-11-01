@@ -517,11 +517,17 @@ fn an_x11_window_that_is_renamed_is_known_by_its_new_class() {
     let (mapped, _) = session.compositor.windows().remove(0);
     session.set_class(window, "thunderbird", "Thunderbird");
     session.set_title(window, "Inbox - Thunderbird");
+    // The two properties arrive as two separate changes; the desk names the
+    // window once it has both, so wait for both.
     session.pump(|session| {
         session
             .compositor
-            .x11_identity(mapped.id)
-            .is_some_and(|identity| identity.class.as_deref() == Some("Thunderbird"))
+            .windows()
+            .first()
+            .is_some_and(|(info, _)| {
+                info.app_id.as_deref() == Some("Thunderbird")
+                    && info.title.as_deref() == Some("Inbox - Thunderbird")
+            })
     });
     let identity = session
         .compositor
