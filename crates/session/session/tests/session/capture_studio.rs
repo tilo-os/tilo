@@ -296,12 +296,12 @@ fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
-    let desk = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    let desk = quiet_desk(&mut session, "HEADLESS-1");
 
     ask_studio(&mut session, "open", &serde_json::json!({}));
     pump(&mut session, &mut [], |session, _| {
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        frame.rgba != desk.rgba
+        frame.rgba != desk
     });
     capture(&mut session, "capture-studio");
 }
@@ -367,18 +367,45 @@ fn answered(
     asking.join().unwrap()
 }
 
-/// Step `session` until the studio's bar shows on `display`: the frame
-/// there is no longer the desk it was. That desk, to know the bar is gone.
+/// Frames of the desk's own clock to run past before the desk is read: chrome
+/// the desk shows on activity (its overlay scroll bars) stays fully up for
+/// 0.9 s and fades over another 0.32 s, and `bar_down` runs the clock on past
+/// it, so the desk the bar is compared against has to be the one with that
+/// chrome gone.
+const QUIET_FRAMES: usize = 30;
+
+/// The desk on `display` with nothing of the studio on it and nothing of its
+/// own moving: the frame the bar arriving changes, and the one it must come
+/// back to.
 #[track_caller]
-fn bar_up(session: &mut Session, display: &str) -> Vec<u8> {
-    let desk = session.compositor().screenshot(display).expect("shot").rgba;
+fn quiet_desk(session: &mut Session, display: &str) -> Vec<u8> {
+    // Chrome the desk fades by itself fades on the clock, and the clock here
+    // is the test's: run it past that fade rather than catching the desk
+    // mid-activity, which a loaded machine would have timed differently.
+    let mut at = tilo_clock::now();
+    for _ in 0..QUIET_FRAMES {
+        at += Duration::from_millis(100);
+        tilo_clock::testing::with_monotonic_time(at, || {
+            session.step(Duration::from_millis(2)).expect("step");
+        });
+    }
+    session
+        .compositor()
+        .screenshot(display)
+        .expect("a picture of the desk")
+        .rgba
+}
+
+/// Step `session` until the studio's bar shows on `display`: the frame there
+/// is no longer `desk`.
+#[track_caller]
+fn bar_up(session: &mut Session, display: &str, desk: &[u8]) {
     pump(session, &mut [], |session, _| {
         session
             .compositor()
             .screenshot(display)
             .is_ok_and(|frame| frame.rgba != desk)
     });
-    desk
 }
 
 /// Step `session` until nothing of the studio is drawn on `display` any
@@ -458,8 +485,9 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
         .expect("the compositor shows the window");
     assert!(x >= WIDTH, "the window stands on the second display");
 
+    let desk = quiet_desk(&mut session, "HDMI-A-1");
     let asking = ask_in_background(&capture, CaptureTarget::Area);
-    let desk = bar_up(&mut session, "HDMI-A-1");
+    bar_up(&mut session, "HDMI-A-1", &desk);
     // A press, a drag and its release: the rectangle the person draws, on
     // the display they are working on.
     draw(
@@ -506,8 +534,9 @@ fn a_portal_window_request_is_the_window_the_person_picks() {
     let (_, (x, y, width, height)) = window(session.compositor(), "org.example.Terminal")
         .expect("the compositor shows the window");
 
+    let desk = quiet_desk(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
-    let desk = bar_up(&mut session, "eDP-1");
+    bar_up(&mut session, "eDP-1", &desk);
     // The person picks the window with the pointer and takes it.
     let centre = (
         f64::from(x) + f64::from(width) / 2.0,
@@ -546,8 +575,9 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
     let _client = mapped(&mut session, "org.example.Terminal");
     settle(&mut session, 4);
 
+    let desk = quiet_desk(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Area);
-    let desk = bar_up(&mut session, "eDP-1");
+    bar_up(&mut session, "eDP-1", &desk);
     // The person closes the bar instead of drawing.
     tap(&mut session, super::keys::ESCAPE);
     assert_eq!(
@@ -559,8 +589,9 @@ fn a_selection_the_person_closes_is_cancelled_and_the_next_request_still_works()
     bar_down(&mut session, "eDP-1", &desk);
 
     // The next request is answered as usual.
+    let quiet = quiet_desk(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
-    let _desk = bar_up(&mut session, "eDP-1");
+    bar_up(&mut session, "eDP-1", &quiet);
     tap(&mut session, super::keys::ENTER);
     let next = answered(&mut session, asking).expect("the next request is answered");
     let picture = image::open(&next).expect("a picture").to_rgba8();
@@ -582,14 +613,16 @@ fn a_request_the_app_closes_takes_the_studio_down_and_leaves_nothing_behind() {
     settle(&mut session, 4);
 
     // The app asks, then stops waiting while the person is choosing.
+    let desk = quiet_desk(&mut session, "eDP-1");
     let asking = capture.screenshot(CaptureTarget::Area);
-    let desk = bar_up(&mut session, "eDP-1");
+    bar_up(&mut session, "eDP-1", &desk);
     drop(asking);
     bar_down(&mut session, "eDP-1", &desk);
 
     // The next request has the selector to itself.
+    let quiet = quiet_desk(&mut session, "eDP-1");
     let asking = ask_in_background(&capture, CaptureTarget::Window);
-    let _desk = bar_up(&mut session, "eDP-1");
+    bar_up(&mut session, "eDP-1", &quiet);
     tap(&mut session, super::keys::ENTER);
     assert!(
         answered(&mut session, asking).is_ok(),
