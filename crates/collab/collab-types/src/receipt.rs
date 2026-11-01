@@ -151,7 +151,7 @@ pub fn claim_node(
     }
 }
 
-/// `room › app › kind › record [› item] › field… › field-edit`, as the door
+/// `workspace › app › kind › record [› item] › field… › field-edit`, as the door
 /// decides a field edit: the collection field holding an item is not a node.
 fn edit_node(resource: TreePath, path: &[PathStep]) -> TreePath {
     let mut tree = resource;
@@ -434,7 +434,7 @@ impl std::fmt::Debug for Surfaces {
     }
 }
 
-/// The node of a record, `room › app › record`, as a change is decided
+/// The node of a record, `workspace › app › record`, as a change is decided
 /// without its app's surface.
 #[must_use]
 pub fn record_node(record: &Record<'_>) -> TreePath {

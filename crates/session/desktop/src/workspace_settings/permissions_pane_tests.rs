@@ -938,8 +938,8 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     assert_eq!(
         sentence,
         format!(
-            "room {} › mail › anywhere › send: outside effects ask first. \
-             room {} › mail: everything allowed. room {}: reading and undoable \
+            "workspace {} › mail › anywhere › send: outside effects ask first. \
+             workspace {} › mail: everything allowed. workspace {}: reading and undoable \
              changes allowed.",
             ws.policy.workspace, ws.policy.workspace, ws.policy.workspace
         ),
@@ -954,6 +954,9 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     let single = grant("mail", room.app("mail"), KindSet::READ, Answer::Deny);
     assert_eq!(
         grant_allows(&single, &NoAppDirectory),
-        format!("room {} › mail: reading not allowed.", ws.policy.workspace)
+        format!(
+            "workspace {} › mail: reading not allowed.",
+            ws.policy.workspace
+        )
     );
 }

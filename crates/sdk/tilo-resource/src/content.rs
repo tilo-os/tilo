@@ -247,7 +247,7 @@ mod tests {
     }
 
     /// A byte parameter takes its bytes inline or by a reference to content
-    /// the window's room holds, and refuses any other hash.
+    /// the window's workspace holds, and refuses any other hash.
     #[test]
     fn a_byte_parameter_reads_a_reference_only_from_the_workspaces_store() {
         let window = tilo_wake::WakeScope::new();
@@ -262,10 +262,10 @@ mod tests {
         assert_eq!(inline.bytes, [1, 2, 3]);
         let named =
             decode(serde_json::json!({"bytes": reference, "more": [[4], reference]})).unwrap();
-        assert_eq!(named.bytes, b"a picture the room holds");
+        assert_eq!(named.bytes, b"a picture the workspace holds");
         assert_eq!(
             named.more,
-            [b"\x04".to_vec(), b"a picture the room holds".to_vec()]
+            [b"\x04".to_vec(), b"a picture the workspace holds".to_vec()]
         );
 
         let missing = format!("tilo.content:{elsewhere}");

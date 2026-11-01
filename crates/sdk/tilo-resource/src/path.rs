@@ -1179,7 +1179,7 @@ impl<R> Edit<R> {
     }
 
     /// The node of the published tree this edit acts on, for deciding
-    /// grants: `room › app › kind › record [› item] › field… › field-edit`.
+    /// grants: `workspace › app › kind › record [› item] › field… › field-edit`.
     /// The collection field holding an item is not a node of its own.
     #[must_use]
     pub fn tree_path(&self, room: &str, app: &str, record: &str) -> tilo_action_policy::TreePath

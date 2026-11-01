@@ -183,11 +183,11 @@ pub struct ChannelState {
     pub artifacts: HashMap<ArtifactId, ArtifactKind>,
 
     /// The app that owns each artifact, if known: the artifact's place in
-    /// the room's tree is `room › app › resource`.
+    /// the workspace's tree is `workspace › app › resource`.
     pub artifact_apps: HashMap<ArtifactId, String>,
 
     /// The record each artifact is, if known: the artifact's node is
-    /// `room › app › record`; otherwise the artifact id stands in.
+    /// `workspace › app › record`; otherwise the artifact id stands in.
     pub artifact_records: HashMap<ArtifactId, String>,
 
     /// The record kind each artifact is, if known: which of its app's
@@ -655,13 +655,13 @@ fn verify_attestation_chain(
     Ok(ra)
 }
 
-/// The node of a collaborative record: `room › app › resource`.
+/// The node of a collaborative record: `workspace › app › resource`.
 #[must_use]
 pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
     TreePath::workspace(room).app(app).resource(record)
 }
 
-/// Every record `room › app › resource` one of `grants` names (at the record
+/// Every record `workspace › app › resource` one of `grants` names (at the record
 /// or anywhere below it), as `(app, record)`, in grant order and possibly
 /// repeated.
 ///
