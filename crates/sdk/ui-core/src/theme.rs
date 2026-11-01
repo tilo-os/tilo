@@ -133,6 +133,17 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
         // A floating panel's inner hairline becomes the border.
         tokens.elevation.floating_edge = ink;
     }
+    // The pointer's answer is the document's response role. One that states
+    // none and holds still answers with lifts only: nothing scales and no
+    // edge lights, the same rule reduced motion follows.
+    tokens.response =
+        document
+            .response
+            .unwrap_or(if matches!(document.motion.curve, MotionCurve::None) {
+                crate::tokens::Response::STILL
+            } else {
+                crate::tokens::Response::STOCK
+            });
     tokens.selector = if document.palette.high_contrast {
         crate::tokens::SelectorFinish::OPAQUE
     } else {
@@ -320,6 +331,7 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     || Theme::preset(Preset::GlassLight),
     || Theme::preset(Preset::Block),
     || Theme::preset(Preset::BlockLight),
+    || Theme::preset(Preset::Pixelated),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
@@ -399,13 +411,40 @@ impl Theme {
         }
     }
 
+    /// Why `document` is not a theme this build can show, as the person or
+    /// the theme's author reads it: the schema, an out-of-band role, or a
+    /// surface shader that is not a surface shader. `None` when it is a
+    /// theme.
+    #[must_use]
+    pub fn refusal(document: &ThemeDocument) -> Option<String> {
+        // A surface shader's own compile error first: the structural check
+        // below only knows that one is wrong, not where.
+        let material = &document.material;
+        for (role, finish) in [
+            ("window", Some(&material.window)),
+            ("control", Some(&material.control)),
+            ("floating", Some(&material.floating)),
+            ("bar", material.bar.as_ref()),
+        ] {
+            if let Some(finish) = finish
+                && finish.set() == crate::part_paint::builtin::shader_set()
+                && let Err(reason) = finish.shader().validate()
+            {
+                return Some(format!("material.{role}: {reason}"));
+            }
+        }
+        document.validate().err().map(str::to_owned)
+    }
+
     /// The theme a document describes, or `None` for one this build does not
-    /// admit ([`ThemeDocument::validate`]). Values outside a role's usable
-    /// band are clamped, and a pairing that misses a contrast floor is
-    /// repaired, so every theme that materializes is legible.
+    /// admit ([`Self::refusal`], which names why). Values outside a role's
+    /// usable band are clamped, and a pairing that misses a contrast floor
+    /// is repaired, so every theme that materializes is legible.
     #[must_use]
     pub fn from_document(document: &ThemeDocument) -> Option<Self> {
-        document.validate().ok()?;
+        if Self::refusal(document).is_some() {
+            return None;
+        }
         Some(Self::built(document.clone(), PresenceHue::Blue))
     }
 
@@ -754,7 +793,7 @@ impl Theme {
     ///
     /// Exists so a check can be run against *all* of them rather than against
     /// whichever two someone remembered.
-    pub const ALL: [&'static str; 11] = [
+    pub const ALL: [&'static str; 12] = [
         Preset::Dark.name(),
         Preset::DarkCool.name(),
         Preset::DarkGraphite.name(),
@@ -766,6 +805,7 @@ impl Theme {
         Preset::GlassLight.name(),
         Preset::Block.name(),
         Preset::BlockLight.name(),
+        Preset::Pixelated.name(),
     ];
 
     /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
@@ -1322,6 +1362,93 @@ mod tests {
         doc.density.spacing = spacing;
         doc.type_.face = "Inter".into();
         doc
+    }
+
+    /// The pointer's answer is the document's `response` role: a theme
+    /// that states one is read through it by every shared selection tier,
+    /// and one that states none keeps the stock (or, held still, the still)
+    /// response.
+    #[test]
+    fn a_documents_response_role_is_how_controls_answer_the_pointer() {
+        use crate::chrome::{SelectionState, selection_tier_on};
+        use crate::tokens::{Response, ResponseStep};
+        let mut document = Preset::Dark.document();
+        assert_eq!(
+            Theme::from_document(&document).unwrap().tokens.response,
+            Response::STOCK
+        );
+        let response = Response {
+            hover: ResponseStep {
+                lift: 1.0,
+                tint: 0.2,
+                scale: 1.05,
+                glow: 0.0,
+            },
+            press: ResponseStep {
+                lift: 2.0,
+                tint: 0.0,
+                scale: 0.9,
+                glow: 0.4,
+            },
+        };
+        document.response = Some(response);
+        let theme = Theme::from_document(&document).expect("an admitted response");
+        assert_eq!(theme.tokens.response, response);
+        let ground = theme.tokens.colors.surfaces.content;
+        let pressed = SelectionState {
+            pressed: true,
+            ..SelectionState::default()
+        };
+        let hovered = SelectionState {
+            hover: true,
+            ..SelectionState::default()
+        };
+        assert!((selection_tier_on(&theme, pressed, ground).scale - 0.9).abs() < 1e-6);
+        assert!((selection_tier_on(&theme, hovered, ground).scale - 1.05).abs() < 1e-6);
+        let stock = Theme::dark();
+        assert_ne!(
+            selection_tier_on(&theme, hovered, ground).fill,
+            selection_tier_on(&stock, hovered, ground).fill,
+            "the hover's lift and tint are the theme's"
+        );
+        // Out of band is not a theme, and the reason says which lever.
+        document.response = Some(Response {
+            press: ResponseStep {
+                scale: 0.2,
+                ..response.press
+            },
+            ..response
+        });
+        assert!(Theme::from_document(&document).is_none());
+        assert!(Theme::refusal(&document).unwrap().contains("scale"));
+        // Block holds still: lifts only.
+        let block = Theme::preset(Preset::Block);
+        assert_eq!(block.tokens.response, Response::STILL);
+    }
+
+    /// A theme whose surface shader does not compile is refused with the
+    /// compiler's reason and where it is, so the person importing it can
+    /// fix it; it never applies.
+    #[test]
+    fn a_broken_surface_shader_is_refused_with_its_reason() {
+        let mut document = Preset::Dark.document();
+        let finish = crate::tokens::Finish::named(
+            "shader",
+            std::collections::BTreeMap::<String, f32>::new(),
+        )
+        .expect("the shader set")
+        .with_shader(crate::tokens::SurfaceShader {
+            wgsl: "fn fs_surface( -> vec4<f32> { return fill; }".to_owned(),
+            time: 0.0,
+        });
+        document.material.window = finish;
+        assert!(Theme::from_document(&document).is_none());
+        let reason = Theme::refusal(&document).expect("a reason");
+        assert!(reason.starts_with("material.window: "), "{reason}");
+        assert_ne!(
+            reason, "material.window: surface shader is not a shader a theme may draw",
+            "the reason is the compiler's, not a generic refusal"
+        );
     }
 
     #[test]

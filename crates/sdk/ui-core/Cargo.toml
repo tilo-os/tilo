@@ -264,6 +264,10 @@ taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tilo-rt.workspace = true
 vello.workspace = true
+# A theme's own surface shader (`tokens::shader`) is checked as WGSL when the
+# theme is read: naga is the same front end wgpu runs, re-exported by it, so
+# the check is the compiler's and no second copy of the grammar is linked.
+naga = { version = "29", default-features = false, features = ["wgsl-in"] }
 # `scene_parts` splits and compares encoded scene streams; widget tests also
 # pin paint contracts on draw tags without rendering pixels.
 vello_encoding.workspace = true
@@ -437,6 +441,10 @@ required-features = ["broker-transport"]
 [[example]]
 name = "component-catalogue"
 path = "examples/component_catalogue.rs"
+
+[[example]]
+name = "theme-looks"
+path = "examples/theme_looks.rs"
 
 [[example]]
 name = "action-presence"

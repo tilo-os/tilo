@@ -50,23 +50,40 @@ pub struct Finish {
     /// The parameters the document states, in the order the set declares
     /// them.
     params: Arc<[Param]>,
+    /// The theme's own surface shader, for the `shader` set; empty for
+    /// every set that draws without one.
+    shader: crate::tokens::shader::Source,
 }
 
-/// A finish as a document spells it.
+/// A finish as a document spells it: the set's name, its parameters, and
+/// for the `shader` set the program itself.
 #[derive(Deserialize)]
 struct FinishDocument {
     painter: String,
     #[serde(flatten)]
     params: BTreeMap<String, f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shader: Option<String>,
+    #[serde(default)]
+    time: Option<f32>,
 }
 
 impl Serialize for Finish {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.params.len().saturating_add(1)))?;
+        let extra = usize::from(!self.shader.is_empty());
+        let mut map = serializer.serialize_map(Some(
+            self.params.len().saturating_add(extra).saturating_add(1),
+        ))?;
         map.serialize_entry("painter", self.set.name())?;
         for param in self.params.iter() {
             map.serialize_entry(&param.name, &param.value)?;
+        }
+        if !self.shader.is_empty() {
+            map.serialize_entry("shader", &self.shader.wgsl)?;
+            if self.shader.time != 0.0 {
+                map.serialize_entry("time", &self.shader.time)?;
+            }
         }
         map.end()
     }
@@ -75,7 +92,19 @@ impl Serialize for Finish {
 impl<'de> Deserialize<'de> for Finish {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let document = FinishDocument::deserialize(deserializer)?;
-        Self::named(&document.painter, document.params).map_err(serde::de::Error::custom)
+        let mut finish =
+            Self::named(&document.painter, document.params).map_err(serde::de::Error::custom)?;
+        if let Some(wgsl) = document.shader {
+            finish.shader = crate::tokens::shader::Source {
+                wgsl,
+                time: document.time.unwrap_or(0.0),
+            };
+        } else if document.time.is_some() {
+            return Err(serde::de::Error::custom(
+                "a finish states time for a shader, and it states none",
+            ));
+        }
+        Ok(finish)
     }
 }
 
@@ -86,13 +115,18 @@ impl std::fmt::Debug for Finish {
         for param in self.params.iter() {
             out.field(&param.name, &param.value);
         }
+        if !self.shader.is_empty() {
+            out.field("shader", &self.shader);
+        }
         out.finish()
     }
 }
 
 impl PartialEq for Finish {
     fn eq(&self, other: &Self) -> bool {
-        self.set.name() == other.set.name() && self.params == other.params
+        self.set.name() == other.set.name()
+            && self.params == other.params
+            && self.shader == other.shader
     }
 }
 
@@ -127,6 +161,7 @@ impl Finish {
         Ok(Self {
             set,
             params: ordered.into(),
+            shader: crate::tokens::shader::Source::empty(),
         })
     }
 
@@ -150,7 +185,22 @@ impl Finish {
                     value,
                 })
                 .collect(),
+            shader: crate::tokens::shader::Source::empty(),
         }
+    }
+
+    /// The theme's own surface shader, for the `shader` set; empty
+    /// otherwise.
+    #[must_use]
+    pub fn shader(&self) -> &crate::tokens::shader::Source {
+        &self.shader
+    }
+
+    /// This finish with `source` as its surface shader.
+    #[must_use]
+    pub fn with_shader(mut self, source: crate::tokens::shader::Source) -> Self {
+        self.shader = source;
+        self
     }
 
     /// The design language's opaque surface: the Default set as it is.
@@ -292,7 +342,8 @@ impl Finish {
     }
 
     /// Structural check: every parameter finite and in the band its set
-    /// admits.
+    /// admits, and a shader a theme stated is a surface shader
+    /// ([`crate::tokens::shader::Source::validate`]).
     pub fn validate(&self) -> Result<(), &'static str> {
         let specs = self.set.painter().params();
         for param in self.params.iter() {
@@ -303,6 +354,13 @@ impl Finish {
             if !(param.value.is_finite() && spec.admitted.contains(&param.value)) {
                 return Err("painter parameter outside its band");
             }
+        }
+        if self.set == *builtin::shader_set() {
+            self.shader
+                .validate()
+                .map_err(|_| "surface shader is not a shader a theme may draw")?;
+        } else if !self.shader.is_empty() {
+            return Err("a shader is only a shader-set parameter");
         }
         Ok(())
     }
@@ -331,6 +389,7 @@ impl Finish {
         Self {
             set: self.set.clone(),
             params,
+            shader: self.shader.clone(),
         }
     }
 
@@ -365,6 +424,7 @@ impl Finish {
         Self {
             set: self.set.clone(),
             params,
+            shader: self.shader.clone(),
         }
     }
 }

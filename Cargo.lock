@@ -22149,6 +22149,7 @@ dependencies = [
  "image",
  "jni 0.21.1",
  "libc",
+ "naga",
  "ndk",
  "ndk-context",
  "objc2 0.6.3",
