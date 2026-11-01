@@ -322,9 +322,9 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
-/// The app in `dir` and the packages it uses, found in `search`, built in dependency order; and
-/// the platform's packages (the device's, Settings'), which an app such as the shell uses as
-/// metadata rather than as a package directory.
+/// The app in `dir` compiled after the packages it uses, found in `search`; and the packages
+/// it uses as metadata rather than as a package directory: the native apps' (each a committed
+/// description, `surface.toml`) and the platform's (the device's, Settings').
 fn build(
     dir: &Path,
     search: &[PathBuf],
@@ -335,13 +335,15 @@ fn build(
     ),
     String,
 > {
-    let platform = tilolang_tilo::platform_apps::platform_packages()?;
-    let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
+    let mut provided_metas =
+        tilolang_tilo::catalogue::native_apps(&tilolang::source::search_of(dir, search))?;
+    provided_metas.extend(tilolang_tilo::platform_apps::platform_packages()?);
+    let provided: Vec<String> = provided_metas.iter().map(|meta| meta.app.clone()).collect();
     let dirs = tilolang::source::dependency_order_with(dir, search, &provided)?;
     let built =
-        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+        tilolang::source::compile_dirs(&dirs, &provided_metas, &mut tilolang::OsEntropy::default())
             .map_err(|e| e.to_string())?;
-    Ok((built, platform))
+    Ok((built, provided_metas))
 }
 
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on

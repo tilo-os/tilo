@@ -611,10 +611,13 @@ pub enum Preset {
     /// rounded edge, straight in the middle, with a specular rim
     /// (`themes/liquid-glass.json`).
     LiquidGlass,
+    /// [`Self::LiquidGlass`] on the light ladder, dark ink on clear bright
+    /// glass (`themes/liquid-glass-light.json`).
+    LiquidGlassLight,
 }
 
 /// The shipped themes that are plain documents, by preset.
-const SHIPPED_DOCUMENTS: [(Preset, &str); 6] = [
+const SHIPPED_DOCUMENTS: [(Preset, &str); 7] = [
     (Preset::Glass, include_str!("../themes/glass.json")),
     (
         Preset::GlassLight,
@@ -630,10 +633,14 @@ const SHIPPED_DOCUMENTS: [(Preset, &str); 6] = [
         Preset::LiquidGlass,
         include_str!("../themes/liquid-glass.json"),
     ),
+    (
+        Preset::LiquidGlassLight,
+        include_str!("../themes/liquid-glass-light.json"),
+    ),
 ];
 
 impl Preset {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Dark,
         Self::DarkCool,
         Self::DarkGraphite,
@@ -647,6 +654,7 @@ impl Preset {
         Self::BlockLight,
         Self::Pixelated,
         Self::LiquidGlass,
+        Self::LiquidGlassLight,
     ];
 
     /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
@@ -666,6 +674,7 @@ impl Preset {
             Self::BlockLight => "block-light",
             Self::Pixelated => "pixelated",
             Self::LiquidGlass => "liquid-glass",
+            Self::LiquidGlassLight => "liquid-glass-light",
         }
     }
 
@@ -686,6 +695,7 @@ impl Preset {
             Self::BlockLight => "Block light",
             Self::Pixelated => "Pixelated",
             Self::LiquidGlass => "Liquid Glass",
+            Self::LiquidGlassLight => "Liquid Glass light",
         }
     }
 
@@ -698,7 +708,9 @@ impl Preset {
             Self::DarkCool => Palette::dark_cool(),
             Self::DarkGraphite => Palette::dark_graphite(),
             Self::DarkSoft => Palette::dark_soft(),
-            Self::Light | Self::GlassLight | Self::BlockLight => Palette::light(),
+            Self::Light | Self::GlassLight | Self::BlockLight | Self::LiquidGlassLight => {
+                Palette::light()
+            }
             Self::HighContrast => Palette::high_contrast_dark(),
             Self::HighContrastLight => Palette::high_contrast_light(),
         }
@@ -758,6 +770,7 @@ impl Preset {
             "blocklight" => Self::BlockLight,
             "pixelated" | "pixel" => Self::Pixelated,
             "liquidglass" | "liquid" => Self::LiquidGlass,
+            "liquidglasslight" | "liquidlight" => Self::LiquidGlassLight,
             _ => return None,
         })
     }

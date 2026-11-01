@@ -1,7 +1,7 @@
 /// The overview: what the desk holds, to search and move things in, over the windows it
 /// covers. It reads the desk the session publishes (`session.desk`, and its windows through
-/// `session.window`), never a copy, and every choice it offers is an action the session runs
-/// (`session.run`), so the arrangement stays the session's: each change is attributed and
+/// `session.window`), never a copy, and every choice it offers is an action the session publishes
+/// (`so.tilo.session`), so the arrangement stays the session's: each change is attributed and
 /// undoable.
 ///
 /// The picture is the desk's: each strip top to bottom, the strip's windows left to right in
@@ -19,14 +19,14 @@ view overview(d: Desk) {
             ui.Text(d.workspace, role: .caption, secondary: true)
             spacer
             ui.Button("New workspace", icon: .plus, size: .small) {
-                on press: new_workspace(d)
+                on press: session.new_workspace(room: .none, name: .none)
             }
             ui.Button("Join a workspace", icon: .users, size: .small) {
-                on press: join_workspace(d)
+                on press: session.join_workspace()
             }
         }
         ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-            on submit: submit_search(d, query)
+            on submit: session.open_search(query: .some(query))
         }
         rooms_here(d)
         if query == "" {
@@ -45,7 +45,7 @@ view rooms_here(d: Desk) {
         row(gap: .related, align: .center, wrap: true) {
             for r in d.rooms.sort_by(r -> r.name) {
                 ui.Chip(r.name, icon: if r.current { .layers } else { .folder }, selected: .some(r.current)) {
-                    on press: switch_to_key(r)
+                    on press: device.switch_workspace(device.desk, workspace: r.key)
                 }
             }
             if not d.people.is_empty() {
@@ -84,7 +84,7 @@ view window_place(d: Desk, w: Win) {
             }
             window_menu(d, w)
         }
-        on activate: focus_window(w)
+        on activate: session.focus(window(w))
     }
 }
 
@@ -93,25 +93,22 @@ view window_place(d: Desk, w: Win) {
 view window_menu(d: Desk, w: Win) {
     ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
         ui.MenuItem("Go there", icon: .arrow_right) {
-            on choose: focus_window(w)
+            on choose: session.focus(window(w))
         }
         for s in strip_names(d, w.workspace) {
             if s != w.strip {
                 ui.MenuItem("Move to {s}", icon: .arrow_right) {
-                    on choose: move_to_strip(w, s)
+                    on choose: session.move_tab_to_strip(tab: w.key, strip: s)
                 }
             }
         }
         for r in d.rooms.filter(r -> r.name != w.workspace) {
             ui.MenuItem("Move to {r.name}", icon: .layers) {
-                on choose: move_to_room(w, r.name)
+                on choose: session.move_tab(tab: w.key, workspace: r.name)
             }
         }
-        ui.MenuItem("Ask an agent…", icon: .bot) {
-            on choose: ask_about(w)
-        }
         ui.MenuItem("Close", icon: .x, destructive: true) {
-            on choose: close_window(w)
+            on choose: session.close(window(w))
         }
     }
 }
@@ -136,14 +133,14 @@ view window_line(d: Desk, w: Win) {
         trailing: {
             ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
                 ui.MenuItem("Go there", icon: .arrow_right) {
-                    on choose: focus_window(w)
+                    on choose: session.focus(window(w))
                 }
                 ui.MenuItem("Move here", icon: .arrow_down) {
-                    on choose: move_to_room(w, d.workspace)
+                    on choose: session.move_tab(tab: w.key, workspace: d.workspace)
                 }
             }
         }
-        on activate: focus_window(w)
+        on activate: session.focus(window(w))
     }
 }
 

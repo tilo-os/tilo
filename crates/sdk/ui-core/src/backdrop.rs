@@ -178,9 +178,11 @@ impl Refraction {
 /// ([`material_band`]) as relative luminances. The backdrop pass maps what
 /// it sampled into it ([`Self::tone`] is the same arithmetic): luminance
 /// is compressed evenly in contrast (a contrast ratio below becomes a
-/// smaller, fixed power of itself), and each colour keeps its chromaticity,
-/// so a bright photo shows dimmed but in its own colours and shapes, never
-/// as one flat colour.
+/// smaller, fixed power of itself), and each colour keeps its hue: dimmed,
+/// its channels scale with its luminance; lifted, it keeps how far its
+/// channels stand off its grey, so a near-grey stays near-grey. A bright
+/// photo shows dimmed but in its own colours and shapes, a dark page lifted
+/// without a cast, never as one flat colour.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Legible {
     /// Relative luminance black maps to.
@@ -225,9 +227,11 @@ impl Legible {
 
     /// `rgb` (sRGB-encoded, 0–1) as it shows through: its relative
     /// luminance `y` mapped so `(y + 0.05) / 0.05` becomes that ratio to
-    /// the power the band allows over the whole 21:1 range, its linear
-    /// channels scaled to it, and pulled toward grey only where a channel
-    /// would leave the gamut. The backdrop pass's `tone` computes the same.
+    /// the power the band allows over the whole 21:1 range; its linear
+    /// channels' offsets from `y` carried to the new luminance, scaled down
+    /// with it where it falls and kept where it rises; and pulled toward
+    /// grey only where a channel would leave the gamut. The backdrop pass's
+    /// `tone` computes the same.
     #[must_use]
     pub fn tone(&self, rgb: [f64; 3]) -> [f64; 3] {
         if !self.compresses() {
@@ -243,11 +247,12 @@ impl Legible {
         let y = 0.0722f64.mul_add(linear[2], 0.2126f64.mul_add(linear[0], 0.7152 * linear[1]));
         let power = ((self.light + 0.05) / (self.dark + 0.05)).ln() / 21f64.ln();
         let target = (self.dark + 0.05) * ((y + 0.05) / 0.05).powf(power) - 0.05;
-        let mut out = if y <= 1e-5 {
-            [target; 3]
+        let keep = if y <= 1e-5 {
+            1.0
         } else {
-            linear.map(|c| c * target / y)
+            (target / y).min(1.0)
         };
+        let mut out = linear.map(|c| (c - y).mul_add(keep, target));
         let top = out[0].max(out[1]).max(out[2]);
         if top > 1.0 {
             let pull = (1.0 - target) / (top - target);
@@ -1253,8 +1258,9 @@ fn encoded(c: vec3<f32>) -> vec3<f32> {
 }
 
 // What shows through, compressed into the legible range: luminance mapped
-// evenly in contrast, chromaticity kept, pulled toward grey only where a
-// channel would leave the gamut. The same arithmetic as `Legible::tone`.
+// evenly in contrast, each channel's offset from it scaled down where it
+// falls and kept where it rises, pulled toward grey only where a channel
+// would leave the gamut. The same arithmetic as `Legible::tone`.
 fn tone(c: vec4<f32>) -> vec4<f32> {
     if (pass_.dark <= 0.0 && pass_.light >= 1.0) {
         return c;
@@ -1263,10 +1269,11 @@ fn tone(c: vec4<f32>) -> vec4<f32> {
     let y = dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
     let power = log((pass_.light + 0.05) / (pass_.dark + 0.05)) / log(21.0);
     let aim = (pass_.dark + 0.05) * pow((y + 0.05) / 0.05, power) - 0.05;
-    var out = vec3<f32>(aim);
+    var keep = 1.0;
     if (y > 1e-5) {
-        out = lin * (aim / y);
+        keep = min(aim / y, 1.0);
     }
+    var out = vec3<f32>(aim) + (lin - vec3<f32>(y)) * keep;
     let top = max(out.r, max(out.g, out.b));
     if (top > 1.0) {
         out = vec3<f32>(aim) + (out - vec3<f32>(aim)) * ((1.0 - aim) / (top - aim));
@@ -1302,6 +1309,9 @@ pub struct BackdropStats {
     pub substituted: usize,
     /// Regions that stay opaque: off target, or their backdrop failed to render.
     pub skipped: usize,
+    /// Of the substituted, those shown from the sample they kept: nothing
+    /// below them changed since it was taken, so no pass ran.
+    pub reused: usize,
     /// CPU time spent encoding and submitting, in microseconds. The GPU
     /// work runs ahead of the frame's own render on the same queue.
     pub encode_us: u64,
@@ -1360,6 +1370,68 @@ pub struct BackdropBlur {
     outputs: Vec<Option<Texture>>,
     /// Placeholders currently substituted on the renderer.
     substituted: Vec<ImageData>,
+    /// What each region slot's output was taken of, so a region whose
+    /// backdrop has not changed shows it again without a pass.
+    taken: Vec<Option<Taken>>,
+}
+
+/// What a region's sample was taken of: everything the pass reads. Equal
+/// to a later frame's region, the sample is still what that region shows.
+struct Taken {
+    below: Scene,
+    rect: Rect,
+    size: (u32, u32),
+    target: (u32, u32),
+    numbers: [u64; 12],
+    colours: [[u32; 4]; 2],
+}
+
+impl Taken {
+    fn of(region: &BackdropRegion, target: (u32, u32), base: Color) -> Self {
+        let lens = region.refraction;
+        Self {
+            below: region.below.clone(),
+            rect: region.rect,
+            size: (region.image.width, region.image.height),
+            target,
+            numbers: [
+                region.blur_px,
+                region.cell_px,
+                lens.strength,
+                lens.band,
+                lens.radius,
+                lens.dispersion,
+                region.legible.dark,
+                region.legible.light,
+                f64::from(u8::from(region.sampling == Sampling::Blocky)),
+                0.0,
+                0.0,
+                0.0,
+            ]
+            .map(f64::to_bits),
+            colours: [region.ground, base].map(|colour| colour.components.map(f32::to_bits)),
+        }
+    }
+
+    /// Whether `region` shows what this sample was taken of.
+    fn holds(&self, other: &Self) -> bool {
+        self.rect == other.rect
+            && self.size == other.size
+            && self.target == other.target
+            && self.numbers == other.numbers
+            && self.colours == other.colours
+            && self.below.encoding_eq(&other.below)
+    }
+}
+
+/// Whether `below` draws any of `images`: another region's sample, taken
+/// anew this frame, which it shows through itself.
+fn shows_any(below: &Scene, images: &[ImageData]) -> bool {
+    !images.is_empty()
+        && below.encoding().resources.patches.iter().any(|patch| {
+            matches!(patch, vello_encoding::Patch::Image { image, .. }
+                if images.iter().any(|taken| taken.data.id() == image.data.id()))
+        })
 }
 
 impl BackdropBlur {
@@ -1461,6 +1533,7 @@ impl BackdropBlur {
             levels: Vec::new(),
             across: None,
             outputs: Vec::new(),
+            taken: Vec::new(),
             substituted: Vec::new(),
         }
     }
@@ -1503,15 +1576,59 @@ impl BackdropBlur {
             return stats;
         }
         queue.write_buffer(&self.passes, 0, &self.strided(&pass_bytes));
+        // Samples taken anew this frame: a region that shows one through
+        // itself is taken anew too.
+        let mut fresh: Vec<ImageData> = Vec::new();
         for (region, plan) in planned {
+            let slot = plan.slot;
+            let now = Taken::of(region, target, base);
+            if self.taken.len() <= slot {
+                self.taken.resize_with(slot.saturating_add(1), || None);
+            }
+            let unchanged = self
+                .taken
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|taken| taken.holds(&now))
+                && !shows_any(&region.below, &fresh);
+            if unchanged && self.show_kept(renderer, region, slot) {
+                stats.substituted = stats.substituted.saturating_add(1);
+                stats.reused = stats.reused.saturating_add(1);
+                continue;
+            }
             if self.render_one(device, queue, renderer, region, &plan, base) {
                 stats.substituted = stats.substituted.saturating_add(1);
+                fresh.push(region.image.clone());
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = Some(now);
+                }
             } else {
                 stats.skipped = stats.skipped.saturating_add(1);
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = None;
+                }
             }
         }
         stats.encode_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         stats
+    }
+
+    /// Show `slot`'s kept sample in place of `region`'s placeholder.
+    fn show_kept(&mut self, renderer: &mut Renderer, region: &BackdropRegion, slot: usize) -> bool {
+        let Some(Some(output)) = self.outputs.get(slot) else {
+            return false;
+        };
+        renderer.override_image(
+            &region.image,
+            Some(wgpu::TexelCopyTextureInfoBase {
+                texture: output.texture.clone(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            }),
+        );
+        self.substituted.push(region.image.clone());
+        true
     }
 
     /// Drop the substitutions of the last [`Self::prepare`], so later

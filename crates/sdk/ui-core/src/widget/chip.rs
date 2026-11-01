@@ -985,9 +985,15 @@ impl Chip {
         self.selectable || self.activation.is_bound()
     }
 
+    /// Whether a press on the body flips the selection: a filter that names nothing to run. A
+    /// selectable chip with a press bound runs it, and shows the selection it is bound to.
+    fn flips(&self) -> bool {
+        self.selectable && !self.activation.is_bound()
+    }
+
     /// Press the body: toggle a filter, or run the bound activation.
     fn press(&mut self) -> bool {
-        if self.selectable {
+        if self.flips() {
             self.flipped();
             return true;
         }
@@ -1202,7 +1208,7 @@ impl Widget for Chip {
                         self.remove_pressed();
                         *ctx.handled = true;
                     }
-                    ElementState::Pressed if self.selectable && over_body => {
+                    ElementState::Pressed if self.flips() && over_body => {
                         self.flipped();
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
@@ -1789,11 +1795,32 @@ mod tests {
             );
         }
 
+        /// A chip showing whether it is chosen and naming what a press does (a choice among
+        /// presets, its state bound to the record) runs the press; its selection follows what
+        /// it is bound to, never a flip of its own.
+        fn a_selected_chip_with_a_press_runs_the_press() {
+            let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counted = std::rc::Rc::clone(&pressed);
+            let mut c = Chip::new("Frames")
+                .selected(false)
+                .on_click(move || counted.set(counted.get() + 1));
+            lay_out(&mut c);
+            draw(&mut c);
+            let center = c.get_rect().center();
+            dispatch(&mut c, &cursor(center));
+            assert!(dispatch(&mut c, &mouse_press()), "the press is the chip's");
+            dispatch(&mut c, &crate::synthetic_input::mouse_release());
+            assert_eq!(pressed.get(), 1, "the press runs");
+            assert!(!c.is_selected(), "the selection is what it is bound to");
+            assert!(!c.take_toggled(), "nothing flipped");
+        }
+
         selectable_chip_toggles_on_body_click();
         plain_chip_does_not_toggle();
         removable_chip_fires_remove_on_x_click();
         removable_and_selectable_x_wins_over_toggle();
         accessibility_toggle_vs_static();
+        a_selected_chip_with_a_press_runs_the_press();
     }
 
     /// Lay a chip out through the shared solver (the `App` / `FrameHarness`
