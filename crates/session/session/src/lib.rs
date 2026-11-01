@@ -73,6 +73,7 @@ mod launches;
 mod lists;
 mod lock_screen;
 mod lock_service;
+mod membership;
 pub mod messages;
 pub mod mount;
 pub mod notices;
@@ -627,6 +628,7 @@ impl Shared {
             &self.workspace_emoji,
             self.file_picker.as_ref(),
             self.personal.as_ref(),
+            self.engine.as_deref(),
         )
     }
 
