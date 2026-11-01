@@ -298,9 +298,9 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         .unwrap()[0]
         .generation
         .unwrap();
-    assert!(
-        after > before,
-        "actual mutable no-op loans advance the bookkeeping counter"
+    assert_eq!(
+        after, before,
+        "a loan that wrote nothing leaves the bookkeeping counter"
     );
     assert_eq!(
         app.action_directory_revision(),
@@ -330,7 +330,10 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         .unwrap()
         .0
         .owners[0];
-    for generation in [None, Some(0), Some(u64::MAX)] {
+    let regressed = current
+        .generation
+        .and_then(|generation| generation.checked_sub(1));
+    for generation in [None, regressed, Some(u64::MAX)] {
         let mut invalid = current.clone();
         invalid.generation = generation;
         assert!(

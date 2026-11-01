@@ -4742,24 +4742,31 @@ impl CallbackBinding {
                 let frame = owned
                     .as_mut()
                     .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
-                // An exclusive loan still advances admission bookkeeping;
-                // only its document transaction waits for an actual action.
-                frame.state.generation = frame
-                    .state
-                    .generation
-                    .and_then(|value| value.checked_add(1));
                 frame.mutation.replace(ActiveMutation {
                     binding: self.clone(),
                     before: None,
                     deferred: true,
                 })
             };
+            let before = crate::doc::settle_mark(document);
             let restore = SettlementReturn {
                 document,
                 frame: handle,
                 previous,
             };
-            Ok(callback(restore.document, root))
+            let result = callback(restore.document, root);
+            // A settlement that wrote advances admission bookkeeping; one
+            // that only read (every sync lends the record) leaves it, so
+            // what was admitted against the record stays current.
+            if crate::doc::settle_mark(restore.document) != before
+                && let Some(frame) = restore.frame.borrow_mut().as_mut()
+            {
+                frame.state.generation = frame
+                    .state
+                    .generation
+                    .and_then(|value| value.checked_add(1));
+            }
+            Ok(result)
         })?
     }
     /// Restore only through the already owned record frame. Unlike ordinary
