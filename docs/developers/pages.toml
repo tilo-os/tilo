@@ -77,6 +77,13 @@ nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
 
 [[page]]
+slug = "slot-views"
+source = "docs/developers/slot-views.md"
+section = "Guides"
+nav = "Draw a part of the shell"
+description = "Read the resource behind a shell slot, invoke its verbs, and bind the slot to a view your app publishes."
+
+[[page]]
 slug = "android"
 source = "docs/android.md"
 section = "Platforms"
