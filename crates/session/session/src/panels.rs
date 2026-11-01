@@ -54,35 +54,6 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     }
 }
 
-/// Quick settings' host, with its readings kept where the session reads
-/// them too (a readout shows the level a key just changed).
-pub(crate) struct Tap {
-    pub(crate) inner: Rc<dyn tilo_quick_settings::host::PanelHost>,
-    pub(crate) feed: Readings,
-}
-
-/// The readings quick settings was lent, once it attached.
-pub(crate) type Readings = Rc<std::cell::RefCell<Option<tilo_quick_settings::host::Feed>>>;
-
-impl tilo_quick_settings::host::PanelHost for Tap {
-    fn attach(&self, feed: tilo_quick_settings::host::Feed) {
-        *self.feed.borrow_mut() = Some(feed.clone());
-        self.inner.attach(feed);
-    }
-
-    fn showing(&self, showing: &tilo_quick_settings::host::Showing) {
-        self.inner.showing(showing);
-    }
-
-    fn run(&self, effect: tilo_quick_settings::QsEffect) -> Result<(), String> {
-        self.inner.run(effect)
-    }
-
-    fn laid_out(&self, height: f64) {
-        self.inner.laid_out(height);
-    }
-}
-
 /// An app the bar opens under its right end, or beside the caret that asked
 /// for it: it shows while the stack has its surface up, stands where the
 /// stack places it, and a press anywhere else closes it — the session's

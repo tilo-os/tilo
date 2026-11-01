@@ -9,9 +9,9 @@ use std::sync::Arc;
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent,
-    ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
+    AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ChromeOverlays,
+    ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip,
+    SystemStatus,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
@@ -167,12 +167,12 @@ fn clock_reading(
 }
 
 /// What the bar reads of the session besides the desk's tree: the
-/// notifications' state, the device's readings, the apps' live activities,
+/// notifications' state, the machine's own status, the apps' live activities,
 /// the running applications' tray items, and where the session's own
 /// notices go.
 pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
-    pub(crate) readings: crate::panels::Readings,
+    pub(crate) readings: crate::status::Shared,
     pub(crate) clock: Rc<Clock>,
     pub(crate) notices: DesktopNotifications,
     /// The applications' tray items, when their watcher serves.
@@ -231,9 +231,9 @@ pub(crate) struct SessionChrome {
     /// plane: the bar's trees carry them as the active workspace's
     /// collaborators.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// The device as the quick settings panel reads it: the status cluster's
+    /// The machine as the services last published it: the status cluster's
     /// battery, network and volume glyphs, and the streams being captured.
-    pub(crate) readings: crate::panels::Readings,
+    pub(crate) readings: crate::status::Shared,
     /// The clocks app's live activity, which the bar shows as its clock.
     pub(crate) clock: Rc<Clock>,
     /// The desk's notifications, where a due timer is announced.
@@ -301,52 +301,12 @@ impl SessionChrome {
         }
     }
 
-    /// The device as the quick settings panel last read it, in the bar's own
+    /// The machine as the services last published it, in the bar's own
     /// terms: what its battery, network and volume glyphs draw and what its
-    /// status cluster says of them. A session without a panel reads nothing,
-    /// and draws no glyph (absence, never a zero).
+    /// status cluster says of them. A part no service read draws no glyph
+    /// (absence, never a zero).
     fn status(&self) -> SystemStatus {
-        let feed = self.readings.borrow().clone();
-        feed.map_or_else(SystemStatus::default, |feed| {
-            system_status(&feed.current().status)
-        })
-    }
-}
-
-/// The bar's status from the panel's reading of the device: the shell's
-/// `system_status`, field for field.
-fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {
-    SystemStatus {
-        battery_percent: status.battery_percent(),
-        battery_charging: status.battery_is_charging(),
-        battery_low: status.battery_is_low(),
-        battery_critical: status.battery_is_critical(),
-        volume: status.volume.map(|volume| VolumeState {
-            level: volume.level,
-            muted: volume.muted,
-        }),
-        link: status.link.as_ref().map(|link| LinkStatus {
-            kind: match link.kind {
-                os_actions::LinkKind::Offline => LinkKind::Offline,
-                os_actions::LinkKind::Wired => LinkKind::Wired,
-                os_actions::LinkKind::Wifi => LinkKind::Wifi,
-            },
-            name: link.name.clone(),
-            signal: link.signal,
-        }),
-        media: status
-            .media
-            .iter()
-            .map(|media| ActiveMediaUse {
-                client_id: media.client_id,
-                label: media.label.clone(),
-                kind: match media.kind {
-                    os_actions::MediaKind::Microphone => MediaKind::Microphone,
-                    os_actions::MediaKind::Camera => MediaKind::Camera,
-                },
-            })
-            .collect(),
-        summary: status.summary(),
+        self.readings.borrow().status()
     }
 }
 
@@ -669,72 +629,6 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use os_actions::{
-        LinkKind as OsLinkKind, LinkStatus as OsLinkStatus, MediaKind as OsMediaKind,
-    };
-    use tilo_power_mgmt::{BatterySnapshot, BatteryState};
-    use tilo_quick_settings::SystemStatus as Reading;
-
-    fn reading() -> Reading {
-        Reading {
-            battery: Some(BatterySnapshot {
-                present: true,
-                percent: 42,
-                state: BatteryState::Charging,
-            }),
-            battery_time: None,
-            link: Some(OsLinkStatus {
-                kind: OsLinkKind::Wifi,
-                name: Some("Home".to_owned()),
-                signal: 3,
-            }),
-            volume: Some(media::audio::default_node::VolumeState {
-                level: 0.6,
-                muted: false,
-            }),
-            media: vec![os_actions::ActiveMediaUse {
-                client_id: 7,
-                pid: 4242,
-                app_id: "so.tilo.meet".to_owned(),
-                label: "Meet".to_owned(),
-                binary: std::path::PathBuf::from("/usr/bin/meet"),
-                kind: OsMediaKind::Microphone,
-            }],
-        }
-    }
-
-    /// The bar's glyphs: the battery's charge, the network's name and
-    /// strength, the volume's level, and the stream being captured.
-    #[test]
-    fn the_bar_reads_the_machines_battery_network_and_volume() {
-        let status = system_status(&reading());
-        assert_eq!(status.battery_percent(), Some(42));
-        assert!(status.battery_is_charging());
-        assert!(!status.battery_is_low());
-        let link = status.link.clone().expect("a link");
-        assert_eq!(link.kind, LinkKind::Wifi);
-        assert_eq!(link.name.as_deref(), Some("Home"));
-        assert_eq!(link.signal, 3);
-        let volume = status.volume.expect("a level");
-        assert!((volume.level - 0.6).abs() < f32::EPSILON);
-        assert!(!volume.muted);
-        assert!(!status.audio_is_silent());
-        assert_eq!(status.media.len(), 1);
-        assert_eq!(status.media[0].client_id, 7);
-        assert_eq!(status.media[0].label, "Meet");
-        assert_eq!(status.media[0].kind, MediaKind::Microphone);
-    }
-
-    /// A machine that read nothing (no panel mounted yet) draws no glyph:
-    /// absence, never a zero battery or a full network.
-    #[test]
-    fn a_machine_with_no_readings_shows_no_glyph() {
-        let status = system_status(&Reading::default());
-        assert_eq!(status.battery_percent(), None);
-        assert!(status.link.is_none());
-        assert!(status.volume.is_none());
-        assert!(status.media.is_empty());
-    }
 
     /// Clocks' live activity in the shape its app publishes it: the label
     /// and remaining time every activity carries, and what `extra` adds.
