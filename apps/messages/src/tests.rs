@@ -788,7 +788,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
             ui::tilo_actions::remote::Caller::local_app("so.tilo.messages")
                 .in_workspace("workspace"),
         ),
-        Some("room".into()),
+        Some("workspace".into()),
     );
     let button = harness
         .a11y_nodes()
@@ -797,7 +797,8 @@ fn with_nobody_yet_the_window_says_how_to_start() {
         .map(|(_, node)| node)
         .expect("the empty state offers to open Contacts");
     assert!(button.bounds().is_some_and(|b| b.width() > 1.0));
-    let contacts = ui::tilo_actions::remote::application_open_target("room", "so.tilo.contacts");
+    let contacts =
+        ui::tilo_actions::remote::application_open_target("workspace", "so.tilo.contacts");
     assert!(
         harness.resources().iter().any(offers_open_contacts),
         "the button's action is one the app publishes"
