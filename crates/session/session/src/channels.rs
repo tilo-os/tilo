@@ -1,27 +1,30 @@
 //! This device's end-to-end encrypted channels: the keys of every record the
-//! rooms it holds keep sealed, the room's governance that decides who reads
-//! each one, and the devices each room admits, which its window streams carry
-//! between.
+//! workspaces it holds keep sealed, the workspace's governance that decides
+//! who reads each one, and the devices each workspace admits, which its window
+//! streams carry between.
 //!
-//! A record a room keeps sealed is opened on no one's machine but a member's:
-//! the room's devices agree, group by group, that exactly the devices the
-//! room's access policy admits take part ([`ChannelDirectory`]), and each
-//! sealed write travels with the key material of the group it was written
-//! under. The keys live here, never in the document: that is what lets a
-//! person invited today read what the room said a year ago, while the room's
-//! membership moves on without the history being re-encrypted.
+//! A record a workspace keeps sealed is opened on no one's machine but a
+//! member's: the workspace's devices agree, group by group, that exactly the
+//! devices the workspace's access policy admits take part
+//! ([`ChannelDirectory`]), and each sealed write travels with the key material
+//! of the group it was written under. The keys live here, never in the
+//! document: that is what lets a person invited today read what the workspace
+//! said a year ago, while its membership moves on without the history being
+//! re-encrypted.
 //!
-//! This device is one participant of the channels of every room it holds. It
-//! asks the room's governor for a channel's keys the first time it reads or
-//! writes the channel's record ([`crate::engine::Engine::record`]), takes in
-//! the frames the room's transport carries here ([`ChannelLink`]), and settles
-//! the groups on their own thread ([`Pump`]) as the room's policy and the
-//! people in it change. Nothing here decides who may read what: the room's
-//! governance does, and this device only follows it.
+//! This device is one participant of the channels of every workspace it holds.
+//! It asks the workspace's governor for a channel's keys the first time it
+//! reads or writes the channel's record ([`crate::engine::Engine::record`]),
+//! takes in the frames the workspace's transport carries here
+//! ([`ChannelLink`]), and settles the groups on their own thread ([`Pump`]) as
+//! the workspace's policy and the people in it change. Nothing here decides
+//! who may read what: the workspace's governance does, and this device only
+//! follows it.
 //!
-//! The same thread tells the collaboration plane which devices each room
-//! admits ([`Rosters`]): a room's window streams carry between those devices
-//! and no others, and the plane is told again whenever the room's state moves.
+//! The same thread tells the collaboration plane which devices each workspace
+//! admits ([`Rosters`]): a workspace's window streams carry between those
+//! devices and no others, and the plane is told again whenever the workspace's
+//! state moves.
 
 mod vault;
 
@@ -48,18 +51,18 @@ use crate::sync::Outgoing;
 pub(crate) use vault::MlsVault;
 
 /// The running channel service: this device's keys, and the thread that keeps
-/// their groups in step with the rooms' governance. Stops when dropped.
+/// their groups in step with the workspaces' governance. Stops when dropped.
 pub(crate) struct Channels {
     _pump: Pump,
 }
 
 impl Channels {
-    /// Open this device's channel service over the rooms `engine` holds: its
-    /// sealed channel state under the platform secret store, and its groups
-    /// settling through `link`, the room transport of this session's
-    /// collaboration plane.
+    /// Open this device's channel service over the workspaces `engine` holds:
+    /// its sealed channel state under the platform secret store, and its
+    /// groups settling through `link`, the workspace transport of this
+    /// session's collaboration plane.
     ///
-    /// Without a secret store the service still runs, for the rooms this
+    /// Without a secret store the service still runs, for the workspaces this
     /// device's own room host takes part in: their keys come from that host,
     /// and this device's own sealed state is the only thing it cannot keep.
     ///
@@ -90,7 +93,7 @@ impl Channels {
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "no system secret store answered: only rooms this device hosts have channel keys"
+                    "no system secret store answered: only workspaces this device hosts have channel keys"
                 );
                 Some(ChannelEncryption::without_store(directory, broker))
             }
@@ -103,18 +106,19 @@ impl Channels {
             access
         });
         let pump = spawn_pump(access, Arc::clone(engine), Arc::clone(&link), link.park())?;
-        // Every room this device already holds reads its roster: the plane
-        // carries a room's window streams between the devices it admits from
-        // the moment it runs, not only from the room's next change.
-        for room in engine.rooms() {
-            link.workspace_changed(room);
+        // Every workspace this device already holds reads its roster: the
+        // plane carries a workspace's window streams between the devices it
+        // admits from the moment it runs, not only from the workspace's next
+        // change.
+        for workspace in engine.rooms() {
+            link.workspace_changed(workspace);
         }
         engine.attach_link(link);
         Ok(Self { _pump: pump })
     }
 }
 
-/// The room transport the channels' governance travels on: what this
+/// The workspace transport the channels' governance travels on: what this
 /// session's collaboration plane hears and says, reached from the thread that
 /// settles the groups.
 ///
@@ -125,12 +129,12 @@ impl Channels {
 pub struct ChannelLink {
     /// Governance the plane heard, waiting for the next settle.
     inbound: Mutex<Vec<InboundChannelGovernance>>,
-    /// The rooms whose state moved since it was last read: their channels and
-    /// their rosters are read again.
+    /// The workspaces whose state moved since it was last read: their channels
+    /// and their rosters are read again.
     changed: Mutex<BTreeSet<RoomId>>,
-    /// The records this device asked a room's hosts for, by room topic and
-    /// channel: a read asks once, and the plane asks a host session that
-    /// starts later itself.
+    /// The records this device asked a workspace's hosts for, by workspace
+    /// topic and channel: a read asks once, and the plane asks a host session
+    /// that starts later itself.
     asked: Mutex<BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Outgoing>>>,
@@ -153,17 +157,19 @@ impl ChannelLink {
     /// plane is gone.
     pub(crate) fn attach(&self, outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>) {
         *self.outgoing.lock_recover() = Some(outgoing);
-        // What was told before the plane ran was told to no one: every room
-        // this device holds is read and told again.
+        // What was told before the plane ran was told to no one: every
+        // workspace this device holds is read and told again.
         self.park.poke();
     }
 
-    /// Wake whatever unsettles the groups: a frame arrived, or a room moved.
+    /// Wake whatever unsettles the groups: a frame arrived, or a workspace
+    /// moved.
     pub(crate) fn park(&self) -> Arc<Park> {
         Arc::clone(&self.park)
     }
 
-    /// Whether the plane this device says its rooms' rosters on is running.
+    /// Whether the plane this device says its workspaces' rosters on is
+    /// running.
     fn attached(&self) -> bool {
         self.outgoing.lock_recover().is_some()
     }
@@ -178,10 +184,10 @@ impl ChannelLink {
         self.park.poke();
     }
 
-    /// Take what a room's governor never admits into its replica: the
-    /// channels' governance, which the room's devices settle their groups
+    /// Take what a workspace's governor never admits into its replica: the
+    /// channels' governance, which the workspace's devices settle their groups
     /// with between each other. Says whether `message` was one of them, and
-    /// so never reaches the room's state.
+    /// so never reaches the workspace's state.
     pub(crate) fn dispatch(&self, message: &NeighbourMsg) -> bool {
         if !matches!(
             message,
@@ -202,26 +208,26 @@ impl ChannelLink {
         self.park.poke();
     }
 
-    /// Read `room` again on a later pass, without waking the pump to it: a
-    /// roster that was not told stays untold until it is.
-    fn changed_again(&self, room: RoomId) {
-        self.changed.lock_recover().insert(room);
+    /// Read `workspace` again on a later pass, without waking the pump to it:
+    /// a roster that was not told stays untold until it is.
+    fn changed_again(&self, workspace: RoomId) {
+        self.changed.lock_recover().insert(workspace);
     }
 
-    /// The rooms that moved since the last call, in a stable order.
+    /// The workspaces that moved since the last call, in a stable order.
     pub(crate) fn take_changed(&self) -> Vec<RoomId> {
         let mut changed = self.changed.lock_recover();
-        let rooms = changed.iter().copied().collect();
+        let workspaces = changed.iter().copied().collect();
         changed.clear();
-        rooms
+        workspaces
     }
 
-    /// Ask `room`'s hosts for the record on `channel` the first time a local
-    /// reader reads it (an on-demand record, or a part of a chain behind its
-    /// head): its history then arrives as the room's other documents do, and
-    /// later reads ask nobody.
-    pub(crate) fn ask_record(&self, room: RoomId, channel: [u8; 32]) {
-        let ws = workspace_topic_id(room);
+    /// Ask `workspace`'s hosts for the record on `channel` the first time a
+    /// local reader reads it (an on-demand record, or a part of a chain behind
+    /// its head): its history then arrives as the workspace's other documents
+    /// do, and later reads ask nobody.
+    pub(crate) fn ask_record(&self, workspace: RoomId, channel: [u8; 32]) {
+        let ws = workspace_topic_id(workspace);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
             return;
@@ -237,17 +243,17 @@ impl ChannelLink {
         asked.insert((ws, channel));
     }
 
-    /// Ask the host of `room` to replay what it retains: a message the room
-    /// held back waited on something the host sends of its own accord too, and
-    /// the replay decides it again.
-    pub(crate) fn ask_replay(&self, room: RoomId) {
+    /// Ask the host of `workspace` to replay what it retains: a message the
+    /// workspace held back waited on something the host sends of its own accord
+    /// too, and the replay decides it again.
+    pub(crate) fn ask_replay(&self, workspace: RoomId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(room)));
+            let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(workspace)));
         }
     }
 
-    /// Tell the plane which devices room `ws` admits; `false` when the plane
+    /// Tell the plane which devices workspace `ws` admits; `false` when the plane
     /// is gone, and the roster is told again when a later pass finds it
     /// changed.
     fn tell_roster(&self, ws: WorkspaceId, devices: Roster) -> bool {
@@ -258,24 +264,20 @@ impl ChannelLink {
 
 impl GovernanceTransport for ChannelLink {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        let room = match &message {
-            NeighbourMsg::MlsGovernance {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsAccessRequest {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
+        let workspace = match &message {
+            NeighbourMsg::MlsGovernance { workspace, .. }
+            | NeighbourMsg::MlsAccessRequest { workspace, .. } => RoomId::parse(workspace),
+            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
             _ => None,
         };
-        let Some(room) = room else {
+        let Some(workspace) = workspace else {
             return false;
         };
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| {
             outgoing
                 .send(Outgoing::Publish {
-                    ws: workspace_topic_id(room),
+                    ws: workspace_topic_id(workspace),
                     msg: Box::new(message),
                 })
                 .is_ok()
@@ -287,85 +289,90 @@ impl GovernanceTransport for ChannelLink {
     }
 }
 
-/// The rooms whose rosters this session has told the plane, by workspace
-/// topic: a roster is told when the room it is of changed, and only then.
+/// The workspaces whose rosters this session has told the plane, by
+/// workspace topic: a roster is told when the workspace it is of changed, and
+/// only then.
 #[derive(Default)]
 struct Rosters {
     told: HashMap<WorkspaceId, Roster>,
 }
 
 impl Rosters {
-    /// Whether the plane is not holding `roster` as room `ws`'s yet.
+    /// Whether the plane is not holding `roster` as workspace `ws`'s yet.
     fn moved(&self, ws: WorkspaceId, roster: &Roster) -> bool {
         self.told.get(&ws) != Some(roster)
     }
 
-    /// Tell the plane the roster of each room that moved: the devices its
+    /// Tell the plane the roster of each workspace that moved: the devices its
     /// governance admits now, which its window streams carry between. A
-    /// device the room removed, or whose certificate ran out, is not on it,
-    /// and what it sends or would be sent is refused from then on.
+    /// device the workspace removed, or whose certificate ran out, is not on
+    /// it, and what it sends or would be sent is refused from then on.
     fn sweep(&mut self, link: &ChannelLink, engine: &Engine) {
-        // A session with no plane says its rosters to no one: the rooms stay
-        // marked, and the pass after the plane starts tells them all
+        // A session with no plane says its rosters to no one: the workspaces
+        // stay marked, and the pass after the plane starts tells them all
         // ([`ChannelLink::attach`]).
         if !link.attached() {
             return;
         }
-        for room in link.take_changed() {
-            if !engine.holds(room) {
-                // The room is gone here, and what the plane held of it went
-                // with the leave.
-                self.told.remove(&workspace_topic_id(room));
+        for workspace in link.take_changed() {
+            if !engine.holds(workspace) {
+                // The workspace is gone here, and what the plane held of it
+                // went with the leave.
+                self.told.remove(&workspace_topic_id(workspace));
                 continue;
             }
-            if let Ok(roster) = roster_of(engine, room) {
-                self.tell(link, room, roster);
+            if let Ok(roster) = roster_of(engine, workspace) {
+                self.tell(link, workspace, roster);
             } else {
-                // A room whose governance cannot be read yet tells no
+                // A workspace whose governance cannot be read yet tells no
                 // roster: the one it had stays until a pass reads it.
-                tracing::debug!(%room, "no roster to tell");
-                link.changed_again(room);
+                tracing::debug!(%workspace, "no roster to tell");
+                link.changed_again(workspace);
             }
         }
     }
 
-    /// Tell the plane `room`'s `roster`, and remember it as told only when
-    /// the plane took it: one it did not take is read again on a later pass.
-    fn tell(&mut self, link: &ChannelLink, room: RoomId, roster: Roster) {
-        let ws = workspace_topic_id(room);
+    /// Tell the plane the workspace's `roster`, and remember it as told only
+    /// when the plane took it: one it did not take is read again on a later
+    /// pass.
+    fn tell(&mut self, link: &ChannelLink, workspace: RoomId, roster: Roster) {
+        let ws = workspace_topic_id(workspace);
         if !self.moved(ws, &roster) {
             return;
         }
         if link.tell_roster(ws, roster.clone()) {
             self.told.insert(ws, roster);
         } else {
-            link.changed_again(room);
+            link.changed_again(workspace);
         }
     }
 }
 
-/// The room's access policy as this device's own rooms hold it: who governs
-/// each room's channels, and which devices the room lets read one.
+/// The workspace's access policy as this device's own workspaces hold it: who
+/// governs each workspace's channels, and which devices the workspace lets
+/// read one.
 struct Directory {
     engine: Arc<Engine>,
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
+    fn governor_of(&self, workspace: RoomId) -> Option<Ed25519PublicKey> {
         self.engine
             .owner()
-            .with_current(room, |view| Ok(view.workspace_host().device_public_key))
+            .with_current(workspace, |view| {
+                Ok(view.workspace_host().device_public_key)
+            })
             .ok()
             .map(Ed25519PublicKey::from_bytes)
     }
 
-    /// The member devices the room's governance lets read `channel` at `now`
-    /// (Unix seconds): the same projection the room's doors apply to the
-    /// record, so a person's device is in a channel exactly when it may read
-    /// the record that channel carries.
+    /// The member devices the workspace's governance lets read `channel` at
+    /// `now` (Unix seconds): the same projection the workspace's doors apply to
+    /// the record, so a person's device is in a channel exactly when it may
+    /// read the record that channel carries.
     fn allowed_devices(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
@@ -374,10 +381,10 @@ impl ChannelDirectory for Directory {
         let readers = self
             .engine
             .owner()
-            .with_current(room, |view| {
+            .with_current(workspace, |view| {
                 view.peer().governance().channel_readers(at, channel, route)
             })
-            // A room whose governance cannot be read says nothing of who
+            // A workspace whose governance cannot be read says nothing of who
             // reads it.
             .ok()
             .flatten()?;
@@ -389,7 +396,8 @@ impl ChannelDirectory for Directory {
         )
     }
 
-    /// Announced whenever a room's governance moves, so a group re-checks on
+    /// Announced whenever a workspace's governance moves, so a group re-checks
+    /// on
     /// the change itself rather than on a clock; without the announcements
     /// the service keeps its one-second re-check.
     fn policy_epoch(&self) -> Option<u64> {
@@ -397,16 +405,19 @@ impl ChannelDirectory for Directory {
             .then(policy_change::epoch)
     }
 
-    /// The first second after `now` at which the room's channels can answer
-    /// differently with nothing written: a capability or a device
+    /// The first second after `now` at which the workspace's channels can
+    /// answer differently with nothing written: a capability or a device
     /// certificate expiring.
-    fn next_policy_change(&self, room: RoomId, now: u64) -> Option<u64> {
+    fn next_policy_change(&self, workspace: RoomId, now: u64) -> Option<u64> {
         let second = tilo_action_broker::policy_schedule::second_at_or_after;
         let (certificates, capabilities) = self
             .engine
             .owner()
-            .with_current(room, |view| {
-                let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
+            .with_current(workspace, |view| {
+                let document = view
+                    .peer()
+                    .admitted_workspace()
+                    .ok_or("no admitted workspace")?;
                 let governance = tilo_peer_state::workspace::governance_of(Some(document));
                 let certificates = governance
                     .identities
@@ -494,7 +505,7 @@ impl Drop for Pump {
 }
 
 /// Run `access`'s governance over `transport` on a thread of its own, and tell
-/// the plane the roster of every room that moved: governance runs at once
+/// the plane the roster of every workspace that moved: governance runs at once
 /// whenever it is poked, then when the protocol next has work that no frame
 /// brings, and parks in between. A group re-checks its channels' access when
 /// a policy change is announced or an expiry it registered comes due, not on
@@ -552,7 +563,10 @@ pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, St
             .member_devices
             .into_iter()
             .collect();
-        let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
+        let document = view
+            .peer()
+            .admitted_workspace()
+            .ok_or("no admitted workspace")?;
         let mut roster = BTreeMap::new();
         for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
@@ -595,9 +609,9 @@ mod tests {
             link.take_inbound().is_empty(),
             "an identity hello is the plane's own, not the channels'"
         );
-        let room = RoomId::new();
+        let workspace = RoomId::new();
         link.heard(&NeighbourMsg::MlsGovernance {
-            workspace: room.to_string(),
+            workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
                 channel: ChannelId::new(),
@@ -617,49 +631,52 @@ mod tests {
         assert!(link.take_inbound().is_empty(), "and is taken once");
     }
 
-    /// A roster is told when its room moved, and a room that moved without
+    /// A roster is told when its workspace moved, and one that moved without
     /// its devices changing is told nothing.
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
-        let room = workspace_topic_id(RoomId::new());
+        let workspace = workspace_topic_id(RoomId::new());
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();
         let one: Roster = vec![(device, None)];
         let both: Roster = vec![(device, None), (other, None)];
-        assert!(rosters.moved(room, &one), "a room never told is told");
-        rosters.told.insert(room, both.clone());
         assert!(
-            !rosters.moved(room, &both),
+            rosters.moved(workspace, &one),
+            "a workspace never told is told"
+        );
+        rosters.told.insert(workspace, both.clone());
+        assert!(
+            !rosters.moved(workspace, &both),
             "the roster the plane holds is not told again"
         );
         assert!(
-            rosters.moved(room, &one),
-            "a device the room removed leaves, and the plane is told"
+            rosters.moved(workspace, &one),
+            "a device the workspace removed leaves, and the plane is told"
         );
     }
 
-    /// A roster the plane did not take is not remembered as told: the room is
-    /// read again and the roster told when the plane takes it.
+    /// A roster the plane did not take is not remembered as told: the
+    /// workspace is read again and the roster told when the plane takes it.
     #[test]
     fn a_roster_the_plane_did_not_take_is_told_again() {
         let link = ChannelLink::new();
-        let room = RoomId::new();
+        let workspace = RoomId::new();
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let mut rosters = Rosters::default();
-        rosters.tell(&link, room, vec![(device, None)]);
+        rosters.tell(&link, workspace, vec![(device, None)]);
         assert_eq!(
             link.take_changed(),
-            vec![room],
-            "the plane took nothing, so the room is read again"
+            vec![workspace],
+            "the plane took nothing, so the workspace is read again"
         );
 
         let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
         link.attach(outgoing);
-        rosters.tell(&link, room, vec![(device, None)]);
+        rosters.tell(&link, workspace, vec![(device, None)]);
         assert!(
             link.take_changed().is_empty(),
-            "once the plane takes the roster, the room is not read again"
+            "once the plane takes the roster, the workspace is not read again"
         );
         assert!(
             matches!(sent.try_recv(), Ok(Outgoing::Roster { .. })),
