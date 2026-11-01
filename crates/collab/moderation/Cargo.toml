@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Reports, the moderation agent's decisions and their enforcement through a room's grants and history."
+description = "Reports, the moderation agent's decisions and their enforcement through a workspace's grants and history."
 
 [lib]
 name = "tilo_moderation"
 path = "src/lib.rs"
 
 [features]
-# The moderation agent and its model provider, for the room host. Apps that
+# The moderation agent and its model provider, for the workspace host. Apps that
 # only offer reporting embed the record without them.
 host = [
   "dep:tilo-action-policy",

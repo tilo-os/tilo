@@ -16,7 +16,9 @@ use tilo_action_policy::Change;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::entry::Did;
 use tilo_agent_participant::Replica;
-use tilo_moderation::{Activity, Moderation, RoomDoor, Source, activity_of, destructive_verbs};
+use tilo_moderation::{
+    Activity, Moderation, Source, WorkspaceDoor, activity_of, destructive_verbs,
+};
 use tilo_resource::Resource;
 use ui::record::RecordId;
 
@@ -137,7 +139,7 @@ impl<'a, R: Resource> ReplicaDoor<'a, R> {
     }
 }
 
-impl<R: Resource> RoomDoor for ReplicaDoor<'_, R> {
+impl<R: Resource> WorkspaceDoor for ReplicaDoor<'_, R> {
     fn now_ms(&self) -> i64 {
         self.now_ms
     }
