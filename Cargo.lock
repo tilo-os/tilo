@@ -22018,6 +22018,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "tilo-advisory-lock",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
