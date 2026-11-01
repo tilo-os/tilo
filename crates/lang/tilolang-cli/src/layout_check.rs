@@ -357,37 +357,7 @@ fn check_app(
         shown: BTreeSet::new(),
     };
     let first = layouts().first().copied().ok_or("no layouts")?;
-    // The layers laid out. A package with more than one root declares layers the person sees
-    // apart from one another — the shell's `Desk`, its `Arrangement` of places and its
-    // `Viewing` of settings — and each has its own default view, so every one is laid out:
-    // the launcher opens an app's first root, yet a person meets the others through the
-    // desktop's surfaces, and a view only one of them reaches (a dock, a settings page) must
-    // still be held to the bar. `--root NAME` narrows the check to that layer alone, as a shot
-    // of the desk is.
-    let roots: Vec<Option<String>> = match root {
-        Some(name) => vec![Some(name.to_owned())],
-        None => {
-            let mut layers: Vec<Option<String>> = vec![None];
-            // Every other root the package declares, by the name `--root` takes: the type's
-            // name, and a named root's own.
-            let named: BTreeSet<&str> = meta.named_roots.iter().map(|r| r.name.as_str()).collect();
-            for ty in &meta.roots {
-                let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
-                    continue;
-                };
-                if named.contains(declared.name.as_str()) || meta.roots.first() == Some(ty) {
-                    // Already laid out: the first root is the window's own, and a named root
-                    // has its name below.
-                    continue;
-                }
-                layers.push(Some(declared.name.clone()));
-            }
-            for name in &named {
-                layers.push(Some((*name).to_owned()));
-            }
-            layers
-        }
-    };
+    let roots = layers_of(&meta, root);
     for root in &roots {
         for scenario in &meta.scenarios {
             let mut staged = stage::Staged::over(
@@ -398,7 +368,11 @@ fn check_app(
                 ui::Theme::light(),
                 root.as_deref(),
             )?;
-            check.run(&mut staged, &scenario.name)?;
+            // A layer other than the window's own is named in what the check says and in its
+            // shots' names, so the shots of one scenario on two layers never overwrite each
+            // other.
+            let title = on_layer(&scenario.name, root.as_deref());
+            check.run(&mut staged, &title)?;
             // The views of types the scenario did not open, on a resource its window names.
             for default in &meta.default_views {
                 let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
@@ -415,7 +389,7 @@ fn check_app(
                 staged.open(resource);
                 check.run(
                     &mut staged,
-                    &format!("{}, then a {} opened", scenario.name, view.name),
+                    &format!("{title}, then a {} opened", view.name),
                 )?;
             }
             // The views the system shows on surfaces of its own rather than in a window of the
@@ -436,10 +410,7 @@ fn check_app(
                     continue;
                 };
                 staged.open_with(&resource, &view.id);
-                check.run(
-                    &mut staged,
-                    &format!("{}, then {} shown", scenario.name, view.name),
-                )?;
+                check.run(&mut staged, &format!("{title}, then {} shown", view.name))?;
             }
             press_stage(
                 &mut check,
@@ -458,6 +429,52 @@ fn check_app(
         .map(|v| format!("{} › {}", check.short, v.name))
         .collect();
     Ok((check.gathered.into_values().collect(), check.ran, unreached))
+}
+
+/// The layers laid out. A package with more than one root declares layers the person sees
+/// apart from one another — the shell's `Desk`, its `Arrangement` of places and its `Viewing`
+/// of settings — and each has its own default view, so every one is laid out: the launcher
+/// opens an app's first root, yet a person meets the others through the desktop's surfaces,
+/// and a view only one of them reaches (a dock, a settings page) must still be held to the bar.
+/// `--root NAME` narrows the check to that layer alone, as a shot of the desk is.
+fn layers_of(meta: &tilolang::PackageMeta, root: Option<&str>) -> Vec<Option<String>> {
+    if let Some(name) = root {
+        return vec![Some(name.to_owned())];
+    }
+    let mut layers: Vec<Option<String>> = vec![None];
+    // Every other root the package declares, by the name `--root` takes: a named root's own,
+    // and the type's name for a root with none. The window's own root is laid out already,
+    // whichever name it goes by.
+    let others: BTreeSet<&str> = meta
+        .named_roots
+        .iter()
+        .filter(|r| meta.roots.first() != Some(&r.ty))
+        .map(|r| r.name.as_str())
+        .collect();
+    for ty in &meta.roots {
+        let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
+            continue;
+        };
+        if meta.named_roots.iter().any(|r| &r.ty == ty) || meta.roots.first() == Some(ty) {
+            // Already laid out: the first root is the window's own, and a named root has its
+            // name below.
+            continue;
+        }
+        layers.push(Some(declared.name.clone()));
+    }
+    for name in &others {
+        layers.push(Some((*name).to_owned()));
+    }
+    layers
+}
+
+/// What the check calls `scenario` laid out on `root`: the scenario's name on the window's own
+/// layer, and the layer's name after it on any other.
+fn on_layer(scenario: &str, root: Option<&str>) -> String {
+    root.map_or_else(
+        || scenario.to_owned(),
+        |root| format!("{scenario} on {root}"),
+    )
 }
 
 /// What the window shows once a person pressed one of its primary actions (a new note opened
@@ -497,7 +514,7 @@ fn press_stage(
             check.audit(
                 &mut staged,
                 layout,
-                &format!("{scenario}, then {label} pressed"),
+                &format!("{}, then {label} pressed", on_layer(scenario, root)),
             )?;
         }
     }
@@ -903,6 +920,13 @@ mod traditional_desktop {
         assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
         for frame in frames {
             let window = frame.get_rect();
+            // What the window holds is cut at its edge, so a list scrolled past its top is
+            // never read over the window behind it.
+            assert_eq!(
+                frame.child_clip_rect(),
+                Some(window),
+                "the window clips what it holds"
+            );
             // The window shows its resource through its type's own view, filling it.
             let shells = named(frame, "NavShell");
             let [shell] = shells[..] else {
@@ -1025,6 +1049,20 @@ mod traditional_desktop {
                 "the badge {badge:?} covers {under:?} at {at}"
             );
         }
+    }
+
+    #[test]
+    fn a_scenario_on_two_layers_is_named_apart() {
+        // The shots of the window's own layer and of the shell's settings layer must not land
+        // in one file, or the desk's shot is the settings page.
+        assert_eq!(
+            super::on_layer("the traditional desktop", None),
+            "the traditional desktop"
+        );
+        assert_ne!(
+            super::on_layer("the traditional desktop", Some("Shell")),
+            super::on_layer("the traditional desktop", None)
+        );
     }
 
     #[test]

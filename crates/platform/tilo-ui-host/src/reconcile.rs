@@ -307,7 +307,9 @@ fn placement(parent: &UiNode, child: &UiNode) -> Placement {
     // its content, so what it holds lays out in the width the row offers. A row that wraps
     // flows its items at their own width instead, as chips and tags do; and a row with a
     // spacer has said where its room goes, so its containers hold what they hold and the
-    // spacer takes the rest (a bar's leading and trailing parts, each a group of its own).
+    // spacer takes the rest (a bar's leading and trailing parts, each a group of its own). A
+    // row whose group must give way when it is short of room (a card's title truncating
+    // beside its menu) leaves the spacer out: the group then takes the room itself.
     if parent.kind == "row"
         && !flag(parent, "wrap")
         && !parent

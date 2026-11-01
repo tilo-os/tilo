@@ -601,3 +601,55 @@ fn a_page_is_as_tall_as_its_text_wraps_at_its_measure() {
         );
     }
 }
+
+/// A spacer that takes a row's leftover room is room, not a sibling: the row's gap stands once
+/// between what comes before it and what follows, so a row with no room to spare still holds
+/// both, and with room the spacer sends what follows it to the far end — in either direction.
+#[test]
+fn a_spacer_takes_the_leftover_room_and_no_gap_of_its_own() {
+    let theme = Theme::dark();
+    let between = gap(&theme, Rhythm::Related);
+    for direction in [Direction::Ltr, Direction::Rtl] {
+        let row = || {
+            let mut spacer = Slot::new(Box::new(Spacer::new()));
+            spacer.fit = Fit::fill(1.0);
+            Stack::row()
+                .fill_width()
+                .direction(direction)
+                .push(boxed(100.0))
+                .push_slot(spacer)
+                .push(boxed(100.0))
+        };
+        // Exactly room for both and one gap.
+        #[allow(clippy::cast_possible_truncation, reason = "a small test width")]
+        let tight = (200.0 + between) as f32;
+        let mut short = row();
+        solve(&mut short, &theme, tight);
+        let r = rects(&short);
+        let (left, right) = if direction == Direction::Ltr {
+            (r[0], r[2])
+        } else {
+            (r[2], r[0])
+        };
+        assert!(
+            left.x0.abs() < 0.5 && (right.x1 - f64::from(tight)).abs() < 0.5,
+            "{direction:?}: {r:?}"
+        );
+        assert!(
+            (right.x0 - left.x1 - between).abs() < 0.5,
+            "one gap between them: {r:?}"
+        );
+        let mut roomy = row();
+        solve(&mut roomy, &theme, 600.0);
+        let r = rects(&roomy);
+        let (left, right) = if direction == Direction::Ltr {
+            (r[0], r[2])
+        } else {
+            (r[2], r[0])
+        };
+        assert!(
+            left.x0.abs() < 0.5 && (right.x1 - 600.0).abs() < 0.5,
+            "{direction:?}: {r:?}"
+        );
+    }
+}

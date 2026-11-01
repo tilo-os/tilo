@@ -383,6 +383,12 @@ impl Decorator for WindowFrame {
         scene.pop_layer();
     }
 
+    /// What the window holds is cut at its edge: a list scrolled past its top is not seen over
+    /// the window behind it, and a press there does not reach it.
+    fn child_clip_rect(&self) -> Option<Rect> {
+        (self.rect.width() > 0.0).then_some(self.rect)
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let relayout = std::mem::take(&mut self.relayout);
         self.layers.take_structure_dirty() || relayout
