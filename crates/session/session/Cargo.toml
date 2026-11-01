@@ -148,6 +148,9 @@ tilo-service = { path = "../service" }
 # provider seam it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The content a record references, kept under this session's state and served
+# to the apps that read the record.
+tilo-content = { path = "../../system/content" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
 tilo-native-media = { path = "../native-media" }

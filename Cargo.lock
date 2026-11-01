@@ -21574,6 +21574,7 @@ dependencies = [
  "tilo-color-pipeline",
  "tilo-compositor",
  "tilo-connectivity-service",
+ "tilo-content",
  "tilo-copy-lint",
  "tilo-crash-records",
  "tilo-desktop",

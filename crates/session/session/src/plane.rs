@@ -25,9 +25,9 @@ use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutStat
 use tilo_action_broker::collab_outbound::PeerPublisher;
 use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    Caller, Granted, HostServices, HostStepServices, PublishedResources, Reading, ResourceWatch,
-    SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-    SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+    Caller, ContentStoreServices, Granted, HostServices, HostStepServices, PublishedResources,
+    Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices,
+    ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -321,6 +321,10 @@ pub struct Hosted {
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
+    /// The content the workspaces' records reference: where an app keeps
+    /// what its record names, and the route an app asks the workspace's other
+    /// devices for what it lacks.
+    pub record_content: Option<std::sync::Arc<crate::content::Plane>>,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -491,6 +495,7 @@ fn host_services(
         agent_runs,
         sealed,
         own_device,
+        record_content,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -531,6 +536,13 @@ fn host_services(
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
         channel_keys: sealed.keys,
+        // Content a record references is kept on this device beside the
+        // workspace's records, and asked of the workspace's other devices: an
+        // app's attachment survives its process and reaches every member.
+        content_store: record_content
+            .as_ref()
+            .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
+        record_content: record_content.map(|content| content.route()),
         ..HostServices::default()
     }
 }
@@ -775,6 +787,7 @@ mod tests {
                 keys: None,
             },
             own_device: None,
+            record_content: None,
         }
     }
 

@@ -101,6 +101,8 @@ pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
     pub sealed: Sealed,
+    /// The records' content this session keeps and asks the workspaces for.
+    pub content: Option<std::sync::Arc<crate::content::Plane>>,
 }
 
 /// The plane the apps read and invoke this session's services on, when it
@@ -123,6 +125,7 @@ pub(crate) fn start_action_plane(
         revocations,
         sync,
         sealed,
+        content,
     } = collaboration;
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -202,6 +205,7 @@ pub(crate) fn start_action_plane(
             agent_runs: Some(agent_runs),
             sealed,
             own_device,
+            record_content: content,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

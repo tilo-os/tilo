@@ -42,6 +42,7 @@ mod capture_studio;
 mod channels;
 mod chrome;
 mod config;
+mod content;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
@@ -1310,6 +1311,13 @@ impl Session {
             .ok()
         });
         let sync = start_collaboration(&options, media, engine.clone());
+        // The content the workspaces' records reference: kept beside their
+        // records under this session's state, and asked of the workspace's
+        // other devices on the topic the records travel.
+        let record_content = content::Plane::open(options.state.as_deref());
+        if let Some(sync) = &sync {
+            sync.attach_content(std::sync::Arc::clone(&record_content));
+        }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the desk this session shows.
         if let Some(sync) = &sync {
@@ -1552,6 +1560,7 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
+                content: Some(record_content),
             },
         )?;
         // The agent door: a program of this login asks here to work in a
