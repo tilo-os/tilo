@@ -2,7 +2,7 @@
 //! the call tile, and the two drawers that flank the conversation — docked
 //! beside it on a wide window, floating over it on a narrow one.
 //!
-//! The shell keeps the room's channels in its sidebar (`resource.rs`); this
+//! The shell keeps the workspace's channels in its sidebar (`resource.rs`); this
 //! window is the conversation beside them, and the detail drawer (people, or
 //! the open thread) at its trailing edge. The toolkit's `SidebarDrawer`
 //! decides, from the width, whether that drawer docks beside the conversation

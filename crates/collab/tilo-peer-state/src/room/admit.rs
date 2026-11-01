@@ -238,6 +238,7 @@ fn membership_authorized(
         input.room,
         (&person, input.source.key, foreign),
         &at,
+        changes,
         &after,
         input.now_ns,
     )

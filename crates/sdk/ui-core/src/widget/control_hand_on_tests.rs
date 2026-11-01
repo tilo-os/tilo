@@ -39,18 +39,18 @@ fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
     vec![
         Box::new(
             Toggle::from_state(&crate::LocalState::new(m.on))
-                .on_change(set(|m, value| m.on = value)),
+                .on_view("switch", set(|m, value| m.on = value)),
         ),
         Box::new(
             Checkbox::from_state(&crate::LocalState::new(m.remember))
                 .with_label("Remember me")
-                .on_change(set(|m, value| m.remember = value)),
+                .on_view("remember", set(|m, value| m.remember = value)),
         ),
         Box::new(
             Checkbox::from_state(&crate::LocalState::new(m.nearby))
                 .radio()
                 .with_label("Nearby only")
-                .on_change(set(|m, value| m.nearby = value)),
+                .on_view("nearby", set(|m, value| m.nearby = value)),
         ),
         Box::new(
             Slider::from_state(&crate::LocalState::new(m.level))
@@ -87,6 +87,8 @@ fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource
         &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
+    // The control published the press; the host answers it after the event.
+    crate::testing::answer_controls(*control);
 }
 
 #[test]

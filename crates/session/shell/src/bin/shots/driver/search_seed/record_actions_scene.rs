@@ -28,10 +28,8 @@ impl ShellDriver {
     /// workspace to publish them in.
     #[cfg(feature = "test-support")]
     fn publish_notes_pages(&mut self) -> bool {
+        use shell::shell::collab_app_broker::{PublishedAction, PublishedInput, PublishedSurface};
         use shell::shell::collab_broker::CrdtRoute;
-        use shell::shell::collab_broker_capnp::{
-            PublishedAction, PublishedInput, PublishedSurface,
-        };
         const NOTES: &str = "so.tilo.notes";
         let Some(room) = ({
             let handle = self.chrome_handle();
@@ -71,7 +69,7 @@ impl ShellDriver {
             page(42, "trip", "Trip plan", false),
         ];
         self.fb.host_mut().attach_app_action_broker({
-            let broker = shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+            let broker = shell::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
             broker.replace_published_surfaces_for_test(pages);
             broker
         });

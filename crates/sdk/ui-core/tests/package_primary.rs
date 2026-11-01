@@ -95,12 +95,6 @@ fn primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     assert!(RecordId::parse(checkout.id.as_str()).is_none());
     let mut doc = AutoCommit::new();
-    doc.put(
-        ROOT,
-        app_state::SCHEMA_VERSION_KEY,
-        u64::from(app_state::SCHEMA_VERSION),
-    )
-    .unwrap();
     tilo_ui::record::init_scoped(
         &mut doc,
         &RecordId::for_tab(7),

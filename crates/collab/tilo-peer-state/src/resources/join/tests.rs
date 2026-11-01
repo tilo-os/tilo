@@ -27,10 +27,10 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     peer.receive_from(
-        crate::TransportOrigin::RelayDelta(peer.authority().device_public_key),
+        crate::TransportOrigin::RelayDelta(peer.owner_certificates()[0].device_public_key),
         crate::NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(peer.authority().clone()),
+            cert: Box::new(peer.owner_certificates()[0].clone()),
             revocations: vec![revocation],
         },
         now,
@@ -39,24 +39,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     let grant = InviteGrant {
         workspace_id: 42,
         room: peer.room().into(),
-        authority: peer.authority().clone(),
         issuer: member.clone(),
-        delegation: Some(
-            sign_workspace_delegation(
-                peer.room(),
-                42,
-                peer.authority(),
-                member.clone(),
-                WorkspaceDelegationPermissions {
-                    issue_invitations: true,
-                    admit_invited_members: true,
-                },
-                [29; 16],
-                Some(now_ns.checked_add(10_000).unwrap()),
-                &governor,
-            )
-            .unwrap(),
-        ),
         role: MemberRole::Editor,
         nonce: [17; 16],
         recipient_user_public_key: Some(member.user_public_key),
@@ -66,7 +49,7 @@ fn responses() -> Vec<JoinTransportResponse> {
             sign_transport_hint(
                 TRANSPORT_TILO_SESSION_JOIN_HTTP_V1,
                 r#"{"endpoint":"https://localhost/join","label":"a\\b"}"#,
-                peer.authority().clone(),
+                peer.owner_certificates()[0].clone(),
                 [44; 32],
                 &governor,
             )
@@ -93,7 +76,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     let membership = MembershipChallenge::new(
         peer.room(),
         42,
-        peer.authority(),
+        &peer.owner_certificates()[0],
         &member,
         [20; 32],
         [21; 32],
@@ -108,7 +91,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         role: MemberRole::Editor,
         room: peer.room().into(),
         workspace_id: 42,
-        authority: peer.authority().clone(),
+        host: peer.owner_certificates()[0].clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -126,7 +109,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         device_cert: bootstrap.device_cert.clone(),
         room: bootstrap.room.clone(),
         workspace_id: bootstrap.workspace_id,
-        authority: bootstrap.authority.clone(),
+        host: bootstrap.host.clone(),
         certified_roster: bootstrap.certified_roster.clone(),
         revocations: bootstrap.revocations.clone(),
         records: bootstrap.records.clone(),
@@ -199,9 +182,8 @@ fn bounded_join_response_malformed_nested_signature_is_refused() {
         panic!()
     };
     let signatures = [
-        inspection.grant.authority.signature,
+        inspection.grant.issuer.signature,
         inspection.grant.transport[0].host_signature,
-        inspection.grant.delegation.as_ref().unwrap().signature,
     ];
     for signature in signatures {
         let mut bytes = postcard::to_allocvec(&response).unwrap();

@@ -571,6 +571,12 @@ fn backdrop_frame(
                 image,
                 rect: kurbo_rect(backdrop.rect),
                 blur_px: f64::from(backdrop.blur_px),
+                sampling: if backdrop.sampling == 1 {
+                    ui::backdrop::Sampling::Blocky
+                } else {
+                    ui::backdrop::Sampling::Smooth
+                },
+                cell_px: f64::from(backdrop.cell_px),
                 below: Scene::from(backdrop.below),
                 ground: Color::new(backdrop.ground),
             })

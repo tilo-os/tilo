@@ -24,7 +24,9 @@
 //! device key, which already lives beside it.
 
 use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use channel_crypto::{ChannelPeer, VaultKey};
@@ -34,6 +36,8 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_lock::MutexRecover as _;
+
+use super::{ChannelKeys, DeviceKeys, GovernedRoom, Rooms, RoomsInner, SystemTime};
 
 /// Channels one room takes part in.
 const MAX_CHANNELS: usize = 4096;
@@ -585,6 +589,186 @@ impl Participation {
             });
         }
         Ok(messages)
+    }
+}
+
+#[cfg(any(feature = "agents", feature = "web"))]
+impl Rooms {
+    /// The content keys of `route`'s channel, for this host's own endpoints
+    /// (the room actions it runs for its members' pages). `create` opens the
+    /// channel when the room actions are about to write a record that has
+    /// none yet; otherwise only an existing channel is read and none is ever
+    /// created. `None` when its device takes no part in the room's channels:
+    /// a participant admits the room actions over the channel like any
+    /// member.
+    ///
+    /// The keys come from the device through [`Rooms::device_keys`], after
+    /// the one admission decision that hands them out
+    /// ([`RoomOperation::OwnChannelKeys`]), taken under the governed room's
+    /// lock. Who may make the room actions act at all is decided there: only
+    /// the relay owner's person, through each record's own door.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the decision is taken under the room's lock, the keys read after it"
+    )]
+    pub async fn own_route_keys(
+        &self,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        let device = self.device_keys()?;
+        let state = self.room(&route.cluster_id).await.ok()?;
+        {
+            let room = state.lock().await;
+            if route.workspace_id().ok() != Some(room.workspace_id()) {
+                return Some(Err("the record is not in this room".into()));
+            }
+            let workspace = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&room.workspace_id())
+                .cloned();
+            drop(room);
+            let Some(workspace) = workspace else {
+                return Some(Err("this relay does not hold the room".into()));
+            };
+            let own = crate::auth::AuthenticatedPeer {
+                cert: self.inner.host.cert.clone(),
+                user_public_key: self.inner.host.cert.user_public_key,
+                device_public_key: self.inner.host.cert.device_public_key,
+            };
+            let trust = crate::room_access::RelayTrust {
+                revocations: &self.inner.host.revocations,
+                policy: &self.inner.host.trust_policy,
+                own_user: &self.inner.host.cert.user_public_key,
+                agents: &self.inner.host.agents,
+            };
+            let decision = crate::room_access::decide(
+                &*workspace.lock().await,
+                &trust,
+                &own,
+                crate::room_access::RoomOperation::OwnChannelKeys,
+            );
+            if let crate::room_access::Decision::Deny(reason) = decision {
+                tracing::warn!(room = %route.cluster_id, reason = reason.reason(),
+                    "the host's own channel keys refused");
+                return Some(Err(reason.reason().into()));
+            }
+        }
+        // This host's own endpoint names the record it writes: the channel
+        // is decided by it from its first admission.
+        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
+        device.channel_keys(&route.cluster_id, &named, create).await
+    }
+}
+
+/// The channel keys of a host that is its own device's peer: the leaf its
+/// participation holds is the device's one leaf, so its own asks are answered
+/// from there.
+pub(super) struct Custody(std::sync::Weak<RoomsInner>);
+
+impl Custody {
+    /// The handle of `inner`, these rooms' host.
+    pub(super) fn of(inner: &Arc<RoomsInner>) -> DeviceKeys {
+        Arc::new(Self(Arc::downgrade(inner)))
+    }
+}
+
+impl ChannelKeys for Custody {
+    fn channel_keys<'a>(
+        &'a self,
+        room: &'a str,
+        route: &'a ChannelRoute,
+        create: bool,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Option<Result<channel_crypto::ChannelContentKeys, String>>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let rooms = Rooms {
+                inner: self.0.upgrade()?,
+            };
+            rooms.custody_keys(room, route, create).await
+        })
+    }
+}
+
+impl Rooms {
+    /// The keys of `route`'s channel in `room` as the participation this
+    /// host takes part with holds them
+    /// ([`ChannelKeys`] of a host that is its own device's peer): `create`
+    /// opens the channel with the devices that may read its record when it
+    /// has none yet.
+    async fn custody_keys(
+        &self,
+        room: &str,
+        route: &ChannelRoute,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        let state = self.room(room).await.ok()?;
+        let governed = state.lock().await;
+        let participant = governed.participation.clone()?;
+        let channel = route.channel(room);
+        if !route.proves(room, channel) {
+            return Some(Err("the record is not this channel's".into()));
+        }
+        participant.learn_route(channel, route);
+        let mut participation = participant.channels.lock().await;
+        let keys = match participation.existing_keys(channel) {
+            Ok(keys) => keys,
+            Err(error) => {
+                if !create {
+                    return Some(Err(error));
+                }
+                match self
+                    .open_record_channel(&governed, &participant, &mut participation, channel)
+                    .await
+                {
+                    Ok(()) => match participation.existing_keys(channel) {
+                        Ok(keys) => keys,
+                        Err(error) => return Some(Err(error)),
+                    },
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+        };
+        // Handed over once published: the channel's new epoch reaches the
+        // other participants before a write sealed under it does.
+        drop(participation);
+        tracing::debug!(room = %governed.room(), epoch = keys.epoch(),
+            "handed the host's own channel keys");
+        Some(Ok(keys))
+    }
+
+    /// Open `channel` of `room` as this host's device, creating its group
+    /// when it has none, with the devices that may read its record admitted,
+    /// and publish that change before anything is written there.
+    pub(super) async fn open_record_channel(
+        &self,
+        room: &GovernedRoom,
+        participant: &Participant,
+        participation: &mut Participation,
+        channel: ChannelId,
+    ) -> Result<(), String> {
+        let now = SystemTime::now();
+        let allowed = super::readers(
+            room.peer(),
+            &room.peer().governance().governed_access(now)?,
+            Some(participant),
+            None,
+            now,
+        )?;
+        let messages = participation.open_channel(channel, &allowed)?;
+        // After the channel changes a settle handed over.
+        room.publisher.flushed().await;
+        self.publish_channel_governance(room.workspace_id(), messages)
+            .await
     }
 }
 

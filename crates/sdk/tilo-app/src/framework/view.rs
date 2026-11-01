@@ -378,7 +378,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let dispatch = self.dispatch.clone();
         let (app, record, target) = (app.to_owned(), record.map(str::to_owned), reference.clone());
         ui_core::widget::Chip::reference(reference.label.clone(), &reference.id)
-            .on_click(move || dispatch.open_reference(&app, record.as_deref(), &target))
+            .on_view(move || dispatch.open_reference(&app, record.as_deref(), &target))
     }
 
     /// Open the platform search with `request`, narrowed to this app or one
@@ -580,6 +580,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// the view function: the rows a table, list or tree creates on demand.
     pub fn actions(&self) -> Actions<R> {
         self.action_bindings.clone()
+    }
+
+    /// The window's bar, its entries bound to the record's actions through
+    /// this view's dispatcher ([`super::WindowBar`]): the view declares what
+    /// the window shows and does, and the framework makes the slots of it.
+    #[must_use]
+    pub fn toolbar(&self) -> super::WindowBar<R> {
+        super::WindowBar::new(self.dispatcher())
     }
 
     /// A value that follows `read` of the resource, for any toolkit control

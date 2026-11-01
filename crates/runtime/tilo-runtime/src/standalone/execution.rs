@@ -6,8 +6,8 @@ use std::{
 };
 use tilo_actions::remote::Caller;
 use tilo_desktop_model::RoomId;
-use tilo_joined_room::{NativeFenceSubscription, NativeWorkspaceOwner};
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::owner::{NativeFenceSubscription, NativeWorkspaceOwner};
 
 const MAX_EXECUTIONS: usize = 512;
 

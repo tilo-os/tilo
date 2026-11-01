@@ -162,7 +162,7 @@ printf 'agreety=%s\n' "$*"
 EOF
 chmod +x "$work/bin/agreety"
 mkdir -p "$work/run-greeter"
-session_entry="$repo/os/usr/share/wayland-sessions/shell.desktop"
+session_entry="$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
 fallback() {
   : >"$work/tty"
   run TILO_TEXT_GREETER="$work/bin/agreety" TILO_GREETER_TTY="$work/tty" \

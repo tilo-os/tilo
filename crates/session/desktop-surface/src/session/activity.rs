@@ -7,8 +7,10 @@
 //! model serves moves ([`ActivityRequests::serve`]). Its writes run on the
 //! desktop's thread when it next takes them ([`ActivityRequests::take`]).
 //! What this device has seen is the person's own: an agent never marks it,
-//! and nothing here reaches a shared record. The history itself is read
-//! only: a write that would change it is refused.
+//! and nothing here reaches a shared record. Whether a change of the history
+//! may be written back is the host's to say ([`crate::ActivityHost`]): this
+//! door carries the write to the model, and a host that only shows a
+//! history refuses it there.
 //!
 //! The windows ask during their frame, on the desktop's thread, and the
 //! desktop answers on its next pass; until then an ask stays pending.
@@ -27,7 +29,6 @@ use tilo_actions::{ActionFailure, ActionOutput, ActorKind, InvocationId, Invocat
 use tilo_lock::MutexRecover as _;
 
 use crate::activity::{is_document_write, is_personal, is_read, refused_to_agent};
-use crate::i18n::t;
 
 /// The activity model's reads, as the desktop holds it.
 pub trait ActivityReads {
@@ -85,6 +86,9 @@ impl Follow {
 struct State {
     follows: HashMap<InvocationId, Follow>,
     asks: Vec<ActivityAsk>,
+    /// The revision the model's reads were last served at: how a host knows
+    /// that what an app follows may read differently.
+    served: Option<u64>,
 }
 
 /// The windows' end: what [`super::DesktopSession`] routes to under
@@ -164,10 +168,7 @@ impl Door {
         if is_read(&action) {
             return Pending::ready(self.follow(caller, invocation, action, arguments));
         }
-        if is_document_write(&action) {
-            return Pending::ready(Err(refused(t("activity-served-read-only"))));
-        }
-        if !is_personal(&action) && action != wire::OPEN {
+        if !is_personal(&action) && !is_document_write(&action) && action != wire::OPEN {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         let (answer, ran) = pending();
@@ -303,12 +304,59 @@ impl ActivityRequests {
     pub fn take(&self) -> Vec<ActivityAsk> {
         std::mem::take(&mut self.door.state.lock_recover().asks)
     }
-
     /// Whether a window follows the activity or asked something of it.
     #[must_use]
     pub fn wanted(&self) -> bool {
         let state = self.door.state.lock_recover();
         !state.asks.is_empty() || state.follows.values().any(|open| !open.finished())
+    }
+
+    /// Ask the model to run write `action` with `arguments` on its thread;
+    /// answered once it ran, or with why it did not.
+    pub fn act(&self, action: &str, arguments: Map<String, Value>) -> Pending<Result<(), String>> {
+        let (answer, ran) = pending();
+        self.door.ask(ActivityAsk::Act {
+            action: action.to_owned(),
+            arguments,
+            answer,
+        });
+        ran
+    }
+
+    /// Start following read `action` for `caller`, as a window or an app that
+    /// reaches the model through the host does.
+    ///
+    /// # Errors
+    /// The invocation already follows something else.
+    pub fn follow(
+        &self,
+        caller: &Caller,
+        invocation: InvocationId,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<(), ActionHostError> {
+        self.door
+            .follow(caller, invocation, action.to_owned(), arguments)
+            .map(|_| ())
+    }
+
+    /// What the follow `invocation` last read: its value, or why it failed
+    /// for good. `None` until the model has read it.
+    #[must_use]
+    pub fn served(&self, invocation: &InvocationId) -> Option<Result<Value, String>> {
+        let state = self.door.state.lock_recover();
+        match &state.follows.get(invocation)?.update {
+            InvocationUpdate::Item { value, .. } => Some(Ok(value.clone())),
+            InvocationUpdate::Failed { error, .. } => Some(Err(error.message.clone())),
+            _ => None,
+        }
+    }
+
+    /// The revision the model last served its reads at: a host that tells apps
+    /// when what they follow may read differently watches it.
+    #[must_use]
+    pub fn served_revision(&self) -> Option<u64> {
+        self.door.state.lock_recover().served
     }
 
     /// Read every followed read `model` has moved since, and send each
@@ -338,6 +386,7 @@ impl ActivityRequests {
         let read_at = model.revision();
         let mut woken = Vec::new();
         let mut state = self.door.state.lock_recover();
+        state.served = Some(read_at);
         for (invocation, value) in reads {
             let Some(open) = state.follows.get_mut(&invocation) else {
                 continue;
@@ -388,4 +437,26 @@ impl ActivityRequests {
             .collect();
         wake(waiters);
     }
+
+    /// Stop following `invocation` for `caller`: what it read is no longer
+    /// being read. A window that had been reading what is new stops counting
+    /// as reading it.
+    ///
+    /// # Errors
+    /// `caller` follows nothing under `invocation`.
+    pub fn cancel(
+        &self,
+        caller: &Caller,
+        invocation: &InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.door.cancel(caller, invocation)
+    }
+}
+
+/// A desktop's end of the activity its session serves, before anything
+/// serves it: a session that serves the model itself, as a native one does,
+/// makes this on its own.
+#[must_use]
+pub fn activity_requests(woken: Arc<AtomicBool>) -> ActivityRequests {
+    Door::new(woken).requests()
 }

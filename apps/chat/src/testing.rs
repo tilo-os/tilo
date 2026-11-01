@@ -1,21 +1,21 @@
-//! Test fixtures over a chat held without a window ([`Room`]): the demo and
+//! Test fixtures over a chat held without a window ([`Workspace`]): the demo and
 //! starter records, verbs applied as a named person, and the record and its
 //! messages read back as the window reads them.
 
 use automerge::AutoCommit;
 use ui::tilo_resource::{Id, Invoke};
 
-pub(crate) use crate::demo::{Room, apply_as, apply_at, post};
+pub(crate) use crate::demo::{Workspace, apply_as, apply_at, post};
 use crate::model::{Channel, Message, User};
 use crate::record::chat;
 use crate::resource::Chat;
 
-/// A room holding the demo room, read by [`crate::model::ME`].
-pub(crate) fn demo_doc() -> Room {
-    Room::demo().unwrap()
+/// A workspace holding the demo workspace, read by [`crate::model::ME`].
+pub(crate) fn demo_doc() -> Workspace {
+    Workspace::demo().unwrap()
 }
 
-/// The demo room's chat record alone, read by [`crate::model::ME`]:
+/// The demo workspace's chat record alone, read by [`crate::model::ME`]:
 /// for what reads no messages.
 pub(crate) fn demo_chat() -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -23,28 +23,28 @@ pub(crate) fn demo_chat() -> AutoCommit {
     doc
 }
 
-/// A verb on the messages of `room`, applied as `author` invokes it at
+/// A verb on the messages of `workspace`, applied as `author` invokes it at
 /// `now_ms`; the part it changed.
 pub(crate) fn apply_part_at(
-    room: &mut Room,
+    workspace: &mut Workspace,
     author: &str,
     now_ms: i64,
     invoke: Invoke<crate::parts::ChatPart>,
 ) -> Result<u64, ui::tilo_actions::DoorError> {
-    room.apply_part_at(author, now_ms, invoke)
+    workspace.apply_part_at(author, now_ms, invoke)
 }
 
-/// A verb on the messages of `room`, applied as `author` invokes it; the
+/// A verb on the messages of `workspace`, applied as `author` invokes it; the
 /// part it changed.
 pub(crate) fn apply_part_as(
-    room: &mut Room,
+    workspace: &mut Workspace,
     author: &str,
     invoke: Invoke<crate::parts::ChatPart>,
 ) -> Result<u64, ui::tilo_actions::DoorError> {
-    room.apply_part_as(author, invoke)
+    workspace.apply_part_as(author, invoke)
 }
 
-/// Start the chat in `doc` as `me` would: the room's `#chat` and `#voice`.
+/// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`.
 pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
     crate::demo::start(doc, me, name, initials).unwrap();
 }
@@ -54,7 +54,7 @@ pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &s
 }
 
 /// Post `text` in `channel` as `author`; the new message's id.
-pub(crate) fn say(doc: &mut Room, author: &str, channel: &str, text: &str) -> String {
+pub(crate) fn say(doc: &mut Workspace, author: &str, channel: &str, text: &str) -> String {
     doc.say(author, channel, text).unwrap()
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn write_draft(app: &mut crate::app::ChatApp, doc: &mut AutoCommit, t
 }
 
 /// The messages of `channel`, oldest first.
-pub(crate) fn messages(doc: &Room, channel: &str) -> Vec<Message> {
+pub(crate) fn messages(doc: &Workspace, channel: &str) -> Vec<Message> {
     doc.message_rows(channel)
 }
 
@@ -156,13 +156,13 @@ pub(crate) fn channels(doc: &AutoCommit) -> Vec<Channel> {
     crate::projection::read(doc).channel_rows()
 }
 
-/// The people in the room.
+/// The people in the workspace.
 pub(crate) fn users(doc: &AutoCommit) -> Vec<User> {
     crate::projection::read(doc).user_rows()
 }
 
 /// How many top-level messages `channel` has.
-pub(crate) fn top_level(doc: &Room, channel: &str) -> usize {
+pub(crate) fn top_level(doc: &Workspace, channel: &str) -> usize {
     doc.messages().top_level(&Id::from_raw(channel))
 }
 

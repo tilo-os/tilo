@@ -34,8 +34,8 @@ use ui::collaboration::{
 };
 use ui::presence::PresenceKey;
 
-use crate::document::{ContentCipher, DocumentRoute};
 use crate::session::{PeerEvent, PeerHandle, TransportPhase};
+use tilo_peer_state::document_frame::{ContentCipher, DocumentRoute};
 
 /// A `channel-crypto` member group as a [`ContentCipher`].
 struct GroupCipher(Box<channel_crypto::ChannelGroup>);

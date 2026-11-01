@@ -13,7 +13,7 @@ use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
-    ResourceSpec, Target,
+    ResourceSpec, ResourceViewSpec, Target,
 };
 
 use crate::action::DynAction;
@@ -290,6 +290,9 @@ impl ActionTypes {
             label,
         )
         .with_action(open_spec(id));
+        for view in views_of(&self.meta, type_name) {
+            resource = resource.with_view(view);
+        }
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
@@ -300,6 +303,44 @@ impl ActionTypes {
         }
         resource
     }
+}
+
+/// The views a resource of `type_name` is shown through: the package's offered views whose
+/// first parameter is one, each opening through the resource's `open`. The type's default view
+/// is the primary one; a view that shows a resource the same way under a name a person chose is
+/// listed beside it.
+fn views_of(meta: &Meta, type_name: &str) -> Vec<ResourceViewSpec> {
+    let Some(declared) = meta.types.iter().find(|t| t.name == type_name) else {
+        return Vec::new();
+    };
+    let primary = meta.default_view(&declared.id);
+    let of_type = |ty: &str| {
+        matches!(
+            tilolang_runtime::meta::parse_ty(ty, &meta.app),
+            Ok(tilolang_runtime::meta::Ty::Record(key))
+                if key.app == meta.app && key.name == type_name
+        )
+    };
+    meta.offered_views()
+        .filter(|view| view.params.first().is_some_and(|p| of_type(&p.ty)))
+        .map(|view| {
+            let label = if view.name.is_empty() {
+                view.id.clone()
+            } else {
+                view.name.clone()
+            };
+            let mut spec = ResourceViewSpec::new(view.id.clone(), label, "open");
+            if let Some(line) = view
+                .doc
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+            {
+                spec = spec.with_description(line);
+            }
+            spec.with_primary(primary == Some(view.id.as_str()))
+        })
+        .collect()
 }
 
 /// The resource `id` of the type `type_name`, published with the actions of that type.
@@ -917,8 +958,9 @@ impl Published<'_> {
             relabels: std::collections::BTreeSet::new(),
             relabel: Relabel::Kept,
         };
-        // The field of the record the name is read through, when an item holds it: fields after
-        // it in id order cannot name the record while it does.
+        // The field of the record the name is read through, when an item holds it: a field
+        // after it in naming order cannot name the record while it does
+        // ([`TypeSchema::in_naming_order`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
             .and_then(|at| self.chain(at));
@@ -927,6 +969,9 @@ impl Published<'_> {
             .and_then(|chain| chain.get(1))
             .and_then(|top| self.holder(top))
             .map(|(_, field)| field);
+        let naming_position = naming_field
+            .as_deref()
+            .and_then(|field| self.schema.naming_position(field));
         for key in fields {
             // A resource's first and last versions (`created(r)`, `updated(r)`), which every
             // change moves: nothing published reads them.
@@ -940,10 +985,14 @@ impl Published<'_> {
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
                 }
-                if naming_field
-                    .as_deref()
-                    .is_none_or(|f| key.field.as_str() <= f)
-                {
+                // Whether the field is read before (or as) the text that names the record.
+                // In naming order, not by id: a title is read first whatever id it drew, and
+                // its change always names the record again.
+                let or_before = match (naming_position, self.schema.naming_position(&key.field)) {
+                    (None, _) | (Some(_), None) => true,
+                    (Some(naming), Some(changed)) => changed <= naming,
+                };
+                if or_before {
                     rework.relabel = Relabel::Whole;
                 }
                 continue;

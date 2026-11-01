@@ -125,10 +125,10 @@ pub fn linked_webhook_username(name: &str, handle: &str) -> String {
         return webhook_username(name, false);
     }
     let suffix = format!(" (@{handle})");
-    let room = MAX_USERNAME_CHARS.saturating_sub(suffix.chars().count());
+    let workspace = MAX_USERNAME_CHARS.saturating_sub(suffix.chars().count());
     let name = webhook_username(name, false);
-    let name = if name.chars().count() > room {
-        let kept: String = name.chars().take(room.saturating_sub(1)).collect();
+    let name = if name.chars().count() > workspace {
+        let kept: String = name.chars().take(workspace.saturating_sub(1)).collect();
         format!("{}…", kept.trim_end())
     } else {
         name
@@ -191,8 +191,8 @@ mod tests {
     #[test]
     fn categories_and_voice_keep_their_names() {
         assert_eq!(
-            discord_channel_name(ChannelKind::Category, " Chat Room "),
-            "Chat Room"
+            discord_channel_name(ChannelKind::Category, " Chat Workspace "),
+            "Chat Workspace"
         );
         assert_eq!(discord_channel_name(ChannelKind::Voice, "Voice"), "Voice");
         assert_eq!(discord_channel_name(ChannelKind::Text, "Voice"), "voice");

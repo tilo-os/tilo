@@ -1,9 +1,6 @@
-use app_host::app_host_capnp::app_host as rpc;
-use app_host::local_package::LocalReview;
-use capnp_rpc::rpc_twoparty_capnp;
+use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
 
 #[path = "../src/local_package/fixture.rs"]
@@ -47,61 +44,6 @@ fn isolated_command(binary: &Path, root: &Path) -> Command {
     command
 }
 
-async fn connect(socket: &Path) -> rpc::Client {
-    use tokio::io::AsyncWriteExt;
-    let deadline = tilo_test_env::hang_deadline();
-    let mut stream = loop {
-        if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
-            break stream;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "Private real host never became ready"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
-    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
-    stream.write_all(b"QAH1").await.unwrap();
-    stream
-        .write_all(&u32::try_from(handoff.len()).unwrap().to_be_bytes())
-        .await
-        .unwrap();
-    stream.write_all(handoff).await.unwrap();
-    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
-        .bootstrap()
-}
-
-fn review(
-    client: &rpc::Client,
-    bytes: &[u8],
-) -> capnp::capability::Request<rpc::review_local_params::Owned, rpc::review_local_results::Owned> {
-    let mut request = client.review_local_request();
-    request.get().set_tapp_bytes(bytes);
-    request
-}
-
-fn decoded(
-    response: &capnp::capability::Response<rpc::review_local_results::Owned>,
-) -> LocalReview {
-    let result = response.get().unwrap();
-    let json = result.get_review_json().unwrap().to_str().unwrap();
-    serde_json::from_str(json).unwrap()
-}
-
-fn install(
-    client: &rpc::Client,
-    bytes: &[u8],
-    review: &LocalReview,
-) -> capnp::capability::Request<rpc::install_local_params::Owned, rpc::install_local_results::Owned>
-{
-    let mut request = client.install_local_request();
-    let mut params = request.get();
-    params.set_tapp_bytes(bytes);
-    params.set_reviewed_root(&review.root);
-    params.set_reviewed_archive_hash(&review.archive_hash);
-    request
-}
-
 #[test]
 fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_and_revocation() {
     let root = tempfile::tempdir().unwrap();
@@ -120,89 +62,52 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _host = Host(command.spawn().unwrap());
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let client = common::store_client(&socket);
+    let checked = client.review_local(&full).unwrap();
+    assert_eq!(checked.manifest.package.id, "so.tilo.unlisted-local");
+    assert!(checked.installed_version.is_none());
+    // Both are valid trusted encodings of the same signed root. Review
+    // of one cannot authorize replacing handed bytes with the other.
+    assert!(
+        client
+            .install_local(&thin, &checked)
+            .expect_err("The canonical host must refuse this install")
+            .contains("changed since review")
+    );
+    let id = client.install_local(&full, &checked).unwrap();
+    assert_eq!(id.to_hex(), checked.root);
+    let thin_review = client.review_local(&thin).unwrap();
+    assert_eq!(thin_review.installed_version.as_deref(), Some("1.0.0"));
+    let mut pin = isolated_command(&installer(), root.path());
+    assert!(
+        pin.args(["pin", "so.tilo.unlisted-local"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(client.install_local(&thin, &thin_review).is_ok());
+    assert!(client.review_local(&thin).unwrap().pinned);
+    let (replacement, _, replacement_trust, _) = fixture::fixture();
+    replacement_trust
+        .save(&config.join("trusted-attestors.toml"))
         .unwrap();
-    tokio::task::LocalSet::new().block_on(&runtime, async {
-        let client = connect(&socket).await;
-        let checked = decoded(&review(&client, &full).send().promise.await.unwrap());
-        assert_eq!(checked.manifest.package.id, "so.tilo.unlisted-local");
-        assert!(checked.installed_version.is_none());
-        // Both are valid trusted encodings of the same signed root. Review
-        // of one cannot authorize replacing handed bytes with the other.
-        assert!(
-            install(&client, &thin, &checked)
-                .send()
-                .promise
-                .await
-                .err()
-                .expect("The canonical host must refuse this install")
-                .to_string()
-                .contains("changed since review")
-        );
-        let id = install(&client, &full, &checked)
-            .send()
-            .promise
-            .await
-            .unwrap();
-        assert_eq!(
-            hex::encode(id.get().unwrap().get_id().unwrap()),
-            checked.root
-        );
-        let thin_review = decoded(&review(&client, &thin).send().promise.await.unwrap());
-        assert_eq!(thin_review.installed_version.as_deref(), Some("1.0.0"));
-        let mut pin = isolated_command(&installer(), root.path());
-        assert!(
-            pin.args(["pin", "so.tilo.unlisted-local"])
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        assert!(
-            install(&client, &thin, &thin_review)
-                .send()
-                .promise
-                .await
-                .is_ok()
-        );
-        assert!(decoded(&review(&client, &thin).send().promise.await.unwrap()).pinned);
-        let (replacement, _, replacement_trust, _) = fixture::fixture();
-        replacement_trust
-            .save(&config.join("trusted-attestors.toml"))
-            .unwrap();
-        let replacement_review =
-            decoded(&review(&client, &replacement).send().promise.await.unwrap());
-        let refusal = install(&client, &replacement, &replacement_review)
-            .send()
-            .promise
-            .await
-            .err()
-            .expect("The canonical host must refuse this install")
-            .to_string();
-        assert!(refusal.contains("changed publisher"), "{refusal}");
-        trust.save(&config.join("trusted-attestors.toml")).unwrap();
-        assert_eq!(
-            decoded(&review(&client, &full).send().promise.await.unwrap()).root,
-            checked.root
-        );
-        RevocationList {
-            revoked: vec![RevokedKey {
-                pubkey_hex: publisher,
-                reason: "fixture revocation after review".into(),
-            }],
-        }
-        .save(&config.join("revoked-keys.toml"))
-        .unwrap();
-        assert!(review(&client, &full).send().promise.await.is_err());
-        assert!(
-            install(&client, &full, &checked)
-                .send()
-                .promise
-                .await
-                .is_err()
-        );
-        assert!(root.path().join("data/tilo-apps").is_dir());
-    });
+    let replacement_review = client.review_local(&replacement).unwrap();
+    let refusal = client
+        .install_local(&replacement, &replacement_review)
+        .expect_err("The canonical host must refuse this install");
+    assert!(refusal.contains("changed publisher"), "{refusal}");
+    trust.save(&config.join("trusted-attestors.toml")).unwrap();
+    assert_eq!(client.review_local(&full).unwrap().root, checked.root);
+    RevocationList {
+        revoked: vec![RevokedKey {
+            pubkey_hex: publisher,
+            reason: "fixture revocation after review".into(),
+        }],
+    }
+    .save(&config.join("revoked-keys.toml"))
+    .unwrap();
+    assert!(client.review_local(&full).is_err());
+    assert!(client.install_local(&full, &checked).is_err());
+    assert!(root.path().join("data/tilo-apps").is_dir());
 }

@@ -14,6 +14,26 @@ use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release,
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
+/// What a host showing `input` answers for it: the bound action this test
+/// names, and the field's own published report, which the field's resource
+/// announces beside it.
+fn answered(
+    input: &TextInput,
+    doc: &AutoCommit,
+) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+    let mut allowed =
+        std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]);
+    for resource in crate::resources::resources(input, doc) {
+        for spec in &resource.actions {
+            allowed.insert(tilo_actions::ActionAddress::new(
+                resource.id.as_str(),
+                spec.id.as_str(),
+            ));
+        }
+    }
+    allowed
+}
+
 #[test]
 fn action_bindings_own_edits_and_accessibility_set_value() {
     // Motion reads at its end: this test checks the resting frame.
@@ -51,7 +71,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
+            .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()))
             .on_action(crate::widget::test_string_action_binding());
         input.bind_text(object.clone());
         crate::widget::controls::refresh_control_action_availability(
@@ -59,13 +79,8 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             &std::collections::HashSet::new(),
         );
         assert!(input.is_disabled());
-        crate::widget::controls::refresh_control_action_availability(
-            &mut input,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
+        let allowed = answered(&input, &doc);
+        crate::widget::controls::refresh_control_action_availability(&mut input, &allowed);
         assert!(!input.is_disabled());
         assert!(Widget::perform_action(
             &mut input,
@@ -80,6 +95,11 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
                 .unwrap()
                 .arguments["value"],
             "Project Atlas"
+        );
+        assert_eq!(
+            crate::testing::answer_controls(&mut input),
+            1,
+            "the field's own report is answered beside the bound action"
         );
         assert_eq!(
             *changes.borrow(),
@@ -99,14 +119,9 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
             .on_action(crate::widget::test_string_action_binding())
-            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
-        crate::widget::controls::refresh_control_action_availability(
-            &mut input,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
+            .on_change_view(move |value| captured.borrow_mut().push(value.to_owned()));
+        let allowed = answered(&input, &doc);
+        crate::widget::controls::refresh_control_action_availability(&mut input, &allowed);
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Atlas".into()),
@@ -120,6 +135,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
                 .arguments["value"],
             "Atlas"
         );
+        assert_eq!(crate::testing::answer_controls(&mut input), 1);
         assert_eq!(*changes.borrow(), ["Atlas"]);
     }
 }

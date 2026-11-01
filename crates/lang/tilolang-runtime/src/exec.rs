@@ -85,18 +85,22 @@ fn push_chain(chain: &mut Vec<ModuleHash>, author: Option<&ModuleHash>) {
 impl Core {
     // ----- marshalling -------------------------------------------------------------------
 
+    /// Whether the reference `r` names a resource of the type `key`: one this runtime holds,
+    /// or another app's, named by its app and type.
+    fn ref_fits(&self, key: &crate::meta::TypeKey, r: &crate::value::RefValue) -> bool {
+        let registry = self.registry.borrow();
+        let Some(want) = registry.type_for(key) else {
+            return false;
+        };
+        want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
+    }
+
     fn check_param(&self, ty: &Ty, v: &Value) -> Result<(), String> {
         let ok = match (ty, v) {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
-            (Ty::Record(key), Value::Ref(r)) => {
-                let want = self.registry.borrow().type_for(key);
-                want.as_deref() == Some(r.target.ty.as_str())
-            }
-            (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| {
-                let want = self.registry.borrow().type_for(key);
-                want.as_deref() == Some(r.target.ty.as_str())
-            }),
+            (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
+            (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
             (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))
@@ -484,6 +488,12 @@ impl Core {
     ) -> Result<InvokeOutcome, RuntimeError> {
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
+        // An action of an app this runtime does not run is a child invocation at that app's
+        // own door: the host sends it on with this view's author, and the door decides it
+        // there (action-system.md, "One invocation path").
+        if self.foreign_action(&aref.action) {
+            return self.invoke_foreign(aref);
+        }
         let mut chain = Vec::new();
         push_chain(&mut chain, aref.author.as_ref());
         let ctx = ExecCtx {
@@ -533,6 +543,41 @@ impl Core {
                 Ok(InvokeOutcome::Suggested(suggestion))
             }
         }
+    }
+
+    /// Whether `action` is an action or a flow of an app this runtime does not run: one the
+    /// host invokes at that app's door.
+    fn foreign_action(&self, action: &str) -> bool {
+        let registry = self.registry.borrow();
+        registry
+            .action_package(action)
+            .is_some_and(|pkg| pkg.foreign)
+            || registry.flow_package(action).is_some_and(|pkg| pkg.foreign)
+    }
+
+    /// Invoke `aref` where its app runs: the host's invoker sends it on as a child of the code
+    /// that named it, and the answer is the child's.
+    fn invoke_foreign(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        use crate::delegate::Invoked;
+        let invocation = self.invocation_of(aref)?;
+        let answer = match self.invoker.borrow().as_ref() {
+            Some(invoker) => invoker.invoke(&invocation),
+            None => {
+                return Err(RuntimeError::Package(format!(
+                    "`{}` is an action of `{}`, an app this host does not run, and it makes no \
+                     invocation of it",
+                    aref.action,
+                    invocation.app()
+                )));
+            }
+        };
+        Ok(match answer {
+            Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
+            // The door said no, or asks the person first: nothing ran here. A host that asked
+            // keeps what it said, and answers the person's decision itself.
+            Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
+        })
     }
 
     // ----- flows -------------------------------------------------------------------------
@@ -857,6 +902,11 @@ impl Core {
                 .collect(),
             class: meta.class,
             destructive: meta.role.as_deref() == Some("destructive"),
+            author: aref.author.clone(),
+            subject: aref.args.iter().find_map(|arg| match arg {
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                _ => None,
+            }),
         })
     }
 

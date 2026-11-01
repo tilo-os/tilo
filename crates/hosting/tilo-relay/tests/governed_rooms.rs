@@ -137,7 +137,7 @@ async fn receive_until(
             match session.recv().await.expect("the session stays open") {
                 Inbound::Delta { author, data } => {
                     let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                    let origin = if author == peer.authority().device_public_key {
+                    let origin = if author == peer.owner_certificates()[0].device_public_key {
                         TransportOrigin::RetainedRelayDelta(author)
                     } else {
                         TransportOrigin::RelayDelta(author)
@@ -219,9 +219,9 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     )
     .unwrap();
     assert_eq!(
-        verified.grant().authority,
+        verified.grant().issuer,
         host.cert,
-        "the relay governs the room"
+        "the relay answers for the room"
     );
     let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
         .redeem_hint(
@@ -241,7 +241,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     // Bob's own replica, from the bootstrap alone, makes him an editor.
     let mut bob_peer = StatePeer::new(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
         SystemTime::now(),
@@ -251,7 +251,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     for bytes in &bootstrap.governance_messages {
         bob_peer
             .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
                 postcard::from_bytes(bytes).unwrap(),
                 SystemTime::now(),
             )
@@ -509,9 +509,9 @@ type = "String"
     )
     .unwrap();
     assert_eq!(
-        verified.grant().authority,
+        verified.grant().issuer,
         host.cert,
-        "the relay governs the room"
+        "the relay answers for the room"
     );
     let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
         .redeem_hint(
@@ -531,7 +531,7 @@ type = "String"
     // Bob's own replica, from the bootstrap alone, makes him an editor.
     let mut bob_peer = StatePeer::new(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
         SystemTime::now(),
@@ -541,7 +541,7 @@ type = "String"
     for bytes in &bootstrap.governance_messages {
         bob_peer
             .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
                 postcard::from_bytes(bytes).unwrap(),
                 SystemTime::now(),
             )
@@ -697,9 +697,9 @@ params = []
     )
     .unwrap();
     assert_eq!(
-        verified.grant().authority,
+        verified.grant().issuer,
         host.cert,
-        "the relay governs the room"
+        "the relay answers for the room"
     );
     let admission = WorkspaceJoinClient::new(device_endpoint(&phone).await)
         .redeem_hint(
@@ -719,7 +719,7 @@ params = []
     // Bob's own replica, from the bootstrap alone, makes him an editor.
     let mut bob_peer = StatePeer::new(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
         SystemTime::now(),
@@ -729,7 +729,7 @@ params = []
     for bytes in &bootstrap.governance_messages {
         bob_peer
             .receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+                TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
                 postcard::from_bytes(bytes).unwrap(),
                 SystemTime::now(),
             )

@@ -364,7 +364,10 @@ mod tests {
             moving_for: 3,
             presses: Vec::new(),
         };
-        assert_eq!(walk(&mut screen, quick()), Ok(vec!["onboarding.begin.card"]));
+        assert_eq!(
+            walk(&mut screen, quick()),
+            Ok(vec!["onboarding.begin.card"])
+        );
         assert_eq!(screen.presses, ["onboarding.begin.card"]);
     }
 }

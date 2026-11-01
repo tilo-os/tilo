@@ -31,8 +31,8 @@ use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing};
 use tilo_automation::run::{AskRequest, ConfirmationRequest, RunHooks};
 use tilo_automation::{RunMode, RunRequest, RunTrigger, Shortcut, TriggerSpec};
-use tilo_browser_peer::DocumentRoute;
 use tilo_connector::ConnectorProcess;
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
 use crate::rooms::{MemberMark, Rooms};

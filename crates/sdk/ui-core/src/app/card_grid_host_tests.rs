@@ -4,14 +4,17 @@ use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
+/// The grid, as a host other than an [`App`] takes it: a tree hands its
+/// controls' custody to the host that adopts it first, and a tree an `App`
+/// already holds belongs to that app's domain.
+fn fixture_tree(count: usize) -> (Box<dyn Widget>, Rc<RefCell<Vec<usize>>>) {
     let clicks = Rc::new(RefCell::new(Vec::new()));
     let cards: Vec<Element> = (0..count)
         .map(|i| {
             let clicks = clicks.clone();
             Box::new(Card::new(Box::new(
                 Button::new(&format!("card-{i}"), &format!("Card {i}"))
-                    .on_click(move || clicks.borrow_mut().push(i)),
+                    .on_view(move || clicks.borrow_mut().push(i)),
             ))) as Element
         })
         .collect();
@@ -23,7 +26,12 @@ fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
         .push(Box::new(
             Container::new().with_no_padding().with_height(10.0),
         ));
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    (Box::new(root), clicks)
+}
+
+fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
+    let (root, clicks) = fixture_tree(count);
+    let mut app = App::new_with_controlled_inputs(State::new(), root);
     app.init_layout();
     (app, clicks)
 }
@@ -102,8 +110,7 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
 
     // Case `card_grid_headless_uses_same_narrow_geometry_and_click_target`.
     {
-        let (mut app, clicks) = fixture(2);
-        let root = std::mem::replace(&mut app.root_widget, Box::new(Column::new()));
+        let (root, clicks) = fixture_tree(2);
         let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
             State::new(),
             root,
@@ -120,6 +127,10 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         assert_eq!((first_w, second_w), (200.0, 200.0), "one full-width column");
         assert!((second_y - (first_y + first_h + gap)).abs() < 0.5);
         driver.click_named("card-1").unwrap();
+        assert!(
+            driver.poll_frame().unwrap(),
+            "the press's frame runs the card's action"
+        );
         assert_eq!(*clicks.borrow(), vec![1]);
     }
 
@@ -433,7 +444,7 @@ impl Widget for GrowingBody {
             let clicks = self.clicks.clone();
             self.column = std::mem::take(&mut self.column).push(Box::new(
                 Button::new(&format!("dynamic-{index}"), "Action")
-                    .on_click(move || clicks.borrow_mut().push(index)),
+                    .on_effect(move || clicks.borrow_mut().push(index)),
             ));
         }
         self.dirty = true;

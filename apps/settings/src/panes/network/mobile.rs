@@ -28,7 +28,7 @@ use os_actions::{
     ModemState, NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic,
     UnlockRetries,
 };
-use provider_settings_ui::bound::{SettingRows as _, record_item};
+use provider_settings_ui::bound::SettingRows as _;
 use tracing::warn;
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx};
@@ -40,7 +40,7 @@ use super::Reach;
 use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
-use crate::prefs::{DeviceVpnPrefs, MobileDataUsage, ResetDay};
+use crate::prefs::{DeviceVpnPrefs, NetworkUsage};
 use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
@@ -869,6 +869,10 @@ impl MobileModel {
     /// Where a capture of `sample` stands: abroad on the modem's page, and
     /// a locked SIM's page with the prompt asking for its code.
     fn stage(&mut self, sample: Option<MobileSample>) {
+        // The capture of the modem's page shows the period's data used.
+        if sample == Some(MobileSample::Roaming) {
+            super::usage::sample(&self.reach.storage);
+        }
         let Some(sample) = sample.filter(|sample| *sample != MobileSample::Registered) else {
             return;
         };
@@ -1344,7 +1348,7 @@ impl MobileModel {
                 })
             })
             .collect();
-        let usage = self.reach.storage.settings::<MobileDataUsage>().get();
+        let usage = self.reach.storage.settings::<NetworkUsage>().get();
         serde_json::json!({
             "source": if self.reach.devices { "device" } else { "preview" },
             "loaded": self.loaded, "present": self.loaded.then(|| self.present()),
@@ -1352,7 +1356,8 @@ impl MobileModel {
             "roaming": self.profile.as_ref().map(|profile| profile.roaming),
             "apn": self.profile.as_ref().map(|profile| profile.apn.clone().unwrap_or_else(|| "automatic".into())),
             "metered": self.profile.as_ref().map(|profile| metered_key(profile.metered)),
-            "data_used_bytes": usage.used,
+            "data_used_bytes": usage.mobile_used(ui::clock::local_now().date_naive()),
+            "data_limit_bytes": usage.limit(),
             "data_period_starts_on_day": usage.reset_day.get(),
             "modems": modems,
             "errors": { "modems": self.modems_error.as_ref().map(ToString::to_string), "profile": self.profile_error },
@@ -1627,7 +1632,6 @@ impl<'a> Page<'a> {
             );
         }
         items.extend(self.apn_rows());
-        items.extend(self.usage_rows());
         items
     }
 
@@ -1686,19 +1690,6 @@ impl<'a> Page<'a> {
             ]));
         }
         items
-    }
-
-    /// The data used this period and the day the period starts on: this
-    /// device's count, each row a part of the view over it.
-    fn usage_rows(&self) -> Vec<Item> {
-        let usage = self.cx.settings::<MobileDataUsage>();
-        [
-            record_item(self.cx, &usage, used_row),
-            record_item(self.cx, &usage, reset_day_row),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
     }
 
     /// The SIMs, the number, the PIN lock and changing the PIN.
@@ -1873,53 +1864,18 @@ impl<'a> Page<'a> {
             self.data_switch(modem),
             rows(data),
         )];
+        if modem.usable() {
+            sections.push(section(
+                &t("net-mobile-usage-title"),
+                rows(super::usage::mobile_rows(self.cx)),
+            ));
+        }
         let sims = self.sim_rows(modem);
         if !sims.is_empty() {
             sections.push(section(&t("net-mobile-sim-title"), rows(sims)));
         }
         sections
     }
-}
-
-/// The data used this period, since the day it started on, and the way to
-/// start counting again (the section's `reset-data-used`).
-fn used_row(cx: &ViewCx<MobileDataUsage>) -> Item {
-    let said = cx.value(|usage: &MobileDataUsage| {
-        let (month, day) = usage.period_start(tilo_clock::unix_now_i64());
-        t_args(
-            "net-mobile-used",
-            &[
-                ("used", ui::format::size(usage.used).into()),
-                ("month", ui::format::month_short(month).into()),
-                ("day", day.into()),
-            ],
-        )
-    });
-    provider_settings_ui::widgets::row(cx.switch(&said, |cx, said| {
-        let reset = cx.actions().bind_invocation(
-            Button::new(
-                "settings.network.mobile.used.reset",
-                &t("net-mobile-used-reset"),
-            ),
-            MobileDataUsage::RESET_DATA_USED.with(()),
-        );
-        Box::new(
-            ListRow::new("settings.network.mobile.used", t("net-mobile-data-used"))
-                .secondary(said.clone())
-                .trailing(Box::new(reset)),
-        )
-    }))
-}
-
-/// The day of the month the data used starts counting again.
-fn reset_day_row(cx: &ViewCx<MobileDataUsage>) -> Item {
-    cx.setting(t("net-mobile-reset-day"))
-        .id("network.mobile.reset-day")
-        .among(
-            MobileDataUsage::paths().reset_day,
-            ResetDay::all(),
-            |day: &ResetDay| day.get().to_string(),
-        )
 }
 
 impl MobileModel {

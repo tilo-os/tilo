@@ -26,6 +26,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
+# Whether a grant an app holds is live now is a question about the clock.
+tilo-clock = { path = "../../platform/tilo-clock" }
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

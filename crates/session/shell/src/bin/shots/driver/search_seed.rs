@@ -115,7 +115,8 @@ impl ShellDriver {
         // opens a hit; the capture's stands in for it.
         #[cfg(feature = "test-support")]
         self.fb.host_mut().attach_app_action_broker(
-            shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            shell::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
+            ),
         );
         // A device has its catalogue indexed long before anyone types: ask
         // once so the background index builds, and let it land, so the

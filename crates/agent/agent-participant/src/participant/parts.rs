@@ -8,7 +8,7 @@
 //! on the part's own route.
 
 use collab_types::DocumentMutation;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;
 

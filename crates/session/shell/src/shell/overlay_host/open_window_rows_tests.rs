@@ -5,8 +5,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
+use ui::search::ActivationModifier;
 use ui::widget::Container;
-use ui::widget::command_palette::ActivationModifier;
 use vello::kurbo::Rect;
 
 use super::*;

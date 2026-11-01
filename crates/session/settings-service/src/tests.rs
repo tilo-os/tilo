@@ -159,6 +159,85 @@ fn the_keyboard_layout_is_chosen_through_its_sections_verb() {
 }
 
 #[test]
+fn a_change_is_a_step_the_person_takes_back_through_the_section() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut services = services();
+    let section = "settings:settings.appearance";
+    let published = services
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == section)
+        .expect("the appearance section is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(actions.contains(&"undo"), "a control can undo: {actions:?}");
+    assert!(actions.contains(&"redo"), "a control can redo: {actions:?}");
+
+    services
+        .invoke(
+            &setting_resource("appearance.high_contrast"),
+            "switch",
+            &Map::new(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.read("settings:settings.appearance").unwrap()["high_contrast"],
+        json!(true)
+    );
+
+    services
+        .invoke(section, "undo", &Map::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.read("settings:settings.appearance").unwrap()["high_contrast"],
+        json!(false),
+        "the step is taken back through the section's own history"
+    );
+    services
+        .invoke(section, "redo", &Map::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.read("settings:settings.appearance").unwrap()["high_contrast"],
+        json!(true),
+        "and made again"
+    );
+}
+
+#[test]
+fn someone_else_cannot_take_back_a_step_that_is_not_theirs() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut ada = SettingsService::new("ada");
+    let mut bob = SettingsService::new("bob");
+    bob.invoke(
+        &setting_resource("appearance.high_contrast"),
+        "switch",
+        &Map::new(),
+    )
+    .expect("flipped");
+    let section = "settings:settings.appearance";
+    assert!(
+        ada.invoke(section, "undo", &Map::new()).is_err(),
+        "bob's step is bob's to take back"
+    );
+    assert_eq!(
+        ada.read("settings:settings.appearance").unwrap()["high_contrast"],
+        json!(true),
+        "ada's undo changed nothing"
+    );
+    bob.invoke(section, "undo", &Map::new()).expect("undone");
+    assert_eq!(
+        bob.read("settings:settings.appearance").unwrap()["high_contrast"],
+        json!(false)
+    );
+}
+
+#[test]
 fn a_change_made_elsewhere_is_published_on_the_next_poll() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut service = SettingsService::new("ada");

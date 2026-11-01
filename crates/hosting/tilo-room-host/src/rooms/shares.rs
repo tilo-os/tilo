@@ -50,10 +50,7 @@ impl Rooms {
         let at = system_time(now);
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        let member = governed
-            .peer()
-            .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+        let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let device_key = hex::encode(device.device_public_key);
@@ -106,10 +103,7 @@ impl Rooms {
         let at = system_time(now);
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        let member = governed
-            .peer()
-            .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+        let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let ids = share::ended_by(

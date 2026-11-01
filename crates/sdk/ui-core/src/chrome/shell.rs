@@ -38,11 +38,13 @@ const PANEL_GROUND_STEPS: &[u8] = &[16, 24, 32, 40, 56, 72, 96];
 /// Alpha of the inset stroke that gives an active control its inner glow.
 pub const GLOW_ALPHA: u8 = 51;
 
-/// Fraction of the full active lift a hovered control reaches.
-pub const HOVER_LIFT_T: f32 = 0.5;
+/// Fraction of the full active lift a hovered control reaches: the stock
+/// theme's hover response (`crate::tokens::ResponseStep::HOVER_LIFT`).
+pub const HOVER_LIFT_T: f32 = crate::tokens::ResponseStep::HOVER_LIFT;
 
-/// Uniform scale a pressed control takes, about its own centre.
-pub const PRESS_SCALE: f64 = 0.97;
+/// Uniform scale a pressed control takes, about its own centre: the stock
+/// theme's press response.
+pub const PRESS_SCALE: f64 = crate::tokens::ResponseStep::PRESS_SCALE as f64;
 
 /// What a chrome surface *is*. Picking the role fixes radius, surface and
 /// border together, so two surfaces of the same role are consistent
@@ -180,10 +182,15 @@ impl SelectionTier {
 pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
-    let fill = if lifted {
-        colors.lift(1.0)
+    let response = theme.tokens.response;
+    let step = response.step(state.hover, state.pressed);
+    let base = colors.surfaces.base;
+    let fill = if lifted && !state.pressed {
+        colors.lift_on(base, 1.0)
+    } else if state.pressed {
+        colors.lift_tinted_on(base, response.press.lift, response.press.tint)
     } else if state.hover {
-        colors.lift(HOVER_LIFT_T)
+        colors.lift_tinted_on(base, response.hover.lift, response.hover.tint)
     } else {
         Color::TRANSPARENT
     };
@@ -191,8 +198,9 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     SelectionTier {
         fill,
         border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),
-        inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
-        scale: if state.pressed { PRESS_SCALE } else { 1.0 },
+        inner_glow: (lifted && step.glow > 0.0)
+            .then(|| Colors::hairline_on(ground, glow_alpha(step.glow))),
+        scale: f64::from(step.scale),
     }
 }
 
@@ -216,22 +224,39 @@ pub const FLOOR_HOVER_T: f32 = 0.65;
 /// white one where a lift of the desktop would vanish into it.
 pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
     let colors = &theme.tokens.colors;
+    let response = theme.tokens.response;
     let lifted = state.active || state.pressed;
+    // The pointer's answer is the theme's response role; the active lift is
+    // the selection's own tier and never moves with it.
+    let step = response.step(state.hover, state.pressed);
     let fill = if state.active {
         colors.selected_on(ground)
     } else if state.pressed {
-        colors.lift_on(ground, 1.0)
+        colors.lift_tinted_on(ground, response.press.lift, response.press.tint)
     } else if state.hover {
-        colors.lift_on(ground, HOVER_LIFT_T)
+        colors.lift_tinted_on(ground, response.hover.lift, response.hover.tint)
     } else {
         Color::TRANSPARENT
     };
     SelectionTier {
         fill,
         border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),
-        inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
-        scale: if state.pressed { PRESS_SCALE } else { 1.0 },
+        inner_glow: (lifted && step.glow > 0.0)
+            .then(|| Colors::hairline_on(ground, glow_alpha(step.glow))),
+        scale: f64::from(step.scale),
     }
+}
+
+/// A response's glow as the hairline alpha it draws at: `glow` of an
+/// opaque line, `0..=0.5` of 255.
+fn glow_alpha(glow: f32) -> u8 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "glow is 0..=0.5, so the product is 0..=128, which fits u8"
+    )]
+    let alpha = (glow.clamp(0.0, 0.5) * 255.0).round() as u8;
+    alpha
 }
 
 /// How far a row's hover and selection lift, and a zebra stripe, bleed past

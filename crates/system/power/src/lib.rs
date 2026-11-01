@@ -16,9 +16,12 @@
 //!   Settings pane writes.
 //! * [`logind`] / [`upower`] — the `zbus` proxies (suspend, inhibit
 //!   locks, battery + lid reads, sleep signals).
-//! * [`sysfs`] — a synchronous, bus-free battery read for callers (the
-//!   compositor's status indicator) that need a number on a plain
-//!   thread rather than a subscription on a runtime.
+//! * [`sysfs`] — the one reader of the kernel's power-supply class: the
+//!   composite battery snapshot, the remaining time, per-supply detail
+//!   (level, health, cycles), and which charge-limit control the hardware
+//!   exposes. Bus-free and synchronous, for callers that need a number on a
+//!   plain thread (the compositor's status indicator, the Settings power
+//!   card, the installer's low-battery check) rather than a subscription.
 //! * [`bridge`] — the `Send + Sync` mailbox between the async service and the
 //!   synchronous compositor loop.
 //! * [`service`] — the [`PowerService`] async orchestrator the compositor

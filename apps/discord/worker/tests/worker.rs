@@ -366,7 +366,7 @@ fn button_token(reply: &Value) -> String {
         .and_then(Value::as_str)
         .expect("a link button");
     url.strip_prefix("https://tilo.example/#?link=")
-        .expect("the room's web entry")
+        .expect("the workspace's web entry")
         .to_owned()
 }
 
@@ -396,7 +396,7 @@ async fn link_answers_with_a_private_button_and_reports_only_its_check() {
     assert_eq!(payload["link_check"], link_check(&link_proof(&token)));
     assert!(
         !Value::Object(payload).to_string().contains(&token),
-        "the token never reaches the room"
+        "the token never reaches the workspace"
     );
 
     // Once linked, the bridge edits the reply to the outcome, once.
@@ -436,7 +436,10 @@ async fn unlink_is_answered_with_what_came_of_it() {
         })
         .await
         .expect("an interaction reply");
-    assert_eq!(reply["reply"]["type"], 5, "it answers once the room did");
+    assert_eq!(
+        reply["reply"]["type"], 5,
+        "it answers once the workspace did"
+    );
     let outcome = host
         .perform(&DiscordOp::AnswerInteraction(AnswerInteractionOp {
             interaction: interaction.clone(),
@@ -484,7 +487,7 @@ async fn a_restarted_worker_hears_discord_again_and_reads_what_it_missed() {
         .await;
     let host = host.restarted().await;
     // Said while no worker was there, then after the new one is up: both
-    // reach the room.
+    // reach the workspace.
     let missed = host
         .fake
         .post(CHANNEL_GENERAL, &ada, "while the worker restarted");
@@ -728,7 +731,7 @@ async fn create_webhook_hands_the_token_to_the_store_only() {
         .perform(&DiscordOp::CreateWebhook(
             discord_wire::op::CreateWebhookOp {
                 channel: CHANNEL_GENERAL.to_owned(),
-                tilo: "room".to_owned(),
+                tilo: "workspace".to_owned(),
             },
         ))
         .await;
@@ -750,7 +753,7 @@ async fn create_webhook_hands_the_token_to_the_store_only() {
         .perform(&DiscordOp::CreateWebhook(
             discord_wire::op::CreateWebhookOp {
                 channel: CHANNEL_GENERAL.to_owned(),
-                tilo: "room".to_owned(),
+                tilo: "workspace".to_owned(),
             },
         ))
         .await;

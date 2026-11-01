@@ -6,7 +6,7 @@ fn grant_adapter_requires_canonical_descriptor_and_rejects_replaced_ancestors() 
     std::fs::create_dir(&parent).unwrap();
     let root = parent.join("medium");
     std::fs::create_dir(&root).unwrap();
-    let pin = PinnedRoot::open_absolute(&root).unwrap();
+    let pin = PinnedDirectory::open_absolute(&root).unwrap();
     let authority = MediaFilesystemGrant {
         target: serde_json::from_value(serde_json::json!({"name":"sdb","model":"USB fixture","stable_id":"device-serial","size":1_073_741_824_u64,"kind":"Usb","tran":"usb","removable":true,"is_system":false,"partitions":[]})).unwrap(),
         root: root.clone(),
@@ -29,7 +29,7 @@ fn grant_adapter_requires_canonical_descriptor_and_rejects_replaced_ancestors() 
     assert!(clone.check_directory_identity(&exact).is_err());
     let redirected = temp.path().join("redirected");
     std::os::unix::fs::symlink(&root, &redirected).unwrap();
-    assert!(PinnedRoot::open_absolute(&redirected).is_err());
+    assert!(PinnedDirectory::open_absolute(&redirected).is_err());
 }
 
 #[test]

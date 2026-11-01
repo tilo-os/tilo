@@ -13,7 +13,7 @@
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// What one step does.
 #[derive(Clone, Debug, PartialEq)]

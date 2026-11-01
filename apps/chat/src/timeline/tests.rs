@@ -19,10 +19,10 @@ const WINDOW: (f64, f64) = (1440.0, 900.0);
 
 /// A channel of `count` top-level messages, the demo's lines and pictures
 /// over and over, a minute apart.
-fn long_channel(count: usize) -> (ChatApp, crate::testing::Room) {
+fn long_channel(count: usize) -> (ChatApp, crate::testing::Workspace) {
     let doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     let seed: Vec<_> = app
         .messages
@@ -83,7 +83,7 @@ impl Frames {
     }
 }
 
-fn feed(app: &mut ChatApp, doc: &mut crate::testing::Room, event: &winit::event::WindowEvent) {
+fn feed(app: &mut ChatApp, doc: &mut crate::testing::Workspace, event: &winit::event::WindowEvent) {
     let mut handled = false;
     app.dispatch_event(
         event,
@@ -94,7 +94,7 @@ fn feed(app: &mut ChatApp, doc: &mut crate::testing::Room, event: &winit::event:
     );
 }
 
-/// The frames before the room's pictures have all landed paint their
+/// The frames before the workspace's pictures have all landed paint their
 /// cards again; a frame after that is the conversation at rest.
 fn settle(app: &mut ChatApp, frames: &mut Frames) {
     for _ in 0..3 {
@@ -260,10 +260,10 @@ fn a_kept_row_paints_what_painting_it_afresh_does() {
 #[test]
 fn a_received_message_lays_out_and_draws_only_its_row() {
     // A channel of 300 messages someone else wrote, as a window over the
-    // room reads it, scrolled to its end.
+    // workspace reads it, scrolled to its end.
     let mut doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.sync(&doc.chat, &automerge::ROOT);
     let channel = app.active_channel.clone();
     for i in 0..300 {

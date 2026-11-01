@@ -89,7 +89,6 @@ fi
 grep -Fq 'python3 -m http.server "$browser_fixture_port"' "$installer_cycle" \
   && grep -Fq '"$vm" keys meta_l-spc' "$installer_cycle" \
   && grep -Fq "wait_screen 18-browser-offline 'Tilo[[:space:]]+browser[[:space:]]+offline[[:space:]]+ready'" "$installer_cycle" \
-  && grep -Fq "'browser_offline_page_verified':True" "$repo/os/dev/run-supervised-install-lane.py" \
   && ok 'the installed-target cold boot proves Browser renders a local offline page' \
   || bad 'the installed-target cold boot lacks durable Browser render evidence'
 

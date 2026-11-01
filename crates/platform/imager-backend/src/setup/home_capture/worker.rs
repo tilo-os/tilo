@@ -785,28 +785,37 @@ fn check_binding(binding: &str, password: &[u8]) -> io::Result<()> {
 }
 
 pub(super) fn read_frame(input: &mut impl Read, bound: usize) -> io::Result<Vec<u8>> {
-    let mut header = [0; 4];
-    input.read_exact(&mut header)?;
-    let length = usize::try_from(u32::from_be_bytes(header)).map_err(io::Error::other)?;
-    if length == 0 || length > bound {
-        return Err(failure("capture private frame exceeds bounds"));
+    match wire_frame::Framing::big_endian(bound)
+        .reject_empty()
+        .read(input)
+    {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "capture private frame is missing",
+        )),
+        Err(wire_frame::FrameError::Truncated) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "capture private frame ends short",
+        )),
+        Err(error) => Err(frame_error(error)),
     }
-    let mut bytes = vec![0; length];
-    input.read_exact(&mut bytes)?;
-    Ok(bytes)
 }
 
 pub(super) fn write_frame(output: &mut impl Write, bytes: &[u8], bound: usize) -> io::Result<()> {
-    if bytes.is_empty() || bytes.len() > bound {
-        return Err(failure("capture private frame exceeds bounds"));
-    }
-    output.write_all(
-        &u32::try_from(bytes.len())
-            .map_err(io::Error::other)?
-            .to_be_bytes(),
-    )?;
-    output.write_all(bytes)?;
+    wire_frame::Framing::big_endian(bound)
+        .reject_empty()
+        .write(output, bytes)
+        .map_err(frame_error)?;
     output.flush()
+}
+
+/// A frame the bounds refuse reads as the failed exchange it is.
+fn frame_error(error: wire_frame::FrameError) -> io::Error {
+    match error {
+        wire_frame::FrameError::Io(io) => io,
+        _ => failure("capture private frame exceeds bounds"),
+    }
 }
 
 #[cfg(test)]

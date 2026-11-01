@@ -5,24 +5,18 @@
     reason = "statistical calculation and plot projection are bounded floating-point operations"
 )]
 
-use crate::widget::ModelPath;
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct DistributionSeries {
@@ -167,75 +161,63 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     low + (high - low) * fraction
 }
 
-pub struct DistributionChart {
+pub struct DistributionMarks {
     series: Vec<DistributionSeries>,
     style: DistributionStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<usize>,
-    activated: Option<String>,
+    frame: PlotFrame<usize>,
 }
+
+/// Box plots or violins summarising each series' samples.
+pub type DistributionChart = Plot<DistributionMarks>;
 
 impl DistributionChart {
     pub fn new(series: Vec<DistributionSeries>) -> Self {
-        Self {
+        Plot::from_marks(DistributionMarks {
             series,
             style: DistributionStyle::default(),
-            title: String::new(),
-            height: 360.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(360.0, 140.0),
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: DistributionStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
     #[must_use]
     pub fn kind(mut self, kind: DistributionKind) -> Self {
-        self.style.kind = kind;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(140.0);
+        self.marks.style.kind = kind;
         self
     }
     pub fn set_series(&mut self, series: Vec<DistributionSeries>) {
-        self.series = series;
-        self.inspection.hovered = None;
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
+        self.marks.series = series;
+        self.marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        let summaries = self.summaries();
-        self.inspection.hovered = self.series.iter().enumerate().position(|(index, series)| {
-            series.id == id && summaries.get(index).is_some_and(Option::is_some)
-        });
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(index) = self.inspection.hovered {
-            self.inspection.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
-        }
-        self.inspection.hovered.is_some()
+        let summaries = self.marks.summaries();
+        let series = self
+            .marks
+            .series
+            .iter()
+            .enumerate()
+            .position(|(index, series)| {
+                series.id == id && summaries.get(index).is_some_and(Option::is_some)
+            });
+        self.inspect_item(series)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
+
+impl DistributionMarks {
     fn plot_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + 58.0,
-            self.rect.y0 + if self.title.is_empty() { 16.0 } else { 48.0 },
-            self.rect.x1 - 14.0,
-            self.rect.y1 - 40.0,
+            self.frame.rect.x0 + 58.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    16.0
+                } else {
+                    48.0
+                },
+            self.frame.rect.x1 - 14.0,
+            self.frame.rect.y1 - 40.0,
         )
     }
     fn summaries(&self) -> Vec<Option<Summary>> {
@@ -328,42 +310,37 @@ impl DistributionChart {
     }
 }
 
-impl InteractiveChart for DistributionChart {
+impl PlotMarks for DistributionMarks {
     type Hover = usize;
-    fn inspection(&mut self) -> &mut ChartInspection<usize> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "DistributionChart";
+    const LABEL: &'static str = "Distribution chart";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        if !self.plot_rect().contains(self.inspection.pointer) {
-            self.inspection.hovered = None;
-            return;
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<usize> {
+        if !self.plot_rect().contains(point) {
+            return None;
         }
-        self.inspection.hovered = self
-            .series
+        self.series
             .iter()
             .enumerate()
             .filter(|(_, series)| !series.samples.is_empty())
             .min_by(|(left, _), (right, _)| {
-                (self.center_x(*left) - self.inspection.pointer.x)
+                (self.center_x(*left) - point.x)
                     .abs()
-                    .total_cmp(&(self.center_x(*right) - self.inspection.pointer.x).abs())
+                    .total_cmp(&(self.center_x(*right) - point.x).abs())
             })
             .and_then(|(index, _)| {
-                ((self.center_x(index) - self.inspection.pointer.x).abs()
-                    <= self.slot_width() / 2.0)
-                    .then_some(index)
-            });
+                ((self.center_x(index) - point.x).abs() <= self.slot_width() / 2.0).then_some(index)
+            })
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(series) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.series.get(index))
-        else {
-            return false;
-        };
-        self.activated = Some(series.id.clone());
-        true
+    fn activation(&self, &index: &usize) -> Option<String> {
+        Some(self.series.get(index)?.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
         let summaries = self.summaries();
@@ -379,50 +356,59 @@ impl InteractiveChart for DistributionChart {
             self.plot_rect().center().y,
         ))
     }
-}
-
-impl Widget for DistributionChart {
-    crate::widget::chart_navigation::chart_leaf!();
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.series
+            .iter()
+            .filter_map(|series| {
+                Summary::from_samples(&series.samples, self.style.whisker_iqr).map(|summary| {
+                    PlotItem::new(
+                        &series.id,
+                        &series.label,
+                        format!(
+                            "Median {}, first quartile {}, third quartile {}, {} observations. {}",
+                            summary.median,
+                            summary.q1,
+                            summary.q3,
+                            summary.sorted.len(),
+                            series.detail
+                        ),
+                        series.id.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
 
     #[allow(
         clippy::too_many_lines,
         reason = "distribution grid, density, box summaries and inspector share one paint pass"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         let summaries = self.summaries();
         let range = Self::range(&summaries);
         let plot = self.plot_rect();
         self.follow_keyboard_anchor();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
-        for value in crate::charts::nice_ticks(range.0, range.1, 5) {
-            let y = self.y(value, range);
-            if self.style.show_grid {
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &Line::new((plot.x0, y), (plot.x1, y)),
-                );
-            }
-            let label = format_compact(value);
-            let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-            tr.draw_style(
-                scene,
-                &label,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.x0 - f64::from(width) - 9.0, y - 6.0)),
-                None,
-                &theme.text(TextRole::Caption),
-            );
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
+        crate::widget::plot::ValueAxis {
+            plot,
+            range,
+            grid: self.style.show_grid,
+            label: format_compact,
         }
+        .paint(scene, transform, tr, theme);
         for (index, (series, summary)) in self.series.iter().zip(summaries.iter()).enumerate() {
             let Some(summary) = summary else {
                 continue;
@@ -523,7 +509,7 @@ impl Widget for DistributionChart {
                     );
                 }
             }
-            if self.inspection.hovered == Some(index) {
+            if self.frame.inspection.hovered == Some(index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -550,7 +536,7 @@ impl Widget for DistributionChart {
                 &theme.text(TextRole::Caption),
             );
         }
-        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(Some(summary))) =
                 (self.series.get(index), summaries.get(index))
         {
@@ -570,66 +556,12 @@ impl Widget for DistributionChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 210.0,
                 (&series.label, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .series
-            .iter()
-            .filter_map(|series| {
-                Summary::from_samples(&series.samples, self.style.whisker_iqr).map(|summary| {
-                    AccessNode::new(Role::Button)
-                        .with_action_target(&series.id)
-                        .with_name(&series.label)
-                        .with_description(format!(
-                            "Median {}, first quartile {}, third quartile {}, {} observations. {}",
-                            summary.median,
-                            summary.q1,
-                            summary.q3,
-                            summary.sorted.len(),
-                            series.detail
-                        ))
-                        .with_state(AccessState::new().focusable(true))
-                })
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Distribution chart"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            self.series.iter().map(|series| &series.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "DistributionChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 

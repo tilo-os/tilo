@@ -327,9 +327,9 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
     let (manager, captures, worker, admission, healthy) = ordinary_catalogue_manager(cluster, 2049);
     let subscriptions = captures.lock().unwrap().action_catalogue_subscriptions;
     if admission.is_ok() && healthy {
-        // This unbound shared widget uses the normal local publication
-        // identity; the broker connection still belongs to the Browser route.
-        let publication_app_id = crate::collaboration::local_app_id();
+        // What the app publishes, the host files under the route its
+        // connection joined: the Browser's.
+        let publication_app_id = "so.tilo.browser";
         let mut app = crate::App::with_collaboration_manager(
             crate::State::new(),
             Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
@@ -342,9 +342,9 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
                 let seen = captures.lock().unwrap();
                 seen.action_directories
                     .iter()
-                    .any(|id| id == &publication_app_id)
+                    .any(|id| id == publication_app_id)
                     && seen.action_publications.iter().any(|(id, actions)| {
-                        id == &publication_app_id
+                        id == publication_app_id
                             && actions
                                 .iter()
                                 .any(|(label, action)| label == "Complete" && !action.is_empty())

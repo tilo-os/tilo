@@ -1,7 +1,7 @@
 //! `LocalSet` half of the certified peer facade. Kept beside broker admission so
 //! no application capability or actor constructor crosses the network queue.
 use super::{
-    Arc, CallerInvocation, CapnpBrokerState, CrdtRoute, DirectoryActionConfirmation,
+    AppBrokerState, Arc, CallerInvocation, CrdtRoute, DirectoryActionConfirmation,
     InvocationInputs, LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
     admit_verified_join_at,
 };
@@ -11,7 +11,7 @@ use tilo_relay_session::client::CertifiedAction;
 /// Why the broker refused a network request: the typed code its caller gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PeerRefusal {
-    /// An effect arrived without its source device's signature.
+    /// A delivery arrived without its source device's signature.
     SignatureRequired,
     /// The signature, its freshness or its uniqueness failed.
     Signature(ActionSignatureError),
@@ -62,28 +62,21 @@ impl From<&'static str> for PeerRefusal {
     }
 }
 
-/// Whether `evidence` carries what its message needs: an effect only ever
+/// Whether `evidence` carries what its message needs: an action only ever
 /// runs on its source device's own signature over exactly this action, never
 /// on the relay's word. Freshness and replay are checked once, at delivery.
 pub(crate) fn signed_as_required(evidence: &CertifiedAction) -> Result<(), PeerRefusal> {
-    match evidence.signed() {
-        Some(signed) => {
-            signed
-                .verify(&evidence.certificate().device_public_key)
-                .map_err(PeerRefusal::Signature)?;
-            if signed.action() != evidence.action() {
-                return Err(PeerRefusal::Signature(ActionSignatureError::Signature));
-            }
-            Ok(())
-        }
-        None if evidence.action().message.requires_signature() => {
-            Err(PeerRefusal::SignatureRequired)
-        }
-        None => Ok(()),
+    let signed = evidence.signed().ok_or(PeerRefusal::SignatureRequired)?;
+    signed
+        .verify(&evidence.certificate().device_public_key)
+        .map_err(PeerRefusal::Signature)?;
+    if signed.action() != evidence.action() {
+        return Err(PeerRefusal::Signature(ActionSignatureError::Signature));
     }
+    Ok(())
 }
 
-impl CapnpBrokerState {
+impl AppBrokerState {
     pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
         self.peer_action_queue.clone()
     }
@@ -149,7 +142,7 @@ impl CapnpBrokerState {
         /// Hands the queue back when the bridge task is dropped with its
         /// broker thread's runtime, so a restarted thread bridges again.
         struct Lent {
-            state: Arc<CapnpBrokerState>,
+            state: Arc<AppBrokerState>,
             receiver: Option<tokio::sync::mpsc::Receiver<crate::peer_actions::Request>>,
         }
         impl Drop for Lent {

@@ -104,3 +104,51 @@ impl ChartLink {
         self
     }
 }
+
+impl ChartLink {
+    /// Whether the link carries a flow worth drawing.
+    pub(crate) fn flows(&self) -> bool {
+        self.value.is_finite() && self.value > 0.0
+    }
+}
+
+/// A node or link of a graph chart, by id: what a chord or Sankey diagram
+/// inspects and reports on activation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphSelection {
+    Node(String),
+    Link(String),
+}
+
+/// The accessible items of a graph chart: every node, then every flowing
+/// link, described by `describe` unless it has a detail.
+pub(crate) fn graph_items(
+    nodes: &[ChartNode],
+    links: &[ChartLink],
+    describe: impl Fn(f64) -> String,
+) -> Vec<crate::widget::PlotItem<GraphSelection>> {
+    use crate::widget::PlotItem;
+    nodes
+        .iter()
+        .map(|node| {
+            PlotItem::new(
+                format!("node:{}", node.id),
+                &node.label,
+                &node.detail,
+                GraphSelection::Node(node.id.clone()),
+            )
+        })
+        .chain(links.iter().filter(|link| link.flows()).map(|link| {
+            PlotItem::new(
+                format!("link:{}", link.id),
+                format!("{} to {}", link.source, link.target),
+                if link.detail.is_empty() {
+                    describe(link.value)
+                } else {
+                    link.detail.clone()
+                },
+                GraphSelection::Link(link.id.clone()),
+            )
+        }))
+        .collect()
+}

@@ -10,6 +10,13 @@ use smithay::utils::{Logical, Point, Rectangle};
 
 use crate::input::{GestureEvent, Switch};
 
+/// A point in the layout: logical pixels, as the desktop arranges outputs
+/// and windows.
+pub type LayoutPoint = Point<i32, Logical>;
+
+/// A rectangle in the layout, such as an output's: whole logical pixels.
+pub type LayoutRect = Rectangle<i32, Logical>;
+
 /// What a policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowInfo {
@@ -29,6 +36,9 @@ pub struct WindowInfo {
     /// The process that made the window: what it is asked of, the way a
     /// portal request names the app it comes from.
     pub pid: Option<u32>,
+    /// The icon the window set for itself, when it set one: what its tab
+    /// paints instead of its app kind's glyph.
+    pub icon: Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>>,
 }
 
 /// Where a window goes and the size it is asked to take.
@@ -37,7 +47,7 @@ pub struct Arrangement {
     /// The window ([`WindowInfo::id`]).
     pub id: u64,
     /// Its top-left corner in the logical layout.
-    pub location: Point<i32, Logical>,
+    pub location: LayoutPoint,
     /// The size it is configured to, or `None` to leave it to the client.
     pub size: Option<(i32, i32)>,
 }
@@ -74,11 +84,7 @@ pub enum WindowRequest {
 pub trait WindowPolicy {
     /// The size a new toplevel is configured to before its first buffer, or
     /// `None` to let the client choose.
-    fn initial_size(
-        &mut self,
-        window: &WindowInfo,
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Option<(i32, i32)>;
+    fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)>;
 
     /// Where a toplevel of `size` goes in the logical layout when it first
     /// shows a buffer.
@@ -86,25 +92,27 @@ pub trait WindowPolicy {
         &mut self,
         window: &WindowInfo,
         size: (i32, i32),
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Point<i32, Logical>;
+        outputs: &[LayoutRect],
+    ) -> LayoutPoint;
 
     /// Lay every mapped window out again (`windows` bottom first, with their
     /// current rectangles) after one mapped or went away, or the outputs
     /// changed. `None` leaves every window where it is.
     fn arrange(
         &mut self,
-        _windows: &[(WindowInfo, Rectangle<i32, Logical>)],
-        _outputs: &[Rectangle<i32, Logical>],
+        _windows: &[(WindowInfo, LayoutRect)],
+        _outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
         None
     }
 
     /// The outputs, each with the monitor on it: its identity from the
     /// display's EDID (make, model and serial), else its connector, which
-    /// a layout follows between ports. Told when they change, before the
-    /// next arrangement.
-    fn monitors(&mut self, _monitors: &[(Rectangle<i32, Logical>, String)]) {}
+    /// a layout follows between ports. `primary` names the monitor the
+    /// person made primary, while it is lit; `None` while they named none,
+    /// or the one they named is off or gone, and the first output stands
+    /// in. Told when either changes, before the next arrangement.
+    fn monitors(&mut self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
 
     /// The pointer moved to `(x, y)` in the logical layout, wherever it
     /// went: over a window, a hosted surface or nothing.
@@ -182,7 +190,7 @@ impl WindowPolicy for StackPolicy {
     fn initial_size(
         &mut self,
         _window: &WindowInfo,
-        _outputs: &[Rectangle<i32, Logical>],
+        _outputs: &[LayoutRect],
     ) -> Option<(i32, i32)> {
         None
     }
@@ -191,8 +199,8 @@ impl WindowPolicy for StackPolicy {
         &mut self,
         _window: &WindowInfo,
         size: (i32, i32),
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Point<i32, Logical> {
+        outputs: &[LayoutRect],
+    ) -> LayoutPoint {
         let Some(output) = outputs.first() else {
             return Point::from((0, 0));
         };

@@ -119,9 +119,7 @@ fn room_with(role: MemberRole) -> (StatePeer, String, SigningKey, DeviceCert) {
         InviteGrant {
             workspace_id: 7,
             room: ROOM.into(),
-            authority: owner.clone(),
             issuer: owner,
-            delegation: None,
             role,
             nonce: [43; 16],
             recipient_user_public_key: Some(guest.user_public_key),

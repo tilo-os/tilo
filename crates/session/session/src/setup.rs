@@ -193,10 +193,8 @@ impl SurfaceHost for Setup {
         self.widgets.key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        if self.up() {
-            self.widgets.prepare_frame();
-        }
+    fn prepare_frame(&mut self) -> bool {
+        self.up() && self.widgets.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {

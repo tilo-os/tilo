@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+settings-store = { path = "../../system/settings-store" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 zeroize = { workspace = true }
 

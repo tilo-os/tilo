@@ -47,13 +47,13 @@ mod owner_commit_tests {
                 journal_root: directory.path().join("journal"),
                 certificate_authority: Arc::new(ExplicitAuthority),
             };
-            let (state, bridge_rx) = CapnpBrokerState::new_configured(&fanout,
+            let (state, bridge_rx) = AppBrokerState::new_configured(&fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())), publisher,
                 Some(membership.authority()), None, Some(&config), HostServices::default());
-            fanout.attach_capnp(state.clone());
+            fanout.attach_app_broker(state.clone());
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
-            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+            let client = wire_channel(JoinedChannel {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -72,9 +72,7 @@ mod owner_commit_tests {
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
                 collab_types::OpKind::Change, SystemTime::now(), 1);
             sign_op(&mut op, &device).unwrap();
-            let mut request = client.send_request();
-            request.get().set_op(&postcard::to_stdvec(&op).unwrap());
-            assert!(request.send().promise.await.is_err(),
+            assert!(client.send(&postcard::to_stdvec(&op).unwrap()).await.is_err(),
                 "standalone send RPC acknowledged a wired void publisher without an owner commit receipt");
             assert!(subscriber.try_recv().is_err(), "uncommitted state must not fan out");
         }).await;
@@ -144,7 +142,7 @@ mod owner_commit_tests {
                         }),
                         ..Default::default()
                     };
-                    let (state, bridge_rx) = CapnpBrokerState::new_configured(
+                    let (state, bridge_rx) = AppBrokerState::new_configured(
                         &fanout,
                         Arc::new(Mutex::new(BrokerChannels::default())),
                         PeerPublisher::disabled(),
@@ -157,52 +155,37 @@ mod owner_commit_tests {
                         state.durable_owner_required,
                         "exercise actual configured durable worker mode"
                     );
-                    let client: channel_handle::Client =
-                        capnp_rpc::new_client(CapnpChannelHandle {
-                            as_app: None,
-                            person_chat_views: RefCell::default(),
-                            committed_read: Rc::new(RefCell::new(
-                                committed_document::Slot::default(),
-                            )),
-                            state,
-                            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-                            channel_id: route.channel_key(),
-                            peer_id: 1,
-                            connection_id: 1,
-                            verified_identity: admitted,
-                            record_kind: None,
-                            route_access: RouteAccess::Own,
-                            lease: None,
-                            _hold: None,
-                        });
-                    let mut request = client.committed_document_request();
-                    request.get().set_request(
-                        &runtime_collab::committed_document::Request::Open {
+                    let client = wire_channel(JoinedChannel {
+                        as_app: None,
+                        person_chat_views: RefCell::default(),
+                        committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                        state,
+                        directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
+                        channel_id: route.channel_key(),
+                        peer_id: 1,
+                        connection_id: 1,
+                        verified_identity: admitted,
+                        record_kind: None,
+                        route_access: RouteAccess::Own,
+                        lease: None,
+                        _hold: None,
+                    });
+                    let response = client
+                        .committed_document(&runtime_collab::committed_document::Request::Open {
                             known_revision: None,
-                        }
-                        .encode()
-                        .unwrap(),
-                    );
-                    let response = request.send().promise.await;
+                        })
+                        .await;
                     if native {
                         assert!(
                             response.is_err()
-                                || response.as_ref().is_ok_and(|response| {
-                                    runtime_collab::committed_document::Reply::decode(
-                                        response.get().unwrap().get_reply().unwrap(),
-                                    )
-                                    .unwrap()
-                                        == runtime_collab::committed_document::Reply::Unavailable
+                                || response.as_ref().is_ok_and(|reply| {
+                                    *reply == runtime_collab::committed_document::Reply::Unavailable
                                 }),
                             "required native owner cannot become Legacy"
                         );
                     } else {
-                        let response = response.unwrap();
                         assert_eq!(
-                            runtime_collab::committed_document::Reply::decode(
-                                response.get().unwrap().get_reply().unwrap()
-                            )
-                            .unwrap(),
+                            response.unwrap(),
                             runtime_collab::committed_document::Reply::Legacy,
                             "portable worker is already hydrated and must preserve storage behavior"
                         );
@@ -408,6 +391,7 @@ mod owner_commit_tests {
             self.0
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map(|_| ())
+                .map_err(|error| error.to_string())
         }
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
@@ -416,9 +400,7 @@ mod owner_commit_tests {
             uuid::Uuid::parse_str(owner.peer().room()).unwrap().into(),
             "Actual owner barrier",
         );
-        workspace.set_owner(principal_id_for_root(
-            owner.peer().authority().user_public_key,
-        ));
+        workspace.set_owner(principal_id_for_root(owner.peer().owner()));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.shared()
@@ -436,8 +418,8 @@ mod owner_commit_tests {
         membership: WorkspaceTreeHandle,
         owner: crate::test_owner::SessionOwner,
         mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
-        state: Arc<CapnpBrokerState>,
-        client: channel_handle::Client,
+        state: Arc<AppBrokerState>,
+        channel: Rc<JoinedChannel>,
         route: CrdtRoute,
         _fanout: Arc<FanoutState>,
     }
@@ -448,9 +430,9 @@ mod owner_commit_tests {
                 for cancelled in [false, true] {
                     let root = canonical_tempdir();
                     let mut fixture = owner_fixture_with_receipt_fault(root.path(), 1);
-                    let request = tilo_owner_commit::OwnerCommitRequest {
+                    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                         room: fixture.route.cluster_id.clone(),
-                        operation: tilo_owner_commit::CommitOperation::Document {
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
                             record: fixture.route.record_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
@@ -479,9 +461,9 @@ mod owner_commit_tests {
                         let error = response.await.unwrap().unwrap_err();
                         assert_eq!(
                             fixture.state.owner_health().unwrap_err(),
-                            format!("owner commit failed: {}", error.extra)
+                            format!("owner commit failed: {}", error.reason)
                         );
-                        assert!(!error.extra.contains("interrupted"));
+                        assert!(!error.reason.contains("interrupted"));
                     }
                 }
             })
@@ -496,7 +478,7 @@ mod owner_commit_tests {
         fault: u8,
         required_room: Option<String>,
     }
-    impl tilo_owner_commit::OwnerCommitService for AlteredReceipt {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for AlteredReceipt {
         fn requires_room(&self, room: &str) -> bool {
             self.required_room
                 .as_deref()
@@ -507,8 +489,8 @@ mod owner_commit_tests {
         }
         fn commit(
             &self,
-            request: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             let response = self.inner.commit(request);
             let fault = self.fault;
             Box::pin(async move {
@@ -516,10 +498,11 @@ mod owner_commit_tests {
                 match fault {
                     1 => receipt.binding.room = uuid::Uuid::new_v4().to_string(),
                     2 => {
-                        receipt.binding.target = tilo_owner_commit::CommitTarget::Document {
-                            app: "other.app".into(),
-                            record: "other".into(),
-                        }
+                        receipt.binding.target =
+                            tilo_peer_state::owner_commit::CommitTarget::Document {
+                                app: "other.app".into(),
+                                record: "other".into(),
+                            }
                     }
                     3 => receipt.binding.request_digest[0] ^= 1,
                     4 => receipt.binding.basis[0] ^= 1,
@@ -553,15 +536,15 @@ mod owner_commit_tests {
             &membership.read(),
             &route,
             VerifiedJoinIdentity {
-                user_public_key: owner.peer().authority().user_public_key,
-                device_public_key: owner.peer().authority().device_public_key,
+                user_public_key: owner.peer().owner(),
+                device_public_key: owner.device().device_public_key,
                 capped: false,
             },
         )
         .unwrap();
         let fanout = Arc::new(FanoutState::new());
         let config = (!native).then(|| owner_config(root, &owner));
-        let (state, bridge_rx) = CapnpBrokerState::new_configured(
+        let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::with_owner_commit(
@@ -583,9 +566,9 @@ mod owner_commit_tests {
             config.as_ref(),
             HostServices::default(),
         );
-        fanout.attach_capnp(state.clone());
+        fanout.attach_app_broker(state.clone());
         state.ensure_channel(&route.channel_key());
-        let client = capnp_rpc::new_client(CapnpChannelHandle {
+        let channel = Rc::new(JoinedChannel {
             as_app: None,
             person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -605,9 +588,15 @@ mod owner_commit_tests {
             owner,
             mailbox,
             state,
-            client,
+            channel,
             route,
             _fanout: fanout,
+        }
+    }
+    impl OwnerFixture {
+        /// The app's channel, over its own wire connection.
+        fn client(&self) -> runtime_collab::ChannelHandle {
+            wire_channel_rc(Rc::clone(&self.channel))
         }
     }
     fn owner_snapshot(f: &OwnerFixture) -> SignedOp {
@@ -643,11 +632,11 @@ mod owner_commit_tests {
                 let mut f = owner_fixture(root.path());
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                 let envelope = owner_snapshot(&f);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&envelope).unwrap());
-                let response = tokio::task::spawn_local(request.send().promise);
+                let op = postcard::to_stdvec(&envelope).unwrap();
+                let response = tokio::task::spawn_local({
+                    let client = f.client();
+                    async move { client.send(&op).await }
+                });
                 let pending = f.mailbox.recv().await.unwrap();
                 assert!(!response.is_finished());
                 assert!(
@@ -674,11 +663,11 @@ mod owner_commit_tests {
                 let mut f = owner_fixture(root.path());
                 let before = f.owner.status();
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                let response = tokio::task::spawn_local(request.send().promise);
+                let op = postcard::to_stdvec(&owner_snapshot(&f)).unwrap();
+                let response = tokio::task::spawn_local({
+                    let client = f.client();
+                    async move { client.send(&op).await }
+                });
                 let pending = f.mailbox.recv().await.unwrap();
                 f.membership.write().workspaces.clear();
                 pending.apply(&mut f.owner).unwrap();
@@ -744,11 +733,11 @@ mod owner_commit_tests {
             host: f.state.invocation_host().unwrap(),
             invocation,
             owner: InvocationOwner::Certified {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
             },
         };
-        let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        let actor = principal_id_for_root(f.owner.peer().owner());
         let context =
             tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
@@ -818,16 +807,14 @@ mod owner_commit_tests {
                         invocation: key.invocation,
                         output: tilo_actions::ActionOutput::default(),
                     };
-                    let mut request = f.client.update_invocation_request();
-                    request.get().set_id(1);
-                    request
-                        .get()
-                        .set_update_json(serde_json::to_string(&update).unwrap());
-                    let mut response = tokio::task::spawn_local(request.send().promise);
+                    let update_json = serde_json::to_string(&update).unwrap();
+                    let mut response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.update_invocation(1, &update_json).await }
+                    });
                     let pending = tokio::select! {
                         pending = f.mailbox.recv() => pending.unwrap(),
                         rejected = &mut response => {
-                            let rejected = rejected.map(|reply| reply.map(|_| ()));
                             panic!("terminal update ended before owner receipt admission: {rejected:?}");
                         }
                     };
@@ -910,7 +897,9 @@ mod owner_commit_tests {
                         }
                     }
                     assert_eq!(std::fs::read(root.path().join("effect")).unwrap(), b"once");
+                    let gone = Arc::downgrade(&f.state);
                     drop(f);
+                    broker_gone(gone).await;
                     let recovered = InvocationJournal::open(&root.path().join("journal"))
                         .unwrap()
                         .lookup(&key)
@@ -932,11 +921,11 @@ mod owner_commit_tests {
                     let mut f = owner_fixture_with_receipt_fault(root.path(), fault);
                     let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                     let envelope = owner_snapshot(&f);
-                    let mut request = f.client.send_request();
-                    request
-                        .get()
-                        .set_op(&postcard::to_stdvec(&envelope).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
+                    let op = postcard::to_stdvec(&envelope).unwrap();
+                    let response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.send(&op).await }
+                    });
                     f.mailbox.recv().await.unwrap().apply(&mut f.owner).unwrap();
                     assert!(
                         response.await.unwrap().is_err(),
@@ -974,6 +963,7 @@ mod owner_commit_tests {
                 }
                 peer.permissions(cert.device_public_key, SystemTime::now())
                     .map(|_| ())
+                    .map_err(|error| error.to_string())
             }
         }
         impl crate::services::WorkspaceAuthority for CurrentOwner {
@@ -1014,7 +1004,7 @@ mod owner_commit_tests {
             crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let initial_generation = owner.status().generation;
         let mut remote = owner.peer().clone();
-        let cert = owner.peer().authority().clone();
+        let cert = owner.device();
         let room: uuid::Uuid = owner.peer().room().parse().unwrap();
         let key = owner.signing_key().clone();
         let record = RecordId::for_tab(1);
@@ -1072,7 +1062,7 @@ mod owner_commit_tests {
         .unwrap();
         let endpoint = || CertifiedEndpointIdentity::new(presentation.clone(), key.clone());
         // A raw same-user socket cannot choose a trusted application route.
-        let raw = std::os::unix::net::UnixStream::connect(broker.capnp_socket()).unwrap();
+        let raw = std::os::unix::net::UnixStream::connect(broker.app_socket()).unwrap();
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 raw.into_raw_fd(),
@@ -1333,8 +1323,7 @@ mod owner_commit_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn local_host_worker_private_rpc_requires_descriptor_and_current_authority() {
         use super::signed_worker::{
-            CurrentHost, HeldHostDirectory, empty_directories, presentation, rpc_pair,
-            signed_device,
+            CurrentHost, empty_directories, presentation, rpc_pair, signed_device,
         };
         async fn scenario() {
             let root = SigningKey::from_bytes(&[81; 32]);
@@ -1364,7 +1353,7 @@ mod owner_commit_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,
@@ -1399,84 +1388,11 @@ mod owner_commit_tests {
                 .join_channel(&route.channel_key(), &bytes)
                 .await
                 .expect("actual descriptor signed host join");
-            assert!(handle.published_invocation_status(999).await.is_ok());
+            assert!(handle.subscribe_action_catalogue().await.is_ok());
             assert!(
                 state.is_current_host_worker(901, &route, &cert).unwrap(),
                 "signed actual host worker establishes live provenance"
             );
-            let (entered, mut callbacks) = mpsc::unbounded_channel();
-            let release = Rc::new(tokio::sync::Notify::new());
-            let row = TestActionDirectory {
-                revision: "directory-r1".into(),
-                resolve_mode: DirectoryResolveMode::Found,
-                result: tilo_actions::ResultSpec::None,
-                confirmation_required: false,
-                params: Vec::new(),
-                query_count: 0,
-                resolve_count: 0,
-            }
-            .row();
-            handle
-                .publish_action_directory(
-                    &route.app_id,
-                    capnp_rpc::new_client(HeldHostDirectory {
-                        entered,
-                        release: release.clone(),
-                        row,
-                    }),
-                )
-                .await
-                .unwrap();
-            for revoke in [false, true] {
-                let query_handle = handle.clone();
-                let query = tokio::task::spawn_local(async move {
-                    query_handle
-                        .query_action_directory(&runtime_collab::ActionDirectoryQuery {
-                            peer_id: 901,
-                            revision: "directory-r1".into(),
-                            cursor: vec![],
-                            needle: String::new(),
-                            parent_resource: String::new(),
-                            max_results: 8,
-                            max_bytes: 65536,
-                            max_work: 64,
-                            max_depth: 4,
-                            resource_name: String::new(),
-                        })
-                        .await
-                });
-                let resolve_handle = handle.clone();
-                let resolve = tokio::task::spawn_local(async move {
-                    resolve_handle
-                        .resolve_published_action(901, "directory-r1", "workspace:atlas", "open")
-                        .await
-                });
-                let mut called = vec![
-                    callbacks.recv().await.unwrap(),
-                    callbacks.recv().await.unwrap(),
-                ];
-                called.sort_unstable();
-                assert_eq!(called, ["query", "resolve"]);
-                if revoke {
-                    *authority.certificate.lock().unwrap() = None;
-                }
-                release.notify_waiters();
-                let query = query.await.unwrap();
-                let resolve = resolve.await.unwrap();
-                if revoke {
-                    assert!(
-                        query.is_err() && resolve.is_err(),
-                        "held directory query/resolve must reject after host revocation: query={query:?}, resolve={resolve:?}"
-                    );
-                } else {
-                    assert_eq!(query.unwrap().rows.len(), 1);
-                    assert!(matches!(
-                        resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found { .. }
-                    ));
-                }
-                *authority.certificate.lock().unwrap() = Some(cert.clone());
-            }
             assert!(
                 !state.durable_owner_required,
                 "host checks must not depend on durable mode"
@@ -1493,10 +1409,7 @@ mod owner_commit_tests {
             .row()
             .descriptor
             .unwrap();
-            handle
-                .publish_actions(&route.app_id, &[descriptor])
-                .await
-                .unwrap();
+            handle.publish_actions(&[descriptor]).await.unwrap();
             let invocations = handle.subscribe_stable_invocations().await.unwrap();
             for revoked in [false, true] {
                 let mut rejected = vec![];
@@ -1561,10 +1474,9 @@ mod owner_commit_tests {
                 .unwrap()
                 .2
                 .clone();
-            let before_read = authority.checks.load(Ordering::SeqCst);
             let pending_read =
                 tokio::task::spawn_local(async move { waiting_catalogue.read().await });
-            while authority.checks.load(Ordering::SeqCst) == before_read {
+            for _ in 0..32 {
                 tokio::task::yield_now().await;
             }
             assert!(
@@ -1639,7 +1551,7 @@ mod owner_commit_tests {
             tilo_user_identity::sign_device_cert(&mut changed, &root).unwrap();
             *authority.certificate.lock().unwrap() = Some(changed.clone());
             assert!(!state.is_current_host_worker(901, &route, &cert).unwrap());
-            assert!(handle.published_invocation_status(999).await.is_err());
+            assert!(handle.subscribe_action_catalogue().await.is_err());
             assert!(
                 rpc.join_channel(
                     &route.channel_key(),
@@ -1657,10 +1569,13 @@ mod owner_commit_tests {
                 pending_read.await.unwrap().is_err(),
                 "a stream must recheck authority after its read wakes"
             );
-            assert!(handle.published_invocation_status(999).await.is_err());
+            assert!(handle.subscribe_action_catalogue().await.is_err());
+            // The catalogue as it stood was disclosed while the worker was
+            // current; nothing after it is.
+            assert!(retained_catalogue.read().await.is_ok());
             assert!(
                 retained_catalogue.read().await.is_err(),
-                "retained stream must recheck host authority before disclosing a buffered snapshot"
+                "a retained stream must recheck host authority before disclosing the next snapshot"
             );
             assert!(state.connect_local_worker(route.clone(), &cert).is_err());
             let mut expired = cert.clone();
@@ -1672,7 +1587,7 @@ mod owner_commit_tests {
             let current_workspaces = membership.read().workspaces.clone();
             membership.write().workspaces.clear();
             assert!(
-                handle.published_invocation_status(999).await.is_err(),
+                handle.subscribe_action_catalogue().await.is_err(),
                 "live membership remains required"
             );
             membership.write().workspaces = current_workspaces;
@@ -1707,11 +1622,11 @@ mod owner_commit_tests {
                         "exercise actual native config=None"
                     );
                     let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                    let mut request = f.client.send_request();
-                    request
-                        .get()
-                        .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
+                    let op = postcard::to_stdvec(&owner_snapshot(&f)).unwrap();
+                    let response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.send(&op).await }
+                    });
                     let pending = tilo_test_env::within(
                         "native enrolled document bypassed the actual owner service",
                         f.mailbox.recv(),
@@ -1761,9 +1676,9 @@ mod owner_commit_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(1);
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
             assert!(publisher.requires_owner_for(&f.route.cluster_id));
-            let request = tilo_owner_commit::OwnerCommitRequest {
+            let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                 room: f.route.cluster_id.clone(),
-                operation: tilo_owner_commit::CommitOperation::Document {
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
                     record: f.route.record_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
@@ -1806,11 +1721,10 @@ mod owner_commit_tests {
                 let f = owner_fixture_with_native_config(root.path(), 0, true, false);
                 assert!(!f.state.publisher.requires_owner_for(&f.route.cluster_id));
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                request.send().promise.await.unwrap();
+                f.client()
+                    .send(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap())
+                    .await
+                    .unwrap();
                 assert!(subscriber.try_recv().is_ok());
                 assert!(
                     f.mailbox.is_empty(),
@@ -1836,8 +1750,8 @@ mod owner_commit_tests {
                     caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {
-                        root: f.owner.peer().authority().user_public_key,
-                        device: f.owner.peer().authority().device_public_key,
+                        root: f.owner.peer().owner(),
+                        device: f.owner.device().device_public_key,
                     },
                     network_evidence: None,
                     original: None,
@@ -1848,7 +1762,7 @@ mod owner_commit_tests {
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     prepared_effect: Arc::default(),
                     last_sequence: 0,
-                    actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
+                    actor: principal_id_for_root(f.owner.peer().owner()),
                     cancellable: false,
                     retryable_on_disconnect: false,
                     execution: tilo_actions::ExecutionMode::Immediate,
@@ -1898,10 +1812,10 @@ mod owner_commit_tests {
         let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
         pending.cluster_id = f.route.cluster_id.clone();
         pending.owner = InvocationOwner::Certified {
-            root: f.owner.peer().authority().user_public_key,
-            device: f.owner.peer().authority().device_public_key,
+            root: f.owner.peer().owner(),
+            device: f.owner.device().device_public_key,
         };
-        pending.actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        pending.actor = principal_id_for_root(f.owner.peer().owner());
         pending.prepared_effect = Arc::default();
         let state = f.state.clone();
         let retry_pending = pending.clone();
@@ -2040,7 +1954,7 @@ mod owner_commit_tests {
     }
 
     fn effect_owner_caller(f: &OwnerFixture) -> VerifiedActionCaller {
-        let certificate = f.owner.peer().authority();
+        let certificate = &f.owner.device();
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: f.route.cluster_id.clone(),
             device_certificate: serde_json::to_vec(certificate).unwrap(),
@@ -2116,9 +2030,9 @@ mod owner_commit_tests {
             tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: f.route.cluster_id.clone(),
-            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
             },
@@ -2143,15 +2057,17 @@ mod owner_commit_tests {
         assert_eq!(
             key.owner,
             InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
                 agent: Some("mcp-7".into()),
             },
             "the durable owner is the person's device delegated to its agent"
         );
         let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
             serde_json::from_slice(match &request.operation {
-                tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } => redacted,
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    redacted, ..
+                } => redacted,
                 _ => unreachable!(),
             })
             .unwrap();
@@ -2177,7 +2093,7 @@ mod owner_commit_tests {
             let caller = delegated_owner_caller(&f, "mcp-7");
             // The person themselves, another agent, or a nameless agent: none
             // of them acted, so none may be named.
-            let person = principal_id_for_root(f.owner.peer().authority().user_public_key);
+            let person = principal_id_for_root(f.owner.peer().owner());
             let actor = mistaken.unwrap_or(&person);
             let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
                 .expect_err("a mismatched actor is still refused");
@@ -2203,8 +2119,8 @@ mod owner_commit_tests {
         assert_eq!(
             owner,
             InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
                 agent: Some("mcp-7".into()),
             }
         );
@@ -2264,8 +2180,8 @@ mod owner_commit_tests {
         assert_eq!(
             current.owner().unwrap(),
             InvocationOwner::Certified {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
             }
         );
     }
@@ -2275,7 +2191,7 @@ mod owner_commit_tests {
         caller: &VerifiedActionCaller,
     ) -> (
         InvocationKey,
-        tilo_owner_commit::OwnerCommitRequest,
+        tilo_peer_state::owner_commit::OwnerCommitRequest,
         invocation_journal::PreparedEffect,
     ) {
         let key = f
@@ -2300,9 +2216,9 @@ mod owner_commit_tests {
             tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: f.route.cluster_id.clone(),
-            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).unwrap(),
             },

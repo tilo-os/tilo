@@ -6,7 +6,7 @@
 //! out.
 
 use tilo_search::FieldWeight;
-use ui::widget::command_palette::{ArgumentSpec, CommandEntry};
+use ui::{ArgumentSpec, CommandEntry};
 
 /// Rows a full list holds until the launcher says how many fit its card.
 const DEFAULT_ROW_CAPACITY: usize = 10;

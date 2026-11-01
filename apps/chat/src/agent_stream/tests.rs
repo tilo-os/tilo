@@ -2,10 +2,10 @@ use super::*;
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
 use crate::testing::MountedChat;
-use crate::testing::Room;
+use crate::testing::Workspace;
 use ui::tilo_resource::Id;
 
-fn fixture() -> Room {
+fn fixture() -> Workspace {
     crate::testing::demo_doc()
 }
 
@@ -23,15 +23,15 @@ fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<ChatPa
     })
 }
 
-fn apply(doc: &mut Room, sequence: u64, output: AgentOutput) {
+fn apply(doc: &mut Workspace, sequence: u64, output: AgentOutput) {
     crate::testing::apply_part_as(doc, crate::model::ME, event(sequence, output)).unwrap();
 }
 
-fn message(doc: &Room) -> crate::model::Message {
+fn message(doc: &Workspace) -> crate::model::Message {
     doc.message_row("stream_reply").unwrap()
 }
 
-fn stream(doc: &Room) -> AgentStream {
+fn stream(doc: &Workspace) -> AgentStream {
     message(doc).work.unwrap().stream.unwrap()
 }
 
@@ -193,7 +193,7 @@ fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
 #[test]
 fn reasoning_history_grows_linearly_with_received_content() {
     let mut doc = fixture();
-    let part = |doc: &Room| doc.part_bytes(0).unwrap();
+    let part = |doc: &Workspace| doc.part_bytes(0).unwrap();
     let baseline = part(&doc).len();
     let mut expected = String::new();
     let mut random = 7_u64;
@@ -329,7 +329,7 @@ fn rendering_discloses_only_provider_reasoning_and_preserves_public_work_card() 
         },
     );
     let mut app = crate::ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     let message = message(&doc);
     let collapsed = app.agent_display_blocks(&message);

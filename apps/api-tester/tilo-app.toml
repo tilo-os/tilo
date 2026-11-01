@@ -54,8 +54,8 @@ mode = "host"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@11"
-tilo-fs = "optional@11"
+collab = "optional@12"
+tilo-fs = "optional@12"
 
 [entrypoint]
 bin             = "bin/api-tester"

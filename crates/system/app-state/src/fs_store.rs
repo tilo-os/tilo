@@ -288,6 +288,69 @@ fn package_dir_in(root: &Path, package: &str) -> Result<PathBuf, StoreError> {
     Ok(root.join(package))
 }
 
+/// Where `package`'s room index of `workspace` lives under `root`: the
+/// directory whose entries change with that index, which a watcher arms on to
+/// hear of every record the room has taken in or let go. The directory of
+/// every room of that package is its parent.
+///
+/// # Errors
+/// A package or room name that is not an identity, a root that is not an
+/// absolute directory, or a key that names no document.
+pub fn room_index_directory(
+    root: &Path,
+    package: &str,
+    workspace: &str,
+) -> Result<PathBuf, SeamError> {
+    let key = StorageKey::room_index(package, workspace);
+    match target_in(root, &key)? {
+        Target::Document(directory) => Ok(directory),
+        Target::View(_) => Err(SeamError::InvalidKey {
+            key: key.to_string(),
+            reason: "a room index is a document".into(),
+        }),
+    }
+}
+
+/// Every room index below `root`, as its package and room: one directory per
+/// package holding one per room, whatever this device shows of them.
+fn room_indexes_in(root: &Path) -> Result<Vec<(String, String)>, SeamError> {
+    let mut packages = Vec::new();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_err(format!("listing {}", root.display()), error).into()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(format!("listing {}", root.display()), e))?;
+        if let Some(name) = entry.file_name().to_str().map(str::to_owned)
+            && validate_package_id(&name).is_ok()
+            && entry.path().is_dir()
+        {
+            packages.push(name);
+        }
+    }
+    packages.sort();
+    let mut room_indexes = Vec::new();
+    for package in packages {
+        let rooms = root.join(&package).join(ROOMS_DIR);
+        let entries = match fs::read_dir(&rooms) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io_err(format!("listing {}", rooms.display()), error).into()),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| io_err(format!("listing {}", rooms.display()), e))?;
+            if let Some(room) = entry.file_name().to_str().map(str::to_owned)
+                && validate_record_key(&room).is_ok()
+                && entry.path().is_dir()
+            {
+                room_indexes.push((package.clone(), room));
+            }
+        }
+    }
+    Ok(room_indexes)
+}
+
 fn target_in(root: &Path, key: &StorageKey) -> Result<Target, SeamError> {
     match key {
         StorageKey::Record {
@@ -978,6 +1041,10 @@ impl DurableStore for FsStore {
         }
         records.sort();
         Ok(records)
+    }
+
+    fn room_indexes(&self) -> Result<Vec<(String, String)>, SeamError> {
+        room_indexes_in(&self.root)
     }
 
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {

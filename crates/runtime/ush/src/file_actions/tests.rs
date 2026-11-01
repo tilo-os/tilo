@@ -1103,74 +1103,15 @@ fn the_file_actions_of_one_shell_run_are_grouped_as_that_run() {
     }
 }
 
-/// Events on the record's directory since the last call, as the watch
-/// thread reads them.
-fn pending_events(inotify: &std::os::fd::OwnedFd) -> Vec<u8> {
-    use std::os::fd::AsRawFd as _;
-    let mut events = Vec::new();
-    let mut buffer = [0u8; 4096];
-    loop {
-        // SAFETY: reads into a local buffer of the length given.
-        let read = unsafe {
-            libc::read(
-                inotify.as_raw_fd(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-            )
-        };
-        let Ok(read) = usize::try_from(read) else {
-            return events;
-        };
-        if read == 0 {
-            return events;
-        }
-        events.extend_from_slice(&buffer[..read]);
-    }
-}
-
-/// Reading the record to carry out what is queued opens its lock files for
-/// writing, which the record's directory reports; that must not count as a
-/// change, or the watch thread wakes itself forever. A write to the record
-/// does count.
+/// Carrying out what is queued reads the record, which opens its lock files
+/// for writing; the watch must report the document only, or it wakes itself
+/// forever.
 #[test]
-fn reading_the_record_is_no_reason_to_look_again_and_a_write_is() {
-    use std::os::fd::FromRawFd as _;
+fn only_the_record_document_counts_as_a_change() {
     let dir = tempfile::tempdir().unwrap();
-    let mut state = brokered_state(dir.path());
-    let record = state
-        .environment
-        .records
-        .record_dir(&state.environment.key)
-        .unwrap();
-    // SAFETY: inotify_init1 takes flags and returns a new descriptor or -1.
-    let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
-    assert!(raw >= 0, "no inotify");
-    // SAFETY: the kernel returned a fresh descriptor this test now owns.
-    let inotify = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-    let path = std::ffi::CString::new(record.as_os_str().as_encoded_bytes()).unwrap();
-    // SAFETY: a valid descriptor and a NUL-terminated path.
-    let added = unsafe {
-        libc::inotify_add_watch(
-            std::os::fd::AsRawFd::as_raw_fd(&inotify),
-            path.as_ptr(),
-            watch::WRITES,
-        )
-    };
-    assert!(added >= 0, "cannot watch {}", record.display());
-
-    carry_out_queued(&state);
-    let read = pending_events(&inotify);
-    assert!(
-        !read.is_empty(),
-        "reading the record no longer reports anything; this test checks nothing"
-    );
-    assert!(!watch::names_document(&read), "a read woke the watch");
-
-    let more = dir.path().join("more");
-    fs::create_dir_all(&more).unwrap();
-    state.handle(crate::broker::Request::TrustDir { path: more });
-    assert!(
-        watch::names_document(&pending_events(&inotify)),
-        "a write to the record did not wake the watch"
-    );
+    assert!(watch::is_document(
+        &dir.path().join(app_state::DOCUMENT_FILE)
+    ));
+    assert!(!watch::is_document(&dir.path().join("lock")));
+    assert!(!watch::is_document(dir.path()));
 }

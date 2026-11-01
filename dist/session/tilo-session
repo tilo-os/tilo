@@ -1,20 +1,40 @@
 #!/bin/sh
 # Tilo session entry point, as installed on a host that is not the Tilo image.
 #
-# The display manager execs this; it supervises the compositor. There is nothing
-# configurable here on purpose: the path below is the one the package owns,
-# and no environment variable, config file or argument can redirect it. The
-# developer counterpart that *can* be redirected is `tilo-session-dev`, in the
-# separate `-devel` subpackage, so a machine that never installed that
-# subpackage has no way to start a session from a binary of someone's
-# choosing.
+# The display manager execs this; it supervises the compositor. What it starts
+# is fixed on purpose: the native session binary the package installs, or the
+# shell it replaces when asked for with `--shell` while both are shipped. No
+# environment variable or config file can name another binary; the flag only
+# chooses between these two package paths. The developer counterpart that
+# *can* be redirected is `tilo-session-dev`, in the separate `-devel`
+# subpackage, so a machine that never installed that subpackage has no way to
+# start a session from a binary of someone's choosing.
 set -eu
 
+TILO_SESSION=/usr/bin/tilo-session
 TILO_SHELL=/usr/bin/tilo-shell
 SESSION_RUNNER=/usr/libexec/tilo-session-runner
 
-if [ ! -x "$TILO_SHELL" ]; then
-    echo "tilo-session: $TILO_SHELL is missing or not executable" >&2
+# A login starts the native session. `--shell` starts the old shell instead,
+# for as long as it is shipped; anything else is refused rather than guessed.
+case "${1:-}" in
+    "")
+        session_bin=$TILO_SESSION
+        session_mode=--host-desktop
+        ;;
+    --shell)
+        session_bin=$TILO_SHELL
+        session_mode=--host-desktop-session
+        shift
+        ;;
+    *)
+        echo "tilo-session: unknown argument: $1" >&2
+        exit 2
+        ;;
+esac
+
+if [ ! -x "$session_bin" ]; then
+    echo "tilo-session: $session_bin is missing or not executable" >&2
     exit 1
 fi
 
@@ -23,4 +43,25 @@ if [ ! -x "$SESSION_RUNNER" ]; then
     exit 1
 fi
 
-exec "$SESSION_RUNNER" "$TILO_SHELL" "$@"
+# The host declaration is the package-owned, distro-neutral way to say that
+# this is a session added to an existing Linux installation rather than the
+# one a complete Tilo system boots into: it keeps device identity material in
+# the login's own XDG trees and selects the reduced identity-only OOBE. Do not
+# infer it from distro files or XDG desktop names, and never drop it because a
+# host happens to look like the image. `--host-desktop` is the native
+# session's name for it, `--host-desktop-session` the shell's.
+#
+# `--backend drm`: this is a real login session on a seat of its own, driving
+# KMS directly. The winit backend (the default) is for running nested inside
+# another compositor and would have nothing to attach to here.
+#
+# `--firstboot`: on the Tilo image a systemd unit creates the user's config
+# directories once before the session. A host has no such unit, so the wrapper
+# performs that idempotent preparation and then falls through to the
+# compositor. Identity creation itself stays interactive in trusted compositor
+# chrome; it is never minted silently by this wrapper.
+#
+# The runner adds no compositor arguments of its own: it owns the lifecycle
+# (graphical targets, activation environment, flight record, logout channel,
+# signals) and starts what it is told to start.
+exec "$SESSION_RUNNER" "$session_bin" "$session_mode" --firstboot --backend drm "$@"

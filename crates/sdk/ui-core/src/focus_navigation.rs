@@ -448,7 +448,6 @@ mod trap_tests {
 #[cfg(test)]
 mod hidden_tests {
     use super::*;
-    use crate::widget::command_palette::CommandPalette;
     use crate::widget::popover::Popover;
     use crate::widget::{Column, ContextMenu, ModalDialog, Tooltip};
 
@@ -479,10 +478,10 @@ mod hidden_tests {
         dialog.set_open(true);
         assert!(!agreed(&dialog), "an open dialog");
 
-        let mut palette = CommandPalette::new();
-        assert!(agreed(&palette), "a closed command palette");
+        let mut palette = crate::ActionPalette::rows(Vec::new());
+        assert!(agreed(&palette), "a closed palette");
         palette.open();
-        assert!(!agreed(&palette), "an open command palette");
+        assert!(!agreed(&palette), "an open palette");
 
         let mut options = Popover::new()
             .with_label("Interval")

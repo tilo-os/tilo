@@ -156,6 +156,54 @@ fn floating_clock() -> TopBarChrome {
     bar
 }
 
+/// The floating timer's controls are Clocks' own: each press carries the
+/// command and the timer it belongs to, and the close button also puts the
+/// overlay away.
+#[test]
+fn the_floating_timers_controls_hand_the_timer_back_to_clocks() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+        active: WorkspaceId::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].id;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.clock = true;
+        state.clock_activity = Some(ClockActivity {
+            activity_id: Some("timer-1".into()),
+            label: "Tea".into(),
+            remaining_secs: 125,
+            overlay: true,
+            ..Default::default()
+        });
+    }
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    bar.activate_clock_control(0);
+    bar.activate_clock_control(1);
+    bar.activate_clock_control(2);
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        [
+            ChromeIntent::ClockCommand {
+                command: "toggle".into(),
+                activity_id: Some("timer-1".into()),
+            },
+            ChromeIntent::ClockCommand {
+                command: "add-minute".into(),
+                activity_id: Some("timer-1".into()),
+            },
+            ChromeIntent::HideClock,
+            ChromeIntent::ClockCommand {
+                command: "close".into(),
+                activity_id: Some("timer-1".into()),
+            },
+        ]
+    );
+    assert!(!chrome.borrow().overlays.clock, "the overlay is away");
+}
+
 #[test]
 fn floating_clock_cursor_exposes_buttons_and_drag_state() {
     let mut bar = floating_clock();
@@ -2361,4 +2409,112 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     let bar = TopBarChrome::from_tree(&own);
     assert!(bar.collaborator_initials().is_empty());
     assert_eq!(bar.collaborator_overflow(), 0);
+}
+
+/// Each reading the machine has draws its own glyph in the status cluster;
+/// a reading that never arrived draws nothing rather than a stand-in, so an
+/// empty cluster is a machine that read nothing, never a full battery.
+#[test]
+fn every_reading_the_machine_has_draws_its_own_glyph() {
+    let mut bar = sample_chrome();
+    assert_eq!(bar.tray_slot_count(), 1, "the bell alone");
+    bar.status = crate::chrome::SystemStatus {
+        battery_percent: Some(72),
+        battery_charging: false,
+        battery_low: false,
+        battery_critical: false,
+        link: Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Wifi,
+            name: Some("Home".into()),
+            signal: 4,
+        }),
+        volume: Some(crate::chrome::VolumeState {
+            level: 0.45,
+            muted: false,
+        }),
+        media: Vec::new(),
+        summary: String::new(),
+    };
+    assert_eq!(
+        bar.tray_slot_count(),
+        4,
+        "the bell, the volume, the link and the battery"
+    );
+    lay_out_and_draw(&mut bar, 1280.0);
+    let known = bar.tray_pill_rect;
+    assert!(
+        known.width() > BAR_CONTROL_PX,
+        "the cluster widens by its glyphs"
+    );
+    bar.status = crate::chrome::SystemStatus::default();
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert_eq!(bar.tray_slot_count(), 1, "nothing known, nothing drawn");
+    assert!(bar.tray_pill_rect.width() < known.width());
+}
+
+/// A display of `monitor` at `x`, 1280 by 800, as the desk knows one.
+fn display(id: u32, monitor: &str, x: f64) -> tilo_desktop_model::Display {
+    tilo_desktop_model::Display {
+        id,
+        monitor: monitor.to_owned(),
+        x,
+        y: 0.0,
+        width: 1280.0,
+        height: 800.0,
+        primary: false,
+    }
+}
+
+/// One place per display, each on its own display's rectangle: the display
+/// in use full, the others compact, and the displays a fullscreen window
+/// owns named by their monitor.
+#[test]
+fn the_placement_gives_every_display_a_place_of_its_own() {
+    let mut tree = DesktopTree::default();
+    assert!(tree.reconcile_displays(&[display(0, "panel", 0.0), display(1, "monitor", 1280.0)]));
+    let placement = Placement::of(&tree, &[]);
+    assert_eq!(placement.bars.len(), 2);
+    assert_eq!(placement.bars[0].display, 0);
+    assert!(
+        placement.bars[0].full,
+        "the primary display is the one in use"
+    );
+    assert_eq!(placement.bars[0].rect, Rect::new(0.0, 0.0, 1280.0, 800.0));
+    assert_eq!(placement.bars[1].display, 1);
+    assert!(!placement.bars[1].full, "the other display is compact");
+    assert_eq!(
+        placement.bars[1].rect,
+        Rect::new(1280.0, 0.0, 2560.0, 800.0),
+        "the second display's own rectangle"
+    );
+    assert!(placement.fullscreen.is_empty());
+
+    // The person moving to the other display carries the full bar there.
+    tree.outputs.set_focused(1);
+    let focused = Placement::of(&tree, &[]);
+    assert!(focused.bars[1].full);
+    assert!(!focused.bars[0].full);
+
+    // A fullscreen window names the monitor of its display.
+    assert_eq!(
+        Placement::of(&tree, &["monitor".to_owned()]).fullscreen,
+        [1]
+    );
+    assert!(
+        Placement::of(&tree, &["unplugged".to_owned()])
+            .fullscreen
+            .is_empty()
+    );
+}
+
+/// A desk of one display needs no placing: the bar's own layout stands it
+/// across the desk.
+#[test]
+fn one_display_needs_no_places() {
+    let mut tree = DesktopTree::default();
+    tree.reconcile_displays(&[display(0, "panel", 0.0)]);
+    assert_eq!(
+        Placement::of(&tree, &["panel".to_owned()]),
+        Placement::default()
+    );
 }

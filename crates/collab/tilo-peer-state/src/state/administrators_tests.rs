@@ -63,7 +63,7 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let person = hex::encode(user);
-    let owner = Subject::Person(hex::encode(peer.authority().user_public_key));
+    let owner = Subject::Person(hex::encode(peer.owner()));
     // The grant as rooms held it before: on the room's resource, where the
     // Editor's Deny at the same node outranks it.
     let legacy = Grant::new(
@@ -405,7 +405,7 @@ fn a_moderator_renames_the_room_and_a_grant_on_a_set_assigns_only_it() {
         lifetime: tilo_action_policy::Lifetime::UntilRevoked,
     };
     assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
-    let owner = hex::encode(peer.authority().user_public_key);
+    let owner = hex::encode(peer.owner());
     let on_set = tilo_action_policy::Grant::new(
         "assign-readers",
         tilo_action_policy::Subject::person(hex::encode(user)),

@@ -8,7 +8,7 @@
 //! agents and collaborators"): an issue in Tasks ("claude-code in this
 //! session"), assigned to a task agent minted for the connection, whose run
 //! the person's admission starts. The connection then works in that run
-//! (`tilo_action_broker::collab_broker_capnp::TaskRunHost`): the run admits
+//! (`tilo_action_broker::collab_app_broker::TaskRunHost`): the run admits
 //! each of its actions, as the agent working on the issue for the person, so
 //! it is attributed, in History and in Tasks like any agent's work, and
 //! stopping the run ends what it may do.

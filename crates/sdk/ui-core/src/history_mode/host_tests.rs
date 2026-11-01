@@ -314,7 +314,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         let effects = Rc::new(Cell::new(0));
         let probe = effects.clone();
         let root = Column::new().push(Box::new(
-            Button::new("live-effect", "Send").on_click(move || probe.set(probe.get() + 1)),
+            Button::new("live-effect", "Send").on_effect(move || probe.set(probe.get() + 1)),
         ));
         let mut state = State::new();
         state.doc.put(ROOT, "body", "first").unwrap();
@@ -535,7 +535,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
     state.commit_action(None, None);
     let before = state.doc.get_heads();
     let root = Column::new().push(Box::new(
-        Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
+        Button::new("live-effect", "Send").on_effect(crate::testing::record_click("effect")),
     ));
     let driver = FrameHarness::from_managed_root(
         state,

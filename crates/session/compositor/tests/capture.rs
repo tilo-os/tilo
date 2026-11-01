@@ -23,7 +23,7 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
 use tilo_compositor::{
-    Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
+    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_pointer::WlPointer,
@@ -226,7 +226,13 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            buffer: self.buffer.clone(),
+            frame: HostFrame::from_buffer(
+                self.buffer.clone(),
+                (
+                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
+                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
+                ),
+            ),
         }]
     }
 
@@ -514,6 +520,140 @@ fn a_trusted_tool_picks_a_window_from_the_list_and_copies_only_it() {
     assert!(near(pixel(&memory, 20, 19, 9), GREEN));
 }
 
+/// Every pixel of the window the toplevel list shows first, copied through
+/// `ext-image-copy-capture` into shared memory.
+fn copy_listed_window(
+    compositor: &mut Compositor,
+    tool: &mut Tool,
+    width: usize,
+    height: usize,
+) -> Vec<[u8; 3]> {
+    let qh = tool.queue.handle();
+    let handle = tool.seen.toplevels[0].0.clone();
+    let source = tool
+        .seen
+        .window_sources
+        .clone()
+        .unwrap()
+        .create_source(&handle, &qh, ());
+    let session =
+        tool.seen
+            .image_copy
+            .clone()
+            .unwrap()
+            .create_session(&source, Options::empty(), &qh, ());
+    tool.seen.session_done = false;
+    pump(compositor, tool, |seen| seen.session_done);
+    let (buffer, memory) = tool.buffer(
+        i32::try_from(width).unwrap(),
+        i32::try_from(height).unwrap(),
+    );
+    let frame = session.create_frame(&qh, ());
+    frame.attach_buffer(&buffer);
+    frame.damage_buffer(
+        0,
+        0,
+        i32::try_from(width).unwrap(),
+        i32::try_from(height).unwrap(),
+    );
+    frame.capture();
+    tool.seen.ready = false;
+    tool.seen.failed = false;
+    pump(compositor, tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the frame was copied");
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| pixel(&memory, width, x, y))
+        .collect()
+}
+
+/// The whole output, copied through `wlr-screencopy` into shared memory.
+fn copy_output(compositor: &mut Compositor, tool: &mut Tool) -> (OwnedFd, usize) {
+    let qh = tool.queue.handle();
+    let frame = tool.seen.screencopy.clone().unwrap().capture_output(
+        0,
+        tool.seen.output.as_ref().unwrap(),
+        &qh,
+        (),
+    );
+    tool.seen.buffer_done = false;
+    pump(compositor, tool, |seen| seen.buffer_done);
+    let (buffer, memory) = tool.buffer(64, 48);
+    frame.copy(&buffer);
+    tool.seen.ready = false;
+    tool.seen.failed = false;
+    pump(compositor, tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the frame was copied");
+    frame.destroy();
+    (memory, 64)
+}
+
+#[test]
+fn a_private_window_is_a_flat_placeholder_in_copies_and_whole_on_its_display() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let _window = open_window(&mut compositor, &mut tool, 20, 10, GREEN);
+    pump(&mut compositor, &mut tool, |seen| {
+        seen.toplevels
+            .iter()
+            .any(|(_, app_id)| app_id == "org.example.shared")
+    });
+    // The window is centred on the 64 x 48 output: 22, 19 to 42, 29.
+    compositor.render().expect("render");
+    let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
+
+    compositor.protect_app("org.example.shared", true);
+    // A copy of the window is one flat colour carrying nothing of it.
+    let hidden = copy_listed_window(&mut compositor, &mut tool, 20, 10);
+    let placeholder = hidden[0];
+    assert!(!near(placeholder, GREEN), "the window's own colour is gone");
+    assert!(
+        !near(placeholder, BACKGROUND),
+        "not what it stands on either"
+    );
+    assert!(
+        hidden.iter().all(|&pixel| pixel == placeholder),
+        "no content of it: {hidden:?}"
+    );
+    // A copy of the output has it as that placeholder, the rest as it is.
+    let (memory, width) = copy_output(&mut compositor, &mut tool);
+    assert_eq!(pixel(&memory, width, 32, 24), placeholder);
+    assert_eq!(pixel(&memory, width, 22, 19), placeholder);
+    assert!(near(pixel(&memory, width, 8, 8), RED), "the square below");
+    assert!(near(pixel(&memory, width, 60, 44), BACKGROUND));
+    // The person's own display still shows it.
+    compositor.render().expect("render");
+    let display = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(display.pixel(32, 24), Some([0, 255, 0, 255]));
+
+    // Shown again once the session no longer marks it private.
+    compositor.protect_app("org.example.shared", false);
+    let shown = copy_listed_window(&mut compositor, &mut tool, 20, 10);
+    assert!(shown.iter().all(|&pixel| near(pixel, GREEN)));
+    let (memory, width) = copy_output(&mut compositor, &mut tool);
+    assert!(near(pixel(&memory, width, 32, 24), GREEN));
+}
+
+#[test]
+fn an_app_that_holds_secrets_is_private_without_asking() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let (surface, toplevel) = open_window(&mut compositor, &mut tool, 20, 10, GREEN);
+    // The same window, under the app id of a password manager.
+    toplevel.set_app_id("org.keepassxc.keepassxc".into());
+    surface.commit();
+    pump(&mut compositor, &mut tool, |seen| {
+        seen.toplevels
+            .iter()
+            .any(|(_, app_id)| app_id == "org.keepassxc.keepassxc")
+    });
+    assert!(!near(
+        copy_listed_window(&mut compositor, &mut tool, 20, 10)[0],
+        GREEN
+    ));
+}
+
 #[test]
 fn a_cursor_session_carries_the_pointer_image_and_where_it_is() {
     let mut compositor = compositor();
@@ -584,6 +724,46 @@ fn a_cursor_session_carries_the_pointer_image_and_where_it_is() {
         .unwrap();
     pump(&mut compositor, &mut tool, |seen| !seen.cursor.is_empty());
     assert_eq!(tool.seen.cursor, vec!["position 40 10".to_owned()]);
+}
+
+/// The pointer's image size as a cursor session copies it, from a
+/// compositor showing it at `size` logical pixels.
+fn pointer_image_size(compositor: &mut Compositor, size: u32) -> (u32, u32) {
+    let mut a11y = compositor.a11y().clone();
+    a11y.cursor.size = size;
+    compositor.set_a11y(a11y).expect("a pointer size");
+    let mut tool = trusted_tool(compositor);
+    pump(compositor, &mut tool, |seen| seen.seat.is_some());
+    let qh = tool.queue.handle();
+    let pointer = tool.seen.seat.as_ref().unwrap().get_pointer(&qh, ());
+    let source = tool.seen.sources.clone().unwrap().create_source(
+        tool.seen.output.as_ref().unwrap(),
+        &qh,
+        (),
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 30.0, y: 20.0 })
+        .unwrap();
+    let cursor = tool
+        .seen
+        .image_copy
+        .clone()
+        .unwrap()
+        .create_pointer_cursor_session(&source, &pointer, &qh, ());
+    let _session = cursor.get_capture_session(&qh, ());
+    pump(compositor, &mut tool, |seen| seen.session_size.is_some());
+    tool.seen.session_size.expect("the pointer's size")
+}
+
+#[test]
+fn a_bigger_pointer_is_the_size_the_person_asked_for() {
+    let mut compositor = compositor();
+    let plain = pointer_image_size(&mut compositor, 24);
+    let large = pointer_image_size(&mut compositor, 48);
+    assert!(
+        large.0 > plain.0 && large.1 > plain.1,
+        "the pointer is drawn bigger: {plain:?} then {large:?}"
+    );
 }
 
 #[test]

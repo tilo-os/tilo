@@ -15,15 +15,61 @@ power-restart = Neu starten
 power-restart-detail = Geöffnete Apps werden geschlossen
 power-shut-down = Ausschalten
 power-shut-down-detail = Geöffnete Apps werden geschlossen
+power-shut-down-session-detail = Das Fenster schließt sich; der Rechner bleibt an
+power-not-offered-switch-user = Benutzerwechsel ist in diesem Fenster nicht möglich
+power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners nicht ändern
 
 ## Display change
 
 display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
+display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
+display-confirm-applying = Wird angewendet …
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
 display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
 display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+
+## Dictation
+
+dictation-title = Diktat
+dictation-ask-title = In dieses Feld diktieren?
+dictation-ask-body = Tilo hört einmal über das Mikrofon zu, nur bis du aufhörst, und lässt das Audio auf diesem Gerät. Vorher wird nichts aufgenommen.
+dictation-ask-caption = Deine Wörter gehen in das Feld, in dem du warst.
+dictation-allow = Erlauben
+dictation-deny = Jetzt nicht
+dictation-preparing = Das fokussierte bearbeitbare Feld wird geprüft…
+dictation-loading = Lokale Erkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an. Sprich, dann setze ein.
+dictation-live-preview = Vorschau: { $text }
+dictation-stopping-microphone = Mikrofon wird gestoppt…
+dictation-finishing = Mikrofon aus. Dein Text wird fertiggestellt…
+dictation-stopping = Diktat wird beendet…
+dictation-finish = Einsetzen
+dictation-cancel = Abbrechen
+dictation-recovery-title = Das Feld hat keine Wörter angenommen
+dictation-recovery-too-long = Mikrofon aus · Der Text ist zu lang, um ihn in einem Schritt einzusetzen. Er bleibt 10 Minuten privat aufbewahrt. Kopieren legt ihn in deine Zwischenablage; Verwerfen löscht ihn.
+dictation-recovery-vocabulary = Mikrofon aus · Dein persönliches Wörterbuch hat sich geändert. Beginne ein neues Diktat, um die neuen Wörter zu nutzen. Das Gehörte bleibt 10 Minuten privat aufbewahrt; Kopieren legt es in deine Zwischenablage, Verwerfen löscht es.
+dictation-recovery-kept = 10 Minuten privat aufbewahrt.
+dictation-copied = Kopiert. Füge es in das Feld deiner Wahl ein; der private Entwurf bleibt, bis du ihn verwirfst oder 10 Minuten vergehen.
+dictation-copy-failed = Die Zwischenablage ist nicht verfügbar. Dein Transkript bleibt weiterhin privat aufbewahrt; versuche es noch einmal oder verwirf es.
+dictation-copy = Kopieren
+dictation-discard = Verwerfen
+dictation-unavailable-title = Diktieren ist nicht möglich
+dictation-unavailable = Lokales Diktieren ist nicht verfügbar. Es wurde kein Text eingesetzt.
+dictation-editable-required = Fokussiere ein bearbeitbares Feld. Passwörter nehmen kein Diktat an.
+dictation-unsupported-field = Diktieren wird in Terminal-Feldern noch nicht unterstützt. Fokussiere ein anderes bearbeitbares Feld.
+dictation-busy = Das vorige Diktat wird noch beendet. Versuche es gleich noch einmal.
+dictation-target-changed = Das Feld hat gewechselt. Das Diktat wurde ohne Einsetzen von Text abgebrochen.
+dictation-timeout = Das Diktat ist abgelaufen. Es wurde kein Text eingesetzt.
+dictation-model-required = Installiere ein freigegebenes lokales Sprachmodell, bevor du diktierst.
+dictation-language-unavailable = Dieses Sprachmodell unterstützt die gewünschte Sprache nicht.
+dictation-microphone-unavailable = Kein Zugriff auf das Mikrofon. Prüfe dein Eingabegerät.
+dictation-vocabulary-unavailable = Dein persönliches Wörterbuch hat sich geändert oder ist nicht verfügbar. Das Diktat wurde beendet; beginne ein neues.
+dictation-audio-interrupted = Das Mikrofon-Audio wurde unterbrochen. Es wurde kein Text eingesetzt.
+dictation-close = Schließen
+dictation-open-settings = Einrichten
 
 ## Shortcut guide
 
@@ -32,6 +78,17 @@ guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken
 guide-listening-cancel = Abbrechen
+guide-message-esc-cancels = { $message }; Esc bricht ab
+guide-rebind-needs-modifier = Füge druckbaren Tasten Super, Strg, Alt oder Umschalt hinzu.
+guide-rebind-in-use = Wird bereits für „{ $action }“ verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-reserved = F1 und Drucken sind vom Desktop reserviert.
+guide-rebind-unsupported = Dieses Tastenkürzel wird nicht unterstützt. Drücke ein anderes.
+guide-rebind-taken-by-action = Wird bereits zum Ausführen einer Aktion verwendet. Drücke ein anderes Tastenkürzel.
+guide-rebind-save-failed = Das Tastenkürzel konnte nicht gespeichert werden. Drücke ein anderes.
+guide-reset-in-use = Ein Standardwert wird bereits für „{ $action }“ verwendet. Ändere zuerst dieses Tastenkürzel.
+guide-reset-taken-by-action = Ein Standardwert führt jetzt eine Aktion aus. Ändere zuerst dieses Tastenkürzel.
+guide-reset-invalid = Die Standard-Tastenkürzel konnten nicht wiederhergestellt werden.
+guide-reset-save-failed = Die Standardwerte konnten nicht wiederhergestellt werden.
 guide-navigation-heading = Navigationskürzel bearbeiten
 guide-essentials-heading = Desktop-Grundlagen
 guide-group-windows = Fenster und Arbeitsbereiche
@@ -63,6 +120,55 @@ guide-touch-open-overview = Übersicht öffnen
 guide-touch-close-overview = Übersicht schließen
 guide-reset = Auf Standard zurücksetzen
 
+## Was die Navigationszeilen der Tastatur bewegen, und was sonst zu den Tasten zu wissen ist: Fenster, Tabs, Leisten und Arbeitsbereiche heißen wie in den Controller-Zeilen oben
+guide-row-move-tab = Tab verschieben
+guide-row-maximize = Maximieren oder wiederherstellen
+guide-row-move-group = Gruppe verschieben
+guide-row-resize = Größe ändern
+guide-row-move-group-strip = Gruppe in Leiste verschieben
+guide-unassigned = Nicht belegt
+guide-unassigned-inline = nicht belegt
+guide-strip-jump = Direkt zu einer Leiste mit { $first } … { $last }; Leiste 1 ist die oberste
+guide-app-tab-chords = { $next }, { $previous } und { $reopen } gehen zuerst an die App; die Tab-Kürzel des Desktops hier wirken immer
+guide-your-shortcuts = Deine Tastenkürzel: { $shortcuts }
+
+## Die Kürzelnamen des Katalogs, die der Leitfaden auflistet
+shortcut-name-focus-previous-window = Vorheriges Fenster fokussieren
+shortcut-name-focus-next-window = Nächstes Fenster fokussieren
+shortcut-name-previous-tab = Vorheriger Tab
+shortcut-name-next-tab = Nächster Tab
+shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
+shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
+shortcut-name-maximize-window = Fenster maximieren
+shortcut-name-restore-window = Fenster wiederherstellen
+shortcut-name-previous-strip = Leiste darüber
+shortcut-name-next-strip = Leiste darunter
+shortcut-name-previous-workspace = Vorheriger Arbeitsbereich
+shortcut-name-next-workspace = Nächster Arbeitsbereich
+shortcut-name-move-group-left = Gruppe nach links verschieben
+shortcut-name-move-group-right = Gruppe nach rechts verschieben
+shortcut-name-resize-narrower = Fenster schmaler machen
+shortcut-name-resize-wider = Fenster breiter machen
+shortcut-name-move-group-to-previous-strip = Gruppe in die Leiste darüber verschieben
+shortcut-name-move-group-to-next-strip = Gruppe in die Leiste darunter verschieben
+shortcut-name-reopen-closed-tab = Geschlossenen Tab wieder öffnen
+shortcut-name-search = Überall suchen
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Übersicht
+shortcut-name-quick-settings = Schnelleinstellungen
+shortcut-name-lock = Bildschirm sperren
+shortcut-switch-windows = Fenster wechseln
+shortcut-close-tab = Tab schließen
+shortcut-new-window = Neues Fenster
+shortcut-duplicate-tab = Neuer Tab dieser App
+shortcut-strip-switcher = Leistenwechsler
+shortcut-screenshot = Bildschirmfoto
+shortcut-display-layout = Anzeigeanordnung
+shortcut-capture-screenshot = Bildschirmfoto aufnehmen
+shortcut-open-terminal = Terminal öffnen
+shortcut-picture-in-picture = Bild im Bild
+shortcut-save-recent-replay = Letzte Aufnahme speichern
+
 ## Public workspaces
 
 directory-title = Einem Arbeitsbereich beitreten
@@ -78,6 +184,25 @@ directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
 directory-open-named = { $name } öffnen
 directory-try-again = Erneut versuchen
+directory-community-tag = von { $host }
+directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-code-failed = Mit diesem Link oder Code konnte nicht beigetreten werden: { $error }
+directory-joined-name = Beigetretenes Workspace
+directory-join-failed-line = Nicht beigetreten: { $error }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
 
 ## Display sheet
 display-sheet-title = Anzeige
@@ -136,6 +261,7 @@ portal-usb-row-read-write = Lesen und Schreiben
 portal-usb-row-read-only = Nur lesen
 portal-a11y-name = Name
 portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
+portal-request-gone = Diese Frage steht nicht mehr offen.
 portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
 portal-a11y-answer = Antwort
 portal-allow = Erlauben
@@ -191,13 +317,6 @@ portal-print-print = Drucken
 portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
 portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
 portal-screenshot-take = Bildschirmausschnitt geben
-portal-pick-color-title = Eine Farbe wählen
-portal-pick-color-detail = Rot, Grün und Blau, jeweils von 0 bis 1.
-portal-pick-color-red = Rot
-portal-pick-color-green = Grün
-portal-pick-color-blue = Blau
-portal-pick-color-use = Farbe verwenden
-portal-pick-color-incomplete = Jeder Teil ist eine Zahl von 0 bis 1.
 portal-usb-title = { $app } USB-Geräte geben?
 portal-usb-detail = { $app } bekommt die angehakten Geräte, bis es nicht mehr fragt oder eins abgezogen wird.
 portal-usb-allow = Ausgewählte geben
@@ -237,6 +356,7 @@ portal-auth-rejected = Dieses Passwort wurde nicht angenommen.
 
 file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
 file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
+file-chooser-request-gone = Diese Dateiauswahl steht nicht mehr offen.
 file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
 file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
 file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
@@ -245,8 +365,137 @@ file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
 
 ## The lock screen.
 lock-title = Gesperrt
+lock-description = Gib dein Passwort ein und drücke die Eingabetaste, um zu entsperren.
 lock-unlock = Entsperren
+lock-password = Passwort
+lock-welcome = Willkommen zurück
+lock-enter-hint = Mit der Eingabetaste entsperren
+lock-caps-lock = Feststelltaste ist an
 lock-checking = Wird geprüft …
 lock-no-password = Gib dein Passwort ein, um zu entsperren.
-lock-wrong-password = Mit diesem Passwort ließ sich nicht entsperren. Versuch es noch einmal.
+lock-wrong-password = Das Passwort war falsch. Versuch es noch einmal.
 lock-unavailable = Das Passwort ließ sich nicht prüfen. Der Bildschirm bleibt gesperrt.
+lock-switch-layout = Zu { $layout } wechseln
+lock-on-screen-keyboard = Bildschirmtastatur
+lock-play = Abspielen
+lock-pause = Pause
+lock-next = Nächster Titel
+lock-previous = Vorheriger Titel
+lock-battery = Akku
+lock-suspend = Bereitschaft
+lock-restart = Neu starten
+lock-shut-down = Ausschalten
+
+## The questions the session shows on the portal sheet: apps' access, the
+## administrator's, a network's secrets and a device pairing.
+portal-connect = Verbinden
+portal-remember-device = Auf diesem Gerät merken
+portal-secret-required = Fülle alle Pflichtfelder aus.
+portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
+portal-sim-unlock = Entsperren
+portal-sim-unlocking = SIM wird entsperrt …
+portal-sim-unlock-failed = Die SIM konnte nicht entsperrt werden. Versuche es erneut.
+portal-sim-pin-wrong = Diese PIN ist falsch.
+portal-sim-puk-title = SIM gesperrt
+portal-sim-puk-lead = Zu viele falsche PINs haben die SIM für „{ $network }“ gesperrt. Gib die PUK vom Kartenhalter der SIM ein und wähle eine neue PIN.
+portal-sim-puk-wrong = Diese PUK ist falsch.
+portal-network-heading = Netzwerk
+portal-network-this-network = dieses Netzwerk
+portal-network-password = Passwort
+portal-network-key = Schlüssel
+portal-network-user-name = Benutzername
+portal-network-private-key-password = Passwort des privaten Schlüssels
+portal-network-anonymous-identity = Anonyme Identität (optional)
+portal-network-wifi-title = WLAN-Passwort erforderlich
+portal-network-enter-password = Gib das Passwort für „{ $network }“ ein.
+portal-network-wired-sign-in-title = Anmeldung am kabelgebundenen Netzwerk
+portal-network-sign-in-title = Netzwerkanmeldung
+portal-network-sign-in-lead = „{ $network }“ benötigt deinen Benutzernamen und dein Passwort.
+portal-network-vpn-title = VPN-Anmeldung
+portal-network-vpn-lead = Gib die Zugangsdaten für „{ $network }“ ein.
+portal-network-sim-pin-title = SIM-PIN erforderlich
+portal-network-sim-pin-lead = Gib die PIN ein, um die SIM für „{ $network }“ zu entsperren.
+portal-network-sim-pin = SIM-PIN
+portal-network-mobile-title = Passwort für mobiles Breitband erforderlich
+portal-network-dsl-title = DSL-Passwort erforderlich
+portal-network-retry = Der letzte Versuch hat nicht funktioniert. Prüfe die Eingabe und versuche es erneut.
+portal-network-wps = Du kannst auch die WPS-Taste am Router drücken.
+portal-network-cert-pinned = Das Zertifikat des Netzwerks wird mit der Zertifizierungsstelle dieser Verbindung geprüft.
+portal-network-cert-pinned-domain = Das Zertifikat des Netzwerks wird mit der Zertifizierungsstelle dieser Verbindung geprüft. Es muss zu { $domain } gehören.
+portal-network-cert-system = Das Zertifikat des Netzwerks wird mit den vertrauenswürdigen Zertifizierungsstellen des Systems geprüft.
+portal-network-cert-system-domain = Das Zertifikat des Netzwerks wird mit den vertrauenswürdigen Zertifizierungsstellen des Systems geprüft. Es muss zu { $domain } gehören.
+portal-network-cert-unchecked = Das Zertifikat des Netzwerks wird nicht geprüft. Fahre nur in einem Netzwerk fort, dem du vertraust.
+network-cannot-join-title = { $network } konnte nicht verbunden werden
+network-cannot-join-body = Gib das Passwort ein, um dich zu verbinden.
+network-cannot-join-action = Passwort eingeben
+bluetooth-prompt-title-confirm-passkey = Zeigt { $device } diesen Code an?
+bluetooth-prompt-title-display = Gib das auf { $device } ein
+bluetooth-prompt-title-request-passkey = Gib den auf { $device } angezeigten Code ein
+bluetooth-prompt-title-request-pin = Gib die PIN für { $device } ein
+bluetooth-prompt-title-confirm-pairing = Mit { $device } koppeln?
+bluetooth-prompt-title-authorize-service = { $device } verbinden lassen?
+bluetooth-prompt-explain-confirm-passkey = Vergleiche ihn mit dem Code auf dem anderen Gerät. Wenn sie sich unterscheiden, versucht etwas anderes, sich zu koppeln. Lehne dann ab.
+bluetooth-prompt-explain-display = Gib diesen Code auf dem anderen Gerät ein, um die Kopplung abzuschließen.
+bluetooth-prompt-explain-request = Der Code wird auf dem Gerät angezeigt, das du koppelst. Viele Tastaturen verlangen, dass du ihn eintippst und die Eingabetaste drückst.
+bluetooth-prompt-explain-confirm-pairing = Dieses Gerät kann keinen Code zum Vergleichen anzeigen, es gibt also nichts zu prüfen. Fahre nur fort, wenn du diese Kopplung selbst gestartet hast.
+bluetooth-prompt-explain-authorize-service = Ein bereits gekoppeltes Gerät möchte einen neuen Dienst nutzen. Gekoppelte Geräte können Eingaben und Audio an diesen Computer senden.
+bluetooth-prompt-digits-entered = { $entered } von 6 Ziffern eingegeben
+bluetooth-prompt-service = Für { $service }
+bluetooth-service-audio = Audio
+bluetooth-service-calls = Anrufe
+bluetooth-service-remote-control = Mediensteuerung
+bluetooth-service-input = Eingabe
+bluetooth-service-contacts = Kontakte
+bluetooth-service-messages = Nachrichten
+bluetooth-service-files = Dateiübertragung
+bluetooth-service-network = Verbindungsfreigabe
+bluetooth-prompt-pin-placeholder = PIN
+bluetooth-prompt-code-placeholder = 6-stelliger Code
+bluetooth-prompt-reject = Nicht koppeln
+bluetooth-prompt-cancel = Abbrechen
+bluetooth-prompt-accept-match = Sie stimmen überein
+bluetooth-prompt-accept-allow = Erlauben
+bluetooth-prompt-accept-pair = Koppeln
+bluetooth-prompt-code-label = Auf dem Gerät angezeigter Code
+bluetooth-prompt-pin-label = PIN für das Gerät
+bluetooth-prompt-a11y-code = Code { $code }
+
+portal-allowed-title = Dauerhaft erlaubt
+portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Widerrufe es, damit Tilo beim nächsten Mal wieder fragt.
+portal-revoke = Widerrufen
+portal-keep = Behalten
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = { $name } zu den Apps hinzufügen?
+add-app-add = Zu den Apps hinzufügen
+add-app-decline = Nicht hinzufügen
+add-app-move = In „Programme“ verschieben
+add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+uninstall-title = { $name } deinstallieren?
+uninstall-action = Deinstallieren
+uninstall-cancel = Abbrechen
+uninstall-remove-data = Ihre Daten entfernen
+uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
+uninstall-files = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+uninstall-home-folder = Persönlicher Ordner
+uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
+uninstall-from-apps-title = { $name } aus den Apps entfernen?
+uninstall-from-apps-action = Aus Apps entfernen
+uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.
+
+## Der Agenten-Zugang: ein Programm dieser Anmeldung (ein KI-Agent in einem
+## Terminal) bittet darum, in einem Arbeitsbereich als Agenten-Mitglied zu
+## arbeiten.
+agent-door-client = { $client } ({ $program })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
+agent-door-admission-detail = Er tritt diesem Arbeitsbereich als Beobachter bei: er liest, was der Arbeitsbereich enthält, und führt die Aktionen aus, die ihm gewährt sind; in den Einstellungen des Arbeitsbereichs kannst du ihn jederzeit entfernen.
+agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
+agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten wollte, existiert nicht mehr.
+agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
+agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
+agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.

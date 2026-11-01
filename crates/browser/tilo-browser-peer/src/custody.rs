@@ -39,7 +39,7 @@ pub struct OutboxEntry {
     /// Relay workspace the commit targets.
     pub workspace_id: u64,
     /// Document route the commit belongs to.
-    pub route: crate::document::DocumentRoute,
+    pub route: tilo_peer_state::document_frame::DocumentRoute,
     /// Retention channel ([`neighbour_wire::retention()`]) of the body.
     pub channel: [u8; 32],
     /// Whether the body is a retained checkpoint rather than a delta.
@@ -76,7 +76,7 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
         Ok(())
     }
     /// The stored record of the rooms this device holds
-    /// ([`tilo_joined_room::NativeWorkspaceOwner`]), if any. A store
+    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), if any. A store
     /// without it holds them for the session only.
     fn load_rooms(&self) -> Option<Vec<u8>> {
         None

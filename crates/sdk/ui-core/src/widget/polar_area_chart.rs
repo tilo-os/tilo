@@ -5,26 +5,20 @@
     reason = "bounded polar geometry uses floating point"
 )]
 
-use crate::widget::ModelPath;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Circle, ParamCurve, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::paint::with_alpha;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct PolarAreaStyle {
@@ -66,83 +60,66 @@ struct Sector {
     outer: f64,
 }
 
-pub struct PolarAreaChart {
+pub struct PolarAreaMarks {
     data: Vec<ChartItem>,
     style: PolarAreaStyle,
-    title: String,
     center_title: String,
     center_subtitle: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<String>,
+    frame: PlotFrame<String>,
     sectors: Vec<Sector>,
-    activated: Option<String>,
 }
+
+/// Equal-angle sectors whose radius shows each value (a Nightingale rose).
+pub type PolarAreaChart = Plot<PolarAreaMarks>;
 
 impl PolarAreaChart {
     pub fn new(data: Vec<ChartItem>) -> Self {
-        Self {
+        Plot::from_marks(PolarAreaMarks {
             data,
             style: PolarAreaStyle::default(),
-            title: String::new(),
             center_title: String::new(),
             center_subtitle: String::new(),
-            height: 320.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
+            frame: PlotFrame::new(320.0, 140.0),
             sectors: Vec::new(),
-            activated: None,
-        }
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: PolarAreaStyle) -> Self {
-        self.style = style;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
+        self.marks.style = style;
         self
     }
     #[must_use]
     pub fn with_center(mut self, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
-        self.center_title = title.into();
-        self.center_subtitle = subtitle.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(140.0);
+        self.marks.center_title = title.into();
+        self.marks.center_subtitle = subtitle.into();
         self
     }
     pub fn set_data(&mut self, data: Vec<ChartItem>) {
-        self.data = data;
-        self.inspection.hovered = None;
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
+        self.marks.data = data;
+        self.marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self
+        let shown = self
+            .marks
             .data
             .iter()
-            .any(|datum| datum.id == id && datum.value.is_finite() && datum.value >= 0.0)
-            .then(|| id.to_owned());
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.anchor_hovered();
-        self.inspection.hovered.is_some()
+            .any(|datum| datum.id == id && datum.value.is_finite() && datum.value >= 0.0);
+        self.inspect_item(shown.then(|| id.to_owned()))
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl PolarAreaMarks {
     fn geometry(&self) -> (Point, f64, f64) {
-        let top = if self.title.is_empty() { 12.0 } else { 40.0 };
+        let top = if self.frame.title.is_empty() {
+            12.0
+        } else {
+            40.0
+        };
         let area = Rect::new(
-            self.rect.x0 + 14.0,
-            self.rect.y0 + top,
-            self.rect.x1 - 14.0,
-            self.rect.y1 - 26.0,
+            self.frame.rect.x0 + 14.0,
+            self.frame.rect.y0 + top,
+            self.frame.rect.x1 - 14.0,
+            self.frame.rect.y1 - 26.0,
         );
         let radius = (area.width().min(area.height()) / 2.0 - 18.0).max(1.0);
         (
@@ -165,7 +142,7 @@ impl PolarAreaChart {
     ) {
         let (center, inner, _) = self.geometry();
         let style = theme.text(TextRole::Caption);
-        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.rect, theme);
+        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.frame.rect, theme);
         if let Some(((_, title), subtitle)) = crate::widget::chart_labels::centre_label_layout(
             tr,
             theme,
@@ -242,7 +219,7 @@ impl PolarAreaChart {
             .color
             .unwrap_or_else(|| theme.tokens.colors.presence.series(index))
     }
-    fn hit(&self, point: Point) -> Option<&str> {
+    fn hit_mark(&self, point: Point) -> Option<&str> {
         let (center, _, _) = self.geometry();
         let dx = point.x - center.x;
         let dy = point.y - center.y;
@@ -279,20 +256,23 @@ fn sector_path(
     path
 }
 
-impl InteractiveChart for PolarAreaChart {
+impl PlotMarks for PolarAreaMarks {
     type Hover = String;
-    fn inspection(&mut self) -> &mut ChartInspection<String> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "PolarAreaChart";
+    const LABEL: &'static str = "Polar area chart";
+
+    fn frame(&self) -> &PlotFrame<String> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self.hit(self.inspection.pointer).map(str::to_owned);
+    fn frame_mut(&mut self) -> &mut PlotFrame<String> {
+        &mut self.frame
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(id) = &self.inspection.hovered else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+    fn hit(&self, point: Point) -> Option<String> {
+        self.hit_mark(point).map(str::to_owned)
+    }
+    fn activation(&self, id: &String) -> Option<String> {
+        Some(id.clone())
     }
     fn keyboard_items(&self) -> Vec<String> {
         let shown = self
@@ -311,23 +291,44 @@ impl InteractiveChart for PolarAreaChart {
             center.y + radius * angle.sin(),
         ))
     }
-}
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.data
+            .iter()
+            .filter(|d| d.value.is_finite() && d.value >= 0.0)
+            .map(|d| {
+                PlotItem::new(
+                    &d.id,
+                    &d.label,
+                    if d.detail.is_empty() {
+                        format_compact(d.value)
+                    } else {
+                        d.detail.clone()
+                    },
+                    d.id.clone(),
+                )
+            })
+            .collect()
+    }
 
-impl Widget for PolarAreaChart {
-    chart_leaf!();
     #[allow(
         clippy::too_many_lines,
         reason = "rings, sectors, radial labels, center copy, and inspector share polar geometry"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         let (center, inner, outer) = self.geometry();
         let max = self.max();
         let rings = self.style.rings.max(1);
@@ -368,7 +369,7 @@ impl Widget for PolarAreaChart {
             let sweep = slot - gap;
             let fraction = (datum.value / max).clamp(0.0, 1.0).powf(exponent);
             let mut radius = fraction.mul_add(outer - inner, inner);
-            let hovered = self.inspection.hovered.as_deref() == Some(&datum.id);
+            let hovered = self.frame.inspection.hovered.as_deref() == Some(&datum.id);
             if hovered {
                 radius += self.style.hover_offset;
             }
@@ -411,6 +412,7 @@ impl Widget for PolarAreaChart {
         );
         self.follow_keyboard_anchor();
         if let Some(datum) = self
+            .frame
             .inspection
             .hovered
             .as_deref()
@@ -427,59 +429,12 @@ impl Widget for PolarAreaChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 140.0,
                 (&datum.label, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
-            "Polar area chart"
-        } else {
-            &self.title
-        });
-        root.children = self
-            .data
-            .iter()
-            .filter(|d| d.value.is_finite() && d.value >= 0.0)
-            .map(|d| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(&d.id)
-                    .with_name(&d.label)
-                    .with_description(if d.detail.is_empty() {
-                        format_compact(d.value)
-                    } else {
-                        d.detail.clone()
-                    })
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(root)
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        keys: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            keys,
-            self.data.iter().map(|d| &d.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "PolarAreaChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -489,9 +444,9 @@ mod tests {
     #[test]
     fn explicit_max_requires_positive_finite_value() {
         let mut chart = PolarAreaChart::new(vec![ChartItem::new("a", "A", 7.0)]);
-        chart.style.max = Some(-2.0);
-        assert_eq!(chart.max(), 7.0);
-        chart.style.max = Some(10.0);
-        assert_eq!(chart.max(), 10.0);
+        chart.marks.style.max = Some(-2.0);
+        assert_eq!(chart.marks.max(), 7.0);
+        chart.marks.style.max = Some(10.0);
+        assert_eq!(chart.marks.max(), 10.0);
     }
 }

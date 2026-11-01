@@ -95,6 +95,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         DesktopCommand::RenameStrip { strip, .. }
         | DesktopCommand::RemoveStrip { strip }
         | DesktopCommand::MoveStrip { strip, .. } => own(*strip),
+        DesktopCommand::ReopenClosed { strip } => own_all(&[*strip]),
         DesktopCommand::CreateStrip { .. }
         | DesktopCommand::RenameWorkspace { .. }
         | DesktopCommand::SaveShortcut { .. }

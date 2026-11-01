@@ -214,12 +214,12 @@ async fn native_media_newer_effect_cannot_skip_a_queued_stop_obligation() {
                     media_joined: true,
                     ..Default::default()
                 }));
-                let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
+                let (client, _) = fake_client(FakeBroker {
                     captures: captures.clone(),
                     ..FakeBroker::default()
                 });
-                let channel = runtime_collab::CollabClient::from_raw(broker)
-                    .join_channel("fixture-admitted-route", b"fixture")
+                let channel = client
+                    .join_channel("fixture-admitted-route", &harness_presentation())
                     .await
                     .unwrap();
                 let (tx, _events) = tokio_mpsc::channel(32);
@@ -296,12 +296,12 @@ async fn native_media_pending_or_uncertain_stop_blocks_later_effects() {
                 }));
                 let (release, gate) = tokio::sync::oneshot::channel();
                 captures.lock().unwrap().media_gates.push_back(gate);
-                let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
+                let (client, _) = fake_client(FakeBroker {
                     captures: captures.clone(),
                     ..FakeBroker::default()
                 });
-                let channel = runtime_collab::CollabClient::from_raw(broker)
-                    .join_channel("fixture-admitted-route", b"fixture")
+                let channel = client
+                    .join_channel("fixture-admitted-route", &harness_presentation())
                     .await
                     .unwrap();
                 let (tx, mut events) = tokio_mpsc::channel(32);

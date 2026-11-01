@@ -459,7 +459,7 @@ def proof(binaries, output, size):
             raise RuntimeError("fixture must not seed app records")
         log = open(output / "shell.log", "w")
         logs.append(log)
-        shell_env = {**env, "RUST_LOG": "warn,tilo_action_broker::collab_broker_capnp=debug"}
+        shell_env = {**env, "RUST_LOG": "warn,tilo_action_broker::collab_app_broker=debug"}
         shell = subprocess.Popen([str(binaries / "shell"), "--backend", "headless",
                                   "--enable-peer-sync"], env=shell_env,
                                  stdout=log, stderr=log, start_new_session=True,

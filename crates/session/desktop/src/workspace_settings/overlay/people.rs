@@ -31,7 +31,7 @@ pub(super) fn remove_id(index: usize) -> String {
 
 /// One person of the list, in the viewer's words.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Person {
+pub struct Person {
     pub user: UserId,
     pub name: String,
     pub you: bool,
@@ -45,7 +45,7 @@ pub(super) struct Person {
 
 /// What a person's row offers the viewer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Offers {
+pub enum Offers {
     /// Nothing: the owner's role is a fact of the row, not a choice.
     Nothing,
     /// Their role, but not Remove: no one removes themselves here.
@@ -56,7 +56,7 @@ pub(super) enum Offers {
 /// Everything the People tab shows, resolved to the person's words. The
 /// page is rebuilt only when this changes.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct PeopleContent {
+pub struct PeopleContent {
     pub count: String,
     /// Where ownership stands, or what removing someone does.
     pub status: String,
@@ -87,7 +87,7 @@ impl PeoplePage {
 }
 
 /// What the People tab shows of `ws` to `viewer`.
-pub(super) fn content(
+pub fn content(
     ws: &Workspace,
     names: &crate::collaborators::PeopleNames,
     viewer: &UserId,

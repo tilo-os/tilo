@@ -42,8 +42,7 @@ fn job_rows_show_reported_phase_counts_through_all_search_paths() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     let doc = AutoCommit::new();
     for (completed, total, expected) in [
@@ -97,8 +96,7 @@ fn job_rows_bound_reported_phase_without_displaying_command_messages() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     let doc = AutoCommit::new();
     let phase = format!("{}\u{7}", "é".repeat(200));
@@ -140,8 +138,7 @@ fn job_rows_replace_progress_on_terminal_and_refuse_foreign_actor() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     let doc = AutoCommit::new();
     broker.record_completion_for_test(17, &actor, progress(17, "Routing", Some(4), Some(10)));
@@ -222,8 +219,7 @@ fn job_rows_keep_progress_across_bounded_pages_and_account_for_utf8_bytes() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     let doc = AutoCommit::new();
     for id in [16, 17] {
@@ -272,8 +268,7 @@ fn uncertified_job_rows_remain_available_without_a_certified_session() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new(broker.clone());
     broker.record_completion_for_test(17, &actor, progress(17, "Routing", None, None));
     let doc = AutoCommit::new();
@@ -300,8 +295,7 @@ fn job_rows_remain_unique_with_multiple_workspace_sessions() {
         .push(Workspace::new(WorkspaceId(2), "Another job workspace"));
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     for id in [17, 16] {
         broker.record_completion_for_test(id, &actor, progress(id, "Routing", None, None));
@@ -329,8 +323,7 @@ fn job_rows_refresh_reported_progress_when_the_desktop_language_changes() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
     let broker =
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
-        );
+        crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
     let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
     let doc = AutoCommit::new();
     broker.record_completion_for_test(17, &actor, progress(17, "Routing", Some(4), Some(10)));

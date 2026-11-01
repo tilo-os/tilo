@@ -2,12 +2,12 @@ use super::*;
 
 #[test]
 fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
-    // Phase: start_call_creates_a_voice_channel_when_the_room_has_none.
+    // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
     {
-        let (mut app, mut doc) = text_only_room();
+        let (mut app, mut doc) = text_only_workspace();
         assert!(
             !app.channels.iter().any(|c| c.kind == ChannelKind::Voice),
-            "the room is text-only"
+            "the workspace is text-only"
         );
         app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
         assert!(
@@ -109,9 +109,9 @@ fn voice_channels(app: &ChatApp) -> usize {
         .count()
 }
 
-/// A room whose only channel is `#chat`: its voice channel deleted.
-fn text_only_room() -> (ChatApp, crate::testing::Room) {
-    let mut doc = crate::testing::Room::default();
+/// A workspace whose only channel is `#chat`: its voice channel deleted.
+fn text_only_workspace() -> (ChatApp, crate::testing::Workspace) {
+    let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, model::ME, "You", "Y");
     crate::testing::apply_as(
         &mut doc,
@@ -122,7 +122,7 @@ fn text_only_room() -> (ChatApp, crate::testing::Room) {
     )
     .unwrap();
     let mut app = ChatApp::new_ephemeral();
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     (app, doc)
 }
@@ -144,11 +144,11 @@ fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
 }
 
 #[test]
-fn start_call_joins_the_rooms_voice_channel_creating_one_when_text_only() {
+fn start_call_joins_the_workspaces_voice_channel_creating_one_when_text_only() {
     use crate::effects::ChatEffect;
-    // A text-only room gains a voice channel, and the call starts in
+    // A text-only workspace gains a voice channel, and the call starts in
     // it once the channel is in the document.
-    let (mut app, mut doc) = text_only_room();
+    let (mut app, mut doc) = text_only_workspace();
     assert_eq!(voice_channels(&app), 0);
     app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(voice_channels(&app), 1);
@@ -163,7 +163,7 @@ fn start_call_joins_the_rooms_voice_channel_creating_one_when_text_only() {
         ui::native_media::State::Preparing
     );
 
-    // A room with a voice channel joins it without making another,
+    // A workspace with a voice channel joins it without making another,
     // through the published effect.
     let (mut app, _doc) = app_with_doc();
     let before = voice_channels(&app);
@@ -242,7 +242,11 @@ fn a_video_call_turns_the_camera_on_once_the_call_is_live() {
         )),
         "the camera is asked for once the call is live"
     );
-    assert_eq!(doc.save(), before, "a call writes nothing into the room");
+    assert_eq!(
+        doc.save(),
+        before,
+        "a call writes nothing into the workspace"
+    );
 }
 
 /// Answer every voice request with the broker's reply when this app has
@@ -396,7 +400,7 @@ fn emoji_search_enter_picks_the_best_match() {
     ui::emoji_catalogue::CATALOGUE.install(|_locale| &DISHES);
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
-    let open_on_message = |app: &mut ChatApp, doc: &mut crate::testing::Room| {
+    let open_on_message = |app: &mut ChatApp, doc: &mut crate::testing::Workspace| {
         app.on_hit(
             Hit::AddReaction {
                 msg: "m_me1".into(),
@@ -449,7 +453,7 @@ fn emoji_search_enter_picks_the_best_match() {
 // production event handlers do the writing and the real CRDT does the
 // merging, so this is a faithful test of live multi-peer chat.
 
-/// A distinct participant: a fresh app bound to the shared room
+/// A distinct participant: a fresh app bound to the shared workspace
 /// starter, authoring under `id` — genuinely different from any other peer.
 fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
@@ -486,7 +490,7 @@ fn exchange(a: &mut AutoCommit, b: &mut AutoCommit) {
 fn two_participants_converge_on_messages_and_edits() {
     // Phase: messages_channels_and_reactions_converge_across_two_participants.
     {
-        // Alice opens the room's chat; Bob adopts her document (as a
+        // Alice opens the workspace's chat; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
         let mut doc_a = AutoCommit::new();
         crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
@@ -497,9 +501,9 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        let parts = crate::testing::Room::default();
-        a.attach_room(&parts);
-        b.attach_room(&parts);
+        let parts = crate::testing::Workspace::default();
+        a.attach_workspace(&parts);
+        b.attach_workspace(&parts);
         a.reload(&doc_a);
         b.reload(&doc_b);
         assert_eq!(a.me.id, "u_alice");
@@ -623,9 +627,9 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        let parts = crate::testing::Room::default();
-        a.attach_room(&parts);
-        b.attach_room(&parts);
+        let parts = crate::testing::Workspace::default();
+        a.attach_workspace(&parts);
+        b.attach_workspace(&parts);
         a.reload(&doc_a);
         b.reload(&doc_b);
 
@@ -851,9 +855,9 @@ fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
             .expect("in the call")
             .muted
     };
-    assert!(muted(&app, &second), "the room says they are muted");
+    assert!(muted(&app, &second), "the workspace says they are muted");
     assert!(!muted(&app, &first));
-    // The room has not heard this person's mute yet: their own word holds.
+    // The workspace has not heard this person's mute yet: their own word holds.
     app.call.muted = true;
     app.refresh_native_streams();
     assert!(muted(&app, &me));
@@ -922,7 +926,7 @@ fn everyone_sees_who_is_deafened() {
     assert_eq!(
         member(&app, &second),
         (true, true),
-        "the room says they hear nothing"
+        "the workspace says they hear nothing"
     );
     assert_eq!(member(&app, &first), (true, false));
     render_frame(&mut app, 1280.0, 800.0);
@@ -969,8 +973,12 @@ fn answer_voice(
     sent
 }
 
-/// A connected call in the room's voice channel.
-fn connected_call() -> (ChatApp, crate::testing::Room, ui::native_media::Snapshot) {
+/// A connected call in the workspace's voice channel.
+fn connected_call() -> (
+    ChatApp,
+    crate::testing::Workspace,
+    ui::native_media::Snapshot,
+) {
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(
         Hit::Channel("c_standup".into()),
@@ -1048,9 +1056,9 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
 }
 
 #[test]
-fn someone_alone_in_a_room_can_still_unmute_and_leave_the_call() {
+fn someone_alone_in_a_workspace_can_still_unmute_and_leave_the_call() {
     let (mut app, _doc, _live) = connected_call();
-    // A fresh room: nobody else has written, so Chat knows no one else.
+    // A fresh workspace: nobody else has written, so Chat knows no one else.
     let me = app.me.id.clone();
     app.users.retain(|user| user.id == me);
     assert!(!app.has_other_collaborator());
@@ -1066,7 +1074,7 @@ fn someone_alone_in_a_room_can_still_unmute_and_leave_the_call() {
         .unwrap_or_default();
     assert!(
         ids.contains(&bar_id(&app, Hit::CallMute)) && ids.contains(&bar_id(&app, Hit::CallLeave)),
-        "the call's microphone and Leave are at hand in any room: {ids:?}"
+        "the call's microphone and Leave are at hand in any workspace: {ids:?}"
     );
 }
 
@@ -1173,7 +1181,7 @@ fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     assert!(app.voice_people("c_huddle").contains(&me));
     assert!(app.presence_payload().is_some(), "the others see you in it");
 
-    // The room ended this device's part (a page that stood still past the
+    // The workspace ended this device's part (a page that stood still past the
     // participation's lifetime): the panel stays to say why.
     app.native_voice.snapshot.state = ui::native_media::State::Ended;
     app.native_voice.snapshot.issue = Some(ui::native_media::Issue::SessionEnded);

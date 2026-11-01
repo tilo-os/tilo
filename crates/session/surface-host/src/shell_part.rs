@@ -45,6 +45,10 @@ pub const DESK_RESOURCE: &str = "session:desk";
 pub const SWITCH_WORKSPACE: &str = "switch-workspace";
 /// The argument of [`SWITCH_WORKSPACE`] naming the workspace.
 pub const WORKSPACE_ARG: &str = "workspace";
+/// The desk's action that opens or closes a running application's tray item, by its key.
+pub const OPEN_TRAY_ITEM: &str = "open-tray-item";
+/// The argument of [`OPEN_TRAY_ITEM`] naming the tray item.
+pub const TRAY_KEY_ARG: &str = "key";
 /// The resource the notification centre's actions are published on.
 pub const NOTIFICATIONS_RESOURCE: &str = "quick-settings.panel";
 
@@ -245,6 +249,16 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
     out.push(shell);
     Ok(out)
 }
+/// The capability that opens a running application's tray item, by its key: the desk's own
+/// `open_tray_item` action answers it.
+const CAP_TRAY: &str = "session.tray";
+
+/// The bar's own `session.act` ids that are the desk's resource's, not the chrome's: the
+/// question on the person's avatar is answered and put off where the desk reads it.
+const DESK_ACTIONS: &[(&str, &str)] = &[
+    ("answer_ask", DESK_RESOURCE),
+    ("put_off_ask", DESK_RESOURCE),
+];
 
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
@@ -336,6 +350,22 @@ pub struct NoticeActionReading {
     pub label: String,
 }
 
+/// A timer or stopwatch running in Clocks, as the bar's clock reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerReading {
+    /// The activity's id, which a press on the clock's controls names.
+    #[serde(default)]
+    pub activity_id: Option<String>,
+    /// Its label, such as `Tea`.
+    pub label: String,
+    /// What the timer has left, or the stopwatch has run, in seconds.
+    pub remaining_secs: u64,
+    #[serde(default)]
+    pub stopwatch: bool,
+    #[serde(default)]
+    pub paused: bool,
+}
+
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
 #[allow(
@@ -346,6 +376,14 @@ pub struct NoticeActionReading {
 pub struct DeskReading {
     pub person: String,
     pub clock: String,
+    /// The timer or stopwatch Clocks shows, when one runs: what the bar's clock reads beside
+    /// the time, and the controls pressed on it name.
+    #[serde(default)]
+    pub timer: Option<TimerReading>,
+    /// The question the session puts to the person about themselves, waiting on their own
+    /// avatar until they answer it or put it off.
+    #[serde(default)]
+    pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
     pub unread: u32,
@@ -405,6 +443,9 @@ pub struct DeskReading {
     /// Whether a window stands where a dock rides.
     #[serde(default)]
     pub dock_covered: bool,
+    /// The running applications' tray items, in the order they registered.
+    #[serde(default)]
+    pub tray: Vec<TrayReading>,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -462,6 +503,58 @@ pub struct ArrangementReading {
     pub rows: Vec<ArrangementRowReading>,
     pub strips: Vec<ArrangementStripReading>,
     pub places: Vec<ArrangementPlaceReading>,
+}
+
+/// A running application's tray item, as the bar shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayReading {
+    /// The item's key, which a press on it names.
+    pub key: String,
+    /// The app's own words for it.
+    pub title: String,
+    /// Whether choosing it opens its menu rather than its window.
+    #[serde(default)]
+    pub menu: bool,
+}
+
+/// A question the session puts to the person about themselves, waiting on their own avatar.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskReading {
+    /// The question ("Keep your name and work?").
+    pub question: String,
+    /// What answering brings.
+    pub detail: String,
+    /// The answer's label ("Keep with passkey").
+    pub answer: String,
+    /// Shown as the popover; `false` while it waits as the avatar's dot.
+    pub open: bool,
+}
+
+impl DeskReading {
+    /// The timer Clocks runs, by its name: its label (`Tea`), or what it is when the app
+    /// named none (`Timer`, `Stopwatch`). Empty when no timer floats.
+    #[must_use]
+    pub fn timer_name(&self) -> String {
+        let Some(timer) = &self.timer else {
+            return String::new();
+        };
+        if !timer.label.is_empty() {
+            return timer.label.clone();
+        }
+        if timer.stopwatch {
+            "Stopwatch".to_owned()
+        } else {
+            "Timer".to_owned()
+        }
+    }
+
+    /// What the timer reads: what it has left, or what the stopwatch has run.
+    #[must_use]
+    pub fn timer_left(&self) -> String {
+        self.timer.as_ref().map_or_else(String::new, |timer| {
+            ui::format::timecode(timer.remaining_secs)
+        })
+    }
 }
 
 /// What a shell asked of the session: an invocation on the door.
@@ -706,11 +799,24 @@ fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
             action: SWITCH_WORKSPACE.to_owned(),
             arguments: BTreeMap::from([(WORKSPACE_ARG.to_owned(), word.clone())]),
         }),
-        CAP_ACT => Ok(Ask {
-            resource: CHROME_RESOURCE.to_owned(),
-            action: word.clone(),
-            arguments: BTreeMap::new(),
+        CAP_TRAY => Ok(Ask {
+            resource: DESK_RESOURCE.to_owned(),
+            action: OPEN_TRAY_ITEM.to_owned(),
+            arguments: BTreeMap::from([(TRAY_KEY_ARG.to_owned(), word.clone())]),
         }),
+        CAP_ACT => {
+            // The desktop's own argument-less actions are the chrome's; the desk's few (the
+            // question on the person's avatar) are the resource the bar reads it from.
+            let resource = DESK_ACTIONS
+                .iter()
+                .find(|(id, _)| id == word)
+                .map_or(CHROME_RESOURCE, |(_, resource)| resource);
+            Ok(Ask {
+                resource: (*resource).to_owned(),
+                action: word.clone(),
+                arguments: BTreeMap::new(),
+            })
+        }
         CAP_RUN | CAP_NOTIFY => run_ask(payload, capability),
         CAP_ARRANGE => {
             // `<action id> {json arguments}`, or just the id for an action that takes none.
@@ -802,6 +908,7 @@ pub struct SessionOrigin {
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
+    tray: BTreeMap<String, Kept<TrayReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -824,6 +931,7 @@ impl SessionOrigin {
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
+            tray: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -929,12 +1037,60 @@ impl SessionOrigin {
             text(&reading.banner),
             reading.banner != was.banner,
         );
+        // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
+        // the clock shows the time alone; paused and stopwatch say how to read it.
+        let timer = reading.timer.clone().unwrap_or_default();
+        set(
+            "timer",
+            text(&reading.timer_name()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_left",
+            text(&reading.timer_left()),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_paused",
+            Value::Bool(timer.paused),
+            reading.timer != was.timer,
+        );
+        set(
+            "timer_stopwatch",
+            Value::Bool(timer.stopwatch),
+            reading.timer != was.timer,
+        );
+        // The ask on the person's avatar: its words, and whether it stands open.
+        let ask = reading.ask.clone().unwrap_or_default();
+        set("ask", text(&ask.question), reading.ask != was.ask);
+        set("ask_detail", text(&ask.detail), reading.ask != was.ask);
+        set("ask_answer", text(&ask.answer), reading.ask != was.ask);
+        set("ask_open", Value::Bool(ask.open), reading.ask != was.ask);
         let mut writes = Vec::new();
         if !fields.is_empty() {
             writes.push(OriginWrite::Set {
                 target: root.clone(),
                 fields,
             });
+        }
+        // The running applications' tray items: each's key and the app's own words for it.
+        let tray = reading.tray.clone();
+        if let (Ok(ty), Some(collection)) = (kind("tray_item"), field(desk, "tray")) {
+            writes.extend(sync_items(
+                &mut self.tray,
+                &tray,
+                root,
+                &collection,
+                ty,
+                |item| item.key.clone(),
+                |item| {
+                    vec![
+                        ("key", text(&item.key)),
+                        ("title", text(&item.title)),
+                        ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
         }
         if let (Ok(ty), Some(collection)) = (kind("workspace"), field(desk, "workspaces")) {
             writes.extend(sync_items(
@@ -1717,7 +1873,9 @@ pub struct ShellWork {
 pub struct ShellPart {
     widgets: WidgetHost,
     instance: Instance,
-    record: tilo_resource::Doc,
+    /// The shell's record, shared by every part of one shell: the bar draws it and each other
+    /// display draws the same, so a change any part commits is the whole shell's.
+    record: Rc<RefCell<tilo_resource::Doc>>,
     origin: Rc<RefCell<SessionOrigin>>,
     /// Input reached the part since its last turn.
     input: bool,
@@ -1728,36 +1886,70 @@ pub struct ShellPart {
     refusals: Vec<String>,
     /// How high the part stands at rest (the bar's band), logical pixels.
     band: u32,
-    /// The outputs' bounding box `(x, y, w, h)` the part spans.
-    outputs: Option<(i32, i32, u32, u32)>,
+    /// The output this part stands on: its connector name, and its logical rectangle
+    /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
+    output: Option<(String, (i32, i32, u32, u32))>,
+    /// The display the part stood on, which went (unplugged, turned off): while it is gone the
+    /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
+    /// until it is told a display again.
+    gone: Option<String>,
+    /// The outputs a fullscreen window covers, by connector name: the part on one of them
+    /// steps aside, as the desktop's own bar does there, and leaves the display to the window.
+    fullscreen: Vec<String>,
     /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
     /// launcher, the notifications), is up: the part covers the outputs so it has room. At
     /// rest it covers only its bands, so a change draws only that.
     cover: bool,
     /// The edges the shell's chrome stands on: what the part covers of the outputs.
     edges: HostEdges,
+    /// The shell's record's heads the instance was last brought up to date with: a commit any
+    /// part of the shell made reaches this one by them, so every display shows one shell.
+    seen_heads: Vec<String>,
+}
+
+/// A shell part's identity: the package it runs, the person it is for, and the record the
+/// shell's parts share.
+pub struct ShellIdentity<'a> {
+    /// The app id of the compiled shell package.
+    pub app: &'a str,
+    /// The packages the instance runs, the shell last.
+    pub packages: Vec<Compiled>,
+    /// The person the shell is arranged by.
+    pub person: &'a str,
+    /// The link the session publishes its desk on and the shell asks through.
+    pub link: Rc<SessionLink>,
+    /// The shell's record, shared by every part of the shell.
+    pub record: Rc<RefCell<tilo_resource::Doc>>,
+    /// The first part of a shell makes its record and seeds it; every other part finds it
+    /// made, so one shell has one record and one seed, however many displays draw it.
+    pub seed: bool,
 }
 
 impl ShellPart {
-    /// The root view of `app` (the last of `packages`, which come in load order) for `person`,
-    /// across the top `band` logical pixels of the outputs at `scale`, kept in step with the
-    /// session through `link`; `waker` wakes the session's loop when work the instance waits
-    /// for is ready.
+    /// The root view of `identity.app` (the last of its packages, which come in load order) for
+    /// its person, across the top `band` logical pixels of the part's output at `scale`, kept in
+    /// step with the session through its link; `waker` wakes the session's loop when work the
+    /// instance waits for is ready.
     ///
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
     /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
     /// no windows of its own (the bar).
     #[must_use]
     pub fn new(
-        app: &str,
-        packages: Vec<Compiled>,
-        person: &str,
-        link: Rc<SessionLink>,
+        identity: ShellIdentity<'_>,
         band: u32,
         scale: f64,
         waker: Waker,
         wells: Option<ui::widget::Wells>,
     ) -> Self {
+        let ShellIdentity {
+            app,
+            packages,
+            person,
+            link,
+            record,
+            seed,
+        } = identity;
         let placement = Placement {
             origin: (0, 0),
             size: (1, band.max(1)),
@@ -1787,8 +1979,10 @@ impl ShellPart {
         instance.set_standing(Rc::new(shell_standing(app, person)));
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
-        let record = tilo_resource::Doc::new();
-        instance.sync(Some(&record));
+        {
+            let record = record.borrow();
+            instance.sync(Some(&record));
+        }
         let window = AppWindow::part(Box::new(window_end));
         let mut widgets = WidgetHost::new(Box::new(window), placement, false);
         widgets.install_wells(wells);
@@ -1802,7 +1996,9 @@ impl ShellPart {
             work: ShellWork::default(),
             refusals: Vec::new(),
             band: band.max(1),
-            outputs: None,
+            output: None,
+            gone: None,
+            fullscreen: Vec::new(),
             cover: false,
             edges: HostEdges {
                 bar: true,
@@ -1810,8 +2006,11 @@ impl ShellPart {
                 dock: false,
                 dock_bottom: false,
             },
+            seen_heads: Vec::new(),
         };
-        part.seed();
+        if seed {
+            part.seed();
+        }
         part.turn();
         part
     }
@@ -1843,7 +2042,10 @@ impl ShellPart {
         // record's making first, then the seed that runs once the record is had.
         self.instance.set_origin(true);
         for _ in 0..3 {
-            self.instance.sync(Some(&self.record));
+            {
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+            }
             self.instance.commit_planned();
             if !self.commit() {
                 break;
@@ -1852,19 +2054,43 @@ impl ShellPart {
         // The seed moved the record: the part's next turn settles what it started (a view
         // that read a bound field runs again), as any change of the record does.
         self.instance.moved();
+        // What the seed wrote is the shell's for every part: the heads here are the ones a
+        // part made later finds and takes in.
+        self.seen_heads = self
+            .record
+            .borrow()
+            .committed_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
     }
 
-    /// Stand over the outputs: the whole of them while a menu of the part's is up, and else
-    /// over each edge the shell's bar and dock ride — a bar at the top takes the top band, a
-    /// dock at the bottom the bottom one — through `edges`. A shell whose chrome is off at an
-    /// edge, or is a bar at the top alone (the first shell), takes that band only.
+    /// Stand on this part's output: the whole of it while a menu of the part's is up, and else
+    /// the band at each edge the shell's bar and dock ride — a bar at the top takes the top
+    /// band, a dock at the bottom the bottom one — through `edges`. A shell whose chrome is off
+    /// at an edge, or is a bar at the top alone (the first shell), takes that band only.
+    ///
+    /// A part on an output a fullscreen window covers takes no room and draws nothing: the
+    /// window owns the display there, as it owns the desktop's own bar's display.
     fn place(&mut self, edges: HostEdges) {
-        let Some((x, y, width, output_height)) = self.outputs else {
+        let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
         let scale = self.widgets.placement().scale;
+        if self.fullscreen.contains(&name) && !self.cover {
+            // Nothing of the part stands there: the smallest placement keeps its layout cheap,
+            // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
+            // it lies over the window.
+            self.widgets.set_placement(Placement {
+                origin: (x, y),
+                size: (width.max(1), 1),
+                scale,
+            });
+            self.widgets.relayout();
+            return;
+        }
         let band = self.band.min(output_height);
-        // A menu of the part's, or a surface of the desk's, takes the whole outputs; else the
+        // A menu of the part's, or a surface of the desk's, takes the whole output; else the
         // part stands in the band at each edge the chrome rides, so a change draws only what
         // shows there.
         let at_top = !self.cover && edges.bar_at_top();
@@ -1954,6 +2180,69 @@ impl ShellPart {
         self.place(edges);
     }
 
+    /// Stand the part on `output`, its connector name and logical rectangle `(x, y, w, h)`:
+    /// the part is one display's, and follows that display as it is added, moved or turned
+    /// off. Every part of one shell is told its own display; none spans them all. `None`: the
+    /// display went, and the part stands nowhere until it is told one again.
+    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
+        if self.output == output {
+            return;
+        }
+        if output.is_some() {
+            self.gone = None;
+        } else {
+            // What it drew goes with its display: nothing of it stands anywhere now.
+            self.gone = self.output.take().map(|(name, _)| name);
+            self.cover = false;
+        }
+        self.output = output;
+        self.place(self.edges);
+    }
+
+    /// Whether the display the part stood on went, and it stands nowhere now.
+    fn retired(&self) -> bool {
+        self.gone.is_some()
+    }
+
+    /// Whether the part shows nothing at all now: its display went, or a fullscreen window
+    /// owns it. It has no layers and takes no pointer then.
+    fn hidden(&self) -> bool {
+        self.retired() || self.aside()
+    }
+
+    /// Tell the part which output's or outputs' windows cover the whole display, by connector
+    /// name: the part on one of them steps aside and draws nothing, as the desktop's own bar
+    /// does where a window owns its display. A change steps it back when they go.
+    pub fn set_fullscreen(&mut self, outputs: Vec<String>) {
+        if self.fullscreen == outputs {
+            return;
+        }
+        self.fullscreen = outputs;
+        self.place(self.edges);
+    }
+
+    /// Where the part stands now, in the desktop's logical layout `(x, y, w, h)`, and the
+    /// display it names: `None` until it is told of its output.
+    #[must_use]
+    pub fn placement(&self) -> Option<(String, (i32, i32, u32, u32))> {
+        self.output.clone()
+    }
+
+    /// Whether the part draws nothing now: it stands on a display a fullscreen window owns.
+    #[must_use]
+    pub fn aside(&self) -> bool {
+        self.output.as_ref().is_some_and(|(name, _)| {
+            !self.cover && self.fullscreen.iter().any(|covered| covered == name)
+        })
+    }
+
+    /// The shell's record as shared by every part of this shell: a part that commits a change
+    /// writes it here, and the rest read it on their next turn.
+    #[must_use]
+    pub fn record_handle(&self) -> Rc<RefCell<tilo_resource::Doc>> {
+        Rc::clone(&self.record)
+    }
+
     /// The shell's own record (`root shell: Shell`) as it holds it now, when the package has
     /// one and the record is made: what its edge settings are read from.
     #[must_use]
@@ -2012,12 +2301,11 @@ impl ShellPart {
                 .ok_or_else(|| format!("no committed action {ticket}"))
                 .and_then(|action| {
                     action
-                        .apply(&mut self.record)
+                        .apply(&mut self.record.borrow_mut())
                         .map_err(|error| error.to_string())
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a shell change could not be committed");
-            } else {
             }
             self.instance.answered(&address, applied.err());
             committed = true;
@@ -2025,9 +2313,18 @@ impl ShellPart {
         if committed {
             // The record holds the changes once they are committed: the instance reads them
             // from its heads, and every view runs again, since the change is the record's.
-            self.record.commit();
+            {
+                let mut record = self.record.borrow_mut();
+                record.commit();
+                self.seen_heads = record
+                    .committed_heads()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+            }
             let at = std::time::Instant::now();
-            self.instance.sync(Some(&self.record));
+            let record = self.record.borrow();
+            self.instance.sync(Some(&record));
             self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
         }
         committed
@@ -2069,6 +2366,40 @@ impl ShellPart {
             self.widgets.relayout();
             self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
         }
+        // A change another display's part of this shell committed reaches this one: the record
+        // it shares moved on from the heads this instance saw, and it draws the shell as it is
+        // now. Nothing else changed, so no other frame is owed.
+        let mut record_moved = false;
+        {
+            let heads: Vec<String> = self
+                .record
+                .borrow()
+                .committed_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if heads != self.seen_heads {
+                self.seen_heads = heads;
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+                self.instance.moved();
+                record_moved = true;
+            }
+        }
+        if record_moved {
+            // The views that read a bound field run again in this turn, so the part draws the
+            // shell's change now rather than a frame late.
+            let mut at = std::time::Instant::now();
+            self.instance.update();
+            self.work.updating = self.work.updating.saturating_add(at.elapsed());
+            at = std::time::Instant::now();
+            shown |= self.window().is_some_and(AppWindow::receive);
+            self.work.receiving = self.work.receiving.saturating_add(at.elapsed());
+            if shown {
+                self.widgets.relayout();
+                self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
+            }
+        }
         // The exchanges ran until neither side had more to say, unless they ran out first:
         // then the next frame goes on.
         self.again = !quiet;
@@ -2107,6 +2438,11 @@ impl ShellPart {
 }
 
 impl crate::Published for ShellPart {
+    /// A part whose display went offers nothing: the parts still standing answer the door.
+    fn offered(&self) -> bool {
+        !self.retired()
+    }
+
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         crate::Published::resources(&mut self.widgets)
     }
@@ -2170,10 +2506,15 @@ impl ShellPart {
 
 impl SurfaceHost for ShellPart {
     fn layers(&self) -> Vec<HostLayer> {
+        // Aside for a fullscreen window, the window has the whole display: not a row of the
+        // bar's pixels stands over it.
+        if self.hidden() {
+            return Vec::new();
+        }
         self.widgets.layers()
     }
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {
         // A shell's overlays answer the keyboard: Alt+Tab walks the switcher, Enter goes there,
         // and Esc closes whatever surface is up. A locked session is not the shell's to answer.
         if locked || self.surface_key(key).is_none() {
@@ -2184,10 +2525,13 @@ impl SurfaceHost for ShellPart {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        if self.hidden() {
+            return false;
+        }
         // While a menu of the part's is up, a press anywhere over it is the part's: outside
         // the menu it closes it, as a press outside any menu does.
         if self.cover
-            && let Some((ox, oy, width, height)) = self.outputs
+            && let Some((_, (ox, oy, width, height))) = self.output
         {
             let (x, y) = (x - f64::from(ox), y - f64::from(oy));
             return x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height);
@@ -2216,6 +2560,11 @@ impl SurfaceHost for ShellPart {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        // A part not yet told which output it stands on spans all of them, as a bar stretched
+        // across the tightest bounding box there is.
+        if self.output.is_some() || self.retired() {
+            return;
+        }
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
             .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
@@ -2229,7 +2578,7 @@ impl SurfaceHost for ShellPart {
         ) else {
             return;
         };
-        self.outputs = Some((x0, y0, width, height));
+        self.output = Some((String::new(), (x0, y0, width, height)));
         self.place(self.edges);
     }
 
@@ -2264,7 +2613,7 @@ impl SurfaceHost for ShellPart {
         self.widgets.cursor()
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
         // standing over them is what lets a press outside it close it.
@@ -2272,16 +2621,21 @@ impl SurfaceHost for ShellPart {
         if input || self.due() {
             self.turn();
         }
-        self.draw();
+        let mut drew = self.draw();
         // The toolkit takes input in at its frame: what the person pressed reports there, and
         // the instance hears of it now rather than at the next input.
         if input {
             if self.turn() {
-                self.draw();
+                drew |= self.draw();
             }
+            // The toolkit took the input in: a menu the part opened, or a surface of the
+            // desk's, may have opened or closed with it.
             self.follow_cover();
-            self.draw();
+            if self.draw() {
+                drew = true;
+            }
         }
+        drew
     }
 }
 
@@ -2300,16 +2654,19 @@ impl ShellPart {
         });
     }
 
-    /// Draw a frame of the part's widget tree when it owes one.
+    /// Draw a frame of the part's widget tree when it owes one, and say
+    /// whether it drew or changed what it shows.
     #[allow(dead_code, reason = "a test draws a frame between presses")]
-    fn draw(&mut self) {
+    fn draw(&mut self) -> bool {
         let before = crate::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
-        self.widgets.prepare_frame();
-        if crate::Published::revision(&self.widgets) != before {
+        let drew = self.widgets.prepare_frame();
+        let changed = crate::Published::revision(&self.widgets) != before;
+        if changed {
             self.work.drawn = self.work.drawn.wrapping_add(1);
             self.work.drawing = self.work.drawing.saturating_add(started.elapsed());
         }
+        drew || changed
     }
 }
 
@@ -2362,16 +2719,21 @@ mod tests_support {
         let link = Rc::new(SessionLink::default());
         link.publish(reading);
         let mut part = ShellPart::new(
-            &app,
-            packages,
-            "Pat",
-            Rc::clone(&link),
+            ShellIdentity {
+                app: &app,
+                packages,
+                person: "Pat",
+                link: Rc::clone(&link),
+                record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+                seed: true,
+            },
             32,
             1.0,
             std::sync::Arc::new(|| {}),
             None,
         );
         part.outputs_changed(&[(0, 0, 1280, 800)]);
+        part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
         for _ in 0..4 {
             part.prepare_frame();
         }
@@ -2415,214 +2777,7 @@ mod tests_support {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::arithmetic_side_effects,
-        reason = "test fixtures"
-    )]
-
-    use super::*;
-
-    fn reading() -> DeskReading {
-        DeskReading {
-            person: "Pat".to_owned(),
-            clock: "4:28 PM".to_owned(),
-            workspace: "Desk".to_owned(),
-            strip: "Main".to_owned(),
-            workspaces: vec![
-                WorkspaceReading {
-                    key: "1".to_owned(),
-                    name: "Desk".to_owned(),
-                    current: true,
-                },
-                WorkspaceReading {
-                    key: "2".to_owned(),
-                    name: "Studio".to_owned(),
-                    current: false,
-                },
-            ],
-            ..DeskReading::default()
-        }
-    }
-
-    use crate::shell_part::tests_support::part_with;
-
-    fn part() -> (ShellPart, Rc<SessionLink>) {
-        part_with(reading())
-    }
-
-    fn click(part: &mut ShellPart, name: &str) {
-        let (x, y, w, h) = part
-            .control_bounds(name)
-            .unwrap_or_else(|| panic!("the bar shows {name}"));
-        part.pointer_motion(x + w / 2.0, y + h / 2.0);
-        part.prepare_frame();
-        part.pointer_button(0x110, true);
-        part.prepare_frame();
-        part.pointer_button(0x110, false);
-        for _ in 0..6 {
-            part.prepare_frame();
-        }
-    }
-
-    #[test]
-    fn a_press_on_the_bar_hands_its_effect_to_the_session() {
-        let (mut part, link) = part();
-        click(&mut part, "Notifications");
-        let outbox = part
-            .instance
-            .host()
-            .map(|host| host.store().outbox_pending_count());
-        assert!(
-            link.has_asks(),
-            "the press reached the session: outbox {outbox:?}, {:?}, refusals {:?}",
-            part.work(),
-            part.refusals()
-        );
-        assert_eq!(
-            link.asked.borrow().front().map(|ask| ask.action.clone()),
-            Some("toggle-quick-settings".to_owned())
-        );
-    }
-
-    /// What one discrete change costs the bar: printed per kind of change, for the record
-    /// of its frame budget; each must land in one turn.
-    #[test]
-    fn each_change_is_one_turn() {
-        type Change = (&'static str, fn(&mut DeskReading));
-        let (mut part, link) = part();
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        let mut now = reading();
-        let changes: [Change; 3] = [
-            ("minute", |r| r.clock = "4:29 PM".to_owned()),
-            ("notification", |r| r.unread = 1),
-            ("workspace switch", |r| {
-                r.workspace = "Studio".to_owned();
-                r.workspaces[0].current = false;
-                r.workspaces[1].current = true;
-            }),
-        ];
-        for (name, change) in changes {
-            change(&mut now);
-            link.publish(now.clone());
-            let before = part.work();
-            part.prepare_frame();
-            part.prepare_frame();
-            let after = part.work();
-            let ms = |a: std::time::Duration, b: std::time::Duration| {
-                a.saturating_sub(b).as_secs_f64() * 1000.0
-            };
-            println!(
-                "SHELL-CHANGE {name}: {} turns, {:.3} ms (update {:.3}, commit {:.3} of which sync {:.3}, receive {:.3}, layout {:.3}), {} drawn {:.3} ms",
-                after.turns - before.turns,
-                ms(after.turning, before.turning),
-                ms(after.updating, before.updating),
-                ms(after.committing, before.committing),
-                ms(after.syncing, before.syncing),
-                ms(after.receiving, before.receiving),
-                ms(after.laying_out, before.laying_out),
-                after.drawn - before.drawn,
-                ms(after.drawing, before.drawing),
-            );
-            assert_eq!(after.turns - before.turns, 1, "{name} is one turn");
-        }
-    }
-
-    #[test]
-    fn the_part_covers_its_band_at_rest_and_the_outputs_while_its_menu_is_up() {
-        let (mut part, _link) = part();
-        assert_eq!(
-            part.widgets.placement().size,
-            (1280, 32),
-            "the band at rest"
-        );
-        assert!(
-            !part.accepts_pointer(900.0, 400.0),
-            "the desk under it takes presses"
-        );
-        click(&mut part, "Desk");
-        assert_eq!(
-            part.widgets.placement().size,
-            (1280, 800),
-            "room for the menu"
-        );
-        assert!(part.control_bounds("Studio").is_some(), "the menu is up");
-        // A press away from the menu closes it.
-        assert!(part.accepts_pointer(900.0, 400.0));
-        part.pointer_motion(900.0, 400.0);
-        part.prepare_frame();
-        part.pointer_button(0x110, true);
-        part.prepare_frame();
-        part.pointer_button(0x110, false);
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        assert!(part.control_bounds("Studio").is_none(), "the menu closed");
-        assert_eq!(
-            part.widgets.placement().size,
-            (1280, 32),
-            "back to the band"
-        );
-    }
-
-    #[test]
-    fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
-        let (mut part, link) = part();
-        click(&mut part, "Desk");
-        for _ in 0..6 {
-            part.prepare_frame();
-            part.draw();
-        }
-        click(&mut part, "Studio");
-        let asked = link.asked.borrow().front().cloned();
-        assert_eq!(
-            asked.map(|ask| (ask.action, ask.arguments)),
-            Some((
-                SWITCH_WORKSPACE.to_owned(),
-                BTreeMap::from([(WORKSPACE_ARG.to_owned(), "2".to_owned())])
-            )),
-            "{:?} {:?}",
-            part.work(),
-            part.refusals()
-        );
-        // The session ran it: the effect is settled.
-        link.serve(|_| Ok(()));
-        for _ in 0..4 {
-            part.prepare_frame();
-        }
-        assert!(!link.has_asks());
-        assert!(
-            part.origin.borrow().in_flight.is_empty(),
-            "the effect was answered"
-        );
-    }
-
-    #[test]
-    fn the_part_stands_in_the_band_the_shell_records_dock_names() {
-        let (mut part, _link) = part();
-        assert_eq!(
-            part.widgets.placement().origin,
-            (0, 0),
-            "the first shell: a bar at the top"
-        );
-        part.set_edges(HostEdges {
-            bar: false,
-            bar_top: true,
-            dock: true,
-            dock_bottom: true,
-        });
-        assert_eq!(
-            part.widgets.placement().origin.1,
-            800 - 32,
-            "a dock at the bottom alone stands in the bottom band"
-        );
-        assert_eq!(part.widgets.placement().size, (1280, 32));
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod surface_keys {
@@ -2634,7 +2789,10 @@ mod surface_keys {
     #[test]
     fn alt_tab_asks_for_the_switcher_from_rest() {
         let (mut part, link) = part_with(reading_with_windows());
-        assert_ne!(part.claim_key(&tab(true, true), false), KeyClaim::Pass);
+        assert_ne!(
+            part.claim_key(&tab(true, true), false, false),
+            KeyClaim::Pass
+        );
         part.key(&tab(true, true));
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
@@ -2663,7 +2821,7 @@ mod surface_keys {
         reading.here = "switcher".to_owned();
         let (mut part, link) = part_with(reading);
         link.asked.borrow_mut().clear();
-        assert_ne!(part.claim_key(&alt(false), false), KeyClaim::Pass);
+        assert_ne!(part.claim_key(&alt(false), false, false), KeyClaim::Pass);
         part.key(&alt(false));
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
@@ -2677,7 +2835,7 @@ mod surface_keys {
         let mut reading = super::tests_support::reading_with_windows();
         reading.here = "overview".to_owned();
         let (mut part, link) = part_with(reading);
-        assert_ne!(part.claim_key(&escape(), false), KeyClaim::Pass);
+        assert_ne!(part.claim_key(&escape(), false, false), KeyClaim::Pass);
         part.key(&escape());
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),

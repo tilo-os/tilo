@@ -92,7 +92,7 @@ impl SheetView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkbookSnapshot {
     pub schema: String,
-    pub schema_version: i64,
+    pub schema_version: u64,
     /// Sheets in tab order.
     pub sheets: Vec<SheetView>,
     /// Document properties (`title`/`author`/… → value).

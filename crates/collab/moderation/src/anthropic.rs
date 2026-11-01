@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use agent_provider_config::transform::{self, Ask, Output, Sampling};
 use agent_provider_config::{ModelDescriptor, ProviderProfile, ProviderProtocol};
 use tilo_secrets::SecretStore;
 use zeroize::Zeroizing;
@@ -15,8 +16,11 @@ pub const SECRET_APP: &str = "so.tilo.moderation";
 /// The purpose of the key item in that store; the item is the profile id.
 pub const KEY_PURPOSE: &str = "model-api-key";
 
-const API_VERSION: &str = "2023-06-01";
 const MAX_OUTPUT_TOKENS: u32 = 1024;
+/// The longest answer a judgement is read from.
+const MAX_ANSWER_BYTES: usize = 64 * 1024;
+/// How much of its effort the model spends on the structured answer.
+const EFFORT: &str = "low";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The profile a room host uses when its operator configures none: the
@@ -91,16 +95,32 @@ impl AnthropicJudge {
 
     #[must_use]
     pub fn body(&self, case: &Case) -> serde_json::Value {
-        serde_json::json!({
-            "model": self.model,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "system": INSTRUCTIONS,
-            "output_config": {
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": Verdict::schema()}
+        self.request(INSTRUCTIONS, &case.input(), &Verdict::schema())
+    }
+
+    /// The request that asks the model `input`, held to the JSON `schema`:
+    /// the shapes of a single-shot call are
+    /// [`transform`](agent_provider_config::transform)'s.
+    fn request(
+        &self,
+        instructions: &str,
+        input: &str,
+        schema: &serde_json::Value,
+    ) -> serde_json::Value {
+        transform::body(
+            ProviderProtocol::Anthropic,
+            &Ask {
+                model: &self.model,
+                instructions,
+                input,
+                max_tokens: Some(MAX_OUTPUT_TOKENS),
+                sampling: Sampling::ProviderDefault,
+                output: Output::Schema {
+                    schema,
+                    effort: EFFORT,
+                },
             },
-            "messages": [{"role": "user", "content": case.input()}]
-        })
+        )
     }
 
     async fn ask(&self, case: &Case) -> Result<Verdict, JudgeError> {
@@ -120,25 +140,20 @@ impl AnthropicJudge {
         prompt: &str,
         schema: &serde_json::Value,
     ) -> Result<String, JudgeError> {
-        self.send(&serde_json::json!({
-            "model": self.model,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "output_config": {
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": schema}
-            },
-            "messages": [{"role": "user", "content": prompt}]
-        }))
-        .await
+        self.send(&self.request("", prompt, schema)).await
     }
 
     async fn send(&self, body: &serde_json::Value) -> Result<String, JudgeError> {
-        let response = self
+        let mut request = self
             .http
-            .post(format!("{}/v1/messages", self.endpoint))
-            .header("x-api-key", self.key.as_str())
-            .header("anthropic-version", API_VERSION)
-            .json(body)
+            .post(transform::url(ProviderProtocol::Anthropic, &self.endpoint))
+            .json(body);
+        for header in transform::headers(ProviderProtocol::Anthropic, Some(self.key.as_str()))
+            .map_err(JudgeError::Provider)?
+        {
+            request = request.header(header.name, header.value.as_str());
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| JudgeError::Provider(error.without_url().to_string()))?;
@@ -154,7 +169,7 @@ impl AnthropicJudge {
                 .unwrap_or("no message");
             return Err(JudgeError::Provider(format!("{status}: {message}")));
         }
-        answer_text(&body)
+        answer(&body)
     }
 }
 
@@ -162,19 +177,9 @@ impl AnthropicJudge {
 ///
 /// # Errors
 /// The answer was refused, truncated or carried no text.
-pub fn answer_text(body: &serde_json::Value) -> Result<String, JudgeError> {
-    match body["stop_reason"].as_str() {
-        Some("refusal") => return Err(JudgeError::Answer("the model declined".into())),
-        Some("max_tokens") => return Err(JudgeError::Answer("the answer was cut off".into())),
-        _ => {}
-    }
-    let text: String = body["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|block| block["type"] == "text")
-        .filter_map(|block| block["text"].as_str())
-        .collect();
+fn answer(body: &serde_json::Value) -> Result<String, JudgeError> {
+    let text = transform::answer_value(ProviderProtocol::Anthropic, body, MAX_ANSWER_BYTES)
+        .map_err(JudgeError::Answer)?;
     if text.trim().is_empty() {
         return Err(JudgeError::Answer("no text in the answer".into()));
     }

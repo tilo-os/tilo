@@ -21,7 +21,9 @@ use std::time::Duration;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
-use tilo_compositor::{Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost};
+use tilo_compositor::{
+    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
+};
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_data_device, wl_data_device::WlDataDevice,
@@ -249,7 +251,7 @@ impl SurfaceHost for DropZone {
         vec![HostLayer {
             location: (500, 20),
             size: (100, 100),
-            buffer: self.buffer.clone(),
+            frame: HostFrame::from_buffer(self.buffer.clone(), (100, 100)),
         }]
     }
 

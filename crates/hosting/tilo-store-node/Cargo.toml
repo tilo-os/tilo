@@ -1,0 +1,45 @@
+[package]
+name = "tilo-store-node"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "A workspace's store device: retained sealed document frames, their retention and replay, served to the workspace's members over iroh. It holds no content keys and opens nothing it keeps."
+
+# Where the relay and the site's door keep a workspace whose members are
+# offline: every frame arrives signed and sealed, so the store keeps it,
+# retires it by the appetite it was given, and hands it back to a member that
+# asks from a cursor. Opening a frame needs the channel's content keys, which
+# only members hold.
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+tilo-files = { path = "../../platform/tilo-files" }
+# The signed op envelope every retained frame carries, and its signature check.
+collab-types = { path = "../../collab/collab-types" }
+# The device↔device message a retained frame is.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The device certificate a member proves itself with.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+thiserror.workspace = true
+hex.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "time"] }
+tracing.workspace = true
+iroh.workspace = true
+iroh-base = { workspace = true, features = ["key"] }
+web-time = { version = "1", features = ["serde"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+channel-crypto = { path = "../../collab/channel-crypto" }
+ed25519-dalek.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

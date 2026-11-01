@@ -279,6 +279,49 @@ impl TypeSchema {
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
         self.columns.iter().find(|column| column.name == name)
     }
+
+    /// The fields in the order a name is read from them: the `title` first, a `body`'s first
+    /// line next, then the rest as declared. Within a tier the declaration order stands
+    /// (`sort_by_key` is stable), never the field's id: ids are drawn per compile, so an order
+    /// over them would name a type with two plain texts differently on every build.
+    #[must_use]
+    pub fn in_naming_order(&self) -> Vec<&FieldSchema> {
+        let mut fields: Vec<&FieldSchema> = self.fields.iter().collect();
+        fields.sort_by_key(|field| match field.role {
+            FieldRole::Title => 0_u8,
+            FieldRole::Body => 1,
+            FieldRole::Plain => 2,
+        });
+        fields
+    }
+
+    /// The order [`crate::reads::first_text`] looks at the fields: every text of the resource's
+    /// own first (in [`Self::in_naming_order`]), then the records and collections it holds, in
+    /// that order. A resource holding a text of its own is named by it before any item it
+    /// holds, whatever the fields' ids.
+    #[must_use]
+    pub fn naming_scan(&self) -> Vec<&FieldSchema> {
+        let ordered = self.in_naming_order();
+        let own: Vec<&FieldSchema> = ordered
+            .iter()
+            .copied()
+            .filter(|field| field.kind.holds_text())
+            .collect();
+        let mut scan = own;
+        scan.extend(
+            ordered
+                .into_iter()
+                .filter(|field| matches!(field.kind, MergeKind::Record | MergeKind::Collection)),
+        );
+        scan
+    }
+
+    /// Where the field `id` stands in [`Self::naming_scan`]: a change to a field at or before
+    /// this one may move the resource's name, a change to one after it cannot.
+    #[must_use]
+    pub fn naming_position(&self, id: &str) -> Option<usize> {
+        self.naming_scan().iter().position(|field| field.id == id)
+    }
 }
 
 thread_local! {

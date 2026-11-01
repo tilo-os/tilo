@@ -365,6 +365,9 @@ mod text;
 mod upkeep;
 mod view;
 pub mod views;
+mod window_bar;
+#[cfg(test)]
+mod window_bar_tests;
 mod workspace;
 mod workspace_emoji;
 
@@ -419,6 +422,7 @@ pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
+pub use window_bar::{Binding, Choice, WindowBar};
 pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store

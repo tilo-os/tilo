@@ -110,13 +110,17 @@ async fn bed() -> Bed {
         backend.clone(),
         Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
     );
-    let portal = Portal::new(questions.clone(), authenticator)
-        .with_consents(crate::consent::Consents::new(questions.clone(), None))
-        .with_grants(crate::restore::Grants::load(Some(
-            grants.path().join("restore.json"),
-        )))
-        .with_streams(Arc::clone(&streams) as Arc<dyn CaptureStreams>)
-        .with_input(Arc::clone(&seat) as Arc<dyn InputInjector>);
+    let portal = Portal::new(
+        questions.clone(),
+        authenticator,
+        tilo_documents::Documents::new(),
+    )
+    .with_consents(crate::consent::Consents::new(questions.clone(), None))
+    .with_grants(crate::restore::Grants::load(Some(
+        grants.path().join("restore.json"),
+    )))
+    .with_streams(Arc::clone(&streams) as Arc<dyn CaptureStreams>)
+    .with_input(Arc::clone(&seat) as Arc<dyn InputInjector>);
     portal.serve(&backend).await.expect("served");
     let frontend = bus.connect().await;
     frontend

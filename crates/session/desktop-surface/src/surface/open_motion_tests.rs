@@ -3,6 +3,7 @@
 //! desktop places it.
 
 use super::*;
+use ui::widget::TileContent;
 
 struct Apps;
 

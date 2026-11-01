@@ -888,11 +888,18 @@ fn run_parsed(
     // Attachment can exec the runtime host in this process's place, and marks
     // the inherited launch guard close-on-exec: it finishes before the
     // renderer preparation below starts a thread.
-    if opens_native_window(&args) && (spec.runtime_attachment)(&args) {
+    // A surface of the desktop is shown by the session that placed it and
+    // reaches it over its own actions socket: it needs no runtime host.
+    let attaches = !crate::surface_services::is_surface() && (spec.runtime_attachment)(&args);
+    if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
+    // A surface app reads what its session publishes over the connection the
+    // session's broker admits for its launch, as any app does; it is made
+    // before the window opens, so the first frame already shows it.
+    crate::surface_services::connect();
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();
@@ -1312,11 +1319,27 @@ fn selected_local_construction()
     .map_err(LaunchError::Operation)
 }
 
+/// The actions socket the session handed this process, when it is a
+/// surface app's: `None` when the number in [`crate::surface_peer::ACTIONS_FD_ENV`]
+/// names no socket.
+#[cfg(feature = "native")]
+fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
+    let number = std::env::var(crate::surface_peer::ACTIONS_FD_ENV).ok()?;
+    let number: i32 = number.trim().parse().ok()?;
+    crate::surface_peer::SurfacePeer::from_descriptor(number)
+}
+
 #[cfg(feature = "native")]
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
+    // A surface app is handed the actions of the desktop that places its
+    // window, in place of a room it never joins: it needs no workspace of
+    // its own, selected or not.
+    if let Some(peer) = surface_peer() {
+        return Ok(crate::collaboration::CollaborationManager::with_peer_transport(peer));
+    }
     crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());

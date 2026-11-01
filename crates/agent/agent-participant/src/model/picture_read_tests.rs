@@ -26,7 +26,7 @@ impl ScanReads {
 impl Reads for ScanReads {
     fn read(
         &mut self,
-        _: &tilo_browser_peer::DocumentRoute,
+        _: &tilo_peer_state::document_frame::DocumentRoute,
         _: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_actions::ActionOutput, String> {

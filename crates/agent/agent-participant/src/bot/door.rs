@@ -31,7 +31,7 @@ use tilo_actions::{
     ActionContext, ActionFailure, ActionInvoker, ActionOutput, ActorKind, InvocationId,
     InvocationUpdate,
 };
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::item_json::OutboxRow;
 use crate::participant::actions::{door_status, record_of, record_provider};

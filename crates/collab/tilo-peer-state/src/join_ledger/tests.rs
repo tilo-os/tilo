@@ -52,8 +52,10 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || vec![b"governance".to_vec()];
+    let host_cert = peer.owner_certificates()[0].clone();
     let room = Governed {
         peer: &peer,
+        host: &host_cert,
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,
@@ -65,7 +67,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let issued = ledger
         .issue(
             &room,
-            peer.authority(),
+            &peer.owner_certificates()[0],
             invitation(Some(guest_cert.user_public_key), now_ns),
             Vec::new(),
             Signer {
@@ -78,7 +80,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let again = ledger
         .issue(
             &room,
-            peer.authority(),
+            &peer.owner_certificates()[0],
             invitation(Some(guest_cert.user_public_key), now_ns),
             Vec::new(),
             Signer {
@@ -139,8 +141,10 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         Some("Calm Owl"),
         "the room names the guest as they named themself, not by their device"
     );
+    let host_cert = candidate.owner_certificates()[0].clone();
     let committed = Governed {
         peer: &candidate,
+        host: &host_cert,
         workspace_id: 7,
         generation: 2,
         governance_messages: &messages,
@@ -206,8 +210,10 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = Vec::<Vec<u8>>::new;
+    let host_cert = peer.owner_certificates()[0].clone();
     let room = Governed {
         peer: &peer,
+        host: &host_cert,
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,
@@ -216,7 +222,7 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let issued = ledger
         .issue(
             &room,
-            peer.authority(),
+            &peer.owner_certificates()[0],
             invitation(None, now_ns),
             Vec::new(),
             Signer {
@@ -267,8 +273,10 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 fn a_join_receipt_keeps_none_of_the_rooms_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
     let messages = || vec![b"governance".to_vec()];
+    let host_cert = peer.owner_certificates()[0].clone();
     let room = Governed {
         peer: &peer,
+        host: &host_cert,
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,

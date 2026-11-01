@@ -129,8 +129,8 @@ fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
 }
 
-/// Whether a node shows text: its own, or its children's.
-fn has_text(node: &InspectionNode) -> bool {
+/// Whether a node is text itself.
+fn is_text(node: &InspectionNode) -> bool {
     use ui::a11y::Role;
     node.widget == "Text"
         || node.semantics.as_ref().is_some_and(|access| {
@@ -139,23 +139,21 @@ fn has_text(node: &InspectionNode) -> bool {
                 Role::StaticText | Role::Label | Role::Heading { .. }
             )
         })
-        || node.children.iter().any(has_text)
 }
 
 /// The boxes of the text `node` shows, its own and its descendants', each as much of it as can
-/// be seen: what a scroller or a clip of theirs hides is not read, so it covers nothing.
+/// be seen: what a scroller or a clip of theirs hides is not read, so it covers nothing, and
+/// what floats over everything (a menu, a tooltip) is no text of the box it opens from.
 fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
-    use ui::a11y::Role;
-    let own = node.widget == "Text"
-        || node.semantics.as_ref().is_some_and(|access| {
-            matches!(
-                access.role,
-                Role::StaticText | Role::Label | Role::Heading { .. }
-            )
-        });
-    let seen = rect(node.rect).intersect(clip);
-    if own && has_area(seen) {
-        out.push(seen);
+    if floats(&node.widget) {
+        return;
+    }
+    if is_text(node) {
+        let seen = rect(node.rect).intersect(clip);
+        if has_area(seen) {
+            out.push(seen);
+        }
+        return;
     }
     let inner = node
         .child_clip
@@ -166,7 +164,8 @@ fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
 }
 
 /// Whether some text of `a` and some text of `b` stand on each other, so neither can be read:
-/// two layers that each hold text somewhere cover nothing unless the text itself meets.
+/// two boxes laid over each other on purpose (a dock over the desk under the bar) whose text
+/// stands apart can both be read.
 fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
     let (mut under, mut over) = (Vec::new(), Vec::new());
     text_boxes(a, clip, &mut under);
@@ -550,7 +549,7 @@ impl Walk<'_> {
                 } else if places {
                     is_control(a) && is_control(b)
                 } else {
-                    !layered || (has_text(a) && has_text(b) && texts_meet(a, b, clip))
+                    !layered || texts_meet(a, b, clip)
                 };
                 if has_area(both) && covers {
                     let mut keys = keys.to_vec();

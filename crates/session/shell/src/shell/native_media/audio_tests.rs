@@ -16,7 +16,7 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
-use super::super::collab_broker_capnp::LocalSessionAuthority;
+use super::super::collab_app_broker::LocalSessionAuthority;
 use super::*;
 use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
 use media::voice::gst::{OpusDecoder, OpusEncoder};

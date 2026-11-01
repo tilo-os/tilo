@@ -681,7 +681,8 @@ impl Default for AgentQuickComposer {
 /// whatever it shows, so an answer arriving grows it downwards only.
 const COMPOSER_WIDTH: f32 = ui::tokens::Metrics::BASE.panel_width_list;
 /// Below a sheet's width the viewport has no room beside the subject, and
-/// the composer is a sheet along the bottom.
+/// the composer is a sheet along the bottom: the HIG's sheet width is where
+/// a panel stops fitting beside what it answers.
 const SHEET_BELOW: f64 = ui::tokens::Metrics::BASE.panel_width_sheet as f64;
 /// The test id of the area showing the work: the steps, the answer view and the reply.
 const WORK_AREA: &str = "agent-quick-work";

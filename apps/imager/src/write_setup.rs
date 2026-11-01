@@ -5,14 +5,11 @@
 //! person already here. The passphrase stays host-local; the collaborative
 //! profile only records the network name, device label, and whether to enroll.
 
-use std::rc::Rc;
-
 use ui::framework::Actions;
 use ui::local_state::LocalState;
 use ui::tilo_actions::ActionBinding;
 use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 
-use crate::app::{Command, Commands};
 use crate::model::InstallProfile;
 use crate::resource::{Imager, ImagerEffect};
 
@@ -71,20 +68,18 @@ fn text_field(
     value: &str,
     kind: TextInputKind,
     actions: Option<&Actions<Imager>>,
-    commands: &Commands,
+    ssh_public_key: &LocalState<String>,
 ) -> Field {
-    let mut input = TextInput::local()
-        .with_id(field.id())
-        .with_kind(kind)
-        .with_initial_value(value);
-    if field == SetupField::SshKey {
+    let mut input = if field == SetupField::SshKey {
         // A key is checked once it is whole, when the write starts: each
         // keystroke of one is no key yet, so it is kept as typed.
-        let sink = Rc::clone(commands);
-        input = input.on_change(move |value| {
-            sink.borrow_mut().push(Command::SshKey(value.to_owned()));
-        });
-    } else if let Some(binding) = actions.and_then(|actions| field.binding(actions)) {
+        TextInput::from_state(ssh_public_key)
+    } else {
+        TextInput::local().with_initial_value(value)
+    }
+    .with_id(field.id())
+    .with_kind(kind);
+    if let Some(binding) = actions.and_then(|actions| field.binding(actions)) {
         input = input.on_action(binding);
     }
     if field == SetupField::WifiPsk {
@@ -99,9 +94,8 @@ fn text_field(
 pub(crate) fn form(
     profile: &InstallProfile,
     wifi_psk: &str,
-    ssh_public_key: &str,
+    ssh_public_key: &LocalState<String>,
     actions: Option<&Actions<Imager>>,
-    commands: &Commands,
 ) -> Form {
     let mut enroll = Toggle::from_state(&LocalState::new(profile.enroll_local_identity))
         .with_id("imager.write-setup.enroll");
@@ -117,28 +111,28 @@ pub(crate) fn form(
                 &profile.wifi_ssid,
                 TextInputKind::Name,
                 actions,
-                commands,
+                ssh_public_key,
             ))
             .field(text_field(
                 SetupField::WifiPsk,
                 wifi_psk,
                 TextInputKind::Password,
                 actions,
-                commands,
+                ssh_public_key,
             ))
             .field(text_field(
                 SetupField::SshKey,
-                ssh_public_key,
+                "",
                 TextInputKind::Name,
                 actions,
-                commands,
+                ssh_public_key,
             ))
             .field(text_field(
                 SetupField::DeviceLabel,
                 &profile.device_label,
                 TextInputKind::Name,
                 actions,
-                commands,
+                ssh_public_key,
             ))
             .field(Field::new("Enroll as a new device", enroll).with_help(ENROLL_NOTE)),
     )
@@ -156,9 +150,9 @@ mod tests {
             ui::Theme::high_contrast(),
         ] {
             for width in [400, 760] {
-                let commands = Rc::new(std::cell::RefCell::new(Vec::new()));
+                let ssh_key = LocalState::new(String::new());
                 let profile = InstallProfile::default();
-                let panel = form(&profile, "", "", None, &commands);
+                let panel = form(&profile, "", &ssh_key, None);
                 let view = ui::headless::FrameHarness::for_root(
                     ui::State::new(),
                     panel,

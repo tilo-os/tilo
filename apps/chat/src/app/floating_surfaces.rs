@@ -83,12 +83,27 @@ impl FloatingSurfaceProvider for ChatApp {
             }
             surface.observe_theme(theme);
             surface.view.perms = self.perms.clone();
-            surface.view.room_agents.clone_from(&self.room_agents);
-            surface.view.room_names.clone_from(&self.room_names);
-            surface.view.room_persons.clone_from(&self.room_persons);
-            surface.view.room_labels.clone_from(&self.room_labels);
+            surface
+                .view
+                .workspace_agents
+                .clone_from(&self.workspace_agents);
+            surface
+                .view
+                .workspace_names
+                .clone_from(&self.workspace_names);
+            surface
+                .view
+                .workspace_persons
+                .clone_from(&self.workspace_persons);
+            surface
+                .view
+                .workspace_labels
+                .clone_from(&self.workspace_labels);
             surface.view.own_label.clone_from(&self.own_label);
-            surface.view.room_colors.clone_from(&self.room_colors);
+            surface
+                .view
+                .workspace_colors
+                .clone_from(&self.workspace_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
             surface.view.refresh_person_conversation();
@@ -147,12 +162,27 @@ impl FloatingSurfaceProvider for ChatApp {
             }
             surface.observe_theme(theme);
             surface.view.perms = self.perms.clone();
-            surface.view.room_agents.clone_from(&self.room_agents);
-            surface.view.room_names.clone_from(&self.room_names);
-            surface.view.room_persons.clone_from(&self.room_persons);
-            surface.view.room_labels.clone_from(&self.room_labels);
+            surface
+                .view
+                .workspace_agents
+                .clone_from(&self.workspace_agents);
+            surface
+                .view
+                .workspace_names
+                .clone_from(&self.workspace_names);
+            surface
+                .view
+                .workspace_persons
+                .clone_from(&self.workspace_persons);
+            surface
+                .view
+                .workspace_labels
+                .clone_from(&self.workspace_labels);
             surface.view.own_label.clone_from(&self.own_label);
-            surface.view.room_colors.clone_from(&self.room_colors);
+            surface
+                .view
+                .workspace_colors
+                .clone_from(&self.workspace_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
             surface.view.refresh_person_conversation();

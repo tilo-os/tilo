@@ -13,7 +13,7 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use smithay::utils::{Logical, Point, Rectangle};
+use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 use tilo_surface_host::{WellPolicy, well_policy};
 use ui::headless::FrameHarness;
@@ -32,8 +32,8 @@ fn round(value: f64) -> i32 {
     value.round() as i32
 }
 
-fn output() -> Vec<Rectangle<i32, Logical>> {
-    vec![Rectangle::new((0, 0).into(), (1280, 800).into())]
+fn output() -> Vec<LayoutRect> {
+    vec![LayoutRect::new((0, 0).into(), (1280, 800).into())]
 }
 
 fn window(id: u64, app: &str) -> WindowInfo {
@@ -112,13 +112,13 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
     let at = policy.place(&window, size, &outputs);
     assert_eq!(
         at,
-        Point::from((round(well.x0), round(well.y0))),
+        LayoutPoint::from((round(well.x0), round(well.y0))),
         "and stands at its well's corner"
     );
     // Laid out again with the well where it is, the client is not configured.
     let arranged = policy
         .arrange(
-            &[(window.clone(), Rectangle::new(at, size.into()))],
+            &[(window.clone(), LayoutRect::new(at, size.into()))],
             &outputs,
         )
         .expect("an arrangement");
@@ -155,7 +155,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
     let at = policy.place(&window, size, &outputs);
     assert_eq!(
         at,
-        Point::from((round(before.x0), round(before.y0))),
+        LayoutPoint::from((round(before.x0), round(before.y0))),
         "the window at the pin"
     );
     // The canvas pans: the frame a pan runs moves the well, and the policy places the window
@@ -176,12 +176,12 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
     let moved = policy.place(&window, size, &outputs);
     assert_eq!(
         moved,
-        Point::from((round(after.x0), round(after.y0))),
+        LayoutPoint::from((round(after.x0), round(after.y0))),
         "the window moved with its well in the same frame"
     );
     assert!(
         policy
-            .arrange(&[(window, Rectangle::new(at, size.into()))], &outputs)
+            .arrange(&[(window, LayoutRect::new(at, size.into()))], &outputs)
             .expect("an arrangement")[0]
             .size
             .is_none(),
@@ -202,7 +202,10 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
     let at = policy.place(&window, (100, 100), &outputs);
     assert!(at.x < 0, "the window waits off the output, at {at:?}");
     let arranged = policy
-        .arrange(&[(window, Rectangle::new(at, (100, 100).into()))], &outputs)
+        .arrange(
+            &[(window, LayoutRect::new(at, (100, 100).into()))],
+            &outputs,
+        )
         .expect("an arrangement");
     assert!(arranged[0].location.x < 0, "still off the output");
 }
@@ -234,9 +237,9 @@ fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     let wells = policy.wells();
     let frame = Frame::new(wells.clone(), 48.0, &key, VIEWPORT);
     let well = wells.well(&key).expect("the well is on screen");
-    let at = Point::from((round(well.x0), round(well.y0)));
+    let at = LayoutPoint::from((round(well.x0), round(well.y0)));
     let size = (round(well.width()), round(well.height()));
-    let windows = [(window, Rectangle::new(at, size.into()))];
+    let windows = [(window, LayoutRect::new(at, size.into()))];
     // The generation moves only when a well reports something new.
     let generation = wells.generation();
     for _ in 0..200 {

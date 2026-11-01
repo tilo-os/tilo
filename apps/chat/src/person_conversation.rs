@@ -1,4 +1,4 @@
-//! Person-only conversations. Bodies and drafts never enter the room record.
+//! Person-only conversations. Bodies and drafts never enter the workspace record.
 
 use crate::app::{ChatApp, Focus};
 use crate::composer::ConversationKey;
@@ -11,13 +11,13 @@ impl Drop for ChatApp {
     }
 }
 
-/// A conversation being opened, by its peer, until the room answers.
+/// A conversation being opened, by its peer, until the workspace answers.
 pub(crate) type Opening = (
     String,
     ui::person_chat::Pending<ui::person_chat::Conversation>,
 );
 
-/// A message on its way, kept until the room accepts or refuses it.
+/// A message on its way, kept until the workspace accepts or refuses it.
 pub(crate) struct Sending {
     peer: String,
     key: ConversationKey,
@@ -41,7 +41,7 @@ impl ChatApp {
 
     pub(crate) fn person_conversation_key(public_key: &str) -> ConversationKey {
         ConversationKey::Person {
-            workspace: crate::app::ROOM_SCOPE.to_owned(),
+            workspace: crate::app::WORKSPACE_SCOPE.to_owned(),
             public_key: public_key.to_owned(),
         }
     }
@@ -58,11 +58,11 @@ impl ChatApp {
 
     /// What a contact is called: the name they go by here now, as
     /// everyone here sees it (they may have renamed themself since the
-    /// room's list was read), else the name the room keeps for them, else
+    /// workspace's list was read), else the name the workspace keeps for them, else
     /// the unnamed person's tag. Never blank.
     pub(crate) fn contact_name(&self, contact: &ui::person_chat::Contact) -> String {
         [
-            self.room_names.get(contact.public_key.as_str()),
+            self.workspace_names.get(contact.public_key.as_str()),
             Some(&contact.display_name),
         ]
         .into_iter()
@@ -99,8 +99,8 @@ impl ChatApp {
     }
 
     /// Open the conversation with `public_key`. The view moves to it once
-    /// the room has it open: at once from the native host, a moment later
-    /// in a page, which never waits for the room on the UI thread.
+    /// the workspace has it open: at once from the native host, a moment later
+    /// in a page, which never waits for the workspace on the UI thread.
     pub(crate) fn open_person_conversation(&mut self, public_key: &str) -> Result<(), String> {
         self.person_contacts = ui::person_chat::contacts();
         self.require_person_contact(public_key)?;
@@ -145,7 +145,7 @@ impl ChatApp {
         Ok(())
     }
 
-    /// Take up what the room answered an open or a send since the last sync.
+    /// Take up what the workspace answered an open or a send since the last sync.
     fn settle_person_replies(&mut self) {
         self.person_abandoned
             .retain(|(peer, opening)| match opening.take() {
@@ -218,7 +218,7 @@ impl ChatApp {
     }
 
     /// An explicit read of the conversation with `public_key`, answered
-    /// once the room has (an invocation's read is checked against its
+    /// once the workspace has (an invocation's read is checked against its
     /// original custody there).
     pub(crate) fn read_person_conversation(
         &mut self,
@@ -252,7 +252,7 @@ impl ChatApp {
         Ok(Effected::value(value))
     }
 
-    /// Send `text` to `public_key`; the reply says when the room accepted it.
+    /// Send `text` to `public_key`; the reply says when the workspace accepted it.
     pub(crate) fn send_person_message(
         &mut self,
         public_key: &str,
@@ -266,7 +266,7 @@ impl ChatApp {
         Ok(ui::person_chat::send(public_key, text))
     }
 
-    /// What the room answered a message to `public_key`, as the effect's value.
+    /// What the workspace answered a message to `public_key`, as the effect's value.
     pub(crate) fn sent_person_answer(
         &mut self,
         public_key: &str,
@@ -288,7 +288,7 @@ impl ChatApp {
     }
 
     /// Send what the composer holds to the open conversation. Its draft
-    /// clears once the room accepted the message, not before.
+    /// clears once the workspace accepted the message, not before.
     pub(crate) fn send_person_focused(&mut self) -> bool {
         let Some(public_key) = self.direct_person.clone() else {
             return false;

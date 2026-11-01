@@ -2802,7 +2802,7 @@ mod tests {
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<serde_json::Value, String> {
         assert_eq!(encoded.type_id, SetupEffect::OPERATION);
-        app.answer(SetupEffect::from_payload(&encoded.payload)?)
+        app.answer(SetupEffect::from_payload(&encoded.payload).map_err(|error| error.to_string())?)
     }
 
     fn retained_widget_count(root: &dyn Widget, id: &str) -> usize {

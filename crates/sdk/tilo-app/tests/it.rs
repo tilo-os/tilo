@@ -23,8 +23,6 @@ pub mod child_records;
 pub mod child_resources;
 #[path = "confirmation.rs"]
 pub mod confirmation;
-#[path = "control_custody_raw_holder.rs"]
-pub mod control_custody_raw_holder;
 #[path = "each_window.rs"]
 pub mod each_window;
 #[path = "edit_answers.rs"]

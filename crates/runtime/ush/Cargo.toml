@@ -34,7 +34,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # Two sessions of one environment never carry the same file action out twice.
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Atomic writes of the host-shell decisions.
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }

@@ -1078,7 +1078,8 @@ impl Editor {
         let rect = ctx.control_line();
         let current = line_spacing_label(self.current_line_spacing());
         if !self.line_spacing.is_open() {
-            self.line_spacing.set_selected(current);
+            self.line_spacing.set_selected(current.clone());
+            self.line_spacing_shown = current;
         }
         let viewport = self.floating_viewport();
         self.line_spacing_rect = Self::host_menu(&mut self.line_spacing, ctx, rect, viewport);
@@ -1136,6 +1137,7 @@ impl Editor {
         }
         if !self.style_pick.is_open() {
             self.style_pick.set_selected(key);
+            key.clone_into(&mut self.style_pick_shown);
         }
         let rect = ctx.control_line();
         let viewport = self.floating_viewport();

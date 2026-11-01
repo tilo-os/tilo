@@ -1290,92 +1290,29 @@ impl Music {
         self.actions = Some(actions);
     }
 
-    /// The context Ctrl+K needs to build Music's resource tree: the user's
-    /// playlists and their tracks, read from the in-memory library cache (itself
-    /// re-projected from the document each `sync`). The virtual "Liked Songs"
-    /// playlist is a projection of the like set, not a stored playlist, so it is
-    /// not surfaced here — only real, mutable playlists are.
-    pub(crate) fn music_resource_ctx(&self) -> crate::actions::MusicResourceCtx {
-        let mut playlists = self.lib.playlists().collect::<Vec<_>>();
-        playlists.sort_by(|a, b| a.id.cmp(&b.id));
-        let playlists = playlists
-            .into_iter()
-            .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-            .map(|p| crate::actions::PlaylistResource {
-                id: p.id.clone(),
-                name: p.name.clone(),
-                tracks: p
-                    .tracks
-                    .values()
-                    .take(crate::actions::OPEN_PLAYLIST_TRACK_LIMIT)
-                    .map(|tid| crate::actions::TrackRef {
-                        id: tid.clone(),
-                        label: self.track_title(tid),
-                        artist: self.track_artist(tid),
-                        liked: self.lib.is_liked(tid),
-                    })
-                    .collect(),
-            })
-            .collect();
-        // HashMap iteration is deliberately unspecified. Sort before applying
-        // the contextual page cap so the palette's initial resource set is
-        // stable across process runs and peers.
-        let mut tracks = self.lib.tracks.values().collect::<Vec<_>>();
-        tracks.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut albums = self.lib.albums.values().collect::<Vec<_>>();
-        albums.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut artists = self.lib.artists.values().collect::<Vec<_>>();
-        artists.sort_by(|a, b| a.id.cmp(&b.id));
-        crate::actions::MusicResourceCtx {
-            playlists,
-            tracks: tracks
-                .into_iter()
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|track| crate::actions::CatalogTrackResource {
-                    id: track.id.clone(),
-                    label: self.track_title(&track.id),
-                    album_id: track.album_id.clone(),
-                    artist_id: track.artist_id.clone(),
-                    offline: matches!(self.cache_state(&track.id), CacheState::Cached),
-                    liked: self.lib.is_liked(&track.id),
-                })
-                .collect(),
-            albums: albums
-                .into_iter()
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|album| crate::actions::CatalogAlbumResource {
-                    id: album.id.clone(),
-                    label: album.title.clone(),
-                })
-                .collect(),
-            artists: artists
-                .into_iter()
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|artist| crate::actions::CatalogArtistResource {
-                    id: artist.id.clone(),
-                    label: artist.name.clone(),
-                    followed: self.artist_followed(&artist.id),
-                })
-                .collect(),
-            membership: None,
+    /// The rows this window shows beside the library's own: built from the
+    /// library, this device's playback, and the two facts about this device
+    /// the library does not hold — its offline copies and the artists it
+    /// follows — beside the file it has open, if any.
+    pub(crate) fn music_rows(&self) -> crate::actions::MusicRows<'_, Self> {
+        crate::actions::MusicRows {
+            lib: &self.lib,
+            playback: &self.pb,
+            device: self,
             local_file: self.local_file_resource(),
-            queue: self
-                .pb
-                .queue
-                .iter()
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .enumerate()
-                .map(|(index, track)| crate::actions::QueueItemResource {
-                    index,
-                    track: track.clone(),
-                    label: self.track_title(track),
-                    artist: self.track_artist(track),
-                    current: self.pb.queue_index == index
-                        && self.pb.current.as_deref() == Some(track),
-                })
-                .collect(),
-            playback: self.pb.clone(),
         }
+    }
+
+    /// The row `id` this surface shows — the player, the queue and its
+    /// entries, a song, artist, playlist or membership, the open file — or
+    /// the library's own row for a place or album — resolved against what it
+    /// shows now, so a stale address from an old palette snapshot finds
+    /// nothing.
+    pub(crate) fn publish_resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        self.music_rows()
+            .row(id)
+            .map(ui::framework::LiveRow::into_resource)
+            .or_else(|| <Library as ui::tilo_resource::Resource>::child(&self.lib, id))
     }
 
     /// The authoritative search result's metadata, for an admitted effect
@@ -1395,13 +1332,12 @@ impl Music {
     /// The rows this device shows beside the library: its player, queue and
     /// open file, and the tracks it keeps offline, which offer their removal.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let ctx = self.music_resource_ctx();
-        let mut rows: Vec<_> = crate::actions::library_rows(&ctx)
-            .into_iter()
-            .chain(crate::recommendations::resources(&self.lib))
-            .chain(crate::actions::live_device_resources(&ctx))
-            .map(ui::framework::LiveRow::from_resource)
-            .collect();
+        let mut rows = self.music_rows().all();
+        rows.extend(
+            crate::recommendations::resources(&self.lib)
+                .into_iter()
+                .map(ui::framework::LiveRow::from_resource),
+        );
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
         rows.extend(self.spotify_remote_rows());
@@ -1462,12 +1398,12 @@ impl Music {
         if let Some(row) = self.catalogue_rows().into_iter().find(|row| row.id() == id) {
             return Some(row);
         }
-        if let Some(resource) = self
+        if let Some(row) = self
             .catalogue_resources()
             .into_iter()
-            .find(|row| row.id.as_str() == id)
+            .find(|row| row.id() == id)
         {
-            return Some(ui::framework::LiveRow::from_resource(resource));
+            return Some(row);
         }
         if id.starts_with("music.recommendation") {
             return crate::recommendations::resource_by_id(&self.lib, id)
@@ -1489,7 +1425,8 @@ impl Music {
                 .flatten();
         }
         // The player, the queue and its entries, the open file, and the
-        // library's tracks, albums, artists, playlists, memberships and views.
+        // library's songs, artists, playlists and memberships. Its places and
+        // albums the framework resolves from the library itself.
         self.publish_resource(id)
             .map(ui::framework::LiveRow::from_resource)
     }
@@ -1546,73 +1483,6 @@ impl Music {
                 tracks: vec![track.to_owned()],
             }),
         )
-    }
-
-    /// Build only the data needed to resolve one resource at the authority
-    /// door. This is intentionally separate from [`Self::music_resource_ctx`]:
-    /// opening Ctrl+K should stay O(page size), while activating a search hit
-    /// can still re-resolve any stable resource against current library state.
-    pub(crate) fn music_resource_ctx_for_id(
-        &self,
-        id: &str,
-    ) -> Option<crate::actions::MusicResourceCtx> {
-        if id == "music.library" {
-            return Some(self.music_resource_ctx());
-        }
-        if crate::actions::parse_view_resource_id(id).is_some() {
-            return Some(crate::actions::MusicResourceCtx {
-                playback: self.pb.clone(),
-                ..Default::default()
-            });
-        }
-        let mut ctx = crate::actions::MusicResourceCtx {
-            local_file: self.local_file_resource(),
-            playback: self.pb.clone(),
-            ..Default::default()
-        };
-        if id == crate::actions::LOCAL_FILE_RESOURCE_ID || id == "music.player:player" {
-            return Some(ctx);
-        }
-        if id == crate::actions::QUEUE_RESOURCE_ID {
-            ctx.queue = self
-                .pb
-                .queue
-                .iter()
-                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
-                .enumerate()
-                .map(|(index, track)| crate::actions::QueueItemResource {
-                    index,
-                    track: track.clone(),
-                    label: self.track_title(track),
-                    artist: self.track_artist(track),
-                    current: self.pb.queue_index == index
-                        && self.pb.current.as_deref() == Some(track),
-                })
-                .collect();
-            return Some(ctx);
-        }
-        if let Some((index, track_id)) = crate::actions::parse_queue_item_resource_id(id) {
-            if self.pb.queue.get(index).map(String::as_str) != Some(track_id.as_str()) {
-                return None;
-            }
-            ctx.queue.push(crate::actions::QueueItemResource {
-                index,
-                label: self.track_title(&track_id),
-                artist: self.track_artist(&track_id),
-                track: track_id,
-                current: self.pb.queue_index == index
-                    && self.pb.current.as_deref() == self.pb.queue.get(index).map(String::as_str),
-            });
-            return Some(ctx);
-        }
-        let mut ctx = crate::actions::MusicResourceCtx::for_document_id(&self.lib, id)?;
-        for track in &mut ctx.tracks {
-            track.offline = matches!(self.cache_state(&track.id), CacheState::Cached);
-        }
-        for artist in &mut ctx.artists {
-            artist.followed = self.artist_followed(&artist.id);
-        }
-        Some(ctx)
     }
 
     /// A one-line "Title — Artist" label for a track id, for the palette.
@@ -2567,13 +2437,6 @@ impl Music {
     fn track_title(&self, track_id: &str) -> String {
         self.playback_track(track_id)
             .map_or_else(|| track_id.to_string(), |t| t.title.clone())
-    }
-
-    /// Who performs a track, the palette row's secondary line.
-    fn track_artist(&self, track_id: &str) -> String {
-        self.playback_track(track_id)
-            .map(|t| self.lib.artist_name(&t.artist_id).to_string())
-            .unwrap_or_default()
     }
 
     fn on_shuffle_play(&mut self, queue: Arc<Vec<String>>, state: &mut ui::widget::Edits<'_>) {
@@ -4067,7 +3930,7 @@ impl Music {
         albums.chain(artists).chain(playlists).collect()
     }
 
-    fn catalogue_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+    fn catalogue_resources(&self) -> Vec<ui::framework::LiveRow> {
         let Some((_, bundle)) = &self.live_bundle else {
             return Vec::new();
         };
@@ -4090,7 +3953,7 @@ impl Music {
                     a.title.as_str(),
                 )
             }))
-            .filter_map(|(id, label)| crate::actions::live_catalogue_resource(&id, label))
+            .filter_map(|(id, label)| crate::actions::live_catalogue_row(&id, label))
             .collect()
     }
 
@@ -5924,6 +5787,16 @@ fn mosaic_covers<'a>(
         }
     }
     covers
+}
+
+impl crate::actions::DeviceFacts for Music {
+    fn offline(&self, track: &str) -> bool {
+        matches!(self.cache_state(track), CacheState::Cached)
+    }
+
+    fn followed(&self, artist: &str) -> bool {
+        self.artist_followed(artist)
+    }
 }
 
 #[cfg(test)]

@@ -167,8 +167,9 @@ fn ask(prompt: &Prompt, max_tokens: u32) -> Option<(String, String)> {
             model,
             instructions: &prompt.instructions,
             input: &prompt.input,
-            max_tokens,
+            max_tokens: Some(max_tokens),
             sampling: transform::Sampling::Deterministic,
+            output: transform::Output::JsonObject,
         },
     );
     let mut request = tilo_net::Client::new()

@@ -2424,8 +2424,9 @@ fn transform_body(
             model: model_id,
             instructions: &ask.instructions,
             input: &ask.input,
-            max_tokens: ask.max_output_tokens,
+            max_tokens: Some(ask.max_output_tokens),
             sampling: provider_transform::Sampling::Deterministic,
+            output: provider_transform::Output::JsonObject,
         },
     )
 }

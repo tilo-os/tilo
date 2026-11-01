@@ -17,15 +17,18 @@ use crate::placement::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSO
 use crate::{ChangeOrigin, SettingsSource};
 
 /// Sections every app reads and only their owners write: the person's
-/// region, spelling and accessibility preferences and the desktop's look
-/// with the defaults this device's image ships, which the toolkit applies in
-/// every app.
+/// region, spelling, accessibility and colour preferences and the desktop's
+/// look with the defaults this device's image ships, which the toolkit
+/// applies in every app.
 pub const APP_READABLE_SECTIONS: &[&str] = &[
     "locale",
     "text_assistance",
     "accessibility",
     "appearance",
     crate::appearance::DEVICE_SECTION,
+    // The colour the person wears, so every app paints their caret, their
+    // peers and their part of a presence list the same.
+    crate::identity::SECTION,
 ];
 
 /// Keys of a shared section that one app owns and writes through the same

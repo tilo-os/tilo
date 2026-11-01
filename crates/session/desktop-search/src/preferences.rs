@@ -23,6 +23,13 @@ fn keepable(id: &str) -> bool {
     id != ALWAYS_ON && !id.is_empty() && id.chars().count() <= MAX_ID_CHARS
 }
 
+/// Whether the person may switch `source` off: the actions are how anything
+/// is done from search, so they stay whatever is switched.
+#[must_use]
+pub fn switchable(source: &str) -> bool {
+    keepable(source)
+}
+
 impl SearchPreferences {
     /// The choices the settings' `search` section holds.
     #[must_use]

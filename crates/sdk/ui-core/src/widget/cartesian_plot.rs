@@ -61,6 +61,9 @@ pub enum AxisLabelFormat {
     Compact,
     Percent(u8),
     Bytes(u8),
+    /// Bytes stored or transferred, in SI decimal units with the precision
+    /// [`crate::format::size`] reads in (`500 MB`, `1.5 GB`).
+    Size,
     Scientific(u8),
     /// Adaptive seconds, milliseconds, minutes, hours, or days.
     Duration(u8),
@@ -2807,7 +2810,7 @@ impl CartesianPlot {
     }
 }
 
-fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
+pub(crate) fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
     match format {
         AxisLabelFormat::Auto => {
             if value.abs() >= 1000.0 {
@@ -2828,6 +2831,7 @@ fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
             places = usize::from(places.min(8))
         ),
         AxisLabelFormat::Bytes(places) => format_bytes(value, places),
+        AxisLabelFormat::Size => format_size(value),
         AxisLabelFormat::Scientific(places) => {
             format!("{value:.places$e}", places = usize::from(places.min(8)))
         }
@@ -2862,6 +2866,15 @@ fn format_duration(seconds: f64, places: u8) -> String {
         "{scaled:.places$} {unit}",
         places = usize::from(places.min(8))
     )
+}
+
+fn format_size(value: f64) -> String {
+    let size = crate::format::size(crate::num::u64_of_f64(value.abs().round()));
+    if value <= -0.5 {
+        format!("-{size}")
+    } else {
+        size
+    }
 }
 
 fn format_bytes(value: f64, places: u8) -> String {

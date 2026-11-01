@@ -5,10 +5,11 @@
 //! other section), in `<root>/records/person.automerge` and
 //! `<root>/records/device.automerge`. Each section is a map at the document's
 //! root and each leaf a key in it; a value is stored as what it is (an object
-//! a map, an array a list, a string, number, boolean or `null` a scalar), the
-//! way `tilo_resource` stores JSON, so concurrent edits of different keys
-//! merge and a typed model can read the same document. Readers see the
-//! device document with the person's leaves laid over it.
+//! a map, an array a list, a string, number, boolean or `null` a scalar), as
+//! every Tilo document stores JSON ([`tilo_automerge::json`]), so concurrent
+//! edits of different keys merge and a typed model can read the same
+//! document. Readers see the device document with the person's leaves laid
+//! over it.
 //!
 //! A write changes the documents in memory, commits it with its
 //! [`ChangeOrigin`] as the change's message, and shows it to readers at once;
@@ -38,9 +39,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use serde_json::{Map, Value};
-use tilo_automerge::ApplyIncoming as _;
+use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
 use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
@@ -412,8 +413,9 @@ impl Store {
                 }
                 let holder = placement::holder(&name);
                 let doc = docs.doc(holder);
-                let section = map_at(doc, &ROOT, &name).map_err(std::io::Error::other)?;
-                write_value(doc, &section, &leaf, &value).map_err(std::io::Error::other)?;
+                let section =
+                    json::map_at(doc, &ROOT, name.as_str()).map_err(std::io::Error::other)?;
+                json::write(doc, &section, leaf.as_str(), &value).map_err(std::io::Error::other)?;
                 touched.push((holder, name.clone(), leaf, value));
             }
         }
@@ -640,10 +642,10 @@ fn make_containers(
     for (name, values) in sections {
         let doc = docs.doc(placement::holder(name));
         made |= !is_map(doc, &ROOT, name);
-        let section = map_at(doc, &ROOT, name)?;
+        let section = json::map_at(doc, &ROOT, name.as_str())?;
         for (leaf, value) in values {
             if value.is_object() && !is_map(doc, &section, leaf) {
-                map_at(doc, &section, leaf)?;
+                json::map_at(doc, &section, leaf.as_str())?;
                 made = true;
             }
         }
@@ -1130,64 +1132,7 @@ fn empty(root: &Path) -> Arc<Store> {
     })
 }
 
-// ----- JSON values as the document's own maps, lists and scalars -----
-
-fn scalar_of(value: &Value) -> ScalarValue {
-    match value {
-        Value::Bool(flag) => ScalarValue::Boolean(*flag),
-        Value::String(text) => ScalarValue::Str(text.as_str().into()),
-        Value::Number(number) => number.as_i64().map_or_else(
-            || {
-                number.as_u64().map_or_else(
-                    || ScalarValue::F64(number.as_f64().unwrap_or_default()),
-                    ScalarValue::Uint,
-                )
-            },
-            ScalarValue::Int,
-        ),
-        Value::Null | Value::Array(_) | Value::Object(_) => ScalarValue::Null,
-    }
-}
-
-fn json_of_scalar(scalar: &ScalarValue) -> Value {
-    match scalar {
-        ScalarValue::Boolean(flag) => Value::Bool(*flag),
-        ScalarValue::Str(text) => Value::String(text.to_string()),
-        ScalarValue::Int(int) => Value::from(*int),
-        ScalarValue::Uint(uint) => Value::from(*uint),
-        ScalarValue::F64(float) => {
-            serde_json::Number::from_f64(*float).map_or(Value::Null, Value::Number)
-        }
-        ScalarValue::Counter(counter) => Value::from(i64::from(counter)),
-        ScalarValue::Timestamp(at) => Value::from(*at),
-        _ => Value::Null,
-    }
-}
-
-fn read_value(doc: &AutoCommit, value: &automerge::Value<'_>, id: &ObjId) -> Value {
-    match value {
-        automerge::Value::Scalar(scalar) => json_of_scalar(scalar),
-        automerge::Value::Object(ObjType::Text) => doc.text(id).map_or(Value::Null, Value::String),
-        automerge::Value::Object(ObjType::Map | ObjType::Table) => Value::Object(read_map(doc, id)),
-        automerge::Value::Object(ObjType::List) => Value::Array(
-            (0..doc.length(id))
-                .map(|at| match doc.get(id, at) {
-                    Ok(Some((value, child))) => read_value(doc, &value, &child),
-                    _ => Value::Null,
-                })
-                .collect(),
-        ),
-    }
-}
-
-fn read_map(doc: &AutoCommit, obj: &ObjId) -> Map<String, Value> {
-    doc.keys(obj)
-        .filter_map(|key| {
-            let (value, id) = doc.get(obj, key.as_str()).ok()??;
-            Some((key, read_value(doc, &value, &id)))
-        })
-        .collect()
-}
+// ----- the sections as JSON -----
 
 /// The sections of `doc`: its root, without the history's bookkeeping.
 fn read_root(doc: &AutoCommit) -> Map<String, Value> {
@@ -1195,88 +1140,9 @@ fn read_root(doc: &AutoCommit) -> Map<String, Value> {
         .filter(|key| !key.starts_with(BOOKKEEPING))
         .filter_map(|key| {
             let (value, id) = doc.get(&ROOT, key.as_str()).ok()??;
-            Some((key, read_value(doc, &value, &id)))
+            Some((key, json::read_value(doc, &value, &id).ok()?))
         })
         .collect()
-}
-
-/// The map at `key` of `obj`, made where something else or nothing is there.
-fn map_at(
-    doc: &mut AutoCommit,
-    obj: &ObjId,
-    key: &str,
-) -> Result<ObjId, automerge::AutomergeError> {
-    match doc.get(obj, key)? {
-        Some((automerge::Value::Object(ObjType::Map), id)) => Ok(id),
-        _ => doc.put_object(obj, key, ObjType::Map),
-    }
-}
-
-/// Make `key` of the map `obj` hold `value`, changing only what differs.
-fn write_value(
-    doc: &mut AutoCommit,
-    obj: &ObjId,
-    key: &str,
-    value: &Value,
-) -> Result<(), automerge::AutomergeError> {
-    match value {
-        Value::Object(fields) => {
-            let map = map_at(doc, obj, key)?;
-            let stale: Vec<String> = doc.keys(&map).filter(|k| !fields.contains_key(k)).collect();
-            for gone in stale {
-                doc.delete(&map, gone.as_str())?;
-            }
-            for (field, value) in fields {
-                write_value(doc, &map, field, value)?;
-            }
-        }
-        Value::Array(items) => {
-            let same = match doc.get(obj, key)? {
-                Some((found, id)) => read_value(doc, &found, &id) == *value,
-                None => false,
-            };
-            if !same {
-                let list = doc.put_object(obj, key, ObjType::List)?;
-                for (at, item) in items.iter().enumerate() {
-                    insert_value(doc, &list, at, item)?;
-                }
-            }
-        }
-        scalar => {
-            let same = match doc.get(obj, key)? {
-                Some((automerge::Value::Scalar(found), _)) => json_of_scalar(&found) == *scalar,
-                _ => false,
-            };
-            if !same {
-                doc.put(obj, key, scalar_of(scalar))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn insert_value(
-    doc: &mut AutoCommit,
-    list: &ObjId,
-    at: usize,
-    value: &Value,
-) -> Result<(), automerge::AutomergeError> {
-    match value {
-        Value::Object(fields) => {
-            let map = doc.insert_object(list, at, ObjType::Map)?;
-            for (field, value) in fields {
-                write_value(doc, &map, field, value)?;
-            }
-        }
-        Value::Array(items) => {
-            let inner = doc.insert_object(list, at, ObjType::List)?;
-            for (index, item) in items.iter().enumerate() {
-                insert_value(doc, &inner, index, item)?;
-            }
-        }
-        scalar => doc.insert(list, at, scalar_of(scalar))?,
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1518,7 +1384,7 @@ mod tests {
     /// Put `value` at `leaf` of the section `section` of `doc`, and mark
     /// the history's bookkeeping beside it.
     fn put_leaf(doc: &mut AutoCommit, section: &str, leaf: &str, value: i64) {
-        let map = map_at(doc, &ROOT, section).unwrap();
+        let map = json::map_at(doc, &ROOT, section).unwrap();
         doc.put(&map, leaf, value).unwrap();
         doc.put(&ROOT, format!("{BOOKKEEPING}mark"), true).unwrap();
     }

@@ -235,7 +235,7 @@ pub fn actions_group<R: Resource>(
                     .role(ButtonRole::Plain)
                     .control_size(ControlSize::Small)
                     .with_accessible_name(&format!("{show_label}: {}", hit.label()))
-                    .on_click(move || show(&home)),
+                    .on_view(move || show(&home)),
             ));
         }
         column = column.push(Box::new(row));

@@ -215,6 +215,59 @@ impl Drop for StoreRuntime {
     }
 }
 
+impl Drop for ContentStore {
+    fn drop(&mut self) {
+        let Backend::Fs(store) = &self.backend else {
+            // The in-memory store brought no runtime of its own.
+            return;
+        };
+        if self.gc.is_closed() {
+            // Closed through [`ContentStore::close`] or [`ContentStore::shutdown`],
+            // which flushed the database before ending the gc task.
+            return;
+        }
+        let (backend, gate) = (Backend::Fs(store.clone()), self.gc.clone());
+        // Ending a store waits on its database, and a drop may run inside a
+        // runtime, so the wait gets a thread of its own. What it waits for
+        // belongs to the store; the process does not wait for it.
+        let spawned = std::thread::Builder::new()
+            .name("fs-content-store-end".into())
+            .spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                if let Err(error) = runtime.block_on(stop_store(&backend, &gate)) {
+                    tracing::warn!("closing a dropped content store failed: {error}");
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!("a dropped content store keeps its threads: {error}");
+        }
+    }
+}
+
+/// Flush and close a store's database, then let its background gc task go.
+///
+/// The task parks in the gate holding a handle of its own, so it outlives
+/// every other handle and the store's actor outlives the task. Closed, its
+/// next pass runs into the closed store and fails, which ends the task; the
+/// last handle goes with it, the actor ends, and the runtime the actor built
+/// for the store shuts down with it.
+async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
+    let stopped = match backend {
+        Backend::Fs(store) => match store.sync_db().await {
+            Ok(()) => store.shutdown().await.map_err(anyhow::Error::from),
+            Err(error) => Err(error.into()),
+        },
+        Backend::Mem(store) => store.shutdown().await.map_err(anyhow::Error::from),
+    };
+    gate.close();
+    stopped
+}
+
 /// Heap the hot cache in front of loose blobs may hold, counting each
 /// entry's bookkeeping. It is for what is read again and again and is small:
 /// manifests, the chunks of small files, thumbnails.
@@ -438,9 +491,18 @@ impl ContentStore {
     /// directory can be opened again in this process while handles to this
     /// store remain; they fail from now on.
     pub async fn shutdown(&self) -> Result<()> {
-        let stopped = self.store().shutdown().await;
+        let stopped = stop_store(&self.backend, &self.gc).await;
         self.files.close();
-        stopped.map_err(Into::into)
+        stopped
+    }
+
+    /// Flush and close the store so another process may open the same
+    /// directory, and end it: its background gc task stops, and the store's
+    /// actor ends with the runtime it built once this handle is gone.
+    pub async fn close(self) -> Result<()> {
+        let stopped = stop_store(&self.backend, &self.gc).await;
+        self.files.close();
+        stopped
     }
 
     /// The file-backed content and cache.
@@ -1272,6 +1334,8 @@ const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
 struct GcGate {
     live: Arc<RwLock<Option<HashSet<Hash>>>>,
     wake: Arc<tokio::sync::Notify>,
+    /// Set once the store behind the gate is closed for good.
+    closed: Arc<AtomicBool>,
 }
 
 impl GcGate {
@@ -1288,6 +1352,18 @@ impl GcGate {
 
     fn snapshot(&self) -> Option<HashSet<Hash>> {
         self.live.read_recover().clone()
+    }
+
+    /// Let the gc task go: its next pass runs into the closed store and fails,
+    /// which ends the task. The task holds a handle to the store, so until it
+    /// ends nothing can end the store's actor or its runtime.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when
@@ -1310,6 +1386,11 @@ impl GcGate {
         Box::pin(async move {
             loop {
                 let authorized = self.wake.notified();
+                if self.is_closed() {
+                    // The store is closed; the pass this lets through fails
+                    // at its first command and the gc task ends on it.
+                    return ProtectOutcome::Continue;
+                }
                 let snapshot = ready
                     .as_ref()
                     .is_none_or(|ready| ready.load(Ordering::Acquire))

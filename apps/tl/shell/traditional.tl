@@ -143,13 +143,12 @@ enum BarRoom {
 /// per run the app declared, in the order the app declared them, and the commands that name no
 /// run under the window's own name. So every action the app published stays reachable, and
 /// each stands under the app's own name for it — never a surface's own generated list of what
-/// did not fit.
+/// did not fit. Below the room the bar's fixed parts take (the system menu, the time, the
+/// notifications), the one menu stands as the window's icon, named by the window.
 view action_run(name: Text, offered: List<host.Action>, room: BarRoom) {
     let loose = offered.filter(c -> c.group == .none and (room != .roomy or not c.frequent))
     row(gap: .tight, align: .center) {
         if room == .one {
-            // Below the room the bar's fixed parts take (the system menu, the time, the
-            // notifications), the one menu stands as the window's icon, named by the window.
             ui.MenuButton(name, icon: .app_window, icon_only: space.width < 18.0, role: .bar) {
                 for c in offered {
                     ui.MenuItem(c.label, icon: c.icon, destructive: c.destructive, checked: c.on) {

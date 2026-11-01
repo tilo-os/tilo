@@ -706,6 +706,18 @@ fn the_other_sim_is_used_by_its_slot() {
     );
 }
 
+/// One modem's traffic total, as the session counts it.
+fn counted(total: u64, at: i64) -> serde_json::Value {
+    serde_json::json!({
+        "readings": [{
+            "counter": "modem:0", "connection": "mobile:8931", "kind": "mobile",
+            "name": "Telia", "received": total, "sent": 0,
+        }],
+        "boot": "b", "at": at,
+        "offset": ui::clock::local_now().offset().local_minus_utc(),
+    })
+}
+
 /// The count is the device's: the session counts the modem's totals into
 /// the section through its verb with no page ever opened, and an agent
 /// reading the section sees them. Reading the modem in Settings counts
@@ -713,24 +725,20 @@ fn the_other_sim_is_used_by_its_slot() {
 #[test]
 fn the_count_is_kept_in_the_section_with_no_page_opened() {
     use crate::testing::invoke_section;
-    let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
+    let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
     // The window opens on About: the network page, whose model reads the
     // modem, is never built.
     let mut app =
         ui::prelude::TestApp::<crate::resource::SettingsShell>::launched(&["settings://about"])
             .unwrap();
     let now = tilo_clock::unix_now_i64();
-    for (total, at) in [(9_000_u64, now), (9_750, now + 60)] {
-        invoke_section(
-            &mut app,
-            kind,
-            "count-data-used",
-            serde_json::json!({ "total": total, "boot": "b", "at": at }),
-        )
-        .unwrap();
+    for (total, at) in [(9_000_u64, now), (9_750, now + 1)] {
+        invoke_section(&mut app, kind, "count-data-used", counted(total, at)).unwrap();
     }
-    let usage = app.settings::<MobileDataUsage>().get();
-    assert_eq!((usage.used, usage.counter), (750, Some(9_750)));
+    let usage = app.settings::<NetworkUsage>().get();
+    let today = ui::clock::local_now().date_naive();
+    assert_eq!(usage.connections["mobile:8931"].on(today).received, 750);
+    assert_eq!(usage.counters["modem:0"].received, 9_750);
     let opened = app
         .with_widget::<crate::window::Inspected, _>(|settings| settings.selected())
         .unwrap();
@@ -741,33 +749,25 @@ fn the_count_is_kept_in_the_section_with_no_page_opened() {
     );
 }
 
-/// The reset day is the section's field, bound on the modem's page and
-/// refused unless every month has it; resetting is the section's verb.
+/// The reset day and the plan are the section's fields, bound on the
+/// modem's page, the reset day refused unless every month has it;
+/// resetting is the section's verb.
 #[test]
-fn the_reset_day_and_reset_are_the_sections() {
+fn the_reset_day_limit_and_reset_are_the_sections() {
     use crate::testing::{edit_field, invoke_section};
-    let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
+    let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
     let (_, mut app) = hosted(MobileSample::Registered);
-    invoke_section(
-        &mut app,
-        kind,
-        "count-data-used",
-        serde_json::json!({ "total": 1_000, "boot": "b", "at": tilo_clock::unix_now_i64() }),
-    )
-    .unwrap();
-    invoke_section(
-        &mut app,
-        kind,
-        "count-data-used",
-        serde_json::json!({ "total": 1_500, "boot": "b", "at": tilo_clock::unix_now_i64() }),
-    )
-    .unwrap();
-    assert_eq!(app.settings::<MobileDataUsage>().get().used, 500);
+    let now = tilo_clock::unix_now_i64();
+    invoke_section(&mut app, kind, "count-data-used", counted(1_000, now)).unwrap();
+    invoke_section(&mut app, kind, "count-data-used", counted(1_500, now)).unwrap();
+    let today = ui::clock::local_now().date_naive();
+    assert_eq!(app.settings::<NetworkUsage>().get().mobile_used(today), 500);
 
     app.call("show-mobile", serde_json::json!({})).unwrap();
     app.settle();
     for id in [
         "network.mobile.reset-day",
+        "network.mobile.limit",
         "settings.network.mobile.used.reset",
     ] {
         assert!(
@@ -780,15 +780,17 @@ fn the_reset_day_and_reset_are_the_sections() {
         "only a day every month has"
     );
     edit_field(&mut app, kind, "reset_day", 3).unwrap();
-    assert_eq!(app.settings::<MobileDataUsage>().get().reset_day.get(), 3);
+    edit_field(&mut app, kind, "limit_gb", 10).unwrap();
+    assert_eq!(app.settings::<NetworkUsage>().get().reset_day.get(), 3);
     let reported = app
         .with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings).unwrap().model().borrow().inspection()
         })
         .unwrap();
     assert_eq!(reported["data_period_starts_on_day"], 3);
+    assert_eq!(reported["data_limit_bytes"], 10_000_000_000_u64);
     invoke_section(&mut app, kind, "reset-data-used", serde_json::json!({})).unwrap();
-    assert_eq!(app.settings::<MobileDataUsage>().get().used, 0);
+    assert_eq!(app.settings::<NetworkUsage>().get().mobile_used(today), 0);
 }
 
 /// A modem service whose changes are followed by hand.

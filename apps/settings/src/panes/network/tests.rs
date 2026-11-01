@@ -10,10 +10,12 @@ use ui::tilo_resource::Effect;
 use ui::widget::{DisclosureRow, Widget};
 use zeroize::Zeroizing;
 
+use super::enterprise::{ENTERPRISE_JOIN, enterprise_arguments};
 use super::vpn::VpnEffect;
 use super::*;
 
 mod device_vpn;
+mod enterprise;
 mod vpn_kill_switch;
 
 /// A Settings window whose Network area holds `model`, open on the
@@ -148,78 +150,6 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     host.type_text("X");
     if profile.get() != "abXcd" {
         return Err("resizing must retain the network editor's actual caret and focus".into());
-    }
-    Ok(())
-}
-
-/// The work or school network's setup in the composition: its row, and
-/// whether that row is open.
-fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, vello::kurbo::Rect)> {
-    if let Some(row) = widget
-        .as_any()
-        .and_then(|any| any.downcast_ref::<DisclosureRow>())
-        && row
-            .accessibility()
-            .and_then(|node| node.name)
-            .is_some_and(|name| name.starts_with(&t("net-enterprise-entry")))
-    {
-        return Some((row.is_open(), row.get_rect()));
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(enterprise_setup_open)
-}
-
-/// The work or school network's setup opens in place under its row on the
-/// standard disclose motion. Its action and a press on the row open the
-/// same row: an agent and a person land in the same place.
-#[test]
-fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
-    use ui::headless::viewport;
-
-    let fake = Arc::new(FakeNetwork::default());
-    let mut network = model(&fake);
-    network.open_page(PAGE_ADVANCED, t("net-advanced"));
-    // The networks were just looked for: no periodic scan rebuilds the
-    // page between the presses.
-    network.scanned_at = Some(ui::time::now());
-    let (mut app, network) = window_showing(network, (1000, 1800));
-    let shown_open = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
-        app.settle();
-        enterprise_setup_open(app.harness().root_widget()).map(|(open, _)| open)
-    };
-    if shown_open(&mut app) != Some(false) {
-        return Err("the setup starts closed, under a disclosure row".into());
-    }
-    app.effect(&SettingsEffect::from(NetworkEffect::ShowEnterpriseSetup))
-        .map_err(|error| error.to_string())?;
-    if shown_open(&mut app) != Some(true) {
-        return Err("the action opens the row".into());
-    }
-    app.effect(&SettingsEffect::from(NetworkEffect::ShowEnterpriseSetup))
-        .map_err(|error| error.to_string())?;
-    app.settle();
-    if network.borrow().enterprise_setup.is_open() {
-        return Err("the action closes the row again".into());
-    }
-
-    let host = app.harness();
-    let (open, rect) =
-        enterprise_setup_open(host.root_widget()).ok_or("the setup's row is on the page")?;
-    if open {
-        return Err("the setup is closed before the press".into());
-    }
-    host.click_at(rect.center().x, rect.y0 + 12.0);
-    if !network.borrow().enterprise_setup.is_open() {
-        return Err("a press on the row opens the setup the action opens".into());
-    }
-    host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
-        .map_err(|error| error.to_string())?;
-    host.click_named("network.enterprise.profile")?;
-    host.type_text("Campus");
-    if network.borrow().enterprise.profile.get() != "Campus" {
-        return Err("the opened setup takes typing".into());
     }
     Ok(())
 }
@@ -368,6 +298,9 @@ struct FakeNetwork {
     /// What tells the model of a change, while it follows the device.
     follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     status_reads: std::sync::atomic::AtomicUsize,
+    /// The action an enterprise join was asked through, with the arguments
+    /// the resource door would take: what the fake device stands in for.
+    enterprise_call: Mutex<Option<(String, serde_json::Map<String, serde_json::Value>)>>,
 }
 
 impl FakeNetwork {
@@ -594,6 +527,13 @@ impl NetworkService for FakeNetwork {
             NetworkChange::Ipv6 { uuid, .. } => format!("ipv6 {uuid}"),
             NetworkChange::Password { uuid, password, .. } => {
                 format!("password {uuid} {}", password.as_str())
+            }
+            NetworkChange::Enterprise { config, password } => {
+                *self.enterprise_call.lock().unwrap() = Some((
+                    ENTERPRISE_JOIN.to_owned(),
+                    enterprise_arguments(config, password),
+                ));
+                format!("enterprise {} {}", config.ssid, config.identity)
             }
             _ => "other".into(),
         };
@@ -1612,7 +1552,15 @@ fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     ];
     let mut model = model(&fake);
     let count = t_args("net-known-count", &[("count", 3.into())]);
-    assert!(shown(&mut model).contains(&count), "the row says how many");
+    assert!(
+        !shown(&mut model).contains(&count),
+        "the first page lists the networks in range, not the saved ones"
+    );
+    run(&mut model, NetworkEffect::ShowAllNetworks).unwrap();
+    assert!(
+        shown(&mut model).contains(&count),
+        "every network's page says how many are known"
+    );
     run(&mut model, NetworkEffect::ShowKnownNetworks).unwrap();
     let text = shown(&mut model);
     let at = |name: &str| {
@@ -2868,4 +2816,81 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
         before + 2,
         "the same profiles read only the status"
     );
+}
+
+/// Data usage is the session's count, charted per connection on its page
+/// (opened from the first page's row) and forgotten from its row's verb.
+#[test]
+fn data_usage_is_charted_per_connection_and_forgotten() {
+    use crate::prefs::NetworkUsage;
+    use crate::testing::invoke_section;
+    without_a_modem();
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    app.harness().resize((1280, 1400)).unwrap();
+    let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
+    let now = tilo_clock::unix_now_i64();
+    let offset = ui::clock::local_now().offset().local_minus_utc();
+    for received in [1_000_u64, 2_001_000] {
+        invoke_section(
+            &mut app,
+            kind,
+            "count-data-used",
+            serde_json::json!({
+                "readings": [{
+                    "counter": "wlan0", "connection": "wifi:home-uuid", "kind": "wifi",
+                    "name": "Home_Network", "received": received, "sent": 0,
+                }],
+                "boot": "b", "at": now, "offset": offset,
+            }),
+        )
+        .unwrap();
+    }
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.settle();
+    assert!(
+        ui::widget::find_test_id(app.harness().root_widget(), "settings.network.usage").is_some(),
+        "the first page's row opens data usage"
+    );
+    app.call("show-data-usage", serde_json::json!({})).unwrap();
+    app.settle();
+    let root = app.harness().root_widget();
+    for id in [
+        "network.usage.overview",
+        "network.usage.span",
+        "settings.network.usage.wifi:home-uuid",
+    ] {
+        assert!(ui::widget::find_test_id(root, id).is_some(), "{id}");
+    }
+    let text = provider_settings_ui::widgets::announced_text(root);
+    assert!(
+        text.iter().any(|line| line.contains("2 MB")),
+        "the connection's total: {text:#?}"
+    );
+    invoke_section(
+        &mut app,
+        kind,
+        "forget-data-used",
+        serde_json::json!({ "connection": "wifi:home-uuid" }),
+    )
+    .unwrap();
+    assert!(app.settings::<NetworkUsage>().get().connections.is_empty());
+}
+
+/// The cable's details are its own page: the first page says how it
+/// stands and opens it.
+#[test]
+fn the_wired_connection_opens_its_page() {
+    let fake = Arc::new(FakeNetwork::default());
+    let mut model = model(&fake);
+    model.wired.device = Some("eth0".into());
+    model.wired.connected = true;
+    let first = shown(&mut model);
+    assert!(
+        !first.contains(&t("net-auto-ipv4")),
+        "the address form is not on the first page"
+    );
+    run(&mut model, NetworkEffect::ShowWired).unwrap();
+    assert_eq!(model.page_key().as_deref(), Some(PAGE_WIRED));
+    assert!(shown(&mut model).contains(&t("net-interface")));
 }

@@ -103,9 +103,9 @@ impl ShellNetwork {
         owner
             .with_current(room, |_| Ok(()))
             .map_err(HostAskError::Unreachable)?;
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: room.to_string(),
-            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: receipt.invocation.0,
                 redacted: serde_json::to_vec(receipt)
                     .map_err(|error| HostAskError::Refused(error.to_string()))?,

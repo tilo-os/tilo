@@ -4,7 +4,7 @@
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::ActionAddress;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::running::{FollowUp, produced, step_brief};
 use crate::planner::{Obligations, PlanRole, Step};

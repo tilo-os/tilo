@@ -16,11 +16,7 @@ async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session(
                 result: tilo_actions::ResultSpec::Job,
                 ..tilo_actions::ActionContract::default()
             };
-            rig.worker
-                .handle
-                .publish_actions(&env.route.app_id, &[action])
-                .await
-                .unwrap();
+            rig.worker.handle.publish_actions(&[action]).await.unwrap();
             let (caller, evidence) = local_host_evidence(&env);
             let host = rig
                 .state

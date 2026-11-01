@@ -133,6 +133,12 @@ impl SurfaceHost for Popover {
         }
     }
 
+    /// Whether what the panel shows is a secret — its Wi-Fi passphrase field
+    /// with a value in it — and so never leaves the display in a capture.
+    fn withholds_captures(&self) -> bool {
+        self.open.get() && self.host.withholds_captures()
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         self.open.get() && self.host.accepts_pointer(x, y)
     }
@@ -167,11 +173,11 @@ impl SurfaceHost for Popover {
         self.host.key(key);
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         // Kept current while hidden too: what it offers follows the
         // readings it was lent, open or not. Nothing is drawn unless
         // something changed.
-        self.host.prepare_frame();
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -275,8 +281,8 @@ impl SurfaceHost for Banners {
         self.host.key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        self.host.prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -362,8 +368,8 @@ impl SurfaceHost for Readout {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn prepare_frame(&mut self) {
-        self.host.prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -419,6 +425,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow().lock_screen()
     }
 
+    fn withholds_captures(&self) -> bool {
+        self.0.borrow().withholds_captures()
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         self.0.borrow().accepts_pointer(x, y)
     }
@@ -443,8 +453,8 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().pressed_elsewhere();
     }
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
-        self.0.borrow_mut().claim_key(key, locked)
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.0.borrow_mut().claim_key(key, locked, inhibited)
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -455,8 +465,8 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        self.0.borrow_mut().prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.0.borrow_mut().prepare_frame()
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

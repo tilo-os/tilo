@@ -333,8 +333,7 @@ impl RoomRecords {
         let ws = self.workspaces.lock().await.get(&workspace_id).cloned();
         let ws = ws.ok_or("the workspace is not hosted here")?;
         let mut runtime = ws.lock().await;
-        let delivered =
-            runtime.fanout_presence(&self.device, crate::auth::PeerRole::Device, &envelope, None);
+        let delivered = runtime.fanout_presence(&self.device, &envelope, None);
         drop(runtime);
         drop(ws);
         Ok(delivered)

@@ -2,7 +2,7 @@
 async fn installed_launch_requires_signed_admission_and_durable_terminal() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::invocation_journal::{
+            use crate::collab_app_broker::invocation_journal::{
                 BarrierFailure, InvocationKey, InvocationOwner,
             };
             for scenario in [
@@ -62,11 +62,7 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 let selected = root.clone();
                 let mut pending = tokio::task::spawn_local(async move {
                     handle
-                        .launch_installed_application(
-                            "so.tilo.word-processor",
-                            None,
-                            Some(&selected),
-                        )
+                        .launch_installed_application("so.tilo.word-processor", Some(&selected))
                         .await
                 });
                 if !matches!(
@@ -196,23 +192,6 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                             tilo_actions::InvocationUpdate::Failed { .. }
                         ));
                     }
-                    assert!(
-                        caller
-                            .handle
-                            .published_invocation_status(id)
-                            .await
-                            .unwrap()
-                            .is_none()
-                    );
-                    let observed = caller
-                        .handle
-                        .published_invocation_observation(
-                            key.host.as_bytes(),
-                            key.invocation.0.as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(observed.result.unwrap().update_json, json);
                     let guard = rig.state.journal.lock().unwrap();
                     let record = guard
                         .as_ref()

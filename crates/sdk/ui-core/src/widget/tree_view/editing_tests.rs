@@ -35,11 +35,14 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
     node: taffy::NodeId,
     modifiers: ModifiersState,
 ) -> bool {
-    Dispatch::new()
+    let handled = Dispatch::new()
         .modifiers(modifiers)
         .layout(taffy, node)
         .send(view, event)
-        .handled
+        .handled;
+    // What the tree published for the gesture is answered after it.
+    crate::testing::answer_controls(view);
+    handled
 }
 
 fn right_press() -> WindowEvent {
@@ -489,7 +492,7 @@ fn renamable() -> (TreeView<()>, Log<(NodeId, String)>, Log<NodeId>) {
         .hide_root()
         .with_expanded([2])
         .on_rename(move |id, title| r.borrow_mut().push((id, title)))
-        .on_activate(move |id| a.borrow_mut().push(id))
+        .on_activate_view("tree", move |id| a.borrow_mut().push(id))
         .rename_on_double_click();
     (view, renamed, activated)
 }

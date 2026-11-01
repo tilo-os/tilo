@@ -219,8 +219,9 @@ mod shell {
                         self.restored_source = Some(self.source().clone());
                         if let HistorySourceRegistration::OwnedDocument { owner, .. } =
                             self.source()
+                            && let Err(error) = owner.schedule_committed_history()
                         {
-                            owner.schedule_committed_history();
+                            tracing::error!(%error, "a described record could not be saved");
                         }
                     }
                     receipt.changed

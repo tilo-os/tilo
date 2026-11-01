@@ -183,8 +183,8 @@ pub struct ResolvedContinuation {
 }
 
 /// Level-triggered reports keyed by `(room, app id, stable instance id)`.
-/// A connection can replace only its own application route; the Cap'n Proto
-/// broker verifies that property before calling [`Self::report`].
+/// A connection can replace only its own application route; the broker
+/// verifies that property before calling [`Self::report`].
 #[derive(Clone, Debug, Default)]
 pub struct ContinuationRegistry {
     owner_views: owner_views::OwnerViews,

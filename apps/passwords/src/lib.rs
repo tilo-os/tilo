@@ -10,6 +10,7 @@ use accounts::{
 use std::collections::HashMap;
 
 pub mod actions;
+mod bindings;
 mod demo;
 mod list_pane;
 mod pages;
