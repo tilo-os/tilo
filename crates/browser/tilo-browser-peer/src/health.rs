@@ -93,6 +93,7 @@ pub struct AdmissionHealth {
 pub struct RecordRef {
     /// Application id.
     pub app_id: String,
+    /// The workspace (its cluster id), named `room` in `SessionHealth` v1.
     pub room: String,
     /// Record wire name.
     pub record_id: String,
