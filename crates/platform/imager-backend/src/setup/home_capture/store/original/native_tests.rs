@@ -13,6 +13,7 @@ use std::{
     },
     process::{Child, Command},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Peer(Child);
 impl Drop for Peer {
@@ -84,7 +85,7 @@ fn peer(groups: [libc::gid_t; 3]) -> (Peer, HostChannel) {
             Ok(())
         });
     }
-    let child = Peer(command.spawn().unwrap());
+    let child = Peer(command.spawn_locked().unwrap());
     let channel = HostChannel::authenticate(host, child.0.id(), 1000).unwrap();
     (child, channel)
 }

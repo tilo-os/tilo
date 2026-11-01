@@ -20,6 +20,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use sha2::{Digest, Sha256};
 use tilo_install_helpers::dev_target_uki::{
@@ -771,7 +772,7 @@ fn the_shipped_command_refuses_outside_the_development_vm() {
     let output = Command::new(&binary)
         .args(["dev-target-uki", "validate-image", "--image-root"])
         .arg(&fixture.image)
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
@@ -780,7 +781,7 @@ fn the_shipped_command_refuses_outside_the_development_vm() {
     );
     let output = Command::new(binary)
         .args(["dev-target-uki", "rebuild", "--image-root", "/"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains(

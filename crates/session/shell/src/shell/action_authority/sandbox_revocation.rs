@@ -238,11 +238,12 @@ mod tests {
     use collab_types::caps::Access;
     use std::process::{Child, Command};
     use std::time::{Duration, Instant};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     struct Process(Child);
     impl Process {
         fn new() -> Self {
-            Self(Command::new("sleep").arg("60").spawn().unwrap())
+            Self(Command::new("sleep").arg("60").spawn_locked().unwrap())
         }
         fn stopped(&mut self) -> bool {
             let deadline = tilo_test_env::hang_deadline();

@@ -4,6 +4,7 @@
 use super::*;
 use std::process::Command;
 use std::sync::atomic::Ordering;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn stamp(inode: u64) -> SourceStamp {
     let vault = FileStamp {
@@ -383,7 +384,7 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
         .env("PATH", root.path())
         .env("XDG_CONFIG_HOME", root.path())
         .env("PROFILE_TEST_CHILD", "1");
-    let output = child.output().unwrap();
+    let output = child.output_locked().unwrap();
     assert!(
         output.status.success(),
         "child failed: {} {}",
@@ -488,7 +489,7 @@ fn a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again() {
         // Use an isolated credential backend rather than the login keyring.
         .env("TILO_SECRETS_DIR", root.path().join("secrets"))
         .env("PROFILE_TEST_CHILD", "1")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),

@@ -18,6 +18,8 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 fn denied() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
@@ -340,7 +342,7 @@ fn owned_native_staging_probe_reaps_after_missing_stdout() {
         .env_remove("LD_LIBRARY_PATH")
         .env_remove("LD_PRELOAD")
         .env_remove("LD_AUDIT");
-    let child = command.spawn().unwrap();
+    let child = command.spawn_locked().unwrap();
     let pid = child.id();
     let mut owner = OwnedProbe {
         child,

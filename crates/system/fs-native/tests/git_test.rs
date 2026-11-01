@@ -8,6 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use fs_native::capture::{CaptureConfig, ChangeOp, EpochCapture, EpochScheduler};
 use fs_native::journal::{ChangeJournal, JournalConfig};
@@ -26,7 +27,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .output()
+        .output_locked()
         .expect("git runs");
     assert!(
         out.status.success(),
@@ -43,7 +44,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<String, String> {
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
-        .output()
+        .output_locked()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -70,7 +71,7 @@ fn git_runs_natively_while_capture_runs_and_every_epoch_is_a_valid_repository() 
         return;
     };
     assert!(
-        Command::new("git").arg("--version").output().is_ok(),
+        Command::new("git").arg("--version").output_locked().is_ok(),
         "git is not installed"
     );
     let mut journal = ChangeJournal::open(&s.store, JournalConfig::new(&s.live)).unwrap();

@@ -1312,6 +1312,8 @@ fn reject_metadata_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn identity_tempdir() -> tempfile::TempDir {
         // macOS exposes /var via a symlink; security fixtures must start
@@ -1742,7 +1744,7 @@ mod tests {
             let result = std::process::Command::new("icacls.exe")
                 .arg(&paths.device_privkey)
                 .args(["/grant", "*S-1-1-0:(R)"])
-                .output()
+                .output_locked()
                 .unwrap();
             assert!(result.status.success(), "{result:?}");
             for result in [

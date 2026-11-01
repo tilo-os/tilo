@@ -12,6 +12,7 @@ use tilo_files::native::atomic::test_support::{
     with_provision_observer,
 };
 use tilo_files::native::atomic::{FileIdentity, Privacy, StorageDirectory, reconcile_directory};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn existing_commit_retains_nondeleting_retry_and_rejects_replacement() {
@@ -274,7 +275,7 @@ fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
                 if shared_child {
                     command.env("TILO_EXISTING_FLOCK_SHARED", "1");
                 }
-                let mut child = ChildGuard(command.spawn().unwrap());
+                let mut child = ChildGuard(command.spawn_locked().unwrap());
                 let mut reader = std::io::BufReader::new(child.0.stdout.take().unwrap());
                 let mut line = String::new();
                 loop {

@@ -575,6 +575,7 @@ mod tests {
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod sandbox_tests {
+    use tilo_test_env::SpawnUnderEnvLock as _;
     #[test]
     fn native_preview_uses_the_normal_readonly_sandbox_profile() {
         const CHILD: &str = "TILO_KEYBOARD_PREVIEW_PROFILE_CHILD";
@@ -633,7 +634,7 @@ mod sandbox_tests {
             "--nocapture".into()]);
         let output = std::process::Command::new("bwrap")
             .args(args)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

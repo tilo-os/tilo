@@ -186,6 +186,7 @@ fn plain_account_name(name: &str) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn daemon(reply: Option<&'static str>) -> (tempfile::TempDir, std::thread::JoinHandle<String>) {
         let dir = tempfile::tempdir().unwrap();
@@ -464,7 +465,7 @@ mod tests {
                 "TILO_GREETER_HANDOFF_FIXTURE",
                 dir.path().join("greetd.sock"),
             )
-            .output()
+            .output_locked()
             .unwrap();
         served.join().unwrap();
         assert!(

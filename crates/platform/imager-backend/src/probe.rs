@@ -506,6 +506,8 @@ fn as_u64(v: &Value) -> Option<u64> {
 mod tests {
     use super::*;
     use std::process::Command;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -792,7 +794,7 @@ mod tests {
             ])
             .env(CHILD_FIFO, &fifo)
             .stdout(std::fs::File::create(root.path().join("child.stdout")).unwrap())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let status =
             bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound()).unwrap();

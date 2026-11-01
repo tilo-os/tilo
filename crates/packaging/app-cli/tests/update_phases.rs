@@ -21,6 +21,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -102,7 +103,7 @@ fn app_update() -> Duration {
     let started = Instant::now();
     let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .arg("update")
-        .output()
+        .output_locked()
         .unwrap();
     let elapsed = started.elapsed();
     assert!(
@@ -225,7 +226,7 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     let collection = Instant::now();
     let gc = std::process::Command::new(&installer)
         .arg("gc")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         gc.status.success(),

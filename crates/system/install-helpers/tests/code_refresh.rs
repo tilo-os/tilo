@@ -17,6 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -324,7 +325,7 @@ fn python_host_bundle_validates_to_the_identical_receipt() {
         .args(["-I", "-c", script])
         .arg(&module)
         .arg(checkout.path())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -701,7 +702,7 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 fn the_shipped_daemon_refuses_outside_the_development_vm() {
     let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .arg("code-refresh")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
@@ -755,7 +756,7 @@ fn the_transient_backend_owns_the_lock_and_refuses_an_unapplied_refresh() {
         ),
     )
     .unwrap();
-    let run = || Command::new("bash").arg(&script).output().unwrap();
+    let run = || Command::new("bash").arg(&script).output_locked().unwrap();
     let ran = run();
     assert!(
         ran.status.success(),

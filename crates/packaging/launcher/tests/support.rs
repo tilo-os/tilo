@@ -1,6 +1,7 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::run::{IdentitySource, RunOptions};
 
@@ -83,7 +84,7 @@ fn build_payload(name: &str, edition: &str) -> PathBuf {
         .arg(&src)
         .arg("-o")
         .arg(&bin)
-        .status()
+        .status_locked()
         .expect("invoke rustc");
     assert!(status.success(), "rustc failed to build the {name} fixture");
     // Another process may have finished the same build first; either copy

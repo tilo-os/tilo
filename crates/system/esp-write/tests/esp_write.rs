@@ -14,6 +14,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -35,7 +36,7 @@ fn sha256(data: &[u8]) -> String {
 }
 
 fn uid() -> String {
-    let out = Command::new("id").arg("-u").output().unwrap();
+    let out = Command::new("id").arg("-u").output_locked().unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
@@ -105,7 +106,10 @@ impl Fixture {
             json!({ "ops": ops }).to_string(),
         )
         .unwrap();
-        self.command(helper(), extra).arg(caller).output().unwrap()
+        self.command(helper(), extra)
+            .arg(caller)
+            .output_locked()
+            .unwrap()
     }
 
     fn run(&self, ops: &Value) -> Output {
@@ -251,7 +255,7 @@ cmd_entries
         )
         .arg("-c")
         .arg(script)
-        .output()
+        .output_locked()
         .unwrap()
     }
 }
@@ -654,7 +658,7 @@ fn only_the_callers_operations() {
     let out = f.run_plan(&json!([]), "someone-else", &[]);
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("usage: tilo-esp-write {boot-entries|secureboot-sign}"));
-    let out = f.command(helper(), &[]).output().unwrap();
+    let out = f.command(helper(), &[]).output_locked().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -675,7 +679,7 @@ fn the_signer_only_replaces_managed_artefacts() {
         fs::write(signer.join("plan.json"), plan.to_string()).unwrap();
         f.command(helper(), &[])
             .arg("secureboot-sign")
-            .output()
+            .output_locked()
             .unwrap()
     };
 
@@ -706,7 +710,7 @@ fn the_signer_finds_its_esp_as_tilo_secureboot_does() {
     let out = f
         .command(helper(), &[("TILO_ESP", "")])
         .arg("secureboot-sign")
-        .output()
+        .output_locked()
         .unwrap();
     if Path::new("/boot/efi/EFI").is_dir() || Path::new("/boot/EFI").is_dir() {
         // A real ESP is read-only to the test, or (as root) writable: either
@@ -828,7 +832,7 @@ fn a_plan_without_an_operation_list_is_refused() {
     let out = f
         .command(helper(), &[])
         .arg("boot-entries")
-        .output()
+        .output_locked()
         .unwrap();
     assert_refused(&out, "plan.json has no operation list");
     assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
@@ -941,7 +945,7 @@ esp_plan_commit
         )
         .arg("-c")
         .arg(script)
-        .output()
+        .output_locked()
         .unwrap();
     assert_ok(&out);
     assert!(

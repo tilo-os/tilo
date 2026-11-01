@@ -686,6 +686,8 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use registry_types::{RegistryVersion, sign_entry};
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     pub(crate) fn signed_entry() -> RegistryEntry {
         // Deterministic key so signing is reproducible under `cargo
@@ -923,7 +925,7 @@ mod tests {
             ])
             .env(CHILD, root.path())
             .env("TILO_STORE_CONFIG_DIR", &config)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

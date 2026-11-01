@@ -351,20 +351,23 @@ view bar(d: Desk) {
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
-/// tasks, which run longest, below a wide one. The menu, the workspace, the clock, the status
-/// and the person's own avatar always keep their room; of the people part, only the others here
-/// give way (`bar_part`). The bar decides by its width, so a part that gives way leaves no room
-/// behind; the bar's parts must never press into each other (the overview shows what gave way).
+/// tasks and the agents, which run longest, below a wide one. The menu, the workspace, the clock,
+/// the status and a question put to the person always keep their room; of the people part, the
+/// others here and, on a phone, the person's own avatar give way (`bar_part`). The bar decides by its width, so a part that gives way
+/// leaves no room behind; the bar's parts must never press into each other (the overview shows
+/// what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
-    if part.slot == .tasks {
+    if part.slot == .tasks or part.slot == .agent {
         return true
     }
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
 /// One part of the bar, drawn from what it is. The person's own avatar carries the question put
-/// to them: their answer or their putting it off, never a banner over their windows, so it
-/// stands on every bar; who else is here runs longest and shows on a wide bar alone. The status
+/// to them: their answer or their putting it off, never a banner over their windows, so the
+/// question stands on every bar; with no question the avatar gives way on a phone, as the
+/// traditional bar's does, where the time and the notifications keep the room. Who else is here
+/// runs longest and shows on a wide bar alone. The status
 /// part leads with the running applications' tray items, each under the app's own words for it.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
@@ -410,7 +413,7 @@ view bar_part(d: Desk, part: BarPart) {
                 ui.Button("Ask me later", role: .bar) {
                     on press: put_off_ask(d)
                 }
-            } else if d.person != "" {
+            } else if d.person != "" and not space.compact {
                 ui.Avatar(name: .some(d.person))
             }
         }

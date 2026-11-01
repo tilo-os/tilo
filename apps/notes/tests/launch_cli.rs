@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_json::Value {
     drive(root, host, target, dump, &serde_json::json!([]))
@@ -56,7 +57,7 @@ fn drive(
     command
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
-    let mut child = command.spawn().unwrap();
+    let mut child = command.spawn_locked().unwrap();
     let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {

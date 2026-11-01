@@ -4,6 +4,7 @@ use std::{
     os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
     process::Command,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[expect(
     clippy::unwrap_used,
@@ -43,7 +44,7 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
     )
     .unwrap();
     std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
     assert!(
         !output.status.success(),
         "unmarked directories are not a checkout"
@@ -54,7 +55,7 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
         "[package]\n",
     )
     .unwrap();
-    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -67,7 +68,7 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
     let output = child_at(&app)
         .env("PATH", &root)
         .env("XDG_CURRENT_DESKTOP", "tilo")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         !output.status.success(),
@@ -75,7 +76,7 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("-p shell --bin tilo-runtime-mcp"));
     std::fs::remove_file(&host).unwrap();
-    let output = child_at(&app).env("PATH", &root).output().unwrap();
+    let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-runtime")
@@ -85,7 +86,10 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
     std::fs::create_dir(root.join("bin")).unwrap();
     let installed = root.join("bin/ebook");
     std::fs::hard_link(&app, &installed).unwrap();
-    let output = child_at(&installed).env("PATH", &root).output().unwrap();
+    let output = child_at(&installed)
+        .env("PATH", &root)
+        .output_locked()
+        .unwrap();
     assert!(
         !output.status.success(),
         "an installed app never searches Cargo profiles"
@@ -134,7 +138,7 @@ fn invalid_inherited_connections_fail_closed() {
     let output = child()
         .env("TILO_SVC_COLLAB_FD", "bad")
         .env("TILO_RUNTIME_BINARY", "/must-not-run")
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(21), "case malformed");
     assert!(
@@ -151,7 +155,7 @@ fn invalid_inherited_connections_fail_closed() {
             .env("TILO_SVC_COLLAB_FD", fd.to_string())
             .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
         inherit(&mut command, vec![fd]);
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert_eq!(output.status.code(), Some(21), "case aliased");
     }
 
@@ -166,7 +170,7 @@ fn invalid_inherited_connections_fail_closed() {
             .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
         inherit(&mut command, fds.to_vec());
         assert_eq!(
-            command.output().unwrap().status.code(),
+            command.output_locked().unwrap().status.code(),
             Some(21),
             "case datagram"
         );
@@ -187,7 +191,7 @@ fn invalid_inherited_connections_fail_closed() {
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env("TILO_RUNTIME_STANDALONE", "1");
     assert_eq!(
-        current.output().unwrap().status.code(),
+        current.output_locked().unwrap().status.code(),
         Some(21),
         "case current provenance"
     );
@@ -195,7 +199,7 @@ fn invalid_inherited_connections_fail_closed() {
         let output = child()
             .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
             .env("TILO_RUNTIME_STANDALONE", "1")
-            .output()
+            .output_locked()
             .unwrap();
         assert_eq!(output.status.code(), Some(21), "case owner {owner}");
         assert!(
@@ -210,7 +214,7 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
     let output = child()
         .env("TILO_RUNTIME_STANDALONE", "1")
         .env("TILO_RUNTIME_BINARY", "/must-not-run")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success(), "case explicit standalone");
     assert!(
@@ -230,7 +234,7 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
             .env("TILO_RUNTIME_PROFILE", "relative-invalid")
             .env("TILO_RUNTIME_BINARY", "/must-not-run");
         inherit(&mut command, fds.to_vec());
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(
             output.status.success(),
             "case complete inherited: {}",
@@ -249,7 +253,7 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
             .env(service, fd.to_string())
             .env("TILO_RUNTIME_BINARY", "/must-not-run");
         inherit(&mut command, vec![fd]);
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(
             output.status.success(),
             "case only {service}: {}",
@@ -267,7 +271,7 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         let output = child()
             .current_dir(&root)
             .env("TILO_RUNTIME_BINARY", &host)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(output.status.success(), "case host exec");
         let stdout = String::from_utf8(output.stdout).unwrap();
@@ -300,7 +304,10 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
             .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
             .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
         inherit(&mut command, fds.to_vec());
-        assert!(command.status().unwrap().success(), "case ancestor hidden");
+        assert!(
+            command.status_locked().unwrap().success(),
+            "case ancestor hidden"
+        );
     }
 
     // A standalone child ignores ancestor metadata without mutating it.
@@ -311,7 +318,7 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         )
         .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
         .env("TILO_RUNTIME_STANDALONE", "1")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -368,7 +375,7 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
         if let Some(binary) = binary {
             command.env("TILO_RUNTIME_BINARY", binary);
         }
-        command.output().unwrap()
+        command.output_locked().unwrap()
     };
     // The re-executed test prints libtest's header before the host runs.
     let chose = |output: &std::process::Output| {

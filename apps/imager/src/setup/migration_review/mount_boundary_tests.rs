@@ -16,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const CHILD: &str = "TILO_HOME_MOUNT_BOUNDARY_CHILD";
 const WITNESS: &str = "TILO_HOME_MOUNT_BOUNDARY_WITNESS";
@@ -33,7 +34,7 @@ impl Drop for OwnedChild {
 fn bounded_child(command: &mut Command) -> ExitStatus {
     let mut child = OwnedChild(
         command
-            .spawn()
+            .spawn_locked()
             .expect("actual private mount namespace required"),
     );
     let deadline = tilo_test_env::hang_deadline();

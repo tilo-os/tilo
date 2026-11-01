@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use tilo_install_helpers::install_proof::{Host, Request, build_proof, write};
@@ -383,7 +384,7 @@ fn backend_emits_proof_only_after_encrypted_finish() {
 fn usage_errors_exit_2() {
     let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .args(["--target-root", "/x"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -397,7 +398,7 @@ fn usage_errors_exit_2() {
     ));
     let ambiguous = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .args(["--efi", "/x"])
-        .output()
+        .output_locked()
         .unwrap();
     assert_eq!(ambiguous.status.code(), Some(2));
     assert!(

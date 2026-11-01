@@ -2142,6 +2142,7 @@ mod tests {
 #[cfg(test)]
 mod userspace_tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn cohort_store_environment_is_read_from_the_admitted_process() {
@@ -2153,7 +2154,7 @@ mod userspace_tests {
             .env("XDG_RUNTIME_DIR", "/run/person")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut ready = String::new();
         std::io::BufReader::new(child.stdout.take().unwrap())
