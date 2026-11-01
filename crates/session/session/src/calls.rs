@@ -1,8 +1,9 @@
 //! Voice calls on the collaboration plane: the channel this device's call is
-//! in, and who is in the channels every room this session takes part in
+//! in, and who is in the channels every workspace this session takes part in
 //! shows.
 //!
-//! Being in a call is the presence every member of the room reads: joining
+//! Being in a call is the presence every member of the workspace reads:
+//! joining
 //! publishes the channel, leaving stops saying it, and a channel's roster is
 //! what the members in it say of themselves. The session publishes this from
 //! its pass ([`Calls::follow`]), and the calls themselves through the service
@@ -11,12 +12,12 @@
 //!
 //! A channel id is the whole of a call's identity on the wire: the presence
 //! names the channel and what it is called, and a roster says who is in a
-//! channel, with no room beside it.
+//! channel, with no workspace beside it.
 //!
 //! What a call carries is the lane of [`tilo_call_lane`] on this session's
-//! own endpoint: the channel's keys seal its audio, the room's admitted
-//! devices are the ones it admits, and the people the room says are in the
-//! channel are the ones this device opens a lane to.
+//! own endpoint: the channel's keys seal its audio, the workspace's admitted
+//! devices are the ones it admits, and the people the workspace says are in
+//! the channel are the ones this device opens a lane to.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,7 +62,7 @@ const PICTURES_BUDGET: usize = 1024 * 1024;
 /// device capabilities use.
 const MICROPHONE: &str = "microphone";
 
-/// The calls of every room this session takes part in.
+/// The calls of every workspace this session takes part in.
 pub(crate) struct Calls {
     /// The calls here, as the people in them say.
     live: Mutex<Vec<LiveCall>>,
@@ -71,7 +72,7 @@ pub(crate) struct Calls {
     /// What the rosters last said, to wake the apps watching them only when
     /// they moved.
     said: Mutex<String>,
-    /// Woken whenever a room's calls may have changed.
+    /// Woken whenever a workspace's calls may have changed.
     changed: Arc<tokio::sync::Notify>,
 }
 
@@ -143,7 +144,7 @@ impl Calls {
         self.rosters.lock_recover().clone()
     }
 
-    /// The devices the room says are in `channel`'s call, this one among
+    /// The devices the workspace says are in `channel`'s call, this one among
     /// them: who a call opens a lane to.
     fn callers(&self, channel: &str) -> Vec<[u8; 32]> {
         let live = self.live.lock_recover();
@@ -249,16 +250,16 @@ impl iroh::protocol::ProtocolHandler for LaneHandler {
     }
 }
 
-/// The devices a room's governance admits, read fresh: what a call's roster
-/// is made of, and who this device accepts frames from.
+/// The devices a workspace's governance admits, read fresh: what a call's
+/// roster is made of, and who this device accepts frames from.
 pub(crate) type Admitted = Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>;
 
 /// Where a call's carrier reads what only the session knows: its endpoint,
-/// the channel service, the room's governance, the person's answers, and
-/// what the audio runs on.
+/// the channel service, the workspace's governance, the person's answers,
+/// and what the audio runs on.
 pub(crate) struct Sources {
-    /// The calls of the rooms this session takes part in, as the loop heard
-    /// them: who else is in the channel this device joins.
+    /// The calls of the workspaces this session takes part in, as the loop
+    /// heard them: who else is in the channel this device joins.
     pub(crate) calls: Arc<Calls>,
     /// The session's own endpoint, where the call's lanes run. `None` for a
     /// session taking part in no transport, which carries no call.
@@ -268,7 +269,7 @@ pub(crate) struct Sources {
     /// This device's channel keys: the ones a call in the channel seals its
     /// audio with.
     pub(crate) keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
-    /// The devices the room `room` admits, which a call's roster names.
+    /// The devices `workspace` admits, which a call's roster names.
     pub(crate) roster: Option<Admitted>,
     /// The person's prompts: the microphone is asked for through them.
     pub(crate) questions: Option<tilo_service::Questions>,
@@ -286,8 +287,8 @@ pub(crate) struct Sources {
 }
 
 /// This plane as the carrier of a call: being in the channel is joining it,
-/// which the session's presence then says to everyone in the room, and a
-/// lane on the session's own endpoint carries its audio.
+/// which the session's presence then says to everyone in the workspace, and
+/// a lane on the session's own endpoint carries its audio.
 pub(crate) struct Factory {
     sources: Arc<Sources>,
     /// The person's answers about the microphone: the prompt the session's
@@ -297,7 +298,7 @@ pub(crate) struct Factory {
 
 impl Sources {
     /// What a session's own calls read: its endpoint, the channel service,
-    /// the room's governance, and the person's prompts.
+    /// the workspace's governance, and the person's prompts.
     #[must_use]
     pub(crate) fn carrier(
         calls: Arc<Calls>,
@@ -372,9 +373,9 @@ async fn open(
         // No transport, no lane: nothing could carry the call.
         return Err(Issue::Unavailable);
     };
-    let room = RoomId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
+    let workspace_id = RoomId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
-    let (access, keys) = call_keys(sources, room, channel)?;
+    let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
     let (calls, accepted) = tilo_call_lane::Calls::new(
@@ -414,7 +415,7 @@ async fn open(
         camera: sources.camera,
         own,
         access,
-        room,
+        workspace_id,
         channel,
         workspace: target.workspace.clone(),
         admitted: sources.roster.clone(),
@@ -478,7 +479,7 @@ fn hello(
 /// no keys for at all leaves it uncarried.
 fn call_keys(
     sources: &Sources,
-    room: RoomId,
+    workspace_id: RoomId,
     channel: collab_types::ChannelId,
 ) -> Result<
     (
@@ -492,7 +493,7 @@ fn call_keys(
         .as_ref()
         .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
         .ok_or(Issue::Unavailable)?;
-    let keys = match access.access(room, channel).0 {
+    let keys = match access.access(workspace_id, channel).0 {
         tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
         tilo_action_broker::channel_encryption::ChannelAccess::Waiting => None,
         _ => return Err(Issue::Unavailable),
@@ -519,7 +520,7 @@ async fn opened_microphones(
     Ok((voice, microphones, offered))
 }
 
-/// The devices the room `workspace` admits: who may send to this device in
+/// The devices `workspace` admits: who may send to this device in
 /// its channels' calls.
 fn admitted(sources: &Sources, workspace: &str) -> tilo_call_lane::Roster {
     let devices = sources
@@ -596,8 +597,8 @@ impl MediaSession for Call {
     }
 }
 
-/// The channel's keys and who may read them, and what the room's governance
-/// admitted at the same time: what seals this call's frames.
+/// The channel's keys and who may read them, and what the workspace's
+/// governance admitted at the same time: what seals this call's frames.
 struct Current {
     keys: channel_crypto::ChannelContentKeys,
     roster: tilo_call_lane::Roster,
@@ -633,10 +634,11 @@ struct Shared {
     own: [u8; 32],
     /// Where the channel's keys come from when its membership moves.
     access: tilo_action_broker::channel_encryption::ChannelKeyAccess,
-    room: RoomId,
+    /// The workspace id the channel's keys and governance are read by.
+    workspace_id: RoomId,
     channel: collab_types::ChannelId,
     workspace: String,
-    /// The room's admitted devices, re-read while the call lasts.
+    /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
     /// The channel's keys and roster, once this device holds them: the call
     /// is up from then, and joining until.
@@ -1076,7 +1078,7 @@ impl Shared {
         drop(peers);
     }
 
-    /// Re-read what the room admits and what the channel's keys are: a
+    /// Re-read what the workspace admits and what the channel's keys are: a
     /// membership change reaches the call as it happens, and a channel whose
     /// keys were still on their way when the call joined brings it up.
     fn refresh(&self) {
@@ -1084,7 +1086,7 @@ impl Shared {
             .admitted
             .as_ref()
             .map(|admitted| tilo_call_lane::Roster::new(admitted(&self.workspace)));
-        let (granted, _) = self.access.access(self.room, self.channel);
+        let (granted, _) = self.access.access(self.workspace_id, self.channel);
         let keys = match granted {
             tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
             // Keys still on their way keep a joining call joining.
@@ -1163,7 +1165,8 @@ impl Shared {
 }
 
 /// Carry `shared`'s call: answer the endpoint's lanes, open one to every
-/// device the room says is in the channel, and move its audio until it ends.
+/// device the workspace says is in the channel, and move its audio until it
+/// ends.
 async fn run(
     shared: Arc<Shared>,
     dialled: Vec<[u8; 32]>,
@@ -1331,8 +1334,8 @@ fn hex(device: &[u8; 32]) -> String {
 mod tests {
     //! A call on the native desk, in two shapes: an app joins a voice channel
     //! on a session that can carry one, and the person and the people in the
-    //! room hear each other; and a session with no transport ends the call it
-    //! cannot carry, saying why.
+    //! workspace hear each other; and a session with no transport ends the
+    //! call it cannot carry, saying why.
     //!
     //! The audio here is the call's own: the same encoder, lane, sealing and
     //! playout a device's call runs, ending in memory instead of a speaker,
@@ -1361,11 +1364,11 @@ mod tests {
     use crate::sync::{Client, OwnPresence};
     use crate::{ActionPlane, Options, Session};
 
-    const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+    const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const CHANNEL: &str = "c_standup";
     const APP: &str = "so.tilo.chat";
     const RECORD: &str = "chat";
-    /// The app id the desktop of a room says its own presence under.
+    /// The app id the desktop of a workspace says its own presence under.
     const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
     /// What the tone's playout reads as heard, against the silence a call
     /// plays while nobody speaks.
@@ -1385,7 +1388,7 @@ mod tests {
         )
     }
 
-    /// One device's key, as the room's governance names it.
+    /// One device's key, as the workspace's governance names it.
     fn key(seed: u8) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(
             ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -1399,23 +1402,24 @@ mod tests {
         ed25519_dalek::SigningKey::from_bytes(&[21; 32])
     }
 
-    fn room() -> RoomId {
-        RoomId::parse(ROOM).expect("a room id")
+    fn workspace_id() -> RoomId {
+        RoomId::parse(WORKSPACE).expect("a workspace id")
     }
 
     fn target() -> CallTarget {
         CallTarget {
-            workspace: ROOM.to_owned(),
+            workspace: WORKSPACE.to_owned(),
             app: APP.to_owned(),
             record: RECORD.to_owned(),
             channel: CHANNEL.to_owned(),
         }
     }
 
-    /// A desk showing one workspace, in the room.
+    /// A desk showing one workspace, as this device holds it.
     fn desk_tree() -> DesktopTree {
-        let room = room();
-        let workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Desk");
+        let workspace_id = workspace_id();
+        let workspace =
+            Workspace::in_workspace(WorkspaceId::of_room(workspace_id), workspace_id, "Desk");
         DesktopTree {
             workspaces: vec![workspace.clone()],
             active: workspace.id,
@@ -1464,20 +1468,20 @@ mod tests {
         .expect("a loopback endpoint binds")
     }
 
-    /// The room as this device knows its governance: one device governs it
-    /// and both of a call's devices may read its channels.
+    /// The workspace as this device knows its governance: one device governs
+    /// it and both of a call's devices may read its channels.
     struct Directory {
         governor: Ed25519PublicKey,
         admitted: std::collections::BTreeSet<Ed25519PublicKey>,
     }
 
     impl ChannelDirectory for Directory {
-        fn governor_of(&self, _room: RoomId) -> Option<Ed25519PublicKey> {
+        fn governor_of(&self, _workspace: RoomId) -> Option<Ed25519PublicKey> {
             Some(self.governor)
         }
         fn allowed_devices(
             &self,
-            _room: RoomId,
+            _workspace: RoomId,
             _channel: collab_types::ChannelId,
             _route: Option<&ChannelRoute>,
             _now: u64,
@@ -1486,9 +1490,9 @@ mod tests {
         }
     }
 
-    /// One channel's keys, as the device `device` of a room `governor` runs
-    /// holds them: ready at once under the room's own device, and still on
-    /// their way under any other.
+    /// One channel's keys, as the device `device` of the workspace `governor`
+    /// runs holds them: ready at once under the workspace's own device, and
+    /// still on their way under any other.
     fn keys(device: u8, governor: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
         let directory = tempfile::tempdir().expect("a directory to keep channel state in");
         let broker = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -1510,7 +1514,8 @@ mod tests {
         (provider, directory)
     }
 
-    /// A session taking part in the room through `sync`, showing the desk.
+    /// A session taking part in the workspace through `sync`, showing the
+    /// desk.
     fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
         let session = Session::headless(
             Options {
@@ -1532,10 +1537,10 @@ mod tests {
         }
     }
 
-    /// One thing `from` said in the room.
+    /// One thing `from` said in the workspace.
     fn said(from: u8, msg: neighbour_wire::NeighbourMsg) -> NetEvent {
         NetEvent::Msg {
-            ws: workspace_topic_id(room()),
+            ws: workspace_topic_id(workspace_id()),
             peer: public(from),
             membership_epoch: None,
             replayed: false,
@@ -1574,7 +1579,7 @@ mod tests {
         )
     }
 
-    /// One presence `from` said of themselves in the room.
+    /// One presence `from` said of themselves in the workspace.
     fn presence(from: u8, payload: collab_types::PeerPresencePayload) -> NetEvent {
         let device_key = public(from);
         said(
@@ -1582,10 +1587,10 @@ mod tests {
             neighbour_wire::NeighbourMsg::AppPresenceV2 {
                 peer: neighbour_wire::peer_handle(device_key.as_bytes()),
                 app_id: DESKTOP_PRESENCE_APP.to_owned(),
-                cluster_id: ROOM.to_owned(),
+                cluster_id: WORKSPACE.to_owned(),
                 presence: PeerPresence {
                     key: postcard::to_stdvec(&PresenceKey::Workspace {
-                        id: ROOM.to_owned(),
+                        id: WORKSPACE.to_owned(),
                     })
                     .expect("a key"),
                     payload,
@@ -1652,7 +1657,7 @@ mod tests {
     }
 
     /// A session that carries its calls: the endpoint it binds, the channel
-    /// keys, and the room's admitted devices.
+    /// keys, and the workspace's admitted devices.
     struct Carrier {
         calls: Arc<Calls>,
         factory: Factory,
@@ -1727,7 +1732,7 @@ mod tests {
             .factory
             .prepare(target())
             .await
-            .expect("a call the room's keys and transport carry");
+            .expect("a call the workspace's keys and transport carry");
         let mut there = right
             .factory
             .prepare(target())
@@ -1955,8 +1960,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_call_joins_while_the_channels_keys_are_still_on_their_way() {
         let person = person_key();
-        // This desk's device is not the one its room is governed by, and its
-        // channel's keys have not reached it yet.
+        // This desk's device is not the one its workspace is governed by, and
+        // its channel's keys have not reached it yet.
         let laptop = device(&person, 0x22, "Laptop");
         let desk = device(&person, 0x11, "Desk");
         laptop.connect(desk.endpoint_addr());
@@ -2063,7 +2068,7 @@ mod tests {
             .iter()
             .find(|call| call.channel == CHANNEL)
             .expect("the peer reads the call this person is in");
-        assert_eq!(heard.workspace, ROOM);
+        assert_eq!(heard.workspace, WORKSPACE);
         assert_eq!(
             heard
                 .people
