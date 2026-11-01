@@ -44,7 +44,7 @@ impl Door {
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
         )
         .expect("owner-only socket directory");
-        let mut workspace = crate::shell::state::Workspace::in_room(
+        let mut workspace = crate::shell::state::Workspace::in_workspace(
             crate::shell::state::WorkspaceId(1),
             crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
             "Desk",

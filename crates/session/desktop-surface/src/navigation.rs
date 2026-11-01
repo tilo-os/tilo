@@ -965,7 +965,7 @@ pub struct StripEntry {
 pub struct WorkspaceEntry {
     pub id: String,
     pub label: String,
-    pub room: String,
+    pub workspace: String,
     pub owner: Option<String>,
     pub strips: Vec<StripEntry>,
 }
@@ -1053,7 +1053,7 @@ pub fn snapshot_with(
             .map(|w| WorkspaceEntry {
                 id: w.id.0.to_string(),
                 label: w.name.clone(),
-                room: w.room().to_string(),
+                workspace: w.room().to_string(),
                 owner: w.owner().cloned(),
                 strips: w
                     .strips

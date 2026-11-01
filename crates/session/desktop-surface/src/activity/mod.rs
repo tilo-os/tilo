@@ -55,7 +55,7 @@ pub struct ActivitySnapshot {
     pub doc: AutoCommit,
     /// The workspace whose document this is, or `None` when it is the device's own
     /// document of the whole desk.
-    room: Option<tilo_desktop_model::RoomId>,
+    workspace: Option<tilo_desktop_model::RoomId>,
     /// What takes a change the model wrote back to the desk it came from: a
     /// host that keeps the workspace's own layout applies it here, and a
     /// host whose history is read only keeps none.
@@ -64,19 +64,19 @@ pub struct ActivitySnapshot {
 impl ActivitySnapshot {
     /// Snapshot the active workspace of `desktop` from its admitted owner document.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
-        let room = desktop
+        let workspace = desktop
             .active_workspace()
             .ok_or("active workspace unavailable")?
             .room();
         let mut snapshot = Self {
             desktop,
             doc,
-            room: Some(room),
+            workspace: Some(workspace),
             commit: None,
         };
-        tilo_desktop_model::projection::apply_admitted_room(
+        tilo_desktop_model::projection::apply_admitted_workspace(
             &mut snapshot.desktop,
-            room,
+            workspace,
             &snapshot.doc,
         )?;
         Ok(snapshot)
@@ -90,7 +90,7 @@ impl ActivitySnapshot {
         let mut snapshot = Self {
             desktop,
             doc,
-            room: None,
+            workspace: None,
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -129,11 +129,11 @@ impl ActivityTree for ActivitySnapshot {
         // they are arranged, never how wide they are or which is in front:
         // those are the device's. The device's own document of the desk
         // records the view it was left in too, so there is nothing to note.
-        self.room
+        self.workspace
             .map(|_| crate::i18n::t("activity-replay-layout-not-recorded"))
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
-        let Some(room) = self.room else {
+        let Some(workspace) = self.workspace else {
             // The whole desk, out of the device's document: its topology,
             // and the view it was left in.
             tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
@@ -143,12 +143,16 @@ impl ActivityTree for ActivitySnapshot {
         // A historical projection must not retain tabs that only exist in the
         // current cache. Workspace documents do not record local width or active-tab
         // selection, so reconstructed groups use neutral presentation defaults.
-        self.desktop.workspaces.retain(|w| w.room() == room);
+        self.desktop.workspaces.retain(|w| w.room() == workspace);
         for workspace in &mut self.desktop.workspaces {
             workspace.strips.clear();
         }
-        tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, room, &self.doc)
-            .map(|_| ())
+        tilo_desktop_model::projection::apply_admitted_workspace(
+            &mut self.desktop,
+            workspace,
+            &self.doc,
+        )
+        .map(|_| ())
     }
     fn commit_activity_change(&mut self) {
         let Some(commit) = self.commit.clone() else {
@@ -176,7 +180,7 @@ pub trait ActivityHost {
     /// Presently admitted provider data only; no implicit refresh or account connection.
     fn morning_payload(
         &self,
-        _room: &str,
+        _workspace: &str,
         _source: &morning::MorningSource,
     ) -> Option<morning::MorningPayload> {
         None
@@ -184,7 +188,7 @@ pub trait ActivityHost {
     /// Submit a chosen source command through the existing admitted action session.
     fn submit_morning_command(
         &self,
-        _room: &str,
+        _workspace: &str,
         _source: &morning::MorningSource,
         _command: morning::MorningCommand,
     ) -> Result<(), String> {
@@ -192,7 +196,7 @@ pub trait ActivityHost {
     }
     fn morning_command_status(
         &self,
-        _room: &str,
+        _workspace: &str,
         _source: &morning::MorningSource,
     ) -> Option<String> {
         None
@@ -257,7 +261,7 @@ pub struct TaskRunDocument {
 /// An agent's run of a task to undo as one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskRunUndo {
-    pub room: String,
+    pub workspace: String,
     pub invocation: uuid::Uuid,
     pub task_id: String,
     /// The documents the run changed: each step's app and record.
@@ -281,14 +285,14 @@ mod admitted_history_tests {
     use tilo_desktop_model::{Workspace, WorkspaceId};
 
     #[test]
-    fn workspace_activity_real_room_topology_enters_pane_feed_and_replay() {
+    fn workspace_activity_real_workspace_topology_enters_pane_feed_and_replay() {
         use tilo_desktop_model::{
             AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
         };
-        let workspace = Workspace::new(WorkspaceId(9), "Actual room");
+        let workspace = Workspace::new(WorkspaceId(9), "Actual workspace");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
-        doc.put(ROOT, "name", "Actual room").unwrap();
+        doc.put(ROOT, "name", "Actual workspace").unwrap();
         doc.commit();
         let mut strips = vec![Strip {
             id: StripId((5 << 48) | 1),

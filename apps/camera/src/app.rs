@@ -3965,7 +3965,7 @@ mod tests {
                 ui::RemoteActions::with_host(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
-                        .in_workspace("room"),
+                        .in_workspace("workspace"),
                 ),
                 Some("room".into()),
             );
@@ -5142,7 +5142,8 @@ mod tests {
         app.harness().set_session_door(
             ui::RemoteActions::with_host(
                 session.clone(),
-                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_workspace("room"),
+                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
+                    .in_workspace("workspace"),
             ),
             Some("room".into()),
         );

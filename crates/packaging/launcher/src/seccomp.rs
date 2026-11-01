@@ -29,7 +29,7 @@ pub const IO_URING: &str = "io-uring";
 /// (`crate::system_stats`): the manifest is the ceiling (an app that does
 /// not declare `io-uring` never gets it); an app the image ships
 /// (`image_shipped`) is granted what it declares; any other app only what
-/// the room's capabilities name (`Scope::Device("io-uring")`), which the
+/// the workspace's capabilities name (`Scope::Device("io-uring")`), which the
 /// person gives through the permission prompt. Without it the calls fail
 /// with `EPERM` and the app's runtime falls back to `epoll`.
 #[must_use]
@@ -42,7 +42,7 @@ pub fn syscall_grants(
     let granted = image_shipped || plan.devices.iter().any(|device| device == IO_URING);
     if declared && !granted {
         eprintln!(
-            "tilo-launcher: {} declares {IO_URING} but holds no grant for it in this room; \
+            "tilo-launcher: {} declares {IO_URING} but holds no grant for it in this workspace; \
              io_uring is refused (EPERM) and the app falls back to epoll",
             manifest.package_id
         );
@@ -208,7 +208,7 @@ mod tests {
     }
 
     /// `io_uring` reaches an app only when its manifest declares it and the
-    /// image ships the app or the room granted it.
+    /// image ships the app or the workspace granted it.
     #[test]
     fn io_uring_needs_the_declaration_and_a_grant() {
         use crate::capabilities::CapabilityPlan;
@@ -222,13 +222,13 @@ mod tests {
         };
         let none = CapabilityPlan::empty();
 
-        // Undeclared: never, whatever the room or the image says.
+        // Undeclared: never, whatever the workspace or the image says.
         assert!(!syscall_grants(&manifest, &granted, true).io_uring);
 
         manifest.capabilities = vec![IO_URING.to_string()];
         assert!(
             !syscall_grants(&manifest, &none, false).io_uring,
-            "a user-installed app without the room's grant is refused"
+            "a user-installed app without the workspace's grant is refused"
         );
         assert!(syscall_grants(&manifest, &granted, false).io_uring);
         assert!(

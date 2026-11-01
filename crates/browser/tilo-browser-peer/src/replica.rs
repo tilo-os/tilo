@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::RoomId;
-use tilo_desktop_model::projection::{RoomLayout, room_layout, room_members};
+use tilo_desktop_model::projection::{WorkspaceLayout, workspace_layout, workspace_members};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
@@ -213,14 +213,14 @@ impl Replicas {
     pub(crate) fn layout(
         &self,
         workspace_id: u64,
-    ) -> Option<(String, RoomLayout, Option<BTreeSet<String>>)> {
+    ) -> Option<(String, WorkspaceLayout, Option<BTreeSet<String>>)> {
         self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
             let doc = peer.admitted_workspace();
             Ok((
                 peer.workspace_id().to_owned(),
-                doc.map(room_layout).unwrap_or_default(),
-                doc.and_then(room_members),
+                doc.map(workspace_layout).unwrap_or_default(),
+                doc.and_then(workspace_members),
             ))
         })?
         .ok()

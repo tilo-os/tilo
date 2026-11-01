@@ -19,7 +19,7 @@ use ui::widget::Widget;
 /// follows.
 pub type Standing = Rc<dyn Fn() -> TopBarPresence>;
 
-/// Takes the room [`super::TopBarChrome`] takes in the desktop's column
+/// Takes the workspace [`super::TopBarChrome`] takes in the desktop's column
 /// (none under a fullscreen window, none while the person hides the bar,
 /// else the bar's height) and draws nothing.
 pub struct BarSpace {
@@ -47,7 +47,7 @@ impl BarSpace {
     }
 }
 
-/// The strip this room takes while the bar is docked, and none while the
+/// The strip this workspace takes while the bar is docked, and none while the
 /// bar is hidden or shown over the window covering its display: either
 /// way the window takes the whole display.
 fn space_style(presence: TopBarPresence, theme: &Theme) -> Style {

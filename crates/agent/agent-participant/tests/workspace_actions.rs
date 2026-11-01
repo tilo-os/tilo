@@ -283,7 +283,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let locator = page.locator.unwrap();
     assert_eq!(locator.origin, hosted.web.origin);
-    assert_eq!(locator.room, workspace.room);
+    assert_eq!(locator.workspace, workspace.room);
     assert_eq!(
         locator.host_device,
         hex::encode(host.cert.device_public_key)
@@ -498,7 +498,7 @@ impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for Deliver
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: "https://fixture.tilo.invalid".into(),
             web_entry: Some("https://fixture.tilo.invalid/qos-runtime/".into()),
-            room: workspace.into(),
+            workspace: workspace.into(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.into(),
         })

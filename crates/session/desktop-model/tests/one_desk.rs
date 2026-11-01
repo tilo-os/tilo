@@ -1,9 +1,9 @@
-//! A room's desk is one document: the record an older build wrote opens as
+//! A workspace's desk is one document: the record an older build wrote opens as
 //! that document, a build that knows only the old record keeps writing into
 //! it, and peers that each change the desk keep both changes.
 //!
 //! Asserted through [`shared_record::read`], the function native and pages
-//! both read a room's desk with, and [`desktop_doc::rebuild`], what the
+//! both read a workspace's desk with, and [`desktop_doc::rebuild`], what the
 //! desk's own document projects.
 
 #![allow(
@@ -55,7 +55,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 
 /// One workspace with strip 1 holding group 10 [100, 101].
 fn desk() -> DesktopTree {
-    let mut workspace = Workspace::in_room(WorkspaceId(1), room(), "Studio");
+    let mut workspace = Workspace::in_workspace(WorkspaceId(1), room(), "Studio");
     workspace.set_owner("ada");
     let mut strip = Strip::new(StripId(1), "A");
     strip.window_groups = vec![group(10, &[100, 101])];
@@ -67,7 +67,7 @@ fn desk() -> DesktopTree {
     }
 }
 
-/// The desk as a room holds it, with one window on a record and two people
+/// The desk as a workspace holds it, with one window on a record and two people
 /// who opened windows of it.
 fn shared(tree: DesktopTree) -> SharedDesktop {
     SharedDesktop {

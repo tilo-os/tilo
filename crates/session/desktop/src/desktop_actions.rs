@@ -41,8 +41,14 @@ pub enum DesktopAction {
     /// shared workspace is `workspace` (joining it when this computer has none), named
     /// `name` when given.
     NewWorkspace {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        room: Option<String>,
+        /// Stored callers name this field `workspace`; new ones name it `workspace`.
+        #[serde(
+            rename = "workspace",
+            alias = "room",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        workspace: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
@@ -307,7 +313,12 @@ fn new_workspace() -> ActionSpec {
         "new-workspace",
         t("desktop-action-new-workspace"),
         vec![
-            ActionParam::optional_owned("room", ParamType::Text, t("desktop-action-param-room")),
+            // The stored argument name; the label says workspace.
+            ActionParam::optional_owned(
+                "room",
+                ParamType::Text,
+                t("desktop-action-param-join-workspace"),
+            ),
             ActionParam::optional_owned(
                 "name",
                 ParamType::Text,
@@ -315,7 +326,7 @@ fn new_workspace() -> ActionSpec {
             ),
         ],
         |args| DesktopAction::NewWorkspace {
-            room: args.text("room").map(str::to_owned),
+            workspace: args.text("room").map(str::to_owned),
             name: args.text("name").map(str::to_owned),
         },
     )

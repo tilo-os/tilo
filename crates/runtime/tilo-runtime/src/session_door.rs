@@ -771,7 +771,7 @@ mod tests {
                 caller.principal(),
                 &tilo_actions::remote::CallerPrincipal::Agent("claude-code".into())
             );
-            assert_eq!(caller.room(), Some("workspace"));
+            assert_eq!(caller.workspace(), Some("workspace"));
             assert!(caller.execution_id().is_some());
         }
     }

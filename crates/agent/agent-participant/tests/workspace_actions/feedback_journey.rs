@@ -671,7 +671,7 @@ async fn owner_answer(
         correlation,
         query: FeedbackQuery {
             destination: FeedbackDestination {
-                room: submission.destination.room.clone(),
+                workspace: submission.destination.room.clone(),
                 provider: submission.destination.provider.clone(),
                 channel: submission.destination.channel.clone(),
             },

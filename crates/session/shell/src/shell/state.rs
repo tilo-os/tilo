@@ -1109,7 +1109,7 @@ impl WorkspaceTree {
         }
         self.archived_workspaces.push(archived);
         self.seed_doc_from_cache();
-        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.queue_save();
         true
@@ -1149,7 +1149,7 @@ impl WorkspaceTree {
         self.desktop.workspaces.push(workspace);
         self.desktop.active = id;
         self.seed_doc_from_cache();
-        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.queue_save();
         Some(id)
@@ -1345,7 +1345,7 @@ impl WorkspaceTree {
             ws.sandbox.extend(local);
             room_outbox::keep_taken_back(ws, &self.room_outbox);
         }
-        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
     }
 
     /// Commit `document` as `room`'s admitted document here, as its native
@@ -1911,10 +1911,11 @@ impl WorkspaceTree {
     /// `room`'s layout scope, as its governance document here says: shared
     /// until this device holds a document that says otherwise.
     #[must_use]
-    pub fn room_layout(&self, room: RoomId) -> projection::RoomLayout {
-        self.room_docs
-            .get(&room)
-            .map_or_else(projection::RoomLayout::default, projection::room_layout)
+    pub fn room_layout(&self, room: RoomId) -> projection::WorkspaceLayout {
+        self.room_docs.get(&room).map_or_else(
+            projection::WorkspaceLayout::default,
+            projection::workspace_layout,
+        )
     }
 
     /// Follow what `room`'s governance document says about its workspace
@@ -1932,7 +1933,7 @@ impl WorkspaceTree {
         let now_ms = tilo_clock::unix_now_ms();
         let shares = window_shares::window_shares_of(room, doc, now_ms);
         let presets = projection::workspace_presets_of(doc);
-        let personal = projection::room_layout(doc)
+        let personal = projection::workspace_layout(doc)
             .is_personal()
             .then(|| tilo_desktop_model::window_share::device_salts(doc));
         self.take_window_shares(room, shares);
@@ -1959,15 +1960,15 @@ impl WorkspaceTree {
 
     /// Tell the tree which records `room`'s index holds. Returns whether
     /// this was news, so the caller can skip re-asking when nothing moved.
-    pub fn set_room_records(
+    pub fn set_workspace_records(
         &mut self,
         room: RoomId,
         held: std::collections::BTreeMap<String, String>,
     ) -> bool {
-        match self.desktop.room_records_held.get(&room) {
+        match self.desktop.workspace_records_held.get(&room) {
             Some(existing) if *existing == held => false,
             _ => {
-                self.desktop.room_records_held.insert(room, held);
+                self.desktop.workspace_records_held.insert(room, held);
                 true
             }
         }
@@ -1975,20 +1976,20 @@ impl WorkspaceTree {
 
     /// Take the references peers have added since this was last called.
     /// Drained rather than read so a queue that only grows isn't a leak.
-    pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
-        std::mem::take(&mut self.desktop.room_records_inbound)
+    pub fn take_inbound_workspace_records(&mut self) -> Vec<(RoomId, String, String)> {
+        std::mem::take(&mut self.desktop.workspace_records_inbound)
     }
 
     /// Diffs `candidate`'s room-record index against what's already held
     /// for `room`, queues the difference for the shell to fold in (see
-    /// [`Self::take_inbound_room_records`]), and reports whether
+    /// [`Self::take_inbound_workspace_records`]), and reports whether
     /// anything arrived.
     fn queue_inbound_records(&mut self, room: RoomId, candidate: &AutoCommit) -> bool {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
-        let arrived = projection::room_records_of(candidate);
-        let already = self.desktop.room_records_held.get(&room);
+        let arrived = projection::workspace_records_of(candidate);
+        let already = self.desktop.workspace_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
@@ -1997,7 +1998,7 @@ impl WorkspaceTree {
             }
         }
         let records_changed = !inbound.is_empty();
-        self.desktop.room_records_inbound.extend(inbound);
+        self.desktop.workspace_records_inbound.extend(inbound);
         records_changed
     }
 
@@ -2126,7 +2127,7 @@ impl WorkspaceTree {
                     .filter(|capability| capability.persists_across_restart())
                     .cloned()
                     .collect(),
-                members: workspace.room_readers_at(now),
+                members: workspace.workspace_readers_at(now),
             })
             .collect();
         Some(FsExport {
@@ -2862,7 +2863,7 @@ impl WorkspaceTree {
         let takes_back = match &request {
             GovernanceRequest::RevokeSandbox(id) => {
                 self.room_docs.get(&room).and_then(|document| {
-                    projection::room_sandbox_of(document)
+                    projection::workspace_sandbox_of(document)
                         .into_iter()
                         .find(|capability| &capability.id == id)
                 })
@@ -3323,7 +3324,7 @@ impl WorkspaceTree {
     fn append_workspace_for_room(&mut self, name: &str, room: RoomId) -> WorkspaceId {
         let ws_id = self.new_workspace_id(room);
         let strip_id = self.mint_strip_id();
-        let mut ws = Workspace::in_room(ws_id, room, name);
+        let mut ws = Workspace::in_workspace(ws_id, room, name);
         ws.strips = vec![Strip {
             id: strip_id,
             name: "Main".into(),
@@ -3374,12 +3375,12 @@ impl WorkspaceTree {
             }
             workspace.name = name.to_string();
             self.seed_doc_from_cache();
-            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
             self.queue_save();
             return true;
         }
         let id = self.new_workspace_id(room);
-        let workspace = Workspace::in_room(id, room, name);
+        let workspace = Workspace::in_workspace(id, room, name);
         let first = self.desktop.workspaces.is_empty();
         self.desktop.workspaces.push(workspace);
         if first {
@@ -3389,7 +3390,7 @@ impl WorkspaceTree {
             self.joining_rooms.insert(room);
         }
         self.seed_doc_from_cache();
-        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
         self.queue_save();
         true
     }
@@ -3411,7 +3412,7 @@ impl WorkspaceTree {
             self.room_docs.remove(&room);
             self.joining_rooms.remove(&room);
             self.pending_placements.remove(&room);
-            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
             self.queue_save();
             drop(removed);
             return None;
@@ -3447,7 +3448,7 @@ impl WorkspaceTree {
         self.joining_rooms.remove(&room);
         self.pending_placements.remove(&room);
         self.seed_doc_from_cache();
-        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
         self.queue_save();
         Some((index, removed))
     }
@@ -3556,7 +3557,7 @@ impl WorkspaceTree {
         }
         if moved {
             self.seed_doc_from_cache();
-            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
             self.queue_save();
         }
         moved
@@ -4036,7 +4037,7 @@ impl WorkspaceTree {
             return false;
         };
         let source = tilo_desktop_model::commands::CommandSource {
-            room,
+            workspace: room,
             heads: Vec::new(),
         };
         tilo_desktop::session_commands::bind_intent(&self.desktop, source, intent)
@@ -5729,7 +5730,7 @@ mod workspace_tree_lifecycle_tests {
         ));
         workspace.grant(reach("persistent", &persistent, Lifetime::UntilRevoked));
         let readers: Vec<String> = workspace
-            .room_readers_at(tilo_clock::unix_now())
+            .workspace_readers_at(tilo_clock::unix_now())
             .into_iter()
             .map(|(person, _)| person)
             .collect();

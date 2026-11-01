@@ -2,7 +2,7 @@
 //! assignment, the actions its apps may use of each other and its apps'
 //! sandbox capabilities, which every member reads from the workspace's
 //! governance document ([`tilo_desktop_model::projection::workspace_presets_of`],
-//! [`tilo_desktop_model::projection::room_sandbox_of`]).
+//! [`tilo_desktop_model::projection::workspace_sandbox_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
 //! key; the workspace's admission decides it against the writer's own grants
@@ -131,7 +131,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let workspace = tilo_desktop_model::ids::RoomId::parse(&self.core.workspace)
             .ok_or("the workspace is not a UUID")?;
-        let mut workspace = tilo_desktop_model::Workspace::in_room(
+        let mut workspace = tilo_desktop_model::Workspace::in_workspace(
             tilo_desktop_model::ids::WorkspaceId(0),
             workspace,
             String::new(),
@@ -227,7 +227,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
-            projection::project_room_sandbox(doc, sandbox)
+            projection::project_workspace_sandbox(doc, sandbox)
         })
     }
 
@@ -261,7 +261,7 @@ impl PeerGovernanceMut<'_> {
 mod tests {
     use super::super::{NeighbourMsg, SigningKey, StatePeer, SystemTime, TransportOrigin};
     use automerge::{ROOT, ScalarValue, transaction::Transactable as _};
-    use tilo_desktop_model::projection::ROOM_NAME_KEY;
+    use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
     const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
@@ -403,7 +403,7 @@ mod tests {
         write(
             &mut peer,
             &other,
-            ROOM_NAME_KEY,
+            WORKSPACE_NAME_KEY,
             ScalarValue::Str("Mine".into()),
         )
         .unwrap();
@@ -411,7 +411,7 @@ mod tests {
         write(
             &mut peer,
             &key,
-            ROOM_NAME_KEY,
+            WORKSPACE_NAME_KEY,
             ScalarValue::Str("Ours".into()),
         )
         .unwrap();

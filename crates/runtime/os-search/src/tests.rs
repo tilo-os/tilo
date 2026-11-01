@@ -74,7 +74,7 @@ impl ActionHost for Host {
                     providers.push(CatalogueProvider {
                         provider: row.provider.clone(),
                         app_id: row.app_id.clone(),
-                        room: ROOM.into(),
+                        workspace: ROOM.into(),
                         record_id: String::new(),
                         browsable: true,
                     });

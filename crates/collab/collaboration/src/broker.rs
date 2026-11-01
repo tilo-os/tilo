@@ -8,7 +8,7 @@
 //! Overload never closes the bridge. Only transient presence is shed;
 //! other durable commands that do not fit wait in the owner's ordered spill
 //! (a newer action surface replaces an older one) until the shovel frees
-//! room. Document mutations have their own budget and are deferred (`Busy`)
+//! workspace. Document mutations have their own budget and are deferred (`Busy`)
 //! or refused (`TooLarge`). Joining,
 //! document signing and envelope verification all happen on the worker with
 //! the certified launcher (or host-supplied) identity.
@@ -544,7 +544,7 @@ impl BrokerTransport {
                 return Err(TransportError::Shed);
             }
             if command.document_len().is_some() {
-                self.state.command_bytes.arm_room_wake();
+                self.state.command_bytes.arm_budget_wake();
                 return Err(TransportError::Busy);
             }
             self.park(command);
@@ -601,7 +601,7 @@ impl BrokerTransport {
             command => self.spill.push_back(command),
         }
         // Arm before the retry so a release racing it is never missed.
-        self.state.command_bytes.arm_room_wake();
+        self.state.command_bytes.arm_budget_wake();
         self.flush_spill();
     }
 
@@ -618,7 +618,7 @@ impl BrokerTransport {
                     ..
                 }) => {
                     self.spill.push_front(command);
-                    self.state.command_bytes.arm_room_wake();
+                    self.state.command_bytes.arm_budget_wake();
                     return;
                 }
                 Err(_) => {
@@ -645,7 +645,7 @@ impl BrokerTransport {
                 }
                 Err(tokio_mpsc::error::TrySendError::Full(_)) if !retried => {
                     // Arm before the retry so a release racing it is never missed.
-                    self.state.command_bytes.arm_room_wake();
+                    self.state.command_bytes.arm_budget_wake();
                     retried = true;
                 }
                 Err(tokio_mpsc::error::TrySendError::Full(_)) => return false,
@@ -1236,13 +1236,17 @@ enum ConnectPhase {
 /// A reservation moves with its queued value and releases automatically when
 /// the receiver consumes or drops that value, waking anyone waiting for room.
 #[derive(Clone)]
-struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>, Option<RoomWake>);
+struct ByteBudget(
+    Arc<AtomicUsize>,
+    Arc<tokio::sync::Notify>,
+    Option<BudgetWake>,
+);
 
 /// Wakes the owner once outbound room frees after one of its sends was
 /// refused as busy. The owner has no timer of its own for that retry, so
 /// without this a refused edit would wait for unrelated input.
 #[derive(Clone)]
-struct RoomWake {
+struct BudgetWake {
     wanted: Arc<AtomicBool>,
     owner: crate::wake::WakeHandle,
 }
@@ -1261,20 +1265,20 @@ impl ByteBudget {
         )
     }
 
-    fn with_room_wake(room: RoomWake) -> Self {
+    fn with_budget_wake(workspace: BudgetWake) -> Self {
         Self(
             Arc::new(AtomicUsize::new(0)),
             Arc::new(tokio::sync::Notify::new()),
-            Some(room),
+            Some(workspace),
         )
     }
 
     /// Ask for an owner wake at the next release of any reservation sharing
-    /// this budget's latch. Arm before re-checking for room, so a release
+    /// this budget's latch. Arm before re-checking for workspace, so a release
     /// racing the refusal is never missed.
-    fn arm_room_wake(&self) {
-        if let Some(room) = &self.2 {
-            room.wanted.store(true, Ordering::Release);
+    fn arm_budget_wake(&self) {
+        if let Some(workspace) = &self.2 {
+            workspace.wanted.store(true, Ordering::Release);
         }
     }
 
@@ -1300,7 +1304,7 @@ impl ByteBudget {
 
     /// Wait until [`Self::reserve_sole`] of `bytes` would succeed: woken by
     /// each release, and at once when there is room already.
-    async fn until_room(&self, bytes: usize, limit: usize) {
+    async fn until_capacity(&self, bytes: usize, limit: usize) {
         loop {
             let released = self.1.notified();
             tokio::pin!(released);
@@ -1341,10 +1345,10 @@ impl Drop for ByteReservation {
     fn drop(&mut self) {
         self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
         self.budget.1.notify_waiters();
-        if let Some(room) = &self.budget.2
-            && room.wanted.swap(false, Ordering::AcqRel)
+        if let Some(workspace) = &self.budget.2
+            && workspace.wanted.swap(false, Ordering::AcqRel)
         {
-            room.owner.notify_events();
+            workspace.owner.notify_events();
         }
     }
 }
@@ -1378,7 +1382,7 @@ impl BridgeState {
         let owner_wake = crate::wake::WakeHandle::new();
         // Both outbound budgets share one latch: a refused document send is
         // queued behind commands of either kind.
-        let outbound_room = RoomWake {
+        let outbound_wake = BudgetWake {
             wanted: Arc::new(AtomicBool::new(false)),
             owner: owner_wake.clone(),
         };
@@ -1394,9 +1398,9 @@ impl BridgeState {
             directory_rpc_successes: Arc::new(AtomicU64::new(0)),
             directory_rpc_failures: Arc::new(AtomicU64::new(0)),
             directory_observation_enabled: Arc::new(AtomicBool::new(false)),
-            command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
+            command_bytes: ByteBudget::with_budget_wake(outbound_wake.clone()),
             event_bytes: ByteBudget::new(),
-            document_command_bytes: ByteBudget::with_room_wake(outbound_room),
+            document_command_bytes: ByteBudget::with_budget_wake(outbound_wake),
             document_event_bytes: ByteBudget::new(),
             catalogue_event_bytes: ByteBudget::new(),
             owner_wake,
@@ -1692,7 +1696,7 @@ fn admit_sdk_command(
         let Some(reservation) = budget
             .reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
             .or_else(|| {
-                budget.arm_room_wake();
+                budget.arm_budget_wake();
                 budget.reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
             })
         else {
@@ -1712,7 +1716,7 @@ fn admit_sdk_command(
                 // drop would spend the wake on a retry that finds the queue
                 // still full.
                 drop(refused);
-                budget.arm_room_wake();
+                budget.arm_budget_wake();
                 if tx.capacity() > 0 {
                     state.owner_wake.notify_events();
                 }
@@ -2052,7 +2056,7 @@ struct SdkJoinIdentity {
 }
 
 /// Where an endpoint with no identity service asks for its routes' channel
-/// keys, as an identity service answers them: the record's room, its app,
+/// keys, as an identity service answers them: the record's workspace, its app,
 /// the record, and the key generation the route holds.
 pub type EndpointChannelKeys = std::sync::Arc<
     dyn Fn(
@@ -2112,7 +2116,7 @@ impl CertifiedEndpointIdentity {
 
     /// The same identity, encrypting its writes under the channel keys
     /// `keys` answers, as an endpoint with an identity service does. Without
-    /// them its writes are plaintext, and refused in a room that seals them.
+    /// them its writes are plaintext, and refused in a workspace that seals them.
     #[must_use]
     pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
         self.signer = EndpointSigner::Harness(Some(keys));
@@ -2466,7 +2470,7 @@ struct ConnectedBroker {
 #[cfg(unix)]
 pub struct JoiningProbe {
     answer: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    room: tokio::sync::watch::Sender<Result<runtime_collab::WorkspaceStatus, String>>,
+    workspace: tokio::sync::watch::Sender<Result<runtime_collab::WorkspaceStatus, String>>,
     sent: Box<dyn Fn() -> usize>,
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -2485,13 +2489,13 @@ impl JoiningProbe {
     }
     /// The reason [`Self::refuse`] gives.
     pub const REFUSAL: &'static str = "fixture join gate dropped";
-    /// The broker reports the room as `status` from now on.
-    pub fn set_room(&self, status: runtime_collab::WorkspaceStatus) {
-        let _ = self.room.send(Ok(status));
+    /// The broker reports the workspace as `status` from now on.
+    pub fn set_workspace_status(&self, status: runtime_collab::WorkspaceStatus) {
+        let _ = self.workspace.send(Ok(status));
     }
-    /// The broker cannot be asked how the room stands, and why.
-    pub fn room_unreachable(&self, reason: &str) {
-        let _ = self.room.send(Err(reason.to_owned()));
+    /// The broker cannot be asked how the workspace stands, and why.
+    pub fn workspace_unreachable(&self, reason: &str) {
+        let _ = self.workspace.send(Err(reason.to_owned()));
     }
     /// How many document changes reached the broker.
     pub fn changes_sent(&self) -> usize {
@@ -2544,7 +2548,7 @@ impl CollaborationManager {
 
     /// Connect a headless service of `app_id` in `cluster_id` that holds no
     /// document of its own: it publishes actions and answers them. It never
-    /// asks the broker for a committed document, which a room holds only for
+    /// asks the broker for a committed document, which a workspace holds only for
     /// apps that declare resource kinds; asking would fail the connection.
     ///
     /// # Errors
@@ -2784,7 +2788,7 @@ impl CollaborationManager {
                 SdkConnectSource::Env
             }
         };
-        let (app, room) = auto_hello_env();
+        let (app, workspace) = auto_hello_env();
         if matches!(source, SdkConnectSource::Env) {
             super::channel_settings::install(&app);
         }
@@ -2792,14 +2796,15 @@ impl CollaborationManager {
         // is answers at once, and says whether someone has to choose first,
         // which the launch waits for before it opens anything.
         tilo_startup_metrics::startup_mark("collab-connect");
-        let identity = sdk_join_identity(room).map_err(|error| native_launch_refusal(&error))?;
+        let identity =
+            sdk_join_identity(workspace).map_err(|error| native_launch_refusal(&error))?;
         tilo_startup_metrics::startup_mark("collab-identity-ready");
         Ok(Self::connect_in_background(
             source,
             SdkIdentitySource::Ready(Some(identity)),
             RouteSpec {
                 app_id: app,
-                cluster_id: room,
+                cluster_id: workspace,
                 record: None,
             },
             Some(kind.as_str().to_owned()),
@@ -2815,7 +2820,7 @@ impl CollaborationManager {
     /// them to the host (`runtime_portal::tilolang_host`): the broker attests
     /// `connection` against the session's launch record of the instance, never
     /// against what the host says, and refuses a hello for another app or
-    /// room. Nothing is read from the process's environment, which is the
+    /// workspace. Nothing is read from the process's environment, which is the
     /// host's, not the app's. `identity` must outlive the manager.
     ///
     /// # Errors
@@ -3437,7 +3442,7 @@ impl CollaborationManager {
 
 /// A surface app's connection to its session's services: the same
 /// connection every app reaches its session through, held by a process that
-/// shows a window placed by the session and joins no room of its own.
+/// shows a window placed by the session and joins no workspace of its own.
 ///
 /// The session records the launch and names its socket on the app's
 /// environment; the app connects that socket itself and writes the handoff
@@ -3472,7 +3477,7 @@ impl SessionServices {
         let transport = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
-                // A surface joins no room: it presents no identity, and the
+                // A surface joins no workspace: it presents no identity, and the
                 // broker admits it for the launch alone.
                 presentation: Vec::new(),
                 participant_kind: "person",
@@ -3530,7 +3535,7 @@ async fn report_join_hold(
     loop {
         match status {
             Ok(runtime_collab::WorkspaceStatus::Waiting { reason, detail }) => {
-                state.set_join_hold(Some(super::JoinHold::RoomWaiting {
+                state.set_join_hold(Some(super::JoinHold::WorkspaceWaiting {
                     reason: reason.clone(),
                     detail: detail.clone(),
                 }));
@@ -4324,7 +4329,7 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
-/// This device's join proof for its person's own room, as the identity
+/// This device's join proof for its person's own workspace, as the identity
 /// service lends it to an app that keeps records of theirs there; `None`
 /// for any other app, or a connection without a certified identity.
 #[allow(
@@ -4341,7 +4346,7 @@ async fn personal_cluster_presentation(
     }
     // The person's records then cannot be reached; the log says why.
     let unavailable = |reason: &dyn std::fmt::Display| {
-        tracing::warn!(%reason, "no join proof for the person's own room");
+        tracing::warn!(%reason, "no join proof for the person's own workspace");
     };
     let launch = match runtime_collab::CertifiedJoinIdentity::decode(presentation) {
         Ok(Some(launch)) => launch,
@@ -4363,17 +4368,17 @@ async fn personal_cluster_presentation(
             return None;
         }
     };
-    let room = collab_types::personal_cluster(&root.user_public_key).to_string();
-    if room == launch.workspace_id {
+    let workspace = collab_types::personal_cluster(&root.user_public_key).to_string();
+    if workspace == launch.workspace_id {
         return None;
     }
     let signed = match signer {
         LocalSdkDocumentSigner::Host(identity) => identity
-            .sign_collaboration_join(&room)
+            .sign_collaboration_join(&workspace)
             .await
             .map_err(|error| error.to_string()),
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
-            let (identity, asked) = (std::sync::Arc::clone(identity), room.clone());
+            let (identity, asked) = (std::sync::Arc::clone(identity), workspace.clone());
             tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
                 .await
                 .map_err(|error| error.to_string())
@@ -4389,13 +4394,13 @@ async fn personal_cluster_presentation(
         }
     };
     let bytes = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.clone(),
+        workspace_id: workspace.clone(),
         device_certificate: launch.device_certificate,
         proof: proof.to_vec(),
     }
     .encode()
     .ok()?;
-    Some((room, bytes))
+    Some((workspace, bytes))
 }
 
 /// Keep `joined`, the outcome of joining `spec`, where the route's owner and
@@ -4428,9 +4433,9 @@ struct SdkJoinContext<'a> {
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
-    /// The person's own room and this device's join proof for it, when the
+    /// The person's own workspace and this device's join proof for it, when the
     /// identity service lends one: what a route of a record of theirs
-    /// presents instead of the launch room's.
+    /// presents instead of the launch workspace's.
     person: Option<&'a (String, Vec<u8>)>,
     participant_handle: Option<&'a str>,
     participant_kind: &'a str,
@@ -4483,7 +4488,7 @@ async fn ensure_sdk_route(
         .lock_recover()
         .remove(&channel_id);
     let identity_bytes = match person {
-        Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
+        Some((workspace, proof)) if *workspace == spec.cluster_id.to_string() => proof.as_slice(),
         _ => presentation,
     };
     // Each round trip of the join is marked, so a launch's startup line says which one
@@ -4568,7 +4573,7 @@ async fn ensure_sdk_route(
             .bind_private_window(&channel_id, instance)?;
     }
 
-    // A room that seals its records takes every write encrypted under the
+    // A workspace that seals its records takes every write encrypted under the
     // record channel's keys, whoever reads the record for the app. A route
     // whose endpoint has no keys to ask for refuses each write there.
     let sealed = matches!(
@@ -4587,8 +4592,8 @@ async fn ensure_sdk_route(
     } else if sealed {
         tracing::warn!(
             app = %spec.app_id,
-            room = %spec.cluster_id,
-            "collab: this room seals every write and this connection holds no channel keys; its writes are refused"
+            workspace = %spec.cluster_id,
+            "collab: this workspace seals every write and this connection holds no channel keys; its writes are refused"
         );
         super::route_keys::RouteKeys::unsealable()
     } else {
@@ -4620,7 +4625,7 @@ async fn ensure_sdk_route(
         async {
             // This intentionally fails quietly for person sessions. An
             // admitted agent gets a separate broker-addressed queue; a
-            // document agent never has to infer task work from room traffic.
+            // document agent never has to infer task work from workspace traffic.
             if !crate::host::environment().identity.managed_agent_context {
                 spawn_task_run_stream(&channel, inbound_tx).await;
             }
@@ -7099,7 +7104,7 @@ mod tests {
         pub committed_open_refused_channels: Vec<String>,
         /// Answer a committed Open on these channels `Absent`, and hold
         /// their `Await`s, as the session host does for an on-demand record
-        /// its room's hosts have none of.
+        /// its workspace's hosts have none of.
         pub committed_absent_channels: Vec<String>,
         /// Hold committed-read `Await`s until this is notified, as the broker
         /// does until the read changes. Without it every `Await` fails, as a
@@ -7129,7 +7134,7 @@ mod tests {
         pub join_refusal: Option<String>,
         /// The workspace's status as the broker reports it, or why the broker
         /// cannot be asked; without it the host refuses to say.
-        pub room_status:
+        pub workspace_status:
             Option<tokio::sync::watch::Receiver<Result<runtime_collab::WorkspaceStatus, String>>>,
         pub committed_reads: Vec<runtime_collab::committed_document::Request>,
         pub media_commands: Vec<runtime_collab::native_media::Request>,
@@ -7573,8 +7578,8 @@ mod tests {
             match request {
                 Operation::Join(join) => self.join(join),
                 Operation::Workspace { seen, .. } => {
-                    let Some(mut status) = self.captures().room_status.clone() else {
-                        return answered(Err("the fixture reports no room status".into()));
+                    let Some(mut status) = self.captures().workspace_status.clone() else {
+                        return answered(Err("the fixture reports no workspace status".into()));
                     };
                     Box::pin(async move {
                         loop {
@@ -7590,7 +7595,7 @@ mod tests {
                             status
                                 .changed()
                                 .await
-                                .map_err(|_| "room status ended".to_owned())?;
+                                .map_err(|_| "workspace status ended".to_owned())?;
                         }
                     })
                 }
@@ -9000,11 +9005,11 @@ mod tests {
         broker: FakeBroker,
     ) -> (CollaborationManager, SharedCaptures, thread::JoinHandle<()>) {
         let (fd, captures, thread) = stand_up_fake_broker(broker);
-        let room = Uuid::new_v4();
+        let workspace = Uuid::new_v4();
         let manager = CollaborationManager::for_route_from(
             SdkConnectSource::Fd(fd),
             "so.tilo.notes".into(),
-            room,
+            workspace,
             Some("tab:0000000000000003".into()),
             presence_handle_env(),
             Some(SdkJoinIdentity {
@@ -9056,11 +9061,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_refused_route_join_says_why() {
-        let room = Uuid::new_v4();
-        let primary = RouteSpec::record("so.tilo.notes", room, "tab:0000000000000001");
+        let workspace = Uuid::new_v4();
+        let primary = RouteSpec::record("so.tilo.notes", workspace, "tab:0000000000000001");
         let beside = RouteSpec::record(
             "so.tilo.chat",
-            room,
+            workspace,
             collab_types::workspace_record_id("tilo.workspace.emoji"),
         );
         let (mut manager, _) =
@@ -10837,10 +10842,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    pub(super) fn connected_manager_for(app: &str, room: Uuid) -> CollaborationManager {
+    pub(super) fn connected_manager_for(app: &str, workspace: Uuid) -> CollaborationManager {
         let broker = FakeBroker::default();
         let (fd, _, _thread) = stand_up_fake_broker(broker);
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room)
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace)
     }
 
     /// Wait for `done`, polling: the worker and the fake broker run on their
@@ -11268,7 +11273,7 @@ mod tests {
             assert_eq!(
                 inbound.replies.state.lock().unwrap().waiting.len(),
                 1,
-                "the result waits for room"
+                "the result waits for workspace"
             );
             assert!(matches!(
                 rx.try_recv(),
@@ -11421,7 +11426,7 @@ mod tests {
             assert_eq!(
                 wakes.load(Ordering::SeqCst),
                 1,
-                "the shovel taking a change frees room, and the idle owner must hear of it \
+                "the shovel taking a change frees workspace, and the idle owner must hear of it \
                  to retry the refused one"
             );
             assert_eq!(try_enqueue_sdk_command(&tx, change(), &state), Ok(()));
@@ -12759,14 +12764,14 @@ pub mod test_support {
         stand_up_fake_broker, wake_channel,
     };
 
-    /// A manager on the broker at `fd`, joined to `app`'s route in `room`.
+    /// A manager on the broker at `fd`, joined to `app`'s route in `workspace`.
     #[must_use]
-    pub fn manager_on(fd: RawFd, app: &str, room: Uuid) -> CollaborationManager {
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room)
+    pub fn manager_on(fd: RawFd, app: &str, workspace: Uuid) -> CollaborationManager {
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace)
     }
 
     /// A manager on the broker at `fd`, joined as a native window to the
-    /// route of `record` of `app` in `room`.
+    /// route of `record` of `app` in `workspace`.
     ///
     /// # Panics
     /// When the route cannot be joined.
@@ -12774,13 +12779,13 @@ pub mod test_support {
     pub fn manager_on_record_route(
         fd: RawFd,
         app: String,
-        room: Uuid,
+        workspace: Uuid,
         record: Option<String>,
     ) -> CollaborationManager {
         CollaborationManager::for_route_from(
             SdkConnectSource::Fd(fd),
             app,
-            room,
+            workspace,
             record,
             None,
             None,

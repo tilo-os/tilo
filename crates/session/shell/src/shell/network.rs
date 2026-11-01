@@ -8239,7 +8239,7 @@ mod tests {
             .clone();
         assert_eq!(inbound.len(), 1);
         assert_eq!(
-            inbound[0].caller.room(),
+            inbound[0].caller.workspace(),
             Some(enrolled.to_string().as_str())
         );
     }
@@ -8347,7 +8347,7 @@ mod tests {
     fn tree_with_own_workspace(person: &str, name: &str) -> (WorkspaceTree, RoomId) {
         let mut tree = WorkspaceTree::default();
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::in_room(
+        let mut workspace = crate::shell::state::Workspace::in_workspace(
             crate::shell::state::WorkspaceId::new(),
             room,
             name,

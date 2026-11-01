@@ -247,7 +247,7 @@ mod tests {
                 )
                 .expect("this device takes the workspace as its governor has it");
         }
-        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Test");
+        let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Test");
         workspace
             .policy
             .members
@@ -434,7 +434,7 @@ mod tests {
         let (room, people, owner, desk, person) = the_owner_raised_ada();
         // What this desk had of the workspace's people before the change is
         // the owner's and this person's; after it, what the workspace has.
-        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Test");
+        let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Test");
         workspace.set_owner(owner.clone());
         workspace.policy.members.insert(desk.clone(), Role::Editor);
         assert!(

@@ -305,7 +305,7 @@ fn closing_the_last_window_pans_only_as_far_as_the_strip_shrinks() {
 /// it here, rather than being rebuilt at home with every window cut to its
 /// place.
 #[test]
-fn a_tree_replaced_from_the_room_moves_the_strip_as_a_close_here_does() {
+fn a_tree_replaced_from_the_workspace_moves_the_strip_as_a_close_here_does() {
     // The workspace echoes the person's own close mid-motion.
     for (focus, close, still) in [(4, 4, vec![]), (2, 2, vec![0, 1]), (4, 1, vec![2, 3, 4])] {
         let mut strip = Desk::focused_on(focus);

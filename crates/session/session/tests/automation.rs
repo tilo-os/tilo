@@ -158,7 +158,7 @@ fn show(session: &Session, workspace: Workspace) {
 /// Put a workspace for [`ROOM`] holding `shortcuts` on this session's desk.
 fn show_room(session: &Session, shortcuts: Vec<SavedShortcut>) {
     let room = RoomId::parse(ROOM).expect("a room id");
-    let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Chat");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Chat");
     workspace.shortcuts = shortcuts;
     show(session, workspace);
 }
@@ -176,7 +176,7 @@ fn show_room_sharing(
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
     let room = RoomId::parse(ROOM).expect("a room id");
-    let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Chat");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Chat");
     workspace.set_owner(person);
     workspace.sandbox.push(
         CapOverride::grant(

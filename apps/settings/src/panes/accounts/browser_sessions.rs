@@ -51,7 +51,7 @@ impl Removal {
                         .providers
                         .iter()
                         .filter(|provider| provider.app_id == "so.tilo.settings")
-                        .map(|provider| provider.room.as_str())
+                        .map(|provider| provider.workspace.as_str())
                         .collect::<Vec<_>>();
                     rooms.sort_unstable();
                     rooms.dedup();

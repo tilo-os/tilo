@@ -669,7 +669,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
             page.providers = vec![CatalogueProvider {
                 provider: "7".into(),
                 app_id: "so.tilo.notes".into(),
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             }];

@@ -400,7 +400,7 @@ mod owner_commit_tests {
         }
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
-        let mut workspace = crate::test_support::Workspace::in_room(
+        let mut workspace = crate::test_support::Workspace::in_workspace(
             crate::test_support::WorkspaceId(72),
             uuid::Uuid::parse_str(owner.peer().workspace_id())
                 .unwrap()
@@ -984,7 +984,7 @@ mod owner_commit_tests {
                     .admitted_workspace()
                     .ok_or("admitted owner governance unavailable")?;
                 let (name, policy) = tilo_peer_state::workspace::extract_governed_fields(doc);
-                let mut workspace = tilo_desktop_model::Workspace::in_room(
+                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
                     tilo_desktop_model::WorkspaceId(72),
                     uuid::Uuid::parse_str(peer.workspace_id())
                         .map_err(|e| e.to_string())?

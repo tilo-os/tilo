@@ -579,7 +579,7 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         let route = DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
-            record: tilo_relay::room_bots::room_record(&catalogue, CHAT),
+            record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
 
         let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
@@ -714,7 +714,7 @@ fn a_persistent_room_reopens_after_hard_stops() {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
-            record: tilo_relay::room_bots::room_record(&catalogue, CHAT),
+            record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
         let watcher = page(plain, key, cert, &host_cert, true);
         watcher.join(workspace_id).unwrap();

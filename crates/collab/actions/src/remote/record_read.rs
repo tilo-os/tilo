@@ -1,7 +1,7 @@
-//! Record reads outside their app: how an agent task's host reads a room's records
+//! Record reads outside their app: how an agent task's host reads a workspace's records
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
-//! A room's records are sealed per app: a connection holding that app's launch custody opens
+//! A workspace's records are sealed per app: a connection holding that app's launch custody opens
 //! them. An agent task is not an app. Its host is admitted as the agent acting for the person
 //! who started it, never session-delegated and holding no app's route, and reads one record at
 //! a time through this door. Each read is decided by the check every reader of a record goes
@@ -19,8 +19,8 @@ pub const RECORD_READS_UNAVAILABLE: &str = "this host reads no records outside t
 pub const RECORD_READS_FOR_TASKS: &str = "only an agent acting for the person who admitted it \
      reads records outside their app; a person's device hands its agents nothing here";
 
-/// One record of a room, by its app (the id whose records it is) and its id there (empty for
-/// the app's record of the room).
+/// One record of a workspace, by its app (the id whose records it is) and its id there (empty for
+/// the app's record of the workspace).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RecordAddress {
     pub app: String,
@@ -32,19 +32,19 @@ pub struct RecordAddress {
 pub enum RecordCopy {
     /// The record's committed content: an Automerge document, whole.
     Document(Vec<u8>),
-    /// The room holds no such record: nothing was ever written to it.
+    /// The workspace holds no such record: nothing was ever written to it.
     Absent,
 }
 
 /// A host's door for reading records outside their app.
 pub trait RecordReads: Send + Sync {
-    /// The record `address` of `caller`'s room, as `caller` may read it now.
+    /// The record `address` of `caller`'s workspace, as `caller` may read it now.
     ///
     /// # Errors
     ///
     /// [`ActionHostError::NotPermitted`] for a caller that is not an agent task acting for its
     /// person, [`ActionHostError::Refused`] for a record the caller may not read,
-    /// [`ActionHostError::Unavailable`] when the room's records cannot be read now (still
+    /// [`ActionHostError::Unavailable`] when the workspace's records cannot be read now (still
     /// arriving, or held nowhere on this device).
     fn read(&self, caller: &Caller, address: &RecordAddress)
     -> Result<RecordCopy, ActionHostError>;
@@ -73,7 +73,7 @@ pub trait RecordChanges: Send + Sync {
     /// # Errors
     ///
     /// [`ActionHostError::Refused`] for a caller that is not an agent task acting for its
-    /// person or a change the room does not allow it, [`ActionHostError::ConfirmationRequired`]
+    /// person or a change the workspace does not allow it, [`ActionHostError::ConfirmationRequired`]
     /// for one that asks its person first, [`ActionHostError::Unavailable`] when the origin
     /// cannot be reached.
     fn apply(

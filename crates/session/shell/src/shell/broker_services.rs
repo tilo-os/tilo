@@ -659,7 +659,7 @@ fn stage_launch_content(
         "launch content requires an application the launcher authenticated".to_owned()
     })?;
     let bytes = reader.read(
-        &::launcher::appdir::room_slug(Some(&caller.workspace_id)),
+        &::launcher::appdir::workspace_slug(Some(&caller.workspace_id)),
         &caller.app_id,
         content_hash,
     )?;
@@ -2148,7 +2148,7 @@ impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
         if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(person) {
             return Err(tilo_actions::remote::ActionHostError::NotPermitted);
         }
-        let Some(room) = crate::shell::state::RoomId::parse(&question.room)
+        let Some(room) = crate::shell::state::RoomId::parse(&question.workspace)
             .filter(|room| self.0.workspace_of_room(*room).is_some())
         else {
             return Err(tilo_actions::remote::ActionHostError::ConfirmationRequired);
@@ -2756,7 +2756,7 @@ mod tests {
         let bytes = b"a photograph".to_vec();
         let hash = tilo_content::hash_bytes(&bytes);
         let content = ScopedContent {
-            room: ::launcher::appdir::room_slug(Some("room-1")),
+            room: ::launcher::appdir::workspace_slug(Some("room-1")),
             hash: hash.clone(),
             bytes,
         };

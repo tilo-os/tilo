@@ -124,7 +124,7 @@ impl PeerWorkspace<'_> {
         device: &tilo_user_identity::DeviceCert,
     ) -> Result<Option<[u8; 32]>, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        use tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
+        use tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
         let doc = self
             .peer
             .core
@@ -133,7 +133,7 @@ impl PeerWorkspace<'_> {
             .ok_or("effect workspace is absent")?;
         let malformed = || "malformed effect history root".to_owned();
         let Some((Value::Object(_), history)) = doc
-            .get(&ROOT, ROOM_EFFECT_HISTORY_KEY)
+            .get(&ROOT, WORKSPACE_EFFECT_HISTORY_KEY)
             .map_err(|e| e.to_string())?
         else {
             return Ok(None);
@@ -297,7 +297,7 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<(), String> {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        use tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
+        use tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
         let mut candidate = self
             .own_effect_candidate(caller, key, now)?
             .ok_or("effect workspace is absent")?;
@@ -311,7 +311,7 @@ impl PeerWorkspaceMut<'_> {
                     .put_object(parent, key, ObjType::Map)
                     .map_err(|e| e.to_string()),
             };
-        let history = object(&mut candidate, &ROOT, ROOM_EFFECT_HISTORY_KEY)?;
+        let history = object(&mut candidate, &ROOT, WORKSPACE_EFFECT_HISTORY_KEY)?;
         let slice = object(
             &mut candidate,
             &history,

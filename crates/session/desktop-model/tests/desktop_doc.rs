@@ -43,7 +43,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 /// Workspace 1: strip 1 holds groups 10 [100, 101] and 11 [110]; strip 2
 /// holds group 20 [200].
 fn tree() -> DesktopTree {
-    let mut ws = Workspace::in_room(
+    let mut ws = Workspace::in_workspace(
         WorkspaceId(1),
         RoomId::parse("00000000-0000-4000-8000-000000000042").unwrap(),
         "Desk",
@@ -249,7 +249,7 @@ fn the_view_of_the_desk_round_trips_with_it() {
 }
 
 #[test]
-fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
+fn newly_appended_workspace_rebuilds_owner_and_revokes_default_grant() {
     let id = WorkspaceId(37);
     let room = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
     let mut doc = AutoCommit::new();
@@ -260,7 +260,7 @@ fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
 
     let rebuilt = read_back(&doc);
     let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
-    let mut expected = Workspace::in_room(id, room, "Research");
+    let mut expected = Workspace::in_workspace(id, room, "Research");
     expected.set_owner("ada");
     assert_eq!(actual.room(), room);
     assert_eq!(actual.policy, expected.policy);
@@ -283,7 +283,7 @@ fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
 }
 
 #[test]
-fn legacy_room_without_grants_map_keeps_its_owner_and_defaults() {
+fn legacy_workspace_without_grants_map_keeps_its_owner_and_defaults() {
     let (tree, mut doc) = seeded();
     let list = doc.get(&ROOT, "workspaces").unwrap().unwrap().1;
     let entry = doc.get(&list, 0).unwrap().unwrap().1;
@@ -568,7 +568,7 @@ fn the_canvas_is_recorded_so_history_can_take_it_back() {
 /// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].
 fn two_workspaces() -> DesktopTree {
     let mut desktop = tree();
-    let mut lab = Workspace::in_room(
+    let mut lab = Workspace::in_workspace(
         WorkspaceId(2),
         RoomId::parse("00000000-0000-4000-8000-000000000043").unwrap(),
         "Lab",

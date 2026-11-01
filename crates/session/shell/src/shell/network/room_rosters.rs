@@ -27,7 +27,7 @@ impl ShellNetwork {
             let Some(tree) = self.tree.try_read_or_wake(self.release_wake()) else {
                 return;
             };
-            let epoch = tree.desktop.room_epoch;
+            let epoch = tree.desktop.workspace_epoch;
             if sent.epoch == Some(epoch) {
                 return;
             }

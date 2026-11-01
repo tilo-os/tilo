@@ -126,7 +126,12 @@ fn on_relay(device: &Device) -> (Option<String>, Vec<(RoomId, bool)>) {
         hosting
             .workspaces
             .into_iter()
-            .map(|workspace| (RoomId::parse(&workspace.room).unwrap(), workspace.on_relay))
+            .map(|workspace| {
+                (
+                    RoomId::parse(&workspace.workspace).unwrap(),
+                    workspace.on_relay,
+                )
+            })
             .collect(),
     )
 }

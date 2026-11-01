@@ -1237,8 +1237,11 @@ mod tests {
     /// for making one does.
     fn open_here(handle: &DesktopHandle, room: RoomId, name: &str) {
         let mut tree = handle.read(Clone::clone);
-        tree.workspaces
-            .push(Workspace::in_room(WorkspaceId::of_room(room), room, name));
+        tree.workspaces.push(Workspace::in_workspace(
+            WorkspaceId::of_room(room),
+            room,
+            name,
+        ));
         handle.replace_tree(tree);
     }
 

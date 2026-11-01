@@ -23,13 +23,12 @@ use std::rc::{Rc, Weak};
 
 use tilo_actions::DoorError;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, RemoteActionTarget,
-    workspace_provider_room,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, RemoteActionTarget, provider_workspace,
 };
 use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext, Planned,
-    Room, Routed, SessionEnvironment, Shown, Spawner, StartAlone,
+    Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -251,7 +250,7 @@ impl Apps {
     /// A launch is decided against the windows on the workspace in front,
     /// which is the one it belongs to. A launch into another room starts its
     /// own process, as it always has: that room's windows are not showing.
-    fn starting(&self, launch: &Launch, room: &Room) -> Option<bool> {
+    fn starting(&self, launch: &Launch, room: &Workspace) -> Option<bool> {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Some(false);
         };
@@ -285,18 +284,18 @@ impl Apps {
 
     /// The room a launch from the desktop belongs to: the workspace in
     /// front, with what the person granted apps in it.
-    fn active_room(&self) -> Room {
+    fn active_room(&self) -> Workspace {
         let Some(desktop) = self.desktop.borrow().clone() else {
-            return Room::under(&runtime_dir(), String::new());
+            return Workspace::under(&runtime_dir(), String::new());
         };
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         handle.read(|tree| match tree.active_workspace() {
-            Some(workspace) => {
-                let mut room = Room::under(&runtime_dir(), workspace.room().to_string());
-                room.grants = workspace.launch_grants(unix_seconds());
-                room
+            Some(shown) => {
+                let mut launched = Workspace::under(&runtime_dir(), shown.room().to_string());
+                launched.grants = shown.launch_grants(unix_seconds());
+                launched
             }
-            None => Room::under(&runtime_dir(), String::new()),
+            None => Workspace::under(&runtime_dir(), String::new()),
         })
     }
 
@@ -304,9 +303,9 @@ impl Apps {
     /// none when it does not: a launch into a room this device does not show
     /// gets the app's manifest permissions alone.
     #[must_use]
-    pub fn room_named(&self, room: &str) -> Room {
+    pub fn room_named(&self, room: &str) -> Workspace {
         self.desktop.borrow().clone().map_or_else(
-            || Room::under(&runtime_dir(), room.to_owned()),
+            || Workspace::under(&runtime_dir(), room.to_owned()),
             |desktop| {
                 let handle = desktop.with_policy(|policy| policy.handle().clone());
                 handle.read(|tree| {
@@ -314,7 +313,7 @@ impl Apps {
                         .workspaces
                         .iter()
                         .find(|workspace| workspace.room().to_string() == room);
-                    let mut launched = Room::under(&runtime_dir(), room.to_owned());
+                    let mut launched = Workspace::under(&runtime_dir(), room.to_owned());
                     if let Some(workspace) = held {
                         launched.grants = workspace.launch_grants(unix_seconds());
                     }
@@ -329,7 +328,7 @@ impl Apps {
     ///
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
-    pub fn start(&self, launch: &Launch, room: &Room) -> Result<(), DoorError> {
+    pub fn start(&self, launch: &Launch, room: &Workspace) -> Result<(), DoorError> {
         let Some(new_window) = self.starting(launch, room) else {
             return Ok(());
         };
@@ -342,7 +341,7 @@ impl Apps {
     ///
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
-    pub fn start_beside(&self, launch: &Launch, room: &Room) -> Result<(), DoorError> {
+    pub fn start_beside(&self, launch: &Launch, room: &Workspace) -> Result<(), DoorError> {
         self.start_window(launch, room, true)
     }
 
@@ -352,14 +351,14 @@ impl Apps {
     fn start_window(
         &self,
         launch: &Launch,
-        room: &Room,
+        room: &Workspace,
         new_window: bool,
     ) -> Result<(), DoorError> {
         let planned = {
             let state = self.state.borrow();
             let context = PlanContext {
                 environment: &state.environment,
-                room,
+                workspace: room,
                 launcher: state.launcher.clone(),
                 identity: state.identity.clone(),
                 render_node: state.render_node.clone(),
@@ -491,7 +490,7 @@ impl AppActions for Apps {
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX);
-        match (open, app, workspace_provider_room(&target.provider)) {
+        match (open, app, provider_workspace(&target.provider)) {
             (true, Some(app), Some(room)) => {
                 let room = self.room_named(room);
                 self.start(
@@ -535,7 +534,7 @@ impl AppActions for Apps {
                 desktop_id: desktop_id.to_owned(),
                 open: None,
             },
-            &Room::under(&runtime_dir(), String::new()),
+            &Workspace::under(&runtime_dir(), String::new()),
         )
     }
 }

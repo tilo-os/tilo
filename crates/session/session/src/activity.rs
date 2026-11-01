@@ -257,7 +257,7 @@ impl HistorySource for Activity {
         let Some(watch) = self.room_records(room) else {
             return Vec::new();
         };
-        let held = tree.room_records_held.get(&room);
+        let held = tree.workspace_records_held.get(&room);
         let records = watch.get();
         records
             .iter()

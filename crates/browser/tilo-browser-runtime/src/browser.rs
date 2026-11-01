@@ -594,7 +594,7 @@ impl Desktop {
         let arrivals = self.here.borrow_mut().take_arrivals(crate::shell::now_ms());
         for name in arrivals {
             self.notify(&tilo_desktop_surface::i18n::t_args(
-                "room-notice-joined",
+                "workspace-notice-joined",
                 &[("name", name.into())],
             ));
         }

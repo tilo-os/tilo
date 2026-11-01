@@ -360,7 +360,7 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
             // workspace actions retain their explicit stable route instead.
             let peer = entry.provider.parse::<u64>().ok();
             if peer.is_none()
-                && tilo_actions::remote::workspace_provider_room(&entry.provider).is_none()
+                && tilo_actions::remote::provider_workspace(&entry.provider).is_none()
                 && !entry.provider.starts_with("launch:")
                 && tilo_actions::remote::application_provider(&entry.provider).is_none()
             {

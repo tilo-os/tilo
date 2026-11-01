@@ -86,7 +86,7 @@ impl ActionHost for Workspace {
             let listed = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
                 app_id: app_id.into(),
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             };

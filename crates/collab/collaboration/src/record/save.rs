@@ -1,8 +1,8 @@
-//! A record's save state: its on-disk copy in a room this device governs,
+//! A record's save state: its on-disk copy in a workspace this device governs,
 //! and whether what the record holds has reached it.
 //!
 //! The copy is the store's (`app_state`): one document per record,
-//! keyed by package, room and record, written by its [`DocWriter`]. The
+//! keyed by package, workspace and record, written by its [`DocWriter`]. The
 //! toolkit's record store (`ui::record`) opens and reports records through
 //! these; a process without the toolkit does the same.
 
@@ -72,11 +72,11 @@ impl RecordSaveStatus {
     }
 }
 
-/// The on-disk copy of the record `record_key` of `package` in the room
+/// The on-disk copy of the record `record_key` of `package` in the workspace
 /// `home`, as a shared writer in `documents`.
 ///
 /// # Errors
-/// Refuses a package, room or record name that is not a valid identity, and
+/// Refuses a package, workspace or record name that is not a valid identity, and
 /// a store that cannot open the document.
 pub fn record_document(
     documents: &Rc<dyn DurableStore>,
@@ -91,32 +91,32 @@ pub fn record_document(
     )
 }
 
-/// The on-disk copy of the room document of `package` in the room `room`:
+/// The on-disk copy of the workspace document of `package` in the workspace `workspace`:
 /// what an app that keeps one record for the workspace ([`StorageKey::workspace_index`])
 /// holds there, as a shared writer in `documents`.
 ///
 /// # Errors
-/// Refuses a package or room name that is not a valid identity, and a store
+/// Refuses a package or workspace name that is not a valid identity, and a store
 /// that cannot open the document.
-pub fn room_document(
+pub fn workspace_document(
     documents: &Rc<dyn DurableStore>,
     package: &str,
-    room: &str,
+    workspace: &str,
 ) -> Result<DocStore, StoreError> {
-    app_state::validate_workspace_identity(package, room)?;
+    app_state::validate_workspace_identity(package, workspace)?;
     DocStore::shared(
         Rc::clone(documents),
-        StorageKey::workspace_index(package, room),
+        StorageKey::workspace_index(package, workspace),
     )
 }
 
-/// Open the document `store` holds, as a room this device governs reads it:
+/// Open the document `store` holds, as a workspace this device governs reads it:
 /// from its on-disk copy, with a writer that keeps it there. A document that
-/// left the room ([`super::retirement`]) starts over.
+/// left the workspace ([`super::retirement`]) starts over.
 pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     let mut doc = store.load_or_new();
     // The app's document moved to another workspace, which now holds it
-    // with its history; this room's app starts over.
+    // with its history; this workspace's app starts over.
     if super::retirement::is_retired(&doc) {
         doc = store.new_document();
         if let Err(error) = store.save(&mut doc) {
@@ -155,8 +155,8 @@ pub fn open_stored_adopting(
     open_stored(store)
 }
 
-/// Open the document `store` holds, as a room another host governs reads it:
-/// the broker's committed read of the room (`read`) merged into the on-disk
+/// Open the document `store` holds, as a workspace another host governs reads it:
+/// the broker's committed read of the workspace (`read`) merged into the on-disk
 /// copy, which keeps the merged graph from then on.
 ///
 /// # Errors
@@ -170,7 +170,7 @@ pub fn open_with_committed_read(
     let stored = store.load_complete().map_err(|e| e.to_string())?;
     let had_stored = stored.is_some();
     let mut doc = stored.unwrap_or_else(|| {
-        // The room's record carries its own genesis, schema version and
+        // The workspace's record carries its own genesis, schema version and
         // all: a stamp made here would be a second, unnamed creation of it.
         let mut fresh = store.new_document();
         fresh.rollback();

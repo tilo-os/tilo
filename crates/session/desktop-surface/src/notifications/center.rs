@@ -2652,8 +2652,8 @@ impl NotificationCenter {
             ],
         );
         let (w, h) = text_renderer.measure_style(&position, None, &caption_style);
-        let room = older.x0 - newer.x1 - 2.0 * qs::RELATED_GAP;
-        if f64::from(w) <= room {
+        let workspace = older.x0 - newer.x1 - 2.0 * qs::RELATED_GAP;
+        if f64::from(w) <= workspace {
             text_renderer.draw_style(
                 scene,
                 &position,

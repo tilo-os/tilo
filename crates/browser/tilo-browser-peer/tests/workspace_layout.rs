@@ -17,7 +17,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
-use tilo_desktop_model::projection::RoomLayout;
+use tilo_desktop_model::projection::WorkspaceLayout;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, start_peer, start_workspace_host, wait_for};
@@ -73,7 +73,7 @@ async fn a_page_keeps_to_its_workspaces_layout_scope() {
     host.relay
         .rooms()
         .unwrap()
-        .set_layout(&workspace.room, RoomLayout::Personal)
+        .set_layout(&workspace.room, WorkspaceLayout::Personal)
         .await
         .unwrap();
     heard(&page, &workspace.room, true).await;
@@ -81,7 +81,7 @@ async fn a_page_keeps_to_its_workspaces_layout_scope() {
     host.relay
         .rooms()
         .unwrap()
-        .set_layout(&workspace.room, RoomLayout::Shared)
+        .set_layout(&workspace.room, WorkspaceLayout::Shared)
         .await
         .unwrap();
     heard(&page, &workspace.room, false).await;

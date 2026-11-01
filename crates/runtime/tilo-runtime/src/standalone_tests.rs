@@ -47,7 +47,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
-    let mut workspace = Workspace::in_room(WorkspaceId(41), placed, "Execution isolation");
+    let mut workspace = Workspace::in_workspace(WorkspaceId(41), placed, "Execution isolation");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree {
@@ -484,7 +484,7 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
         return;
     };
     let request = |workspace: &str| tilo_actions::offload::OffloadRequest {
-        room: workspace.to_owned(),
+        workspace: workspace.to_owned(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {

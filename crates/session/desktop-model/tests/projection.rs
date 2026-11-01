@@ -75,9 +75,9 @@ fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)
 }
 
 /// Alice's strip holds her notes and Bob's terminal, side by side.
-fn room() -> (AutoCommit, Workspace) {
+fn workspace() -> (AutoCommit, Workspace) {
     let room = RoomId::new();
-    let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Team");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Team");
     let mut strip = Strip::new(StripId(compose_id(ALICE, 1)), "Main");
     strip.window_groups.push(group(
         compose_id(ALICE, 2),
@@ -96,7 +96,7 @@ fn room() -> (AutoCommit, Workspace) {
 
 #[test]
 fn a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leave() {
-    let (doc, workspace) = room();
+    let (doc, workspace) = workspace();
     let notes = compose_id(ALICE, 3);
     let terminal = compose_id(BOB, 3);
 
@@ -121,7 +121,7 @@ fn a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leav
 
 #[test]
 fn a_window_added_in_someone_elses_name_is_an_attribution() {
-    let (doc, workspace) = room();
+    let (doc, workspace) = workspace();
     let mut added = workspace;
     let forged = compose_id(BOB, 9);
     added.strips[0]
@@ -176,14 +176,14 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
 /// The workspace's owner holds what they made on its desktop as every member
 /// does: their windows are not released to whoever writes there.
 #[test]
-fn the_rooms_owner_is_among_its_members() {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new("room", "owner".to_owned());
+fn the_workspaces_owner_is_among_its_members() {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "owner".to_owned());
     policy
         .members
         .insert("ada".into(), tilo_action_policy::Role::Editor);
     let mut doc = AutoCommit::new();
-    tilo_desktop_model::projection::project_room_policy(&mut doc, &policy).unwrap();
-    let members = tilo_desktop_model::projection::room_members(&doc).unwrap();
+    tilo_desktop_model::projection::project_workspace_policy(&mut doc, &policy).unwrap();
+    let members = tilo_desktop_model::projection::workspace_members(&doc).unwrap();
     assert!(members.contains("owner"), "{members:?}");
     assert!(members.contains("ada"), "{members:?}");
 }

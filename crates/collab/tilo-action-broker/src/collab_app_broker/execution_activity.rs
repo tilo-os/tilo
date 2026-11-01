@@ -226,7 +226,7 @@ impl ActivityTarget {
         // person can retire it without changing the actor of its running jobs.
         self.scope.as_ref().is_some_and(|scope| {
             caller.execution_lease().as_ref() == Some(&scope.lifetime)
-                && caller.room() == Some(self.route.cluster_id.as_str())
+                && caller.workspace() == Some(self.route.cluster_id.as_str())
         })
     }
 

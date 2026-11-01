@@ -11,7 +11,7 @@
 //! unreachable worker only ever costs time, never a different answer.
 //!
 //! The inputs a job may read are only the content the invocation's own
-//! content parameters name ([`content_inputs`]), as the invoker's room
+//! content parameters name ([`content_inputs`]), as the invoker's workspace
 //! reaches it; never a path, an environment or an argument vector.
 
 use std::future::Future;
@@ -25,8 +25,8 @@ use crate::{
 /// One admitted invocation of an offloadable action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OffloadRequest {
-    /// The room (workspace) it was invoked in.
-    pub room: String,
+    /// The workspace it was invoked in.
+    pub workspace: String,
     pub app_id: String,
     /// The invoked action.
     pub address: ActionAddress,

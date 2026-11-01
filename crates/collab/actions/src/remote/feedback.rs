@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedbackDestination {
-    pub room: String,
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     pub provider: String,
     pub channel: String,
 }
@@ -38,7 +39,7 @@ pub struct FeedbackAdmission {
     pub reporter_user: String,
     pub reporter_device: String,
     pub standing: serde_json::Value,
-    /// The room's current sandbox capabilities.
+    /// The workspace's current sandbox capabilities.
     pub sandbox: serde_json::Value,
     pub unix_time: u64,
 }
@@ -71,7 +72,7 @@ mod tests {
             correlation: 7,
             query: FeedbackQuery {
                 destination: FeedbackDestination {
-                    room: "existing-room".into(),
+                    workspace: "existing-workspace".into(),
                     provider: "record:so.tilo.chat:".into(),
                     channel: "existing-channel".into(),
                 },
@@ -89,7 +90,7 @@ mod tests {
                 result: Err(ActionHostError::NotPermitted)
             }
         ));
-        let untrusted = serde_json::json!({"destination":{"room":"existing-room","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
+        let untrusted = serde_json::json!({"destination":{"workspace":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
         assert!(serde_json::from_value::<FeedbackQuery>(untrusted).is_err());
     }
 }

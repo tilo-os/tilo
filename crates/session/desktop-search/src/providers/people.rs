@@ -33,16 +33,16 @@ pub fn people_kind() -> ResourceKind {
 }
 
 pub struct People {
-    /// The room of the workspace they are in.
-    room: String,
+    /// The workspace they are in.
+    workspace: String,
     people: Vec<PersonEntry>,
 }
 
 impl People {
     #[must_use]
-    pub fn new(room: impl Into<String>, people: Vec<PersonEntry>) -> Self {
+    pub fn new(workspace: impl Into<String>, people: Vec<PersonEntry>) -> Self {
         Self {
-            room: room.into(),
+            workspace: workspace.into(),
             people,
         }
     }
@@ -77,8 +77,13 @@ impl Source for People {
                     score,
                     icon: Some(ui::icons::Icon::User),
                     target: Target::Invoke(Box::new(
-                        InvokeTarget::action(DESKTOP_APP, &self.room, PEOPLE_RESOURCE, SHOW_PERSON)
-                            .with_argument(PERSON_PARAM, person.id.clone()),
+                        InvokeTarget::action(
+                            DESKTOP_APP,
+                            &self.workspace,
+                            PEOPLE_RESOURCE,
+                            SHOW_PERSON,
+                        )
+                        .with_argument(PERSON_PARAM, person.id.clone()),
                     )),
                 })
             })
@@ -93,7 +98,7 @@ mod tests {
     #[test]
     fn a_collaborator_is_found_by_name_and_shown_by_the_chromes_address() {
         let people = People::new(
-            "room",
+            "workspace",
             vec![PersonEntry {
                 id: "mara".into(),
                 name: "Mara Lind".into(),

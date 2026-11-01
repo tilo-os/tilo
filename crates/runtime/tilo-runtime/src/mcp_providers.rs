@@ -14,7 +14,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut listed = page
             .providers
             .into_iter()
-            .filter(|provider| provider.browsable && provider.room == self.workspace)
+            .filter(|provider| provider.browsable && provider.workspace == self.workspace)
             .map(|provider| {
                 let peer = provider.provider.parse::<u64>().ok();
                 let mut entry = json!({

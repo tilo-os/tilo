@@ -14,7 +14,7 @@
 //! it is no longer anyone's own, and whoever writes there closes or moves
 //! it as their own, so a window of someone gone never stays stuck on
 //! everyone's desktop. Who is still in the workspace is its governance's member
-//! list ([`crate::projection::room_members`]).
+//! list ([`crate::projection::workspace_members`]).
 //!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of
@@ -99,11 +99,11 @@ pub struct Touched {
     pub owner: Option<String>,
 }
 
-/// The node `touched` is decided on in `room`:
+/// The node `touched` is decided on in `workspace`:
 /// `workspace › desktop app › desktop › desktop › item › moderation › act`.
 #[must_use]
-pub fn act_node(room: &str, touched: &Touched) -> TreePath {
-    TreePath::workspace(room)
+pub fn act_node(workspace: &str, touched: &Touched) -> TreePath {
+    TreePath::workspace(workspace)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
         .resource(DESKTOP_RECORD)
@@ -112,13 +112,13 @@ pub fn act_node(room: &str, touched: &Touched) -> TreePath {
         .action(touched.act.verb())
 }
 
-/// Every strip's and window's moderation on `room`'s shared desktop: what a
+/// Every strip's and window's moderation on `workspace`'s shared desktop: what a
 /// desktop asks the workspace whether its person may do before it offers to
 /// close or move what others made. A grant on one window alone does not
 /// cover it; the workspace's moderators' does.
 #[must_use]
-pub fn moderation_node(room: &str) -> TreePath {
-    TreePath::workspace(room)
+pub fn moderation_node(workspace: &str) -> TreePath {
+    TreePath::workspace(workspace)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
         .resource(DESKTOP_RECORD)
@@ -447,7 +447,7 @@ mod tests {
                 .map(|t| (t.id, t.act))
                 .collect::<Vec<_>>(),
             vec![(10, Act::Close)],
-            "the room's own strip is nobody's to release"
+            "the workspace's own strip is nobody's to release"
         );
     }
 
@@ -554,10 +554,10 @@ mod tests {
             act: Act::Close,
             owner: Some(BEN.into()),
         };
-        let node = act_node("room-1", &touched);
+        let node = act_node("workspace-1", &touched);
         assert_eq!(
             node,
-            TreePath::workspace("room-1")
+            TreePath::workspace("workspace-1")
                 .app(DESKTOP_APP)
                 .kind(DESKTOP_KIND)
                 .resource(DESKTOP_RECORD)
@@ -566,11 +566,11 @@ mod tests {
                 .action("close")
         );
         // The roles' moderation rule covers it: Moderators may, Editors not.
-        let moderation = tilo_action_policy::roles::moderation("room-1");
+        let moderation = tilo_action_policy::roles::moderation("workspace-1");
         assert!(moderation.covers(&node));
         // And the node a desktop asks about, which no one window's grant
         // covers.
-        assert!(moderation.covers(&moderation_node("room-1")));
-        assert!(!node.covers(&moderation_node("room-1")));
+        assert!(moderation.covers(&moderation_node("workspace-1")));
+        assert!(!node.covers(&moderation_node("workspace-1")));
     }
 }

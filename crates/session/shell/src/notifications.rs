@@ -465,7 +465,7 @@ impl NotificationBridge {
                     snoozed.lock().ok().map(|alarms| {
                         alarms
                             .iter()
-                            .filter(|alarm| alarm.target.room == room)
+                            .filter(|alarm| alarm.target.workspace == room)
                             .cloned()
                             .collect()
                     })

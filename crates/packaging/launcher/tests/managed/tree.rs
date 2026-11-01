@@ -371,7 +371,7 @@ fn qualify_tree(owned_stop: bool) {
     let (package, trust) = fixture_package(root.path());
     let runtime = fixture_runtime(root.path());
     let binding = ManagedBinding {
-        room: uuid::Uuid::new_v4().to_string(),
+        workspace: uuid::Uuid::new_v4().to_string(),
         app: "so.tilo.agent".into(),
         agent: "tree-fixture".into(),
         scope: ManagedLaunchScope::Task {

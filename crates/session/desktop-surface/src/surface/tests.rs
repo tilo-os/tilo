@@ -1461,7 +1461,7 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
     );
 }
 
-fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
+fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
     tilo_desktop_model::WindowGroup {
         id: group,
         tabs: vec![Tab {
@@ -1505,7 +1505,7 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     for (group, tab, title) in windows {
         incoming.workspaces[0].strips[0]
             .window_groups
-            .push(room_window(group, tab, title));
+            .push(workspace_window(group, tab, title));
     }
     handle.replace_shared_tree(incoming, &[]);
     let kim = ui::widget::TabHolder {
@@ -1609,7 +1609,7 @@ fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     for (group, tab) in [(9_100_100, own), (9_100_200, theirs)] {
         after.workspaces[0].strips[0]
             .window_groups
-            .push(room_window(group, tab, "Notes"));
+            .push(workspace_window(group, tab, "Notes"));
     }
     assert_eq!(
         arrivals::opened_elsewhere(&before, &after, &[own]),
@@ -1629,8 +1629,8 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     frame.relayout();
-    let room = handle.read(Clone::clone);
-    let mut before = room.clone();
+    let workspace = handle.read(Clone::clone);
+    let mut before = workspace.clone();
     before.workspaces[0].strips[0].window_groups.truncate(1);
     handle.replace_tree(before);
     frame.relayout();
@@ -1641,7 +1641,7 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     .unwrap();
     handle.dispatch(&open, "g").unwrap();
     // The workspace's desktop, with its window of the app, lands first.
-    handle.replace_tree(room);
+    handle.replace_tree(workspace);
     for _ in 0..3 {
         frame.relayout();
     }

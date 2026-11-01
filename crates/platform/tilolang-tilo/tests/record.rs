@@ -567,7 +567,7 @@ fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
     );
     let heads = record.doc().clone().get_heads();
     let mut store =
-        collaboration::record::save::room_document(&documents, APP, &workspace_id.to_string())
+        collaboration::record::save::workspace_document(&documents, APP, &workspace_id.to_string())
             .unwrap();
     drop(record);
     let mut stored = store

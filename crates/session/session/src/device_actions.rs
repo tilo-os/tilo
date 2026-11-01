@@ -122,7 +122,7 @@ impl OwnDeviceActions for DeviceActions {
         // The workspace the two devices are to share: the one the app acts
         // in, which is where the other device decides whether this one may
         // act at all.
-        let Some(workspace) = caller.room() else {
+        let Some(workspace) = caller.workspace() else {
             return Err(ActionHostError::NotPermitted);
         };
         let device = self.device(checked.device, workspace)?;
@@ -600,7 +600,7 @@ mod tests {
             Some(&here.1.device_public_key),
             "the device that asked, not the one that answered"
         );
-        assert_eq!(seen[0].room(), Some(ROOM));
+        assert_eq!(seen[0].workspace(), Some(ROOM));
 
         router.shutdown().await.expect("the router stops");
         here_endpoint.close().await;

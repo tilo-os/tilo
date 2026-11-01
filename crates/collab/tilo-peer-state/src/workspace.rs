@@ -244,7 +244,7 @@ pub fn extract_governed_fields(
     let workspace = text("room").unwrap_or_default();
     (
         text("name"),
-        tilo_desktop_model::projection::room_policy_of(candidate, &workspace),
+        tilo_desktop_model::projection::workspace_policy_of(candidate, &workspace),
     )
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
@@ -292,7 +292,7 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
 /// Whatever a key holds counts, so a value of another shape than a writer
 /// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
-    use tilo_desktop_model::projection::{ROOM_NAME_KEY, ROOM_PRESETS_KEY};
+    use tilo_desktop_model::projection::{WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY};
     let Some(doc) = doc else {
         return Vec::new();
     };
@@ -304,7 +304,7 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
         Value::Object(kind) => format!("{kind:?}").into_bytes(),
     };
     let mut settings = Vec::new();
-    for key in [ROOM_NAME_KEY, ROOM_PRESETS_KEY] {
+    for key in [WORKSPACE_NAME_KEY, WORKSPACE_PRESETS_KEY] {
         let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
             continue;
         };
@@ -320,9 +320,9 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
     settings
 }
 /// The key holding effect receipts: `{person → {invocation id → JSON receipt}}`.
-const EFFECT_RECEIPTS: &str = tilo_desktop_model::projection::ROOM_EFFECT_RECEIPTS_KEY;
+const EFFECT_RECEIPTS: &str = tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY;
 /// The key anchoring archived receipts: `{person → {device → root}}`.
-const EFFECT_HISTORY: &str = tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
+const EFFECT_HISTORY: &str = tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
 #[cfg(test)]
 thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 

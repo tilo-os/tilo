@@ -80,7 +80,7 @@ impl DeviceMeshModel {
                 hosting
                     .workspaces
                     .iter_mut()
-                    .find(|workspace| workspace.room == room)
+                    .find(|workspace| workspace.workspace == room)
             })
             .ok_or("that workspace is not hosted on this device")?;
         workspace.on_relay = on;
@@ -165,11 +165,11 @@ impl Page<'_> {
             .workspaces
             .iter()
             .map(|workspace| {
-                let room = workspace.room.clone();
+                let room = workspace.workspace.clone();
                 self.switch_on_row(
                     workspace.name.clone(),
                     t_args("mesh-home-relay-also", &[("relay", relay.into())]),
-                    &format!("device_mesh.home_relay.{}", workspace.room),
+                    &format!("device_mesh.home_relay.{}", workspace.workspace),
                     workspace.on_relay,
                     &home_relay_row(workspace, relay).into_resource(),
                     effect(DeviceMeshEffect::SET_HOME_RELAY_HOSTING)
@@ -197,11 +197,11 @@ pub(super) fn home_relay_row_id(room: &str) -> String {
 /// well (`on`, which its caller gives), or no longer.
 fn home_relay_row(workspace: &HostedWorkspace, relay: &str) -> LiveRow {
     let switch = SettingsEffect::from(DeviceMeshEffect::SetHomeRelayHosting {
-        room: workspace.room.clone(),
+        room: workspace.workspace.clone(),
         on: true,
     });
     let row = LiveRow::new(
-        home_relay_row_id(&workspace.room),
+        home_relay_row_id(&workspace.workspace),
         "settings.home-relay-workspace",
         workspace.name.clone(),
     )

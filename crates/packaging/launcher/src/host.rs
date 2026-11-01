@@ -28,7 +28,7 @@
 //!
 //! A host application runs with the user's own identity, files and
 //! network, exactly as under any other desktop: no `TILO_WORKSPACE_ID`
-//! (no collaboration room, no per-room partition), no capability file
+//! (no collaboration workspace, no per-workspace partition), no capability file
 //! (workspace grants describe what a *sandboxed* app may reach, and
 //! passing them here would assert a limit that doesn't exist), and no
 //! `TILO_APP_DIR` (it writes to the user's real `$HOME`).
@@ -166,7 +166,7 @@ fn spawn_with(
     // developer's terminal will all see it.
     eprintln!(
         "tilo-launcher: running host application {} ({}) UNCONFINED — \
-         no Tilo sandbox, no workspace room, no per-room state. {} {}",
+         no Tilo sandbox, no workspace, no per-workspace state. {} {}",
         launch.desktop_id,
         launch.source.label(),
         launch.program.display(),

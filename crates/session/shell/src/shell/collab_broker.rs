@@ -1375,7 +1375,7 @@ pub(crate) fn answer_remote_actions(
         if let tilo_actions::remote::RemoteActionMessage::RecordRequest { correlation, query } =
             &request.message
         {
-            let workspace = crate::shell::state::RoomId::parse(&query.room)
+            let workspace = crate::shell::state::RoomId::parse(&query.workspace)
                 .and_then(|room| net.workspace_of_room(room));
             let result = crate::shell::record_hydration::serve(
                 workspace.as_ref(),

@@ -42,7 +42,7 @@ pub struct Snapshot {
     /// Locked secret-bearing entries, matched only to offer unlocking.
     locked: Vec<IndexedEntry>,
     locked_index: SearchIndex,
-    /// `(app, room, resource)` of every visible entry.
+    /// `(app, workspace, resource)` of every visible entry.
     covered: HashSet<(String, String, String)>,
     /// The boost its app gave each visible entry that has one, by row id.
     boosts: HashMap<String, i32>,
@@ -56,7 +56,7 @@ impl Snapshot {
             .map(|indexed| {
                 (
                     indexed.slot.app.clone(),
-                    indexed.slot.room.clone(),
+                    indexed.slot.workspace.clone(),
                     indexed.entry.resource.clone(),
                 )
             })
@@ -125,7 +125,7 @@ fn field_weight(weight: IndexWeight) -> FieldWeight {
 pub fn entry_id(slot: &SlotKey, key: &str) -> String {
     format!(
         "{}{ID_SEPARATOR}{}{ID_SEPARATOR}{}{ID_SEPARATOR}{key}",
-        slot.app, slot.room, slot.record
+        slot.app, slot.workspace, slot.record
     )
 }
 
@@ -140,13 +140,13 @@ pub fn unlock_app(id: &str) -> Option<&str> {
 pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
     let mut parts = id.splitn(4, ID_SEPARATOR);
     let app = parts.next()?;
-    let room = parts.next()?;
+    let workspace = parts.next()?;
     let record = parts.next()?;
     let key = parts.next()?;
     Some((
         SlotKey {
             app: app.to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             record: record.to_owned(),
         },
         key,
@@ -159,9 +159,9 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
 pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
     match &entry.action {
         Some(action) => {
-            InvokeTarget::action(&slot.app, &slot.room, &action.resource, &action.action)
+            InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
         }
-        None => InvokeTarget::open(&slot.app, &slot.room, &entry.resource),
+        None => InvokeTarget::open(&slot.app, &slot.workspace, &entry.resource),
     }
 }
 
@@ -206,14 +206,16 @@ impl IndexedContent {
         }
     }
 
-    /// Whether this source finds `resource` of `app` in `room`, whether or
+    /// Whether this source finds `resource` of `app` in `workspace`, whether or
     /// not the app runs: one resource is one row, so a window's own row for
     /// it gives way.
     #[must_use]
-    pub fn covers(&self, app: &str, room: &str, resource: &str) -> bool {
-        self.current()
-            .covered
-            .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
+    pub fn covers(&self, app: &str, workspace: &str, resource: &str) -> bool {
+        self.current().covered.contains(&(
+            app.to_owned(),
+            workspace.to_owned(),
+            resource.to_owned(),
+        ))
     }
 
     /// The boost its app gave row `id`: it orders the row among the app's
@@ -343,7 +345,7 @@ impl Source for IndexedContent {
             return Vec::new();
         }
         let snapshot = self.current();
-        // Two rooms' copies of one app's entry (a vault opened in each) are
+        // Two workspaces' copies of one app's entry (a vault opened in each) are
         // one row.
         let mut shown: HashSet<(&str, &str)> = HashSet::new();
         let mut out: Vec<Hit> = snapshot
@@ -404,7 +406,7 @@ mod tests {
         for delta in publisher.publish(state, entries) {
             index
                 .publish(
-                    "room",
+                    "workspace",
                     app,
                     "tab:0001",
                     &delta.encode().expect("a delta encodes"),
@@ -434,7 +436,7 @@ mod tests {
             tilo_actions::ActionAddress::new("n1", OPEN_ACTION)
         );
         assert_eq!(target.arguments[OPEN_ANCHOR], "n1");
-        assert!(content.covers("so.tilo.notes", "room", "n1"));
+        assert!(content.covers("so.tilo.notes", "workspace", "n1"));
         assert_eq!(
             content
                 .resolve(&hits[0].id, "")

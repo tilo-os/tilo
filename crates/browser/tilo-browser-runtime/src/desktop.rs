@@ -1000,7 +1000,7 @@ fn linked_accounts(
 ) -> tilo_app::linked_accounts::LinkedAccounts {
     let (woken, notify) = (shared.clone(), Arc::clone(notify));
     tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
-        tilo_app::linked_accounts::RoomAccounts::new(
+        tilo_app::linked_accounts::WorkspaceAccounts::new(
             Rc::new(shared.record_actions.clone()),
             Rc::new(move || {
                 woken.wake();
@@ -1010,7 +1010,7 @@ fn linked_accounts(
     ))
 }
 
-impl tilo_app::linked_accounts::RoomRecordActions for HostRecordActions {
+impl tilo_app::linked_accounts::WorkspaceRecordActions for HostRecordActions {
     fn apps(&self) -> Vec<String> {
         let workspace_apps = self
             .peer
@@ -1400,7 +1400,10 @@ impl Tiles {
         store: &RecordStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<RecordId>), String> {
-        let default = RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone());
+        let default = RecordCheckout::new(
+            RecordId::workspace_default(),
+            definition.record_kind.clone(),
+        );
         let taken = self
             .shared
             .records

@@ -82,7 +82,11 @@ fn fixture() -> Fixture {
     let _ = host.take_structure_dirty();
     let mut room_doc = AutoCommit::new();
     room_doc
-        .put(automerge::ROOT, projection::ROOM_ID_KEY, room.to_string())
+        .put(
+            automerge::ROOT,
+            projection::WORKSPACE_ID_KEY,
+            room.to_string(),
+        )
         .unwrap();
     room_doc.commit();
     Fixture {
@@ -127,8 +131,8 @@ impl Fixture {
         self.room_doc
             .put(
                 automerge::ROOT,
-                projection::ROOM_LAYOUT_KEY,
-                projection::RoomLayout::Personal.id(),
+                projection::WORKSPACE_LAYOUT_KEY,
+                projection::WorkspaceLayout::Personal.id(),
             )
             .unwrap();
         let owners = self
@@ -149,7 +153,7 @@ impl Fixture {
     /// writes a resource share.
     fn host_records_share(&mut self) {
         let room = self.room.to_string();
-        let mut policy = projection::room_policy_of(&self.room_doc, &room);
+        let mut policy = projection::workspace_policy_of(&self.room_doc, &room);
         policy.grants.extend(
             tilo_action_policy::share::share_grants(
                 &room,
@@ -160,18 +164,18 @@ impl Fixture {
             )
             .expect("a window is one resource of the room"),
         );
-        projection::project_room_policy(&mut self.room_doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut self.room_doc, &policy).unwrap();
         self.take_in_room();
     }
 
     /// The room's host records the share's end.
     fn host_records_end(&mut self) {
         let room = self.room.to_string();
-        let mut policy = projection::room_policy_of(&self.room_doc, &room);
+        let mut policy = projection::workspace_policy_of(&self.room_doc, &room);
         policy.grants.retain(|grant| {
             !tilo_action_policy::share::is_of_share(grant, &window_share_id(self.window.tab))
         });
-        projection::project_room_policy(&mut self.room_doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut self.room_doc, &policy).unwrap();
         self.take_in_room();
     }
 
@@ -524,7 +528,7 @@ fn a_shared_tilo_apps_window_shares_again_what_it_moves_to() {
         .declare_tab_toolbar_for_tests(tab, Some(at("page-1")));
     // The room's host records the window's share, at the note it is at.
     let records_at = |f: &mut Fixture, shows: &WindowShows| {
-        let mut policy = projection::room_policy_of(&f.room_doc, &room);
+        let mut policy = projection::workspace_policy_of(&f.room_doc, &room);
         let id = window_shows_share_id(tab);
         policy
             .grants
@@ -544,7 +548,7 @@ fn a_shared_tilo_apps_window_shares_again_what_it_moves_to() {
                 .expect("one resource of the room"),
             );
         }
-        projection::project_room_policy(&mut f.room_doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut f.room_doc, &policy).unwrap();
         f.take_in_room();
     };
     records_at(&mut f, &note("page-1"));

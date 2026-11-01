@@ -177,7 +177,7 @@ impl NativePersonalSession {
         let (certificate, _) = self.host.current_native_material(self.workspace)?;
         if collab_types::personal_cluster(&certificate.user_public_key).to_string()
             != room.to_string()
-            || self.caller.room() != Some(room.to_string().as_str())
+            || self.caller.workspace() != Some(room.to_string().as_str())
         {
             return Err("retained launch differs from certified personal room".into());
         }

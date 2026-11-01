@@ -46,14 +46,14 @@ fn group_with(tab: Tab) -> WindowGroup {
 }
 
 fn workspace(room: RoomId, tab: Tab) -> Workspace {
-    let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Home");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Home");
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(group_with(tab));
     workspace.strips.push(strip);
     workspace
 }
 
-/// The record of `room` holding `tab`, as a peer wrote it.
+/// The record of `workspace` holding `tab`, as a peer wrote it.
 fn record(room: RoomId, tab: Tab) -> AutoCommit {
     let workspace = workspace(room, tab);
     let mut doc = AutoCommit::new();

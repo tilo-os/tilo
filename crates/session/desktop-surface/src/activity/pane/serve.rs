@@ -413,9 +413,9 @@ impl WorkspaceActivityPane {
                     text: self.morning_payload_text(&key),
                     refreshable: self
                         .host
-                        .morning_payload(&self.room, source)
+                        .morning_payload(&self.workspace, source)
                         .is_some_and(|payload| payload.refreshable),
-                    status: self.host.morning_command_status(&self.room, source),
+                    status: self.host.morning_command_status(&self.workspace, source),
                     key,
                 }
             })

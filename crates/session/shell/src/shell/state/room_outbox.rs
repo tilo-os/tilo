@@ -127,11 +127,14 @@ impl Outgoing {
     /// Whether `document`, the room's admitted document, carries this entry.
     fn carried_by(&self, document: &automerge::AutoCommit) -> bool {
         if let Some(capability) = &self.takes_back {
-            return !tilo_desktop_model::projection::room_sandbox_of(document).contains(capability);
+            return !tilo_desktop_model::projection::workspace_sandbox_of(document)
+                .contains(capability);
         }
         if let Some(revoked) = &self.revokes {
-            let policy =
-                tilo_desktop_model::projection::room_policy_of(document, &self.room.to_string());
+            let policy = tilo_desktop_model::projection::workspace_policy_of(
+                document,
+                &self.room.to_string(),
+            );
             return !policy.grants.iter().any(|grant| &grant.id == revoked);
         }
         match &self.change {
@@ -144,10 +147,13 @@ impl Outgoing {
             // Carried once the room's record no longer holds the share.
             RoomChange::WindowUnshare { tab, .. } => {
                 let share = tilo_desktop_model::window_share::window_share_id(*tab);
-                !tilo_desktop_model::projection::room_policy_of(document, &self.room.to_string())
-                    .grants
-                    .iter()
-                    .any(|grant| tilo_action_policy::share::is_of_share(grant, &share))
+                !tilo_desktop_model::projection::workspace_policy_of(
+                    document,
+                    &self.room.to_string(),
+                )
+                .grants
+                .iter()
+                .any(|grant| tilo_action_policy::share::is_of_share(grant, &share))
             }
         }
     }

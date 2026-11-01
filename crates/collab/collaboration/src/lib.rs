@@ -1,6 +1,6 @@
 //! The collab client without the toolkit.
 //!
-//! A process that commits to a Tilo room links this crate, not the UI
+//! A process that commits to a Tilo workspace links this crate, not the UI
 //! toolkit: an app host running tilolang apps as wasm instances, a browser
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
 //! (`ui::collaboration`, `ui::record`, `ui::app_surface`,
@@ -15,7 +15,7 @@
 //! - [`local_identity`]: who sits at this device, the process's one identity
 //!   seam.
 //! - [`local_document_action`]: a local action observation as it is
-//!   reported to the room.
+//!   reported to the workspace.
 //! - The collaboration manager below: the broker client.
 //!
 //! Toolkit-side collab client: a synchronous, non-blocking `send` / `poll`
@@ -406,7 +406,7 @@ impl From<TransportError> for CollabSendError {
     }
 }
 
-/// Why a native launch's manager could not join its room.
+/// Why a native launch's manager could not join its workspace.
 #[cfg(feature = "native")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeLaunchError {
@@ -421,19 +421,19 @@ pub enum NativeLaunchError {
 /// join is pending ([`CollaborationManager::join_hold`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinHold {
-    /// The broker holds the join until the room is ready on this device:
+    /// The broker holds the join until the workspace is ready on this device:
     /// why, in the person's words, and what last held it up when something
     /// did.
-    RoomWaiting {
+    WorkspaceWaiting {
         reason: String,
         detail: Option<String>,
     },
-    /// The broker could not be asked how the room stands: the connection to
+    /// The broker could not be asked how the workspace stands: the connection to
     /// it is unreachable, and why.
     Unreachable(String),
 }
 
-/// Which connection a native launch's manager joins its room on.
+/// Which connection a native launch's manager joins its workspace on.
 #[cfg(feature = "native")]
 pub enum NativeConnection {
     /// The one the launcher handed the process: its first window's.
@@ -494,8 +494,8 @@ pub enum CollabRequest {
         /// Which **record** ([`crate::record`]) this connection carries, when
         /// adopted. The broker delivers payloads only to connections
         /// announcing the same record, so two people editing different
-        /// files in one room don't merge each other's state; `None` means
-        /// one document per `(app, room)`.
+        /// files in one workspace don't merge each other's state; `None` means
+        /// one document per `(app, workspace)`.
         record: Option<String>,
         /// The resource kind of `record`, named so a host that creates a
         /// missing record on the app's first write knows what it holds.
@@ -549,7 +549,7 @@ pub enum CollabRequest {
     ///
     /// Apps page by repeating with `before_seq` set to the lowest seq from
     /// the previous batch until `exhausted == true`, then fall back to the
-    /// cooperative path (the broker asks the room's other members).
+    /// cooperative path (the broker asks the workspace's other members).
     FetchScrollback {
         artifact: collab_types::ArtifactId,
         /// Exclusive upper bound on `seq`.
@@ -571,7 +571,7 @@ pub enum CollabRequest {
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
-    /// capture; it is never a room action or a restore command.
+    /// capture; it is never a workspace action or a restore command.
     ReportContinuation {
         schema_version: u16,
         metadata: Vec<u8>,
@@ -962,7 +962,7 @@ impl CollaborationManager {
     /// frame.
     ///
     /// Both modes auto-send `Hello` announcing **no record** (one document
-    /// per `(app, room)`); use [`Self::for_record`] for apps that have
+    /// per `(app, workspace)`); use [`Self::for_record`] for apps that have
     /// adopted records.
     pub fn new() -> Self {
         Self::new_scoped(
@@ -1026,7 +1026,7 @@ impl Default for CollaborationManager {
 
 impl CollaborationManager {
     /// A manager scoped to **one record** — one document, one change graph,
-    /// one channel — so two people editing different files in one room
+    /// one channel — so two people editing different files in one workspace
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
@@ -1120,7 +1120,7 @@ impl CollaborationManager {
     }
 
     /// What holds up the primary route this manager is joining, as the
-    /// broker reports it: the room is not ready on this device yet, or the
+    /// broker reports it: the workspace is not ready on this device yet, or the
     /// broker cannot be reached. `None` while nothing is reported, and once
     /// the route is joined or refused. Each change wakes the owner.
     #[must_use]
@@ -1144,7 +1144,7 @@ impl CollaborationManager {
 
     /// Whether changes were meant to reach peers and currently do not: the
     /// manager had a collaboration service and has lost it. A document that
-    /// never had one (local, outside any room) is not offline, and one still
+    /// never had one (local, outside any workspace) is not offline, and one still
     /// connecting has not lost anything yet.
     #[must_use]
     pub fn sync_lost(&self) -> bool {
@@ -1257,7 +1257,7 @@ impl CollaborationManager {
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
     /// shed under saturation; any other durable command is accepted and
-    /// waits for the transport's queue to have room, so a burst is
+    /// waits for the transport's queue to have workspace, so a burst is
     /// backpressure, never a disconnect. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
     ///
@@ -1552,7 +1552,7 @@ impl CollaborationManager {
 
     /// Why the last join of `route` failed, until a join of it succeeds:
     /// a route that never joined (a refused committed read, a record its
-    /// room cannot create) says why here, rather than staying unready.
+    /// workspace cannot create) says why here, rather than staying unready.
     #[must_use]
     pub fn route_join_failure(&self, route: &RouteSpec) -> Option<String> {
         match &self.backend {
@@ -1948,7 +1948,7 @@ pub fn local_app_id() -> String {
     auto_hello_env().0
 }
 
-/// The room this process collaborates in. Exposed so presence scopes
+/// The workspace this process collaborates in. Exposed so presence scopes
 /// from the same source routing uses, rather than a derivation that
 /// could drift.
 ///
@@ -1961,7 +1961,7 @@ pub fn local_cluster_id() -> Uuid {
 fn auto_hello_env_uncached() -> (String, Uuid) {
     // Only the random fallback id is memoised — caching the env-derived
     // answer would freeze every later reader into the first caller's
-    // room, since env is the routing truth (a property of the launch, not
+    // workspace, since env is the routing truth (a property of the launch, not
     // the process image) and can differ per manager in one process (every
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -1978,7 +1978,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
                 .clone()
         });
 
-    // No workspace named is the nil room; one named that does not parse
+    // No workspace named is the nil workspace; one named that does not parse
     // is the same, and logged, since the app then reaches no workspace.
     let cluster_id = identity
         .workspace_id
@@ -2305,7 +2305,7 @@ mod late_primary_route_tests {
     fn the_join_says_what_the_broker_says_holds_it_up() {
         let transport = Late::default();
         let mut manager = joining(&transport);
-        let waiting = JoinHold::RoomWaiting {
+        let waiting = JoinHold::WorkspaceWaiting {
             reason: "Placing the workspace on its host".into(),
             detail: Some("the host is offline".into()),
         };

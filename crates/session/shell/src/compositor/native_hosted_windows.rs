@@ -384,8 +384,8 @@ mod tests {
         automerge::transaction::Transactable::put(
             &mut personal,
             automerge::ROOT,
-            tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
-            tilo_desktop_model::projection::RoomLayout::Personal.id(),
+            tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal.id(),
         )
         .unwrap();
         let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
@@ -468,12 +468,12 @@ mod tests {
         use tilo_desktop_model::projection;
 
         let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text)
+        doc.put(automerge::ROOT, projection::WORKSPACE_ID_KEY, room_text)
             .unwrap();
         doc.put(
             automerge::ROOT,
-            projection::ROOM_LAYOUT_KEY,
-            projection::RoomLayout::Personal.id(),
+            projection::WORKSPACE_LAYOUT_KEY,
+            projection::WorkspaceLayout::Personal.id(),
         )
         .unwrap();
         let identities = doc
@@ -512,7 +512,7 @@ mod tests {
             "no unshared window streams to a member or a host"
         );
 
-        let mut policy = projection::room_policy_of(&doc, &room_text);
+        let mut policy = projection::workspace_policy_of(&doc, &room_text);
         policy.grants.extend(
             tilo_action_policy::share::share_grants(
                 &room_text,
@@ -523,7 +523,7 @@ mod tests {
             )
             .unwrap(),
         );
-        projection::project_room_policy(&mut doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut doc, &policy).unwrap();
         doc.commit();
         tree.project_room_document_for_test(room, &doc);
         let desired = desired_legacy_shares(&tree, true, &hosts, &nobody, &members);
@@ -547,7 +547,7 @@ mod tests {
         );
 
         policy.grants.clear();
-        projection::project_room_policy(&mut doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut doc, &policy).unwrap();
         doc.commit();
         tree.project_room_document_for_test(room, &doc);
         assert!(
@@ -577,7 +577,7 @@ mod tests {
 
         let room_text = room.to_string();
         let mut doc = personal_room_document(&room_text);
-        let mut policy = projection::room_policy_of(&doc, &room_text);
+        let mut policy = projection::workspace_policy_of(&doc, &room_text);
         let note = WindowShows {
             record: String::new(),
             item: Some("7".into()),
@@ -607,7 +607,7 @@ mod tests {
                 .unwrap(),
             );
         }
-        projection::project_room_policy(&mut doc, &policy).unwrap();
+        projection::project_workspace_policy(&mut doc, &policy).unwrap();
         doc.commit();
         tree.project_room_document_for_test(room, &doc);
         let now_ms = tilo_clock::unix_now_ms();

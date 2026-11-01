@@ -1,7 +1,7 @@
 //! Where a desk widget rests, and how far an open card reaches from it.
 //!
 //! A widget rests wherever the person put it, on whichever display: its place
-//! is kept per display as fractions of the room its resting form can move in
+//! is kept per display as fractions of the space its resting form can move in
 //! there ([`ui::desk_widgets::Place`]), so a widget against an edge or in a
 //! corner stays there when the resolution changes.
 //!
@@ -44,7 +44,7 @@ fn room(area: Rect, size: Size) -> Rect {
     Rect::new(x0, y0, x1, y1)
 }
 
-/// `size` at fractions `(x, y)` of its room in `area`.
+/// `size` at fractions `(x, y)` of its space in `area`.
 #[must_use]
 pub fn rect_at(area: Rect, size: Size, (x, y): (f64, f64)) -> Rect {
     let room = room(area, size);
@@ -55,8 +55,8 @@ pub fn rect_at(area: Rect, size: Size, (x, y): (f64, f64)) -> Rect {
     Rect::from_origin_size(origin, size)
 }
 
-/// The fractions `rect` stands at in its room in `area`: the inverse of
-/// [`rect_at`]. A rect outside the room reads as the nearest edge.
+/// The fractions `rect` stands at in its space in `area`: the inverse of
+/// [`rect_at`]. A rect outside that space reads as the nearest edge.
 #[must_use]
 pub fn fractions(area: Rect, rect: Rect) -> (f64, f64) {
     let room = room(area, rect.size());

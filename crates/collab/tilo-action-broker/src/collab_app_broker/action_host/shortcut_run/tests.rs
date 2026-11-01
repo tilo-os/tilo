@@ -267,7 +267,7 @@ fn start_direct(
     fixture: &Fixture,
     trigger: Option<&tilo_automation::TriggerSpec>,
 ) -> Result<u64, ActionHostError> {
-    let workspace = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.workspace().unwrap();
     if let Some(trigger) = trigger {
         fixture.state.start_triggered_shortcut_run(
             &fixture.caller,
@@ -411,7 +411,7 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
-    let workspace = fixture.caller.room().unwrap().to_string();
+    let workspace = fixture.caller.workspace().unwrap().to_string();
     fixture.caller = Caller::local_person("another-person").in_workspace(workspace);
     assert!(start_direct(&fixture, None).is_err());
     tokio::task::yield_now().await;
@@ -696,7 +696,7 @@ async fn wait_for_finished(fixture: &Fixture) {
 #[tokio::test(flavor = "current_thread")]
 async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
     let fixture = Fixture::with_extra(waiting_shortcut());
-    let workspace = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.workspace().unwrap();
     fixture
         .state
         .start_interactive_shortcut_run(
@@ -778,7 +778,7 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
 #[tokio::test(flavor = "current_thread")]
 async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error() {
     let fixture = Fixture::new();
-    let workspace = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.workspace().unwrap();
     let stopped = fixture.state.stop_shortcut_runs(
         workspace,
         &automation::StopRequest::Shortcut("echo".into()),
@@ -792,7 +792,7 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
     fixture.finish().await;
     wait_for_finished(&fixture).await;
     let _ = fixture.state.take_finished_shortcut_runs();
-    let workspace = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.workspace().unwrap();
     assert!(
         fixture
             .state
@@ -904,7 +904,7 @@ async fn finished_run(fixture: &Fixture) -> automation::FinishedShortcutRun {
 #[tokio::test(flavor = "current_thread")]
 async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from() {
     let fixture = Fixture::with_extra(several_steps(4));
-    let workspace = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.workspace().unwrap().to_owned();
     let origin = fixture
         .state
         .start_interactive_shortcut_run(
@@ -978,7 +978,7 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothing() {
     let fixture = Fixture::with_extra(several_steps(1));
-    let workspace = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.workspace().unwrap().to_owned();
     let refused = fixture.state.start_interactive_shortcut_run_continuing(
         &fixture.caller,
         &workspace,
@@ -1007,7 +1007,7 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_from_the_run_itself_is_refused() {
     let fixture = Fixture::with_extra(several_steps(1));
-    let workspace = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.workspace().unwrap().to_owned();
     let refused = fixture.state.start_interactive_shortcut_run_continuing(
         &fixture.caller,
         &workspace,

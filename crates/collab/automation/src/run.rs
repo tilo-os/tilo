@@ -1872,14 +1872,14 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             .flatten();
         let node = match &at {
             Some(at) => step_node_at(
-                self.caller.room(),
+                self.caller.workspace(),
                 app_id,
                 &descriptor.resource_kind,
                 &descriptor.address,
                 at,
             ),
             None => step_node(
-                self.caller.room(),
+                self.caller.workspace(),
                 app_id,
                 &descriptor.resource_kind,
                 &descriptor.address,

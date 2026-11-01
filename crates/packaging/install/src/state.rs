@@ -34,7 +34,7 @@ pub struct RoomState {
 }
 
 /// The directory every room lives under. Mirrors
-/// `launcher::appdir::ROOMS_DIR`; kept as its own constant rather than
+/// `launcher::appdir::WORKSPACES_DIR`; kept as its own constant rather than
 /// a dependency because the installer must not link the launcher.
 pub const ROOMS_DIR: &str = "tilo-rooms";
 

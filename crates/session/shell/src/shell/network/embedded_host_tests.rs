@@ -16,7 +16,7 @@ fn tree_with(rooms: &[(&str, RoomId)]) -> WorkspaceTree {
     for (index, (name, room)) in (100u64..).zip(rooms) {
         tree.desktop
             .workspaces
-            .push(Workspace::in_room(WorkspaceId(index), *room, *name));
+            .push(Workspace::in_workspace(WorkspaceId(index), *room, *name));
     }
     tree
 }
@@ -363,7 +363,7 @@ fn a_room_waiting_with_its_workspace_still_waits_after_a_pass() {
     let gone = RoomId::new();
     let mut tree = tree_with(&[("Plans", plans)]);
     tree.archived_workspaces
-        .push(Workspace::in_room(WorkspaceId(200), archived, "Old"));
+        .push(Workspace::in_workspace(WorkspaceId(200), archived, "Old"));
     tree.pending_placements.extend([plans, archived, gone]);
     let (mut network, _commands) = personal_workspaces_network_for_test(
         &ed25519_dalek::SigningKey::from_bytes(&[0x65; 32]),

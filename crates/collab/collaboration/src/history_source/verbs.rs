@@ -312,7 +312,7 @@ type MakeEdit =
 
 /// The history verbs that change one part of a chain, each naming the part
 /// (`part`): what a chain publishes beside its parts' own actions, so the
-/// people, agents and the room's moderation take back steps in a part
+/// people, agents and the workspace's moderation take back steps in a part
 /// through the same door as in any record.
 pub fn part_edit_specs() -> Vec<ActionSpec> {
     edit_specs_with(part_edit)

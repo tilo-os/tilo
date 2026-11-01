@@ -1191,9 +1191,9 @@ mod tasks_screen {
     /// A task the workspace refuses is withdrawn, and the status that said it
     /// was added says the workspace did not keep it instead.
     #[test]
-    fn a_task_the_room_refuses_is_not_said_to_be_added() {
+    fn a_task_the_workspace_refuses_is_not_said_to_be_added() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        app.shared_in_room().expect("shared");
+        app.shared_in_workspace().expect("shared");
         app.call("show-tasks", serde_json::json!({}))
             .expect("show-tasks");
         let heads = app.read_document(|doc| doc.clone().get_heads());
@@ -1201,7 +1201,7 @@ mod tasks_screen {
         app.harness().type_text("Buy milk");
         app.harness().key("Enter");
         app.settle();
-        assert!(app.room_publishes().expect("published"));
+        assert!(app.workspace_publishes().expect("published"));
         assert!(
             named(&mut app, "Added Buy milk").is_none(),
             "nothing is said done before the workspace answers"
@@ -1214,10 +1214,10 @@ mod tasks_screen {
                 .collect()
         });
         assert!(
-            app.refused_by_room(&changes, "This workspace doesn't allow that.")
+            app.refused_by_workspace(&changes, "This workspace doesn't allow that.")
                 .unwrap()
         );
-        app.room_keeps();
+        app.workspace_keeps();
         assert!(app.state().tasks.is_empty(), "the refused task is gone");
         assert!(named(&mut app, "Added Buy milk").is_none());
         assert!(
@@ -1233,18 +1233,18 @@ mod tasks_screen {
     /// In a calendar a workspace decides, a new task is said added only once
     /// the workspace kept it, not when this device applied it.
     #[test]
-    fn a_task_is_said_added_once_the_room_keeps_it() {
+    fn a_task_is_said_added_once_the_workspace_keeps_it() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
-        app.shared_in_room().expect("shared");
+        app.shared_in_workspace().expect("shared");
         app.call("show-tasks", serde_json::json!({}))
             .expect("show-tasks");
         activate(&mut app, "Add a task to Inbox");
         app.harness().type_text("Buy milk");
         app.harness().key("Enter");
         app.settle();
-        assert!(app.room_publishes().expect("published"));
+        assert!(app.workspace_publishes().expect("published"));
         assert!(named(&mut app, "Added Buy milk").is_none());
-        app.room_keeps();
+        app.workspace_keeps();
         assert!(
             named(&mut app, "Added Buy milk").is_some(),
             "the workspace kept it: it is said done"

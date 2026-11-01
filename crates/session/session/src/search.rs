@@ -328,7 +328,7 @@ impl SessionSearch {
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
-            room: String::new(),
+            workspace: String::new(),
             actions: self.own.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
@@ -484,7 +484,7 @@ impl SessionSearch {
             Target::Invoke(invoke) => self.with_apps(|apps| {
                 apps.invoke(
                     application_action_target(
-                        &invoke.room,
+                        &invoke.workspace,
                         &invoke.app,
                         invoke.address.resource.as_str(),
                         invoke.address.action.as_str(),
@@ -502,9 +502,9 @@ impl SessionSearch {
             }
             Target::Cancel {
                 app,
-                room,
+                workspace,
                 invocation,
-            } => self.with_apps(|apps| apps.cancel(&app, &room, &invocation)),
+            } => self.with_apps(|apps| apps.cancel(&app, &workspace, &invocation)),
             Target::Open { uri, .. } => self.with_apps(|apps| apps.open_uri(room, &uri)),
             other => {
                 tracing::debug!(?other, "search row the desk carries out");
@@ -649,7 +649,7 @@ impl SearchHost for SessionSearch {
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
-            room: room.to_owned(),
+            workspace: room.to_owned(),
             actions: self.own.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
@@ -975,7 +975,7 @@ mod tests {
     fn place(label: &str, room: &str) -> Place {
         Place {
             app: "so.tilo.notes".into(),
-            room: room.into(),
+            workspace: room.into(),
             tab: 4,
             label: label.into(),
             value: String::new(),

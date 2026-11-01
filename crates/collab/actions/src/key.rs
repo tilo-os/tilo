@@ -13,7 +13,7 @@ pub struct ActionKey {
 }
 
 /// The action id of a resource made as a whole by the platform rather than by one of the app's
-/// own actions: a package's per-room root, the first time a window wants it. History reads it as
+/// own actions: a package's per-workspace root, the first time a window wants it. History reads it as
 /// the resource's creation ("Created Plan").
 pub const CREATE_ACTION: &str = "$create";
 

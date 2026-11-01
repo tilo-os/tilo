@@ -2491,9 +2491,9 @@ impl TileSource for OpeningApps {
 }
 
 /// The page desktop: one frame hosting its windows in process, serving them
-/// its own session for the workspace `room`.
+/// its own session for the workspace `workspace`.
 fn serving_desk(
-    room: &str,
+    workspace: &str,
 ) -> (
     ui::headless::FrameHarness,
     DesktopHandle,
@@ -2513,13 +2513,14 @@ fn serving_desk(
         ui::permissions::UserId("tester".into()),
     );
     driver.set_caller_palette_enabled(false);
-    let (session, openings) = tilo_desktop_surface::session::serve(room, std::sync::Arc::default());
+    let (session, openings) =
+        tilo_desktop_surface::session::serve(workspace, std::sync::Arc::default());
     driver.set_session_door(
         ui::RemoteActions::with_host(
             session,
-            ui::tilo_actions::remote::Caller::local_person("tester").in_workspace(room),
+            ui::tilo_actions::remote::Caller::local_person("tester").in_workspace(workspace),
         ),
-        Some(room.into()),
+        Some(workspace.into()),
     );
     driver.relayout();
     (driver, handle, openings)
@@ -2531,7 +2532,7 @@ fn serving_desk(
 /// over the window that asked, never dropped.
 #[test]
 fn a_window_opens_another_app_through_the_desktop_s_session() {
-    let (mut driver, handle, openings) = serving_desk("room");
+    let (mut driver, handle, openings) = serving_desk("workspace");
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
@@ -2553,7 +2554,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     );
     assert_eq!(driver.refusal_said(), None);
 
-    let (mut driver, handle, openings) = serving_desk("room");
+    let (mut driver, handle, openings) = serving_desk("workspace");
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
@@ -2771,12 +2772,12 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
         ui::Theme::dark(),
     );
     let (session, openings) =
-        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_workspace("room");
-    let open = |room: &str| -> InvokeRequest {
+        tilo_desktop_surface::session::serve("workspace", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_workspace("workspace");
+    let open = |workspace: &str| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
-            "target": application_record_target(room, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
+            "target": application_record_target(workspace, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
         }))
         .unwrap()
     };
@@ -2788,7 +2789,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     );
 
     for _ in 0..2 {
-        drop(session.invoke(&caller, open("room")));
+        drop(session.invoke(&caller, open("workspace")));
         assert!(openings.open(&handle, "g", |app, _| {
             assert_eq!(app, "so.tilo.notes", "admitted as its app");
             Ok(())
@@ -2831,12 +2832,12 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
         ui::Theme::dark(),
     );
     let (session, openings) =
-        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_workspace("room");
+        tilo_desktop_surface::session::serve("workspace", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_workspace("workspace");
     let ask = |argument: serde_json::Value| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
-            "target": application_record_target("room", "so.tilo.notes", "n:plan", "plan", "pin"),
+            "target": application_record_target("workspace", "so.tilo.notes", "n:plan", "plan", "pin"),
             "argument": argument,
         }))
         .unwrap()
@@ -2921,14 +2922,14 @@ fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
         ui::Theme::dark(),
     );
     let (session, openings) =
-        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
-    let caller = Caller::local_person("tester").in_workspace("room");
+        tilo_desktop_surface::session::serve("workspace", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_workspace("workspace");
     let hash = "ab".repeat(32);
     let launch = ApplicationLaunch::with_content("so.tilo.photos", hash.clone());
     let ask = |argument: ui::tilo_actions::remote::InvokeArgument| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
-            "target": launch.target("room"),
+            "target": launch.target("workspace"),
             "argument": argument,
         }))
         .unwrap()

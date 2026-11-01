@@ -6,7 +6,7 @@ use super::{ActionAddress, RemoteActionTarget, workspace_provider};
 
 /// Resource prefix of a workspace's actions on one node of its published
 /// tree (a record, an item of it): the rest is the node's text form
-/// (`room:…/app:…/kind:…/resource:…/item:…`). See [`node_target`].
+/// (`workspace:…/app:…/kind:…/resource:…/item:…`). See [`node_target`].
 pub const NODE_RESOURCE_PREFIX: &str = "node:";
 
 /// Share a node with the workspace's members: grant them, on that node
@@ -23,11 +23,11 @@ pub const NODE_PERMITS_ACTION: &str = "permits";
 
 /// The target of `action` (one of [`SHARE_NODE_ACTION`],
 /// [`UNSHARE_NODE_ACTION`], [`NODE_PERMITS_ACTION`]) on `node`, the text
-/// form of a node of workspace `room`'s tree.
+/// form of a node of workspace `workspace`'s tree.
 #[must_use]
-pub fn node_target(room: &str, node: &str, action: &str) -> RemoteActionTarget {
+pub fn node_target(workspace: &str, node: &str, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: workspace_provider(room),
+        provider: workspace_provider(workspace),
         address: ActionAddress::new(format!("{NODE_RESOURCE_PREFIX}{node}"), action),
     }
 }

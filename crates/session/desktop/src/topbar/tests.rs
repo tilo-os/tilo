@@ -745,7 +745,7 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         ),
         "the explicit chevron label points to the activity detail route"
     );
-    assert!(!chrome.borrow().overlays.room_activity);
+    assert!(!chrome.borrow().overlays.workspace_activity);
 }
 
 fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
@@ -1729,7 +1729,7 @@ fn clicking_a_person_opens_people_not_history() {
     assert!(handled);
     assert!(chrome.borrow().overlays.collaborators);
     assert!(
-        !chrome.borrow().overlays.room_activity,
+        !chrome.borrow().overlays.workspace_activity,
         "a presence face represents People; activity has its own explicit route"
     );
 }
@@ -2012,7 +2012,10 @@ fn unread_activity_paints_nothing_on_the_people_control() {
     };
     let (quiet, people) = paint(0);
     let (unread, _) = paint(3);
-    assert!(people.area() > 0.0, "the empty room shows its Invite seat");
+    assert!(
+        people.area() > 0.0,
+        "the empty workspace shows its Invite seat"
+    );
     let around = people.inflate(12.0, 12.0);
     let px = ui::num::u32_of_f64;
     for y in px(around.y0)..px(around.y1.min(48.0)) {
@@ -2138,7 +2141,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     );
     assert!(
         bar.invite_rect().area() > 0.0,
-        "an empty room offers the first invite",
+        "an empty workspace offers the first invite",
     );
     assert!(bar.avatar_stack_rect.is_zero_area(), "and no faces");
 
@@ -2233,7 +2236,7 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
         node.children
             .iter()
             .all(|child| child.name.as_deref() != Some("Invite")),
-        "an audience is not an empty room"
+        "an audience is not an empty workspace"
     );
     assert!(
         node.children.iter().any(|child| child

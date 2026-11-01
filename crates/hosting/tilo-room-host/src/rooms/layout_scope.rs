@@ -1,5 +1,5 @@
 //! Whether a room shares its members' layout is its governance's word
-//! ([`RoomLayout`]), and the governor holds the room to it.
+//! ([`WorkspaceLayout`]), and the governor holds the room to it.
 //!
 //! In a room whose layout is personal each member's strips and windows stay
 //! on their device: which apps someone has open, and their titles, are the
@@ -11,7 +11,7 @@
 //! shares its layout.
 //!
 //! The governor writes the scope into the room's governance
-//! ([`tilo_desktop_model::projection::ROOM_LAYOUT_KEY`]), where every
+//! ([`tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY`]), where every
 //! member's device reads it, and in a personal room:
 //! - refuses a member's change to the room's topology (`SyncResp`) or to its
 //!   shared desktop record at every door it enters by
@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 #[cfg(feature = "agents")]
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-use tilo_desktop_model::projection::RoomLayout;
+use tilo_desktop_model::projection::WorkspaceLayout;
 use tilo_lock::MutexRecover as _;
 
 use super::desktop_writes::is_desktop;
@@ -46,14 +46,14 @@ pub(crate) const LAYOUT_REFUSAL: &str = tilo_relay_protocol::refusal::PERSONAL_L
 /// apart from the room's lock because every door decides a member's write
 /// by it.
 #[derive(Default)]
-pub(super) struct Layouts(std::sync::Mutex<HashMap<String, RoomLayout>>);
+pub(super) struct Layouts(std::sync::Mutex<HashMap<String, WorkspaceLayout>>);
 
 impl Layouts {
-    fn get(&self, room: &str) -> RoomLayout {
+    fn get(&self, room: &str) -> WorkspaceLayout {
         self.0.lock_recover().get(room).copied().unwrap_or_default()
     }
 
-    fn set(&self, room: &str, layout: RoomLayout) {
+    fn set(&self, room: &str, layout: WorkspaceLayout) {
         self.0.lock_recover().insert(room.to_owned(), layout);
     }
 
@@ -149,7 +149,7 @@ pub(super) fn drop_shared_windows(doc: &mut automerge::AutoCommit) -> Result<boo
 impl Rooms {
     /// `room`'s layout scope, as its governance says.
     #[must_use]
-    pub fn layout(&self, room: &str) -> RoomLayout {
+    pub fn layout(&self, room: &str) -> WorkspaceLayout {
         self.inner.layouts.get(room)
     }
 
@@ -203,7 +203,7 @@ impl Rooms {
         if chosen.is_some() {
             return Ok(());
         }
-        self.set_layout(room, RoomLayout::Personal).await
+        self.set_layout(room, WorkspaceLayout::Personal).await
     }
 
     /// Set `room`'s layout scope to `layout`, as its governor: written into
@@ -222,7 +222,7 @@ impl Rooms {
     pub async fn set_layout(
         &self,
         room: &str,
-        layout: RoomLayout,
+        layout: WorkspaceLayout,
     ) -> Result<(), CollaborationError> {
         let host = &self.inner.host;
         if layout.is_personal() {

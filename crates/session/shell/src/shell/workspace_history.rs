@@ -83,7 +83,7 @@ mod tests {
                 30,
             );
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(kept.id.to_string(), kept.kind.to_string());
@@ -112,7 +112,7 @@ mod tests {
             let second = action_record(&records, RecordId::for_tab(2), room, 20);
             for record in [&first, &second] {
                 tree.desktop
-                    .room_records_held
+                    .workspace_records_held
                     .entry(room)
                     .or_default()
                     .insert(record.id.to_string(), record.kind.to_string());
@@ -142,7 +142,7 @@ mod tests {
             let records = RecordStore::in_memory();
             let record = action_record(&records, RecordId::for_tab(72), room, 20);
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
@@ -219,7 +219,7 @@ mod tests {
             let (mut tree, room) = tree_and_room();
             let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(missing.id.to_string(), missing.kind.to_string());
@@ -247,12 +247,12 @@ mod tests {
                 40,
             );
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(first.id.to_string(), first.kind.to_string());
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(represented)
                 .or_default()
                 .insert(second.id.to_string(), second.kind.to_string());
@@ -292,7 +292,7 @@ mod tests {
                 loads: Cell::new(0),
             };
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(checkout.id.to_string(), checkout.kind.to_string());
@@ -325,7 +325,7 @@ mod tests {
                 loads: Cell::new(0),
             };
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(checkout.id.to_string(), checkout.kind.to_string());
@@ -349,7 +349,7 @@ mod tests {
             let records = RecordStore::in_memory();
             let record = action_record(&records, RecordId::for_tab(44), room, 20);
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
@@ -417,7 +417,7 @@ mod tests {
             let (mut tree, room) = tree_and_room();
             let records = RecordStore::in_memory();
             let query = WorkspaceHistoryQuery {
-                room: Some(room),
+                workspace: Some(room),
                 limit: 1,
                 ..WorkspaceHistoryQuery::default()
             };
@@ -445,7 +445,7 @@ mod tests {
             let records = RecordStore::in_memory();
             let record = action_record(&records, RecordId::for_tab(55), room, 20);
             tree.desktop
-                .room_records_held
+                .workspace_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
@@ -477,7 +477,7 @@ mod tests {
             for (name, time) in [("older.md", 10), ("newer.md", 20)] {
                 let record = action_record(&records, RecordId::for_file(name), room, time);
                 tree.desktop
-                    .room_records_held
+                    .workspace_records_held
                     .entry(room)
                     .or_default()
                     .insert(record.id.to_string(), record.kind.to_string());
@@ -487,7 +487,7 @@ mod tests {
                 &mut tree,
                 &records,
                 WorkspaceHistoryQuery {
-                    room: Some(room),
+                    workspace: Some(room),
                     limit: 2,
                     ..WorkspaceHistoryQuery::default()
                 },

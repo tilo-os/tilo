@@ -66,7 +66,7 @@ impl AppBrokerState {
         Some((
             route,
             OffloadRequest {
-                room: workspace.to_owned(),
+                workspace: workspace.to_owned(),
                 app_id: app_id.to_owned(),
                 address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
                 offload,

@@ -1583,17 +1583,18 @@ impl DesktopChrome {
         Ok(())
     }
 
-    /// Make a workspace after the others and go there; with `room`, the
-    /// workspace sharing that workspace, joining it when this computer has none (a
+    /// Make a workspace after the others and go there; with `join`, the
+    /// workspace holding that id, joining it when this computer has none (a
     /// workspace that exists is a workspace that exists, so joining one is holding
-    /// its workspace, which needs no workspace of the person's own to make).
-    fn new_workspace(&self, room: Option<&str>, name: Option<&str>) {
+    /// it, which needs no workspace of the person's own to make).
+    fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
-        let mut workspace = if let Some(room) = room {
-            let Some(room) = RoomId::parse(room) else {
-                self.handle
-                    .acknowledge(tilo_desktop_surface::i18n::t("desktop-joined-room-unknown"));
+        let mut workspace = if let Some(id) = join {
+            let Some(room) = RoomId::parse(id) else {
+                self.handle.acknowledge(tilo_desktop_surface::i18n::t(
+                    "desktop-joined-workspace-unknown",
+                ));
                 return;
             };
             if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
@@ -1604,7 +1605,7 @@ impl DesktopChrome {
                 self.handle.replace_tree(tree);
                 return;
             }
-            Workspace::in_room(WorkspaceId::of_room(room), room, name)
+            Workspace::in_workspace(WorkspaceId::of_room(room), room, name)
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {
                 self.handle.acknowledge(refusal);
@@ -2196,8 +2197,8 @@ impl DesktopChrome {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return true;
             }
-            DesktopAction::NewWorkspace { room, name } => {
-                self.new_workspace(room.as_deref(), name.as_deref());
+            DesktopAction::NewWorkspace { workspace, name } => {
+                self.new_workspace(workspace.as_deref(), name.as_deref());
                 return true;
             }
             DesktopAction::Overview { open } => {

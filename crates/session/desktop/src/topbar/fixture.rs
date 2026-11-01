@@ -12,7 +12,7 @@ use std::{
 pub struct Overlays {
     pub overview: bool,
     pub collaborators: bool,
-    pub room_activity: bool,
+    pub workspace_activity: bool,
     pub ws_settings: bool,
     pub clock: bool,
 }

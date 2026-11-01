@@ -1,7 +1,7 @@
 //! The registration gate between a host that launches `tilo-launcher` and
 //! the launcher it starts.
 //!
-//! A host records each launch (pid, start time, app, room) so the broker can
+//! A host records each launch (pid, start time, app, workspace) so the broker can
 //! attest the launcher when it connects. `Command::spawn` returns only after
 //! the child exists, and a fast child could connect before the host recorded
 //! it. The gate closes that race at the source: the host hands the child one

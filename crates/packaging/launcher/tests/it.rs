@@ -15,8 +15,6 @@ mod bus_filters;
 mod launcher_smoke;
 #[path = "netgate_egress.rs"]
 mod netgate_egress;
-#[path = "room_confinement.rs"]
-mod room_confinement;
 #[path = "sandbox_environment.rs"]
 mod sandbox_environment;
 #[path = "support.rs"]
@@ -24,6 +22,8 @@ mod support;
 #[cfg(target_os = "linux")]
 #[path = "system_view.rs"]
 mod system_view;
+#[path = "workspace_confinement.rs"]
+mod workspace_confinement;
 
 #[path = "managed.rs"]
 mod managed;

@@ -17,7 +17,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
 use tilo_desktop_model::projection::{
-    ROOM_LAYOUT_KEY, RoomLayout, project_room_policy, room_policy_of,
+    WORKSPACE_LAYOUT_KEY, WorkspaceLayout, project_workspace_policy, workspace_policy_of,
 };
 use tilo_desktop_model::window_share::{window_node, window_share_id};
 use tilo_peer_state::workspace::{Standing, WorkspaceAdmission, Writer, admit_workspace_changes};
@@ -164,7 +164,7 @@ pub(super) fn b_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<(u64, TileConten
 /// The governor records `person`'s share of the window `tab` of `app` in
 /// the room's governance, as the room's host writes a resource share.
 fn share(governor: &mut AutoCommit, person: &str, app: &str, tab: u64) {
-    let mut policy = room_policy_of(governor, ROOM);
+    let mut policy = workspace_policy_of(governor, ROOM);
     policy.grants.extend(
         share_grants(
             ROOM,
@@ -175,17 +175,17 @@ fn share(governor: &mut AutoCommit, person: &str, app: &str, tab: u64) {
         )
         .expect("a window is one resource of the room"),
     );
-    project_room_policy(governor, &policy).expect("the room's authority");
+    project_workspace_policy(governor, &policy).expect("the room's authority");
     governor.commit();
 }
 
 /// The governor ends the share of the window `tab`.
 pub(super) fn stop(governor: &mut AutoCommit, tab: u64) {
-    let mut policy = room_policy_of(governor, ROOM);
+    let mut policy = workspace_policy_of(governor, ROOM);
     policy
         .grants
         .retain(|grant| !is_of_share(grant, &window_share_id(tab)));
-    project_room_policy(governor, &policy).expect("the room's authority");
+    project_workspace_policy(governor, &policy).expect("the room's authority");
     governor.commit();
 }
 
@@ -210,7 +210,11 @@ fn a_window_shared_in_a_personal_room_is_a_tab_of_the_sharers_on_the_others_unti
     let host_key = hex::encode(host);
     let mut governor = governed_room(ROOM, host, a_person, a_device);
     governor
-        .put(automerge::ROOT, ROOM_LAYOUT_KEY, RoomLayout::Personal.id())
+        .put(
+            automerge::ROOT,
+            WORKSPACE_LAYOUT_KEY,
+            WorkspaceLayout::Personal.id(),
+        )
         .expect("the governor makes the layout personal");
     governor.commit();
 
@@ -256,7 +260,7 @@ fn a_window_shared_in_a_personal_room_is_a_tab_of_the_sharers_on_the_others_unti
     b.take_in(&mut net, &host_key);
     net.assert_converged(
         &mut [(&gov, &mut governor), a.on_net(), b.on_net()],
-        &[tilo_desktop_model::projection::ROOM_GRANTS_KEY],
+        &[tilo_desktop_model::projection::WORKSPACE_GRANTS_KEY],
     );
     a_tree.project_room_document_for_test(room, a.admitted());
     let now_ms = tilo_clock::unix_now_ms();
@@ -350,7 +354,11 @@ fn in_a_personal_room_a_member_sees_who_is_here_with_and_without_a_share() {
     let host_key = hex::encode(host);
     let mut governor = governed_room(ROOM, host, a_person, a_device);
     governor
-        .put(automerge::ROOT, ROOM_LAYOUT_KEY, RoomLayout::Personal.id())
+        .put(
+            automerge::ROOT,
+            WORKSPACE_LAYOUT_KEY,
+            WorkspaceLayout::Personal.id(),
+        )
         .expect("the governor makes the layout personal");
     governor.commit();
     let mut net = FakeDocumentNet::new();

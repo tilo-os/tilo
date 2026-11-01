@@ -81,7 +81,7 @@ fn spawn_broker(
     crate::shell::state::WorkspaceTreeHandle,
 ) {
     let owner = owner_principal();
-    let mut workspace = crate::shell::state::Workspace::in_room(
+    let mut workspace = crate::shell::state::Workspace::in_workspace(
         crate::shell::state::WorkspaceId(1),
         room(),
         "Drafts room",

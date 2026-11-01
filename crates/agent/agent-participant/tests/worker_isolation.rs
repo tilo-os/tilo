@@ -108,7 +108,7 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// package primary, like Notes.
 #[test]
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
-    assert_seed_route("so.tilo.sheets", ui::record::RecordId::room_default());
+    assert_seed_route("so.tilo.sheets", ui::record::RecordId::workspace_default());
 }
 
 #[test]

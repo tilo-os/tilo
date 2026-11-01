@@ -218,7 +218,7 @@ fn task_person(caller: &Caller) -> Option<(&str, &str)> {
     if !matches!(caller.principal(), CallerPrincipal::Agent(_)) || caller.is_session_delegated() {
         return None;
     }
-    Some((caller.acting_for_person()?, caller.room()?))
+    Some((caller.acting_for_person()?, caller.workspace()?))
 }
 
 struct BrokerRecordReads {
@@ -246,7 +246,7 @@ impl RecordReads for BrokerRecordReads {
         let revalidate = Arc::new(move || {
             let (state, caller, address) = &checked;
             let state = state.upgrade().ok_or("record read broker ended")?;
-            let workspace = caller.room().ok_or("record read lost its workspace")?;
+            let workspace = caller.workspace().ok_or("record read lost its workspace")?;
             state
                 .may_read_record(caller, workspace, address)
                 .map_err(|_| "record read no longer allowed".to_owned())

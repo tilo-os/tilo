@@ -647,15 +647,15 @@ impl ResourceSemanticIdentity {
 /// of the person's own — the clipboard's copies, a screen's content — is not
 /// every caller's to read. Declaring a reading [`Granted`](Self::Granted)
 /// puts it under the same permission model the resource's actions already
-/// have: the session decides it where the resource sits, from the room's
-/// grants, and a caller the room does not grant it to is refused.
+/// have: the session decides it where the resource sits, from the workspace's
+/// grants, and a caller the workspace does not grant it to is refused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Readers {
     /// Anyone who reaches the session's door: what a resource is unless it
     /// says otherwise.
     #[default]
     Everyone,
-    /// Only a caller the room grants reading this resource.
+    /// Only a caller the workspace grants reading this resource.
     Granted,
 }
 
@@ -676,7 +676,7 @@ pub struct ResourceSpec {
     pub semantic_identity: Option<ResourceSemanticIdentity>,
     /// The app that publishes it, as the [`ActionKey`](crate::ActionKey)s
     /// of its actions name it: the one whose resource this is, not the
-    /// provider keeping it in a room. `None` for a resource published
+    /// provider keeping it in a workspace. `None` for a resource published
     /// outside an app.
     pub app_id: Option<String>,
     pub children: Vec<ResourceSpec>,
@@ -729,7 +729,7 @@ impl ResourceSpec {
         self
     }
 
-    /// Publish this resource's reading only to callers the room grants it to
+    /// Publish this resource's reading only to callers the workspace grants it to
     /// ([`Readers::Granted`]): what the person's own state needs, when it is
     /// theirs alone.
     #[must_use]

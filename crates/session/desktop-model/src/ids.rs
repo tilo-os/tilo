@@ -20,8 +20,8 @@ impl WorkspaceId {
         self.0
     }
 
-    /// The id of the workspace that is `room`, the same on every device: the
-    /// room's transport shard, which Activity, the relay and custody already
+    /// The id of the workspace that is `workspace`, the same on every device: the
+    /// workspace's transport shard, which Activity, the relay and custody already
     /// derive from it (`tilo_workspace_join::room_workspace_id`, pinned to
     /// the same value by the shell's tests). A new workspace takes it; one
     /// stored before keeps the id it has.
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn a_rooms_workspace_id_is_its_transport_shard() {
         // The same literal `tilo_workspace_join::room_workspace_id` is pinned
-        // to: every device and the relay derive the same workspace from a room.
+        // to: every device and the relay derive the same workspace from a workspace.
         let room = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
         assert_eq!(WorkspaceId::of_room(room).raw(), 3_029_697_355_180_468_570);
         let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();

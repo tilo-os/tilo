@@ -11,7 +11,7 @@ fn room_admitting(
     role: crate::shell::state::CapRole,
 ) -> crate::shell::state::Workspace {
     use crate::shell::state::{Workspace, WorkspaceId};
-    let mut ws = Workspace::in_room(
+    let mut ws = Workspace::in_workspace(
         WorkspaceId(1),
         crate::shell::state::RoomId::new(),
         "Design review",

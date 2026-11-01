@@ -93,7 +93,7 @@ impl std::fmt::Display for Refusal {
                 "Only the workspace's owner and moderators manage its desks"
             }
             Self::Governed(Governed::Workspaces) => {
-                "Only the room's owner and moderators add workspaces"
+                "Only the workspace's owner and moderators add workspaces"
             }
             Self::Others { .. } => "Only whoever opened it, or a moderator, can change it",
             Self::ReadOnly => "You can look at this workspace, not change it",
@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn only_owner_and_moderators_add_or_change_the_rooms_desks() {
+    fn only_owner_and_moderators_add_or_change_the_workspaces_desks() {
         let add = DesktopCommand::CreateStrip {
             name: "Mine".into(),
         };
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn in_a_room_that_shares_no_layout_a_visitors_desktop_is_their_own() {
+    fn in_a_workspace_that_shares_no_layout_a_visitors_desktop_is_their_own() {
         let visitor = Standing {
             layout_shared: false,
             members: None,

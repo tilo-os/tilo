@@ -129,7 +129,10 @@ fn withdrawn_as_refused(
 
     // The page withdraws what the workspace refused, and the app hears of it as
     // a refusal of the verb it invoked, for the note it would have pinned.
-    assert!(app.refused_by_room(changes, plain_reason(reason)).unwrap());
+    assert!(
+        app.refused_by_workspace(changes, plain_reason(reason))
+            .unwrap()
+    );
     assert_eq!(app.state().notes.len(), pinned, "the refused note is gone");
     assert!(
         app.state()
@@ -143,7 +146,7 @@ fn withdrawn_as_refused(
         .expect("the app is told the workspace refused it");
     assert_eq!(told.action, "pin");
     assert_eq!(told.reason, PLAIN_TOO_FAST);
-    assert!(told.by_room);
+    assert!(told.by_workspace);
     // Pinning acts on the board, not on an item of it.
     assert_eq!(told.item, None);
 }

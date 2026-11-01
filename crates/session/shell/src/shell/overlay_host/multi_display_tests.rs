@@ -65,7 +65,7 @@ fn group(id: GroupId) -> WindowGroup {
 /// One window on each display, restored from this device's partition.
 fn tree() -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
-    let mut ws = Workspace::in_room(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
+    let mut ws = Workspace::in_workspace(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
     ws.strips = vec![Strip {
         id: STRIP,
         name: "Main".into(),

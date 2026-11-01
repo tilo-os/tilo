@@ -106,8 +106,8 @@ impl RiskLevel {
     }
 }
 
-/// [`ActionContract::tags`] entry of an action any member of a room may ask
-/// the room's host to run for themselves on a record of the room (linking
+/// [`ActionContract::tags`] entry of an action any member of a workspace may ask
+/// the workspace's host to run for themselves on a record of the workspace (linking
 /// their own account elsewhere). The host runs it as that member, under
 /// their own standing, so the action's door and its own checks decide what
 /// it may do; its answer goes back to the asking device alone.
@@ -275,7 +275,7 @@ pub const HOUSEKEEPING_TAG: &str = "change:housekeeping";
 /// the one field of its resource it writes when it writes only one (a reply
 /// writes the `comments`), which places it below that field in the tree, and
 /// whether it is privileged ([`RiskLevel::Privileged`]): it exercises
-/// authority over the room or others in it, so the person's own grants must
+/// authority over the workspace or others in it, so the person's own grants must
 /// allow it (`tilo_action_policy::Verdict::privileged`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionNeed {
@@ -287,7 +287,7 @@ pub struct ActionNeed {
 }
 
 /// The node of the resource `resource` (of kind `resource_kind`) the app
-/// `app` publishes, below `base` (a room, or the root for a path relative to
+/// `app` publishes, below `base` (a workspace, or the root for a path relative to
 /// one): where a reading of it is decided, as an action of it is at
 /// [`action_node`].
 #[must_use]
@@ -301,7 +301,7 @@ pub fn resource_node(
 }
 
 /// The node of the action `action` on the resource `resource` (of kind
-/// `resource_kind`) the app `app` publishes, below `base` (a room, or the
+/// `resource_kind`) the app `app` publishes, below `base` (a workspace, or the
 /// root for a path relative to one), and below the one `field` it writes if
 /// any: where every door decides it.
 #[must_use]
@@ -541,18 +541,18 @@ impl ResultSpec {
 /// a chooser for them, asks them for a credential or a sign-in, or shows
 /// something only they may see. Whoever acts for a person (an agent, a bot,
 /// an app) is always asked first, and no answer allows it unasked, not even
-/// one given for that very action. The person's own click needs no room's
+/// one given for that very action. The person's own click needs no workspace's
 /// consent: the chooser, the sign-in or the reveal in front of them is
 /// their decision, so like an effect of [`OWN_DEVICE_SCOPE`] it needs only
 /// what reading needs and runs only on the device of whoever starts it.
 pub const ATTENDED_TAG: &str = "tilo.attended";
 
 /// The contract tag of an effect whose whole scope is the invoking
-/// person's own device: it touches nothing a room shares and no one else
+/// person's own device: it touches nothing a workspace shares and no one else
 /// (their clipboard, their own appearance, a network test from their own
-/// browser, a draft of their own). A room's grants have nothing to consent
+/// browser, a draft of their own). A workspace's grants have nothing to consent
 /// to, so it needs only what reading needs ([`ActionContract::need`]), and
-/// a guest presses it as the room's owner does. Whatever shared it goes on
+/// a guest presses it as the workspace's owner does. Whatever shared it goes on
 /// to change goes through that change's own action and is decided there.
 /// Being the invoker's own device, it runs only for the person at the
 /// device it acts on and those acting for them. An effect that reaches
@@ -562,8 +562,8 @@ pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 
 /// The contract tag of an action that changes a record of the invoking
 /// person's own (their contact directory, a settings section of theirs),
-/// carried out on that record rather than on the room's document. Only the
-/// host of that person changes it, and only for them, so a room's grants
+/// carried out on that record rather than on the workspace's document. Only the
+/// host of that person changes it, and only for them, so a workspace's grants
 /// and roles have nothing to decide: it needs only what reading needs
 /// ([`ActionContract::need`]). What it does stays its
 /// [`kind`](ActionContract::kind): a change Undo takes back is still
@@ -580,7 +580,7 @@ pub struct ActionContract {
     /// first follow from it. What a grant must allow is its
     /// [`need`](Self::need), which every door decides with the action's
     /// place in the published tree: the kind, unless the action's scope
-    /// reaches nothing a room governs ([`Self::scoped`]).
+    /// reaches nothing a workspace governs ([`Self::scoped`]).
     #[serde(default = "undoable")]
     pub kind: ActionKind,
     /// The one field of its resource the action writes, when it writes only
@@ -708,13 +708,13 @@ impl ActionContract {
         })
     }
 
-    /// The authority `need` asks of a room once this action's scope is
+    /// The authority `need` asks of a workspace once this action's scope is
     /// accounted for. The kind says what the action does (whether Undo takes
     /// it back, whether it asks first); the need says what a grant must
     /// allow, and the scope is where they part: a change of the person's own
     /// record ([`OWN_RECORD_SCOPE`]) and an outside effect on the person's
     /// own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reach nothing a
-    /// room's grants govern, so they need only what reading needs.
+    /// workspace's grants govern, so they need only what reading needs.
     #[must_use]
     pub fn scoped(&self, mut need: ActionNeed) -> ActionNeed {
         if self.is_own_record()
@@ -1114,11 +1114,11 @@ mod tests {
     use super::*;
 
     /// An outside effect the person attends (their chooser, a sign-in) or
-    /// one on their own device needs only what reading needs, so a room's
+    /// one on their own device needs only what reading needs, so a workspace's
     /// guest starts it with no workspace consent; it runs on the device of
     /// whoever starts it. Any other outside effect still reaches outside.
     #[test]
-    fn an_attended_or_own_device_effect_needs_no_room_consent() {
+    fn an_attended_or_own_device_effect_needs_no_workspace_consent() {
         let outside = ActionContract::for_operation(OperationKind::Effect);
         assert_eq!(outside.need().kind, ActionKind::Outside);
         assert!(!outside.runs_on_invokers_device());

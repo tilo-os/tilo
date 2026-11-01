@@ -138,7 +138,7 @@ fn witness(state: &AppBrokerState, actor: &str, request: &InvokeRequest) -> Conf
         state
             .witness_confirmation(&state.witness_binding(
                 actor,
-                tilo_actions::remote::workspace_provider_room(&request.target.provider).unwrap(),
+                tilo_actions::remote::provider_workspace(&request.target.provider).unwrap(),
                 request,
             ))
             .unwrap(),
@@ -155,7 +155,7 @@ fn owner_governance_rejects_witness_from_other_original_contexts() {
         "publication",
     ] {
         let (state, service, owner, mut request) = broker(true);
-        let mut binding = state.witness_binding("owner", owner.room().unwrap(), &request);
+        let mut binding = state.witness_binding("owner", owner.workspace().unwrap(), &request);
         match changed {
             "provider" => binding.provider = "another-provider".into(),
             "workspace" => binding.workspace = "another-workspace".into(),
@@ -255,14 +255,14 @@ fn owner_governance_witness_does_not_replace_current_policy_or_custody() {
         invoke(&state, &owner, &request),
         Err(ActionHostError::ConfirmationRequired)
     );
-    let agent = Caller::local_agent("limited").in_workspace(owner.room().unwrap());
+    let agent = Caller::local_agent("limited").in_workspace(owner.workspace().unwrap());
     request.confirmation = Some(witness(&state, "agent:limited", &request));
     assert_eq!(
         invoke(&state, &agent, &request),
         Err(ActionHostError::NotPermitted),
         "even a grant and exact witness cannot confer direct owner custody"
     );
-    let other = Caller::local_person("other").in_workspace(owner.room().unwrap());
+    let other = Caller::local_person("other").in_workspace(owner.workspace().unwrap());
     request.confirmation = Some(witness(&state, "other", &request));
     assert!(invoke(&state, &other, &request).is_err());
     request.target.address.resource = "not-published".into();
@@ -282,7 +282,7 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
         let (state, service, owner, mut request, tree) = broker_with_tree(true);
         // Structural owners are unrestricted by grants. Use a direct person
         // governed by grants to exercise current policy, not owner override.
-        let person = Caller::local_person("guest").in_workspace(owner.room().unwrap());
+        let person = Caller::local_person("guest").in_workspace(owner.workspace().unwrap());
         let path = TreePath::root()
             .app("so.tilo.workspace")
             .any(tilo_action_policy::Level::Kind)

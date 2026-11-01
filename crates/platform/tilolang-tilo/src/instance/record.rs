@@ -198,7 +198,7 @@ impl InstanceRecord {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
             open_stored, open_stored_adopting, open_with_committed_read, record_document,
-            room_document,
+            workspace_document,
         };
         let route = manager
             .primary_route()
@@ -207,7 +207,7 @@ impl InstanceRecord {
         let workspace = route.cluster_id.to_string();
         // The workspace's record of the app, or the one the route names: a member's own.
         let store = match &route.record {
-            None => room_document(documents, &route.app_id, &workspace),
+            None => workspace_document(documents, &route.app_id, &workspace),
             Some(record) => {
                 let id = collaboration::record::RecordId::parse(record)
                     .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
@@ -237,7 +237,7 @@ impl InstanceRecord {
                 Some(record) if tilo_action_policy::member_record(record).is_some() => {
                     open_stored_adopting(
                         store,
-                        room_document(documents, &route.app_id, &workspace).ok(),
+                        workspace_document(documents, &route.app_id, &workspace).ok(),
                     )
                 }
                 _ => open_stored(store),

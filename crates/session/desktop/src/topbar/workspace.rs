@@ -109,7 +109,7 @@ impl TopBarChrome {
         )
     }
 
-    /// How wide the workspace name may grow in `room`. Named strips follow
+    /// How wide the workspace name may grow in `workspace`. Named strips follow
     /// the pill, so the name leaves them their width down to a short
     /// name's.
     pub(super) fn workspace_label_budget(

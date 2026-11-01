@@ -23,7 +23,7 @@ const confirmed = confirmation => (confirmation === 'Confirmed' ? {kind: 'confir
   : typeof confirmation?.Phrase === 'string' ? {kind: 'phrase', phrase: confirmation.Phrase} : null);
 const hostRuns = provider => typeof provider === 'string' && (provider.startsWith('record:') || provider.startsWith('workspace:'));
 
-/** The id of `workspace`'s governance resource (`room_governance_resource`). */
+/** The id of `workspace`'s governance resource (`workspace_governance_resource`). */
 export const governanceResource = workspace => `workspace.permissions:${workspace}`;
 
 const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`));

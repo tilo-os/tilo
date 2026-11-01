@@ -66,9 +66,9 @@ pub enum RecordReadError {
     /// The record is not the one the custody was taken for.
     #[error("record identity does not match its binding")]
     IdentityMismatch,
-    /// The record the room sends this device only once it asks is not here
+    /// The record the workspace sends this device only once it asks is not here
     /// yet: it was asked for.
-    #[error("the record is on its way from the room")]
+    #[error("the record is on its way from the workspace")]
     Arriving,
     /// The read or its scope failed.
     #[error("record initialization failed: {0}")]
@@ -242,7 +242,7 @@ impl NativeConstruction {
         let manager = manager
             .as_mut()
             .ok_or("prepared component worker already transferred")?;
-        // A manager still joining its room builds on the local replica: the
+        // A manager still joining its workspace builds on the local replica: the
         // route answers later, as an event the app takes. Join the bound
         // record's route rather than the launch's, without waiting.
         if manager.is_joining() {
@@ -401,7 +401,7 @@ impl RecordInitialization {
 #[cfg(feature = "broker-transport")]
 pub fn take_initialization(
     app: &str,
-    room: &str,
+    workspace: &str,
     checkout: &crate::record::RecordCheckout,
 ) -> Result<Option<RecordInitialization>, String> {
     let Some(state) = current() else {
@@ -410,7 +410,7 @@ pub fn take_initialization(
     let Some(bridge) = state.bridge.as_ref() else {
         return Ok(None);
     };
-    bridge.check_scope(app, Some(room))?;
+    bridge.check_scope(app, Some(workspace))?;
     let mut scoped = bridge.clone();
     if !checkout.id.is_package_primary() {
         scoped.route = RouteSpec::record(app, bridge.route.cluster_id, checkout.id.as_str());
@@ -434,7 +434,7 @@ pub fn take_initialization(
 #[cfg(not(feature = "broker-transport"))]
 pub fn take_initialization(
     _app: &str,
-    _room: &str,
+    _workspace: &str,
     _checkout: &crate::record::RecordCheckout,
 ) -> Result<Option<RecordInitialization>, String> {
     Ok(None)
@@ -452,7 +452,7 @@ impl NativeConstruction {
     }
 }
 /// Whether the construction under way is on a manager still joining its
-/// room. A record that is not on this device is then not created: the room
+/// workspace. A record that is not on this device is then not created: the workspace
 /// may hold it, and a second copy made here would diverge from it. It
 /// arrives with the join.
 pub fn joining() -> bool {
@@ -544,7 +544,7 @@ pub fn capture_bridge() -> Option<InitialReadBridge> {
 /// retaining the original worker.
 ///
 /// A window is built while its route is still joining (the live launch
-/// builds local-first), and a room this device governs answers the route's
+/// builds local-first), and a workspace this device governs answers the route's
 /// committed read as its own channel. Neither is a reason this app may not
 /// reach the session: whether the session serves a service to an app is the
 /// session's own decision on the app's certified route, not a property of
@@ -578,12 +578,12 @@ pub fn fail(error: &str) {
 }
 pub fn primary(
     app: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> Option<Result<(String, CommittedDocument), String>> {
     let state = current()?;
     let bridge = state.bridge.as_ref()?;
     Some((|| {
-        bridge.check_scope(app, room)?;
+        bridge.check_scope(app, workspace)?;
         let read = state
             .primary
             .borrow_mut()
@@ -711,7 +711,7 @@ impl InitialReadBridge {
         let Backend::Transport(transport) = &manager.backend else {
             return Ok(None);
         };
-        // A manager still joining its room builds on the local replica (the
+        // A manager still joining its workspace builds on the local replica (the
         // non-Required path): its route's committed history arrives later,
         // as an event the app merges.
         if manager.awaiting_primary {
@@ -783,10 +783,10 @@ impl InitialReadBridge {
         read.applied();
         Ok(())
     }
-    fn check_scope(&self, app: &str, room: Option<&str>) -> Result<(), String> {
+    fn check_scope(&self, app: &str, workspace: Option<&str>) -> Result<(), String> {
         self.check()?;
         if app != self.route.app_id
-            || room.is_some_and(|room| room != self.route.cluster_id.to_string())
+            || workspace.is_some_and(|workspace| workspace != self.route.cluster_id.to_string())
         {
             return Err("native initial read scope mismatch".into());
         }
@@ -794,9 +794,9 @@ impl InitialReadBridge {
     }
     /// The committed history `checkout` starts from, read before the app
     /// builds its record. `None` when no committed read answers it: the
-    /// broker said the app's own channel does (a record a sealed room does
+    /// broker said the app's own channel does (a record a sealed workspace does
     /// not hold yet, which is new and which the app makes there), and the
-    /// record opens as one without a bridge would. A record the room sends
+    /// record opens as one without a bridge would. A record the workspace sends
     /// this device only once it asks
     /// ([`crate::record::RecordId::arrives_on_demand`]) is asked for and
     /// never waited on: [`RecordReadError::Arriving`] until it
@@ -806,11 +806,11 @@ impl InitialReadBridge {
     pub fn record(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         checkout: &crate::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
         if checkout.id.arrives_on_demand() {
-            self.check_scope(app, Some(room))
+            self.check_scope(app, Some(workspace))
                 .map_err(RecordReadError::Initialization)?;
             if self.answered_by_own_channel(checkout) {
                 return Ok(None);
@@ -821,16 +821,16 @@ impl InitialReadBridge {
                 .map(Some)
                 .ok_or(RecordReadError::Arriving);
         }
-        self.record_waiting(app, room, checkout)
+        self.record_waiting(app, workspace, checkout)
             .map_err(RecordReadError::Initialization)
     }
     fn record_waiting(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         checkout: &crate::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, String> {
-        self.check_scope(app, Some(room))?;
+        self.check_scope(app, Some(workspace))?;
         let route = if checkout.id.is_package_primary() {
             self.route.clone()
         } else {
@@ -857,7 +857,7 @@ impl InitialReadBridge {
             return Ok(Some(read));
         }
         let read = if checkout.id.is_package_primary() {
-            if let Some(initial) = primary(app, Some(room)) {
+            if let Some(initial) = primary(app, Some(workspace)) {
                 Some(initial.map(|(_, read)| read)?)
             } else {
                 self.read(None)?
@@ -880,7 +880,7 @@ impl InitialReadBridge {
         Ok(Some(read))
     }
     /// Whether the broker answered `checkout`'s read as the app's own
-    /// channel's: a record a sealed room does not hold yet, which is new and
+    /// channel's: a record a sealed workspace does not hold yet, which is new and
     /// which the app makes there. Never the primary route, which the bridge
     /// reads committed.
     pub fn answered_by_own_channel(&self, checkout: &crate::record::RecordCheckout) -> bool {
@@ -927,7 +927,7 @@ impl InitialReadBridge {
             }
         }
         // No clock ends this wait: the broker answers the read once it can,
-        // which for a record of a sealed room can mean after the room's
+        // which for a record of a sealed workspace can mean after the workspace's
         // host replayed it and a participant of the channel admitted this device
         // to its keys. Each of those is an event the broker waits on; under
         // load they take what they take. The worker's end, the route's
@@ -952,7 +952,7 @@ impl InitialReadBridge {
         }
     }
     /// The committed history of the on-demand record `checkout` that
-    /// arrived, asking the room for it the first time: `None` until it is
+    /// arrived, asking the workspace for it the first time: `None` until it is
     /// here. Its arrival reaches the app as every committed read does
     /// ([`super::CollabEvent::CommittedDocument`]), which wakes the store's
     /// readers.
@@ -1023,7 +1023,7 @@ impl InitialReadBridge {
     fn check(&self) -> Result<(), String> {
         match self.never {}
     }
-    fn check_scope(&self, _app: &str, _room: Option<&str>) -> Result<(), String> {
+    fn check_scope(&self, _app: &str, _workspace: Option<&str>) -> Result<(), String> {
         match self.never {}
     }
     fn publishable(&self, _channel: &str) -> bool {
@@ -1048,7 +1048,7 @@ impl InitialReadBridge {
     pub fn record(
         &self,
         _app: &str,
-        _room: &str,
+        _workspace: &str,
         _checkout: &crate::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
         match self.never {}
@@ -1085,11 +1085,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn component_primary_read_retains_original_creation_receipt_without_eager_read() {
-        let room = uuid::Uuid::new_v4();
-        let route = RouteSpec::app("so.tilo.chat", room);
+        let workspace_id = uuid::Uuid::new_v4();
+        let route = RouteSpec::app("so.tilo.chat", workspace_id);
         let workspace = CreationWorkspace {
-            id: room.to_string(),
-            name: "Verified room".into(),
+            id: workspace_id.to_string(),
+            name: "Verified workspace".into(),
         };
         let first = Reply::Created {
             receipt: CreationReceipt {
@@ -1142,29 +1142,30 @@ mod tests {
             crate::record::RecordKind::new("chat.workspace"),
         );
         bridge
-            .record("so.tilo.chat", &room.to_string(), &checkout)
+            .record("so.tilo.chat", &workspace_id.to_string(), &checkout)
             .unwrap()
             .unwrap()
             .applied();
-        let initialization = take_initialization("so.tilo.chat", &room.to_string(), &checkout)
-            .unwrap()
-            .unwrap();
+        let initialization =
+            take_initialization("so.tilo.chat", &workspace_id.to_string(), &checkout)
+                .unwrap()
+                .unwrap();
         assert_eq!(initialization.workspace(), Some(&workspace));
         assert!(
-            take_initialization("so.tilo.chat", &room.to_string(), &checkout)
+            take_initialization("so.tilo.chat", &workspace_id.to_string(), &checkout)
                 .unwrap()
                 .is_none()
         );
     }
 
-    /// A record a sealed room does not hold yet is new, and the app makes it
+    /// A record a sealed workspace does not hold yet is new, and the app makes it
     /// on its own channel: the broker answers its read so ([`Reply::Legacy`]).
     /// The bridge says no committed read answers it, at once, rather than
     /// waiting out its deadline for a read that never comes and failing the
     /// app's open of the record.
     #[test]
     fn a_record_the_apps_own_channel_answers_has_no_committed_read() {
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let checkout = crate::record::RecordCheckout::new(
             crate::record::RecordId::parse(
                 "derived:part.0@derived:messages@derived:default@tab:0000000000000000",
@@ -1172,19 +1173,19 @@ mod tests {
             .expect("a record id"),
             crate::record::RecordKind::new("chat.part"),
         );
-        let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());
+        let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();
         state.document_reads.legacy_for_test(&route.channel_id());
         let (sender, _receiver) = tokio::sync::mpsc::channel(4);
         let bridge = InitialReadBridge {
-            route: RouteSpec::app("so.tilo.chat", room),
+            route: RouteSpec::app("so.tilo.chat", workspace),
             commands: sender.downgrade(),
             state,
         };
         let started = std::time::Instant::now();
         assert!(
             bridge
-                .record("so.tilo.chat", &room.to_string(), &checkout)
+                .record("so.tilo.chat", &workspace.to_string(), &checkout)
                 .unwrap()
                 .is_none()
         );
@@ -1199,13 +1200,13 @@ mod tests {
     /// the read waiting for it, at once.
     #[test]
     fn a_read_of_a_route_that_did_not_join_fails_with_its_reason() {
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let checkout = crate::record::RecordCheckout::new(
             crate::record::RecordId::parse("uuid:00000000-0000-0000-0000-000000000001")
                 .expect("a record id"),
             crate::record::RecordKind::new("chat.part"),
         );
-        let route = RouteSpec::record("so.tilo.chat", room, checkout.id.as_str());
+        let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();
         let reads = state.document_reads.clone();
         let (sender, mut receiver) = tokio::sync::mpsc::channel::<super::QueuedSdkCommand>(4);
@@ -1222,12 +1223,12 @@ mod tests {
             receiver
         });
         let bridge = InitialReadBridge {
-            route: RouteSpec::app("so.tilo.chat", room),
+            route: RouteSpec::app("so.tilo.chat", workspace),
             commands: sender.downgrade(),
             state,
         };
         let refused = bridge
-            .record("so.tilo.chat", &room.to_string(), &checkout)
+            .record("so.tilo.chat", &workspace.to_string(), &checkout)
             .expect_err("no read is coming");
         assert!(
             refused.to_string().contains("the broker refused the route"),

@@ -294,7 +294,7 @@ impl ScheduleStore {
                     app_id: entry.app.clone(),
                     title: entry.title.clone(),
                     target: tilo_desktop::notifications::ScheduledNotificationTarget {
-                        room: entry.room.clone(),
+                        workspace: entry.room.clone(),
                         token: entry.token.clone(),
                         occurrence_ms: active.at_ms,
                         calendar_alarm: true,
@@ -323,7 +323,7 @@ impl ScheduleStore {
         let app_id = request.app_id.as_str();
         let entry = entries.iter_mut().find(|entry| {
             entry.app == app_id
-                && entry.room == target.room
+                && entry.room == target.workspace
                 && entry.token == target.token
                 && entry.activation == target.uri
         });
@@ -378,7 +378,7 @@ impl ScheduleStore {
         for request in bridge.drain_scheduled_actions() {
             let result = if workspaces.is_some_and(|workspaces| {
                 workspaces
-                    .caller_in_room(&request.target.room, &request.app_id)
+                    .caller_in_room(&request.target.workspace, &request.app_id)
                     .is_none()
             }) {
                 Err("alarm's original application workspace is unavailable".into())
@@ -431,7 +431,7 @@ impl ScheduleStore {
                 entry.token = hex::encode(crate::random::nonzero::<16>());
             }
             let target = tilo_desktop::notifications::ScheduledNotificationTarget {
-                room: entry.room.clone(),
+                workspace: entry.room.clone(),
                 token: entry.token.clone(),
                 occurrence_ms: at_ms,
                 calendar_alarm: entry.calendar.is_some(),
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = requests.first().expect("one verified launch");
         assert_eq!(request.app_id, "so.tilo.clocks");
-        assert_eq!(request.target.room, caller.room);
+        assert_eq!(request.target.workspace, caller.room);
         assert_eq!(request.target.uri, "tilo-clocks:alarm/exact-alarm-id");
         assert_eq!(request.target.occurrence_ms, due.timestamp_millis());
         assert_eq!(
@@ -645,7 +645,7 @@ mod tests {
         let requests = chrome.borrow_mut().take_notification_launch_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].target.uri, "tilo-clocks:alarm/live-alarm-id");
-        assert_eq!(requests[0].target.room, caller.room);
+        assert_eq!(requests[0].target.workspace, caller.room);
         chrome.borrow_mut().activate_notification(id);
         assert!(
             chrome
@@ -1174,7 +1174,7 @@ mod tests {
         let held = fixture.store.lock().expect("a commit holds the store");
         let (read_tx, read) = std::sync::mpsc::channel();
         let bridge = fixture.bridge.clone();
-        let room = fixture.target.room.clone();
+        let room = fixture.target.workspace.clone();
         std::thread::spawn(move || {
             let _ = read_tx.send(bridge.snoozed_alarms(&room));
         });
@@ -1326,7 +1326,7 @@ mod tests {
             let mut request = action_request(&fixture, ScheduledAction::Snooze);
             match changed {
                 0 => request.app_id = "another.app".into(),
-                1 => request.target.room = "another-room".into(),
+                1 => request.target.workspace = "another-room".into(),
                 2 => request.target.token = "0123456789abcdef0123456789abcdef".into(),
                 _ => request.target.occurrence_ms -= 1,
             }

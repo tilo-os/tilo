@@ -295,7 +295,7 @@ mod tests {
 
     /// Chat's messages: a chain of parts of the workspace's default record.
     fn messages() -> ui::record::RecordId {
-        ui::record::RecordId::derived("messages", &ui::record::RecordId::room_default())
+        ui::record::RecordId::derived("messages", &ui::record::RecordId::workspace_default())
     }
 
     /// Part `index` of Chat's messages.

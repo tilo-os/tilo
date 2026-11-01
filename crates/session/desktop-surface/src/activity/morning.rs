@@ -9,7 +9,7 @@ pub const MAX_SOURCES: usize = 8;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MorningPreferences {
-    pub room: String,
+    pub workspace: String,
     pub sources: Vec<MorningSource>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -40,17 +40,17 @@ impl MorningSource {
 }
 impl MorningPreferences {
     /// Empty by default; a recycled workspace id never reuses another workspace's choices.
-    pub fn for_room(&self, room: &str) -> &[MorningSource] {
-        if self.room == room {
+    pub fn for_workspace(&self, workspace: &str) -> &[MorningSource] {
+        if self.workspace == workspace {
             self.sources.get(..MAX_SOURCES).unwrap_or(&self.sources)
         } else {
             &[]
         }
     }
-    pub fn toggle(&mut self, room: &str, source: MorningSource) -> bool {
-        if self.room != room {
+    pub fn toggle(&mut self, workspace: &str, source: MorningSource) -> bool {
+        if self.workspace != workspace {
             *self = Self {
-                room: room.into(),
+                workspace: workspace.into(),
                 sources: Vec::new(),
             };
         }
@@ -67,10 +67,10 @@ impl MorningPreferences {
 
 /// Each queued navigation/removal stays bound to the workspace where it was offered.
 pub fn decode_action<'a>(id: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
-    let (room, key) = id.strip_prefix(prefix)?.split_once('.')?;
-    uuid::Uuid::parse_str(room).ok()?;
+    let (workspace, key) = id.strip_prefix(prefix)?.split_once('.')?;
+    uuid::Uuid::parse_str(workspace).ok()?;
     (!key.is_empty() && key.len() <= 4610 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then_some((room, key))
+        .then_some((workspace, key))
 }
 
 /// Bounded provider-owned observation, read through the currently admitted catalogue.

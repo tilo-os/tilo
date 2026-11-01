@@ -28,11 +28,11 @@ use crate::shared_surfaces::SharedSurfaces;
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room: the same
+    /// Durable identity of this workspace as a collaboration workspace: the same
     /// value on every device. Given once, when the workspace is made
-    /// ([`Self::new`] mints one, [`Self::in_room`] takes the room created or
-    /// joined), and never changed: read it with [`Self::room`]. Joining the
-    /// same room again lands in the same workspace.
+    /// ([`Self::new`] mints one, [`Self::in_workspace`] takes the workspace created or
+    /// joined), and never changed: read it with [`Self::workspace`]. Joining the
+    /// same workspace again lands in the same workspace.
     room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
@@ -213,7 +213,7 @@ pub enum PresetMutationError {
 }
 
 /// The app id the workspace's own resources are published under.
-pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER;
+pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
 /// Granting, published on the workspace: a grant of the workspace's tree to someone.
 pub const GRANT_ACTION_ID: &str = "grant";
 /// Revoking one grant.
@@ -244,10 +244,10 @@ pub fn governance_of(action: &str) -> Option<&'static str> {
 }
 
 /// The resource the workspace publishes its governance actions on, for the
-/// room `room`: the workspace itself (resource kind [`roles::ROOM_KIND`]).
+/// workspace `workspace`: the workspace itself (resource kind [`roles::ROOM_KIND`]).
 #[must_use]
 pub fn governance_resource_id(room: &RoomId) -> String {
-    tilo_actions::remote::room_governance_resource(&room.to_string())
+    tilo_actions::remote::workspace_governance_resource(&room.to_string())
 }
 
 /// A role's stable name, as a collaborator row records it
@@ -557,7 +557,7 @@ impl Workspace {
             .any(|strip| !strip.window_groups.is_empty())
     }
 
-    /// The room this workspace is, given when it was made and never changed.
+    /// The workspace this workspace is, given when it was made and never changed.
     #[must_use]
     pub fn room(&self) -> RoomId {
         self.room
@@ -756,7 +756,7 @@ impl Workspace {
         true
     }
 
-    /// Give up governance because this workspace joined a room it did not
+    /// Give up governance because this workspace joined a workspace it did not
     /// mint: drops the recorded owner and every grant of governance actions,
     /// so this machine answers for nothing it does not own.
     pub fn surrender_governance(&mut self) -> bool {
@@ -781,10 +781,10 @@ impl Workspace {
     #[must_use]
     pub fn is_blocked(&self, user: &str) -> bool {
         let person = Subject::Person(user.to_owned());
-        let room = self.node();
+        let workspace_node = self.node();
         self.policy.grants.iter().any(|grant| {
             grant.subject == person
-                && grant.node == room
+                && grant.node == workspace_node
                 && grant.answer == Answer::Deny
                 && grant.kinds == KindSet::ALL
         })
@@ -813,8 +813,8 @@ impl Workspace {
     /// granted until revoked, the end of a time-limited grant otherwise. A
     /// grant that ends with the session is no standing reach and is left out.
     #[must_use]
-    pub fn room_readers_at(&self, now: u64) -> Vec<(UserId, Option<u64>)> {
-        let room = self.node();
+    pub fn workspace_readers_at(&self, now: u64) -> Vec<(UserId, Option<u64>)> {
+        let workspace_node = self.node();
         let cx = context_at(now);
         let mut readers: BTreeMap<UserId, Option<u64>> = self
             .roster()
@@ -827,7 +827,7 @@ impl Workspace {
             };
             if grant.answer != Answer::Allow
                 || !grant.kinds.contains(ActionKind::Read)
-                || !grant.node.covers(&room)
+                || !grant.node.covers(&workspace_node)
             {
                 continue;
             }
@@ -846,7 +846,7 @@ impl Workspace {
             .into_iter()
             .filter(|(person, _)| {
                 Authority::person(self.policy.party(person))
-                    .decide(&room, ActionKind::Read, &cx)
+                    .decide(&workspace_node, ActionKind::Read, &cx)
                     .answer
                     == Answer::Allow
             })
@@ -858,13 +858,13 @@ impl Workspace {
     #[must_use]
     pub fn agent_members_at(&self, now: u64) -> Vec<(String, KindSet)> {
         let cx = context_at(now);
-        let room = self.node();
+        let workspace_node = self.node();
         let mut agents: Vec<(String, KindSet)> = Vec::new();
         for grant in &self.policy.grants {
             let Subject::Agent(agent) = &grant.subject else {
                 continue;
             };
-            if grant.node != room || grant.answer == Answer::Deny || !grant.is_live(&cx) {
+            if grant.node != workspace_node || grant.answer == Answer::Deny || !grant.is_live(&cx) {
                 continue;
             }
             match agents.iter_mut().find(|(held, _)| held == agent) {
@@ -922,10 +922,10 @@ impl Workspace {
     #[must_use]
     pub fn agent_role_at(&self, agent: &str, now: u64) -> Option<Role> {
         let cx = context_at(now);
-        let room = self.node();
+        let workspace_node = self.node();
         let admitted = self.policy.grants.iter().any(|grant| {
             matches!(&grant.subject, Subject::Agent(held) if held == agent)
-                && grant.node == room
+                && grant.node == workspace_node
                 && grant.answer != Answer::Deny
                 && grant.is_live(&cx)
         });
@@ -936,7 +936,7 @@ impl Workspace {
         let changes = |node: &TreePath| {
             authority.decide(node, ActionKind::Undoable, &cx).answer == Answer::Allow
         };
-        Some(if changes(&room) {
+        Some(if changes(&workspace_node) {
             Role::Editor
         } else if changes(&roles::comments(&self.policy.workspace)) {
             Role::Commenter
@@ -950,13 +950,13 @@ impl Workspace {
     #[must_use]
     pub fn shares_of_at(&self, node: &TreePath, now: u64) -> Vec<&Grant> {
         let cx = context_at(now);
-        let room = self.node();
+        let workspace_node = self.node();
         self.policy
             .grants
             .iter()
             .filter(|grant| {
                 matches!(grant.subject, Subject::Person(_))
-                    && grant.node != room
+                    && grant.node != workspace_node
                     && grant.answer != Answer::Deny
                     && grant.is_live(&cx)
                     && grant.node.covers(node)
@@ -1060,16 +1060,21 @@ impl Workspace {
             .iter()
             .find(|preset| preset.name.eq_ignore_ascii_case(name.trim()))
             .cloned();
-        let room = self.policy.workspace.clone();
+        let workspace = self.policy.workspace.clone();
         let may = |node: &TreePath| {
             authority.decide(node, roles::GOVERNANCE_KIND, &cx).answer == Answer::Allow
         };
         let on_set = preset
             .as_ref()
-            .is_some_and(|preset| may(&preset_assign_node(&room, &preset.name)));
-        if !on_set && !may(&roles::governance_action(&room, roles::governance::GRANT)) {
+            .is_some_and(|preset| may(&preset_assign_node(&workspace, &preset.name)));
+        if !on_set
+            && !may(&roles::governance_action(
+                &workspace,
+                roles::governance::GRANT,
+            ))
+        {
             let verdict = authority.decide(
-                &roles::governance_action(&room, roles::governance::GRANT),
+                &roles::governance_action(&workspace, roles::governance::GRANT),
                 roles::GOVERNANCE_KIND,
                 &cx,
             );
@@ -1081,7 +1086,7 @@ impl Workspace {
             mint_capability_id(),
             preset.name.trim().to_lowercase()
         );
-        let room_node = self.node();
+        let workspace_node = self.node();
         let grants: Vec<Grant> = preset
             .assign(
                 &prefix,
@@ -1091,12 +1096,12 @@ impl Workspace {
             )
             .into_iter()
             .map(|grant| Grant {
-                node: room_node.join(&grant.node),
+                node: workspace_node.join(&grant.node),
                 ..grant
             })
             .collect();
         for grant in &grants {
-            if grant.node.workspace_id() != Some(room.as_str()) {
+            if grant.node.workspace_id() != Some(workspace.as_str()) {
                 return Err(Refusal::OutsideWorkspace(grant.node.clone()).into());
             }
             WorkspacePolicy::check_within(authority, grant, &cx)?;
@@ -1107,34 +1112,34 @@ impl Workspace {
     }
 }
 
-/// The node of assigning the named grant set `name` in `room`: a grant on it
+/// The node of assigning the named grant set `name` in `workspace`: a grant on it
 /// lets someone assign that one set.
 #[must_use]
-pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
-    roles::workspace_resource(room)
+pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
+    roles::workspace_resource(workspace)
         .field("presets")
         .item(name.trim().to_lowercase())
         .action("assign")
 }
 
 impl Workspace {
-    /// A workspace in a room minted for it here: the room exists from the
+    /// A workspace in a workspace minted for it here: the workspace exists from the
     /// moment the workspace does, minted when it is made rather than lazily.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self::in_room(id, RoomId::new(), name)
+        Self::in_workspace(id, RoomId::new(), name)
     }
 
-    /// A new workspace, named `name`, in a room minted for it, under the
-    /// id every device derives from that room ([`WorkspaceId::of_room`]).
+    /// A new workspace, named `name`, in a workspace minted for it, under the
+    /// id every device derives from that workspace ([`WorkspaceId::of_room`]).
     pub fn create(name: impl Into<String>) -> Self {
         let room = RoomId::new();
-        Self::in_room(WorkspaceId::of_room(room), room, name)
+        Self::in_workspace(WorkspaceId::of_room(room), room, name)
     }
 
-    /// The workspace that is `room`, created or joined, under the local id
+    /// The workspace that is `workspace`, created or joined, under the local id
     /// `id`: new workspaces take [`WorkspaceId::of_room`], an existing one
     /// keeps the id it was stored under.
-    pub fn in_room(id: WorkspaceId, room: RoomId, name: impl Into<String>) -> Self {
+    pub fn in_workspace(id: WorkspaceId, room: RoomId, name: impl Into<String>) -> Self {
         Self {
             id,
             room,
@@ -1214,7 +1219,7 @@ impl Workspace {
         }
     }
 
-    /// This workspace's collaboration cluster id — [`Self::room`], not
+    /// This workspace's collaboration cluster id — [`Self::workspace`], not
     /// the local [`Self::id`]. Unminted returns the nil uuid, which
     /// `CrdtRoute::delivers_to` refuses to deliver to.
     pub fn collab_cluster_id(&self) -> uuid::Uuid {

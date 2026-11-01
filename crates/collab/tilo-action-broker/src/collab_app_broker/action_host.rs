@@ -17,8 +17,8 @@ use tilo_actions::remote::{
     APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal, CataloguePage,
     CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt,
     InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation,
-    application_provider, application_provider_record, pending, workspace_provider,
-    workspace_provider_room,
+    application_provider, application_provider_record, pending, provider_workspace,
+    workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -664,7 +664,7 @@ impl AppBrokerState {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
         let mut as_app = Caller::local_app(app_id);
-        if let Some(workspace) = person.room() {
+        if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
         let permitted = match message {
@@ -687,7 +687,7 @@ impl AppBrokerState {
             // Never under the app's own identity, which the workspace knows not.
             RemoteActionMessage::Invoke(request)
                 if workspace_nodes::node_ask(request)
-                    .is_some_and(|(workspace, _)| person.room() == Some(workspace)) =>
+                    .is_some_and(|(workspace, _)| person.workspace() == Some(workspace)) =>
             {
                 Some(person.clone())
             }
@@ -769,7 +769,7 @@ impl AppBrokerState {
                 });
         }
         if target.provider == OWN_PROVIDER
-            || (workspace_provider_room(&target.provider).is_some()
+            || (provider_workspace(&target.provider).is_some()
                 && target
                     .address
                     .resource
@@ -809,7 +809,7 @@ impl AppBrokerState {
     /// was admitted to it by its connection; any other caller must be a
     /// member.
     fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
-        match caller.room() {
+        match caller.workspace() {
             // Confinement says which workspace a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership
             // was removed must lose its catalogue and authority at once. It
@@ -846,7 +846,7 @@ impl AppBrokerState {
     /// gone, or the agent may no longer read in it. `None` for any other
     /// caller, and for an agent that may act in its workspace.
     fn agent_workspace_unreachable(&self, caller: &Caller) -> Option<String> {
-        let workspace_id = caller.room()?;
+        let workspace_id = caller.workspace()?;
         let CallerPrincipal::Agent(agent) = caller.principal() else {
             return None;
         };
@@ -1085,7 +1085,7 @@ impl AppBrokerState {
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
-                    room: workspace_id.clone(),
+                    workspace: workspace_id.clone(),
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
@@ -1115,7 +1115,7 @@ impl AppBrokerState {
                         }),
                 );
             }
-            if caller.room().is_some() {
+            if caller.workspace().is_some() {
                 let retained = self.launchable_catalogue(
                     &workspace,
                     &policy,
@@ -1158,12 +1158,12 @@ impl AppBrokerState {
                 providers.push(CatalogueProvider {
                     provider: root.peer_id.to_string(),
                     app_id: root.app_id.clone(),
-                    room: workspace_id.clone(),
+                    workspace: workspace_id.clone(),
                     record_id: root.record_id.clone(),
                     browsable: true,
                 });
             }
-            if caller.room() == Some(workspace_id.as_str()) {
+            if caller.workspace() == Some(workspace_id.as_str()) {
                 for steps in &host_steps {
                     // The host's own services are publishers like an app's
                     // window: listed whatever rows were asked for (a query
@@ -1172,7 +1172,7 @@ impl AppBrokerState {
                     providers.push(CatalogueProvider {
                         provider: steps.provider().to_owned(),
                         app_id: steps.app_id().to_owned(),
-                        room: workspace_id.clone(),
+                        workspace: workspace_id.clone(),
                         record_id: String::new(),
                         browsable: true,
                     });
@@ -1266,7 +1266,7 @@ impl AppBrokerState {
                         }),
                 );
             }
-            if caller.room().is_some()
+            if caller.workspace().is_some()
                 && let Some(launcher) = self.services.launcher.as_ref()
             {
                 let applications = applications.get_or_insert_with(|| {
@@ -1473,7 +1473,7 @@ impl AppBrokerState {
             providers.push(CatalogueProvider {
                 provider,
                 app_id: surface.app_id.clone(),
-                room: workspace_id.clone(),
+                workspace: workspace_id.clone(),
                 record_id: surface.route.record_id.clone(),
                 browsable: false,
             });
@@ -1723,7 +1723,7 @@ impl AppBrokerState {
             return self.invoke_directory(caller, root, origin, request);
         }
         if self.services.shortcut_library.is_some()
-            && let Some(workspace) = workspace_provider_room(&request.target.provider)
+            && let Some(workspace) = provider_workspace(&request.target.provider)
             && let Some(shortcut) = automation::run_target(&request.target.address)
         {
             return Pending::ready(
@@ -1905,7 +1905,7 @@ impl AppBrokerState {
             )
         };
         // Only a caller on this machine launches apps on this desktop.
-        if caller.room().is_none() {
+        if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
         // The launcher keeps the workspace past the read: only this
@@ -2700,7 +2700,7 @@ impl AppBrokerState {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
-        if let Some(workspace) = workspace_provider_room(provider) {
+        if let Some(workspace) = provider_workspace(provider) {
             return self
                 .start_workspace_action(
                     caller,
@@ -2821,7 +2821,7 @@ impl AppBrokerState {
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_OPEN_ACTION
         {
-            if caller.room().is_none() {
+            if caller.workspace().is_none() {
                 return Err(ActionHostError::UnknownAction);
             }
             if !policy.may_in(
@@ -2886,7 +2886,7 @@ impl AppBrokerState {
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_CLOSE_ACTION
         {
-            if caller.room().is_none() {
+            if caller.workspace().is_none() {
                 return Err(ActionHostError::UnknownAction);
             }
             if !policy.may_in(

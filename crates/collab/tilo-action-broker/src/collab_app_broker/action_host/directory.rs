@@ -56,7 +56,10 @@ impl AppBrokerState {
                 reason: "a canonical route lookup must request only its provider".into(),
             });
         }
-        if self.decide_for(caller, &route.room, |_, _, _| ()).is_none() {
+        if self
+            .decide_for(caller, &route.workspace, |_, _, _| ())
+            .is_none()
+        {
             return Err(ActionHostError::NotPermitted);
         }
         let mut page = CataloguePage {
@@ -68,7 +71,7 @@ impl AppBrokerState {
             page.providers.push(CatalogueProvider {
                 provider: token,
                 app_id: root.app_id,
-                room: root.cluster_id,
+                workspace: root.cluster_id,
                 record_id: root.record_id,
                 browsable: true,
             });

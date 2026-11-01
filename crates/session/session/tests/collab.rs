@@ -49,7 +49,7 @@ fn room() -> RoomId {
 fn desk() -> DesktopTree {
     let room = room();
     let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_room(id, room, "Desk");
+    let mut workspace = Workspace::in_workspace(id, room, "Desk");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),

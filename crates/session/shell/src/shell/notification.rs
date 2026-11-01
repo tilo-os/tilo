@@ -52,7 +52,7 @@ pub(crate) fn launch_scheduled_notification(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room().to_string() == request.target.room)
+        .find(|workspace| workspace.room().to_string() == request.target.workspace)
         .cloned()
         .ok_or("notification's original room is unavailable")?;
     crate::shell::launcher::queue_package_target_in_workspace(
@@ -135,7 +135,7 @@ fn snoozed_alarm_rows(
         .into_iter()
         .filter_map(|source| {
             let id = snoozed_alarm_dismiss_id(&source.target);
-            if source.target.room != workspace.room().to_string()
+            if source.target.workspace != workspace.room().to_string()
                 || !crate::shell::actions::shell_action_authorized_for(workspace, &actor, &id)
             {
                 return None;
@@ -149,7 +149,7 @@ fn snoozed_alarm_rows(
                     scheduled_launch(notice).is_some_and(|request| {
                         request.target.calendar_alarm
                             && request.app_id == source.app_id
-                            && request.target.room == source.target.room
+                            && request.target.workspace == source.target.workspace
                             && request.target.token == source.target.token
                             && request.target.uri == source.target.uri
                             && request.target.occurrence_ms == source.target.occurrence_ms
@@ -158,7 +158,7 @@ fn snoozed_alarm_rows(
             if already_reachable {
                 return None;
             }
-            let expected_room = source.target.room.clone();
+            let expected_room = source.target.workspace.clone();
             let address = id.clone();
             let label = tilo_desktop::notifications::alarm_action_labels()
                 .into_iter()
@@ -217,7 +217,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
             continue;
         }
         let Some(request) = scheduled_launch(notice)
-            .filter(|request| request.target.calendar_alarm && request.target.room == room)
+            .filter(|request| request.target.calendar_alarm && request.target.workspace == room)
         else {
             continue;
         };
@@ -229,7 +229,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
             if !crate::shell::actions::shell_action_authorized_for(workspace, &actor, &id) {
                 continue;
             }
-            let expected_room = request.target.room.clone();
+            let expected_room = request.target.workspace.clone();
             let action_id = id.clone();
             rows.push(SearchResult {
                 facts: Vec::new(),
@@ -1438,7 +1438,7 @@ mod tests {
         let request = NotificationLaunch {
             app_id: "so.tilo.clocks".into(),
             target: tilo_desktop::notifications::ScheduledNotificationTarget {
-                room: "missing-original-room".into(),
+                workspace: "missing-original-room".into(),
                 token: "0123456789abcdef0123456789abcdef".into(),
                 occurrence_ms: 1,
                 calendar_alarm: true,

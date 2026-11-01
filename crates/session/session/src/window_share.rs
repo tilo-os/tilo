@@ -756,7 +756,7 @@ impl WindowShares {
                 continue;
             }
             let Some(ws) = sync.workspace_topic(&start.room) else {
-                t("session-window-share-room-left").clone_into(&mut start.waiting_for);
+                t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
                 self.starting.push(start);
                 continue;
             };
@@ -1677,7 +1677,7 @@ fn room_argument() -> ActionParam {
     ActionParam::required_owned(
         "room",
         ParamType::Text,
-        t("session-window-share-param-room"),
+        t("session-window-share-param-workspace"),
     )
 }
 

@@ -163,13 +163,14 @@ fn published(
     )?
     .providers;
     let record = reveal.record.as_deref().unwrap_or("");
+    let workspace = reveal.room.as_str();
     // Only a running connection (a numeric token) is the app now on screen;
     // launchable and application tokens would start another copy.
     let mut live: Vec<_> = providers
         .into_iter()
         .filter(|provider| {
             provider.app_id == reveal.app_id
-                && provider.room == reveal.room
+                && provider.workspace == workspace
                 && provider.provider.parse::<u64>().is_ok()
         })
         .collect();

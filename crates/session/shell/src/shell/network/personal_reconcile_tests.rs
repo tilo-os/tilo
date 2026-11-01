@@ -27,7 +27,7 @@ fn laptop(seed: u8) -> (Arc<ShellNetwork>, tokio::sync::mpsc::Receiver<NetCmd>) 
     };
     let mut tree = WorkspaceTree::default();
     let held = RoomId::new();
-    let mut workspace = Workspace::in_room(WorkspaceId::new(), held, "Research");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::new(), held, "Research");
     workspace.set_owner(person);
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);

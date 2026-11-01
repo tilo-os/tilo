@@ -945,7 +945,7 @@ mod tests {
     /// A desk showing one workspace, in the room.
     fn desk_tree() -> DesktopTree {
         let room = room();
-        let workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Desk");
+        let workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Desk");
         DesktopTree {
             workspaces: vec![workspace.clone()],
             active: workspace.id,

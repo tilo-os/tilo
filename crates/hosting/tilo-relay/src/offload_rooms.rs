@@ -246,7 +246,7 @@ fn let_go(routes: &mut Vec<HeldRoute>, room: &str, keep: impl Fn(&HeldRoute) -> 
 impl ActionOffload for RoomOffload {
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_> {
         Box::pin(async move {
-            let route = match self.route_for(&request.room).await {
+            let route = match self.route_for(&request.workspace).await {
                 Ok(route) => route,
                 Err(reason) => {
                     tracing::info!(
@@ -268,7 +268,7 @@ impl ActionOffload for RoomOffload {
             .routes
             .lock_recover()
             .iter()
-            .find(|held| held.rooms.contains_key(&request.room))
+            .find(|held| held.rooms.contains_key(&request.workspace))
             .map(|held| Arc::clone(&held.route));
         if let Some(route) = route {
             route.ran_here(request, elapsed);

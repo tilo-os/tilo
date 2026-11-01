@@ -517,7 +517,7 @@ mod tests {
                 page.providers = vec![CatalogueProvider {
                     provider: PROVIDER.into(),
                     app_id: "so.tilo.word-processor".into(),
-                    room: ROOM.into(),
+                    workspace: ROOM.into(),
                     record_id: RECORD.into(),
                     browsable: false,
                 }];

@@ -230,7 +230,7 @@ impl TopBarChrome {
     /// The lane the active centre widget draws into: the same inset in from
     /// either end of the band. One function so
     /// [`Self::draw_center_band`] and [`Self::activity_content_width`]
-    /// cannot disagree about how much room the activity headline has.
+    /// cannot disagree about how much workspace the activity headline has.
     pub(super) fn center_content_lane(band: Rect) -> (f64, f64) {
         // Symmetric, so the content's centre is the band's centre.
         (band.x0 + CENTER_INSET_PX, band.x1 - CENTER_INSET_PX)

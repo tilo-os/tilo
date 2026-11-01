@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueLimits, CataloguePage, CatalogueQuery,
-    InvokeArgument, InvokeRequest, ReceiptStatus, workspace_provider_room,
+    InvokeArgument, InvokeRequest, ReceiptStatus, provider_workspace,
 };
 use tilo_actions::{ActionFailure, InvocationId};
 
@@ -95,7 +95,7 @@ impl OsSearch {
         for provider in providers {
             // The workspace's own rows open applications, which the host
             // already lists; a host search here finds what is inside them.
-            if workspace_provider_room(&provider.provider).is_some() {
+            if provider_workspace(&provider.provider).is_some() {
                 continue;
             }
             let budget = MAX_ENTRIES.saturating_sub(entries.len());

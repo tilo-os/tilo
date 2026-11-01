@@ -144,7 +144,7 @@ pub trait TileSource {
 
     /// The workspace the windows are in, which each window's app is told:
     /// apps sharing one process have none of their own.
-    fn workspace_room(&self) -> Option<String> {
+    fn workspace_id(&self) -> Option<String> {
         None
     }
 

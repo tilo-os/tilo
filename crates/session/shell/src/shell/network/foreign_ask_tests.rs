@@ -41,7 +41,7 @@ fn question(room: &str) -> ConfirmationQuestion {
     ConfirmationQuestion {
         id: [0x2b; 32],
         device_label: "3f9a1c02b7d4e586".into(),
-        room: room.to_owned(),
+        workspace: room.to_owned(),
         resource_label: "Identities".into(),
         action_label: "Remove".into(),
         risk: tilo_actions::RiskLevel::Destructive.name().to_owned(),

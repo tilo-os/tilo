@@ -107,7 +107,7 @@ enum Cmd {
         /// display.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
-        /// Workspace (collaboration room) this launch belongs to, forwarded as
+        /// Workspace (collaboration workspace) this launch belongs to, forwarded as
         /// `TILO_WORKSPACE_ID` — the cluster id CRDT deltas are addressed to, so
         /// two apps with the same value can collaborate. Omit for launches with
         /// no session.
@@ -204,7 +204,7 @@ enum Cmd {
         /// Host Wayland socket path. Omit for a package with no GUI entrypoint.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
-        /// Collaboration room to launch into. See `run --workspace-id`.
+        /// Collaboration workspace to launch into. See `run --workspace-id`.
         #[arg(long)]
         workspace_id: Option<String>,
         /// A document for the app to open, as an absolute host path. An
@@ -1566,11 +1566,11 @@ fn run_installed(
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.
         wayland_socket: None,
-        // Inherit the room from the shell the command was typed into: a
-        // terminal opened in a workspace lands its CLI apps in the same room
+        // Inherit the workspace from the shell the command was typed into: a
+        // terminal opened in a workspace lands its CLI apps in the same workspace
         // rather than none. Outside a session the child gets nothing.
         //
-        // This carries no authority: it names a room, not a permission. The
+        // This carries no authority: it names a workspace, not a permission. The
         // capabilities that decide what the app may touch are resolved
         // separately, and deliberately not inherited.
         workspace_id: std::env::var(launcher::sandbox::WORKSPACE_ID_ENV)
@@ -1725,7 +1725,7 @@ mod admit_share_tests {
 mod action_authority_tests {
     use super::*;
     #[test]
-    fn action_authority_cli_keeps_host_selected_path_and_room() {
+    fn action_authority_cli_keeps_host_selected_path_and_workspace() {
         let parsed = Cli::try_parse_from([
             "tilo-launcher",
             "run",

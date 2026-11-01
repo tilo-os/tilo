@@ -189,7 +189,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             assert_eq!(
                 route.asked.lock().unwrap().as_slice(),
                 &[OffloadRequest {
-                    room: fixture.cluster_id.clone(),
+                    workspace: fixture.cluster_id.clone(),
                     app_id: fixture.route.app_id.clone(),
                     address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
                     offload: declared.clone(),

@@ -77,7 +77,7 @@ fn room() -> RoomId {
 fn desk(tile: TileContent, tab: u64) -> DesktopTree {
     let room = room();
     let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_room(id, room, "Desk");
+    let mut workspace = Workspace::in_workspace(id, room, "Desk");
     let mut strip = Strip::new(StripId::from(1), "Main");
     strip.window_groups.push(WindowGroup {
         id: GroupId::from(1_u64),

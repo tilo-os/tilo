@@ -1,17 +1,17 @@
-//! Accounts elsewhere a person links to who they are in a room: their
-//! Discord account in a room bridged to a Discord server, say.
+//! Accounts elsewhere a person links to who they are in a workspace: their
+//! Discord account in a workspace bridged to a Discord server, say.
 //!
-//! A connector keeps the room's record (the bridged server) and publishes
-//! actions on it that any member may ask the room's host to run for
+//! A connector keeps the workspace's record (the bridged server) and publishes
+//! actions on it that any member may ask the workspace's host to run for
 //! themselves ([`tilo_actions::MEMBER_OWN_TAG`]), which the profile card and
 //! Settings use the same way for every service:
 //!
-//! - a read, [`READ_ACTION`], answering a [`Reading`]: whether the room is
+//! - a read, [`READ_ACTION`], answering a [`Reading`]: whether the workspace is
 //!   connected to the service at all, the reader's linked account if any,
 //!   and the actions below;
 //! - the connect action, when the host offers signing in with the service,
 //!   answering a [`LinkStart`]: the service's consent page, which sends the
-//!   person back to the room's host and from there to Tilo with a one-time
+//!   person back to the workspace's host and from there to Tilo with a one-time
 //!   link token;
 //! - the offer read and the accept action, which take such a token (from
 //!   the consent page's return, or from a button the service's side
@@ -19,9 +19,9 @@
 //!   the accept links it;
 //! - the unlink action.
 //!
-//! The room's host runs them: the connector's code stays there, and the
-//! page or shell only asks, through a host's [`RoomRecordActions`].
-//! [`RoomAccounts`] asks the room's connectors ([`connector_apps`]) for the
+//! The workspace's host runs them: the connector's code stays there, and the
+//! page or shell only asks, through a host's [`WorkspaceRecordActions`].
+//! [`WorkspaceAccounts`] asks the workspace's connectors ([`connector_apps`]) for the
 //! read and keeps what it learns as [`LinkedAccount`]s; a host lends it to
 //! the panels that show them as [`LinkedAccounts`].
 
@@ -65,7 +65,7 @@ pub struct ProfileLink {
     pub picture: Option<String>,
 }
 
-/// The read action a connector's room record publishes, answering a
+/// The read action a connector's workspace record publishes, answering a
 /// [`Reading`] for the person who reads it.
 pub const READ_ACTION: &str = "my-link";
 
@@ -75,7 +75,7 @@ pub const READ_ACTION: &str = "my-link";
 pub struct Reading {
     /// The service's name ("Discord").
     pub service: String,
-    /// The room is connected to the service (a server is bridged).
+    /// The workspace is connected to the service (a server is bridged).
     pub connected: bool,
     #[serde(default)]
     pub account: Option<AccountName>,
@@ -168,7 +168,7 @@ pub enum LinkState {
     Linked(AccountName),
 }
 
-/// One service the room is connected to, and the person's account there.
+/// One service the workspace is connected to, and the person's account there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkedAccount {
     /// The connector's app id, which choices name it by.
@@ -180,17 +180,17 @@ pub struct LinkedAccount {
     pub problem: Option<String>,
 }
 
-/// What shows and changes a person's linked accounts in a room. Asking
-/// never waits: what comes of it shows in [`Self::accounts`] once the room's
+/// What shows and changes a person's linked accounts in a workspace. Asking
+/// never waits: what comes of it shows in [`Self::accounts`] once the workspace's
 /// host answered, and [`Self::revision`] moves.
 pub trait LinkedAccountsHost {
-    /// Every service the room is connected to, with the person's account,
+    /// Every service the workspace is connected to, with the person's account,
     /// as last heard.
     fn accounts(&self) -> Vec<LinkedAccount>;
     /// Moves whenever [`Self::accounts`] changed.
     fn revision(&self) -> u64;
     /// The person's linked accounts as their profile names them; `None`
-    /// until the room's host answered where they stand.
+    /// until the workspace's host answered where they stand.
     fn profile_links(&self) -> Option<Vec<ProfileLink>> {
         None
     }
@@ -298,7 +298,7 @@ impl LinkedAccounts {
     }
 }
 
-/// How often a panel waiting on the room's host asks again.
+/// How often a panel waiting on the workspace's host asks again.
 pub const LINKING_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many times a shown panel that knows no service yet asks again, at
@@ -307,17 +307,17 @@ pub const LINKING_RECHECK: std::time::Duration = std::time::Duration::from_secs(
 pub const UNANSWERED_RETRIES: u32 = 4;
 
 /// How many times a link token's offer is asked for before the panel says
-/// why it found none. Coming back from a consent page, the room's host
+/// why it found none. Coming back from a consent page, the workspace's host
 /// records the offer a moment after the page arrives.
 pub const OFFER_TRIES: u32 = 10;
 
 /// Asks again while a panel shows the accounts:
 ///
-/// - while a link token waits for its offer: the room's host records what
+/// - while a link token waits for its offer: the workspace's host records what
 ///   came back from a consent page a moment after the page is back;
 /// - while it knows no service at all: the read it asked on opening can
 ///   fail or go unanswered on a busy page or host, and the panel would
-///   offer nothing to link until it was opened again. A room with no
+///   offer nothing to link until it was opened again. A workspace with no
 ///   connector answers no reading either, so these asks are few and
 ///   spaced out ([`UNANSWERED_RETRIES`]).
 #[derive(Debug, Default)]
@@ -427,32 +427,32 @@ impl LinkingRecheck {
     }
 }
 
-/// The answer to one action the room's host ran.
+/// The answer to one action the workspace's host ran.
 pub type ActionAnswer = Result<serde_json::Value, String>;
 
-/// Of `room_apps`, the apps whose room record the room holds, those that
+/// Of `workspace_apps`, the apps whose workspace record the workspace holds, those that
 /// may publish the read ([`READ_ACTION`]): connectors, which bridge a
-/// service elsewhere and so run on the room's host (its secret store, its
+/// service elsewhere and so run on the workspace's host (its secret store, its
 /// worker), never in the person's desktop. An app the desktop runs itself
 /// (`runs_here`) publishes no reading, and asking its record would only
 /// have the host open it to answer that it has no such action.
 pub fn connector_apps(
-    room_apps: impl IntoIterator<Item = String>,
+    workspace_apps: impl IntoIterator<Item = String>,
     runs_here: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    room_apps
+    workspace_apps
         .into_iter()
         .filter(|app| !runs_here(app))
         .collect()
 }
 
-/// How a host asks the room's host to run an action of a room record for
+/// How a host asks the workspace's host to run an action of a workspace record for
 /// the person, on the web and natively alike.
-pub trait RoomRecordActions {
-    /// The apps whose room record this room holds and may publish the read
-    /// ([`READ_ACTION`]): the room's connectors ([`connector_apps`]).
+pub trait WorkspaceRecordActions {
+    /// The apps whose workspace record this workspace holds and may publish the read
+    /// ([`READ_ACTION`]): the workspace's connectors ([`connector_apps`]).
     fn apps(&self) -> Vec<String>;
-    /// Ask the room's host to run `action` on `app`'s room record (its own
+    /// Ask the workspace's host to run `action` on `app`'s workspace record (its own
     /// resource) with `arguments`, as the person; `done` gets the answer,
     /// later, on this thread.
     fn invoke(
@@ -469,7 +469,7 @@ pub trait RoomRecordActions {
     }
 }
 
-/// What [`RoomAccounts`] learned so far.
+/// What [`WorkspaceAccounts`] learned so far.
 #[derive(Default)]
 struct Known {
     /// Each connector's last reading, by app id.
@@ -492,22 +492,22 @@ struct Known {
     accepting: BTreeSet<String>,
 }
 
-/// Linked accounts read from a room's records by its host, through a
-/// [`RoomRecordActions`]. A link token the page came with is kept here, on
+/// Linked accounts read from a workspace's records by its host, through a
+/// [`WorkspaceRecordActions`]. A link token the page came with is kept here, on
 /// this device, until it is used up or declined.
-pub struct RoomAccounts {
-    actions: Rc<dyn RoomRecordActions>,
+pub struct WorkspaceAccounts {
+    actions: Rc<dyn WorkspaceRecordActions>,
     known: Rc<RefCell<Known>>,
     revision: Rc<Cell<u64>>,
     /// Called when what is known changed, to draw it again.
     changed: Rc<dyn Fn()>,
 }
 
-impl RoomAccounts {
+impl WorkspaceAccounts {
     /// Accounts asked through `actions`; `changed` is called whenever an
     /// answer changed them.
     #[must_use]
-    pub fn new(actions: Rc<dyn RoomRecordActions>, changed: Rc<dyn Fn()>) -> Self {
+    pub fn new(actions: Rc<dyn WorkspaceRecordActions>, changed: Rc<dyn Fn()>) -> Self {
         Self {
             actions,
             known: Rc::default(),
@@ -633,7 +633,7 @@ fn token_argument(token: &str) -> serde_json::Map<String, serde_json::Value> {
     arguments
 }
 
-impl LinkedAccountsHost for RoomAccounts {
+impl LinkedAccountsHost for WorkspaceAccounts {
     fn accounts(&self) -> Vec<LinkedAccount> {
         let known = self.known.borrow();
         known
@@ -842,7 +842,7 @@ impl LinkedAccountsHost for RoomAccounts {
 mod tests {
     use super::*;
 
-    /// A room whose host answers at once, from a connector's readings.
+    /// A workspace whose host answers at once, from a connector's readings.
     #[derive(Default)]
     struct Host {
         reading: RefCell<Reading>,
@@ -859,7 +859,7 @@ mod tests {
         waiting: RefCell<Vec<Box<dyn FnOnce()>>>,
     }
 
-    impl RoomRecordActions for Rc<Host> {
+    impl WorkspaceRecordActions for Rc<Host> {
         fn apps(&self) -> Vec<String> {
             vec!["so.tilo.chat".into(), "so.tilo.discord".into()]
         }
@@ -954,15 +954,15 @@ mod tests {
 
     #[test]
     fn only_connectors_are_asked_for_a_reading() {
-        let room = ["so.tilo.chat", "so.tilo.contacts", "so.tilo.discord"].map(String::from);
+        let workspace = ["so.tilo.chat", "so.tilo.contacts", "so.tilo.discord"].map(String::from);
         let runs_here = |app: &str| matches!(app, "so.tilo.chat" | "so.tilo.contacts");
-        assert_eq!(connector_apps(room, runs_here), ["so.tilo.discord"]);
+        assert_eq!(connector_apps(workspace, runs_here), ["so.tilo.discord"]);
     }
 
     #[test]
     fn connecting_goes_to_the_consent_page() {
         let host = host(Err("gone".into()));
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         assert!(
             accounts.accounts().is_empty(),
             "nothing is known before asking"
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn a_linked_account_is_named_with_its_picture_for_the_profile() {
         let host = host(Ok(kim()));
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         assert_eq!(accounts.profile_links(), None, "nothing answered yet");
         accounts.refresh();
         assert_eq!(accounts.profile_links(), Some(Vec::new()), "not linked");
@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     fn a_token_shows_its_offer_and_a_yes_links_it() {
         let host = host(Ok(kim()));
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         accounts.offer("T0KEN");
         assert_eq!(accounts.accounts()[0].state, LinkState::Offered(kim()));
         accounts.accept("so.tilo.discord");
@@ -1026,7 +1026,7 @@ mod tests {
             started_here: true,
             ..kim()
         }));
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         accounts.refresh();
         accounts.offer("T0KEN");
         assert_eq!(
@@ -1042,7 +1042,7 @@ mod tests {
             ..kim()
         }));
         host.holding.set(true);
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         // The page came back with a token, and the card opening asked again.
         accounts.offer("T0KEN");
         accounts.refresh();
@@ -1070,7 +1070,7 @@ mod tests {
     #[test]
     fn a_declined_offer_is_dropped() {
         let host = host(Ok(kim()));
-        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
         accounts.offer("T0KEN");
         accounts.decline("so.tilo.discord");
         assert!(matches!(
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn a_token_with_no_offer_is_asked_after_then_says_why() {
         let host = host(Err("This link ran out.".into()));
-        let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
+        let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
             Rc::new(Rc::clone(&host)),
             Rc::new(|| {}),
         )));
@@ -1102,10 +1102,10 @@ mod tests {
     }
 
     #[test]
-    fn a_room_with_no_connector_is_asked_again_a_few_times_then_left() {
+    fn a_workspace_with_no_connector_is_asked_again_a_few_times_then_left() {
         let host = host(Err("gone".into()));
         host.reading.borrow_mut().connected = false;
-        let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
+        let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
             Rc::new(Rc::clone(&host)),
             Rc::new(|| {}),
         )));

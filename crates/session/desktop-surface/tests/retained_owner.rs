@@ -91,7 +91,7 @@ struct Source {
 }
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room().to_string();
+        let workspace = workspace.room().to_string();
         let signal = Signal::default();
         self.signals.borrow_mut().insert(tab.id, signal.clone());
         NEXT.with_borrow_mut(|slot| *slot = Some(signal));
@@ -108,9 +108,9 @@ impl TileSource for Source {
             opens: &[],
             create: factory,
         };
-        let records = self.owners.open(APP, &room).unwrap();
+        let records = self.owners.open(APP, &workspace).unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
+            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &workspace)
                 .unwrap(),
         );
         let permissions = ui::permissions::SharedPermissions::new(

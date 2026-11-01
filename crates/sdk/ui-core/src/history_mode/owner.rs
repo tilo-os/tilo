@@ -57,7 +57,7 @@ pub(crate) enum OwnerKind {
         lifetime: Weak<RecordOwnerLifetime>,
         /// Whether this app publishes the record's changes: the identity
         /// service signs a change on a route only for the app of that
-        /// route, or for one of the workspace's workspace records
+        /// route, or for one of the workspace's shared records
         /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)).
         /// A record this app only reads is merged from its route, never
         /// published on it.

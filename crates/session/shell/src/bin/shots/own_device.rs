@@ -72,7 +72,7 @@ fn hosted(id: u64, app: &str, title: &str) -> Tab {
 pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomId {
     let id = WorkspaceId(salted(salt, 1));
     let room = RoomId::new();
-    let mut workspace = Workspace::in_room(id, room, "Research");
+    let mut workspace = Workspace::in_workspace(id, room, "Research");
     workspace.set_owner(person.to_string());
     let mut strip = Strip::new(StripId(salted(salt, 2)), "Thesis");
     let draft = salted(salt, 4);

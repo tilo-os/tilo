@@ -36,7 +36,7 @@ struct Connection {
 }
 impl Connection {
     fn custody(&self) -> Result<(), Error> {
-        let room = crate::shell::state::RoomId::parse(&self.destination.room)
+        let room = crate::shell::state::RoomId::parse(&self.destination.workspace)
             .ok_or(Error::ReceiptMismatch)?;
         let (reporter, owner) = self
             .network
@@ -55,7 +55,7 @@ impl Connection {
             .filter(|(_, received)| received.elapsed() < Duration::from_secs(5))
             .map(|(admission, _)| admission.clone())
             .ok_or(Error::Invalid("fresh native feedback admission required"))?;
-        let room = crate::shell::state::RoomId::parse(&self.destination.room)
+        let room = crate::shell::state::RoomId::parse(&self.destination.workspace)
             .ok_or(Error::ReceiptMismatch)?;
         self.network
             .native_owner()
@@ -89,7 +89,7 @@ impl Connection {
             return Err(Error::Full);
         }
         self.serial = self.serial.checked_add(1).ok_or(Error::Full)?;
-        let workspace = tilo_relay_protocol::room_workspace_id(&self.destination.room)
+        let workspace = tilo_relay_protocol::room_workspace_id(&self.destination.workspace)
             .map_err(|_| Error::ReceiptMismatch)?;
         let answer = self
             .network
@@ -180,7 +180,7 @@ impl Delivery {
         let mut connection = Connection {
             network,
             destination: FeedbackDestination {
-                room: destination.room,
+                workspace: destination.room,
                 provider: destination.provider,
                 channel: destination.channel,
             },
@@ -458,7 +458,7 @@ pub(super) fn configured_destination(
     let wire: FeedbackDestination =
         serde_json::from_slice(&bytes).map_err(|_| LaunchError::BindingMismatch)?;
     let destination = tilo_desktop::feedback::Destination {
-        room: wire.room,
+        room: wire.workspace,
         provider: wire.provider,
         channel: wire.channel,
     };

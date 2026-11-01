@@ -91,7 +91,7 @@ impl Links {
         };
         let locator = ui::tilo_actions::remote::ResourceViewLocator {
             origin: self.origin.clone(),
-            room: self.workspace.clone(),
+            workspace: self.workspace.clone(),
             host_device: self.host_device.clone(),
             provider: provider.to_owned(),
             web_entry: Some(self.web_entry.clone()),

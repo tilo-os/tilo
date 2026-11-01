@@ -463,11 +463,12 @@ impl Drop for CacheDir {
 #[test]
 fn each_app_keeps_its_own_shader_cache_and_no_other() {
     let f = fixture();
-    let room = format!("cache-test-{}", std::process::id());
-    let container = prepare_container(&f.root.join("support"), Some(&room), PACKAGE).unwrap();
-    let other = prepare_container(&f.root.join("support"), Some(&room), "so.tilo.other").unwrap();
-    let own = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+{PACKAGE}")));
-    let _other = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+so.tilo.other")));
+    let workspace = format!("cache-test-{}", std::process::id());
+    let container = prepare_container(&f.root.join("support"), Some(&workspace), PACKAGE).unwrap();
+    let other =
+        prepare_container(&f.root.join("support"), Some(&workspace), "so.tilo.other").unwrap();
+    let own = CacheDir(user_cache_dir().join(format!("so.tilo+{workspace}+{PACKAGE}")));
+    let _other = CacheDir(user_cache_dir().join(format!("so.tilo+{workspace}+so.tilo.other")));
 
     let mut req = request_with(&f, &f.probe, "cache", OsString::from("com.apple.metal"));
     req.container_dir = container;

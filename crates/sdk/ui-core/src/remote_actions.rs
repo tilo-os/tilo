@@ -30,8 +30,8 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget, UpdateMark, serve,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, UpdateMark, WORKSPACE_GOVERNANCE_PROVIDER, serve,
 };
 
 use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
@@ -346,7 +346,8 @@ impl RemoteActions {
     /// host, named as the person knows its workspace.
     fn source(&self, target: Option<&RemoteActionTarget>) -> Source {
         let session = matches!(self.lock().transport, Transport::Session);
-        let governance = target.is_some_and(|target| target.provider == ROOM_GOVERNANCE_PROVIDER);
+        let governance =
+            target.is_some_and(|target| target.provider == WORKSPACE_GOVERNANCE_PROVIDER);
         if session && governance {
             if let Some(sync) = crate::workspace_sync::current() {
                 let workspace = sync.workspace.trim();

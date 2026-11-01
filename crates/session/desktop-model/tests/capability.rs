@@ -34,7 +34,7 @@ fn capability_grants_start_empty_and_round_trip() {
                     tilo_action_policy::roles::governance::SETTINGS,
                     NOW
                 ),
-                "a room with no owner has no administrators"
+                "a workspace with no owner has no administrators"
             );
             assert_ne!(
                 ws.sandbox_decide_at(

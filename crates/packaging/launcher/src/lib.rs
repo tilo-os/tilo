@@ -4,7 +4,7 @@
 //! in `main.rs` is just argv parsing + orchestration.
 //!
 //! - [`sandbox`] — bubblewrap argv construction.
-//! - [`appdir`] — the one directory an app may write to, per room and
+//! - [`appdir`] — the one directory an app may write to, per workspace and
 //!   package; no manifest field feeds it.
 //! - [`profile`] — the fixed set of host paths every app may read.
 //! - [`sandbox_view`] — that set pre-built once as a read-only view, so a

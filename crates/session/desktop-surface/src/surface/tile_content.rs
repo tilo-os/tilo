@@ -19,7 +19,7 @@ pub(super) fn build_tile(
     host.set_panic_scope(tab.id);
     // Its app's bar is drawn here: what it declares goes on its window.
     let window = ui::hosted_window::HostedWindow::new();
-    window.set_workspace(tiles.workspace_room());
+    window.set_workspace(tiles.workspace_id());
     host.set_hosted_window(window);
     if let Some(domain) = controls {
         ui::widget::controls::install_control_custody(

@@ -952,15 +952,15 @@ mod tests {
             personal
                 .put(
                     ROOT,
-                    tilo_desktop_model::projection::ROOM_ID_KEY,
+                    tilo_desktop_model::projection::WORKSPACE_ID_KEY,
                     room.to_string(),
                 )
                 .unwrap();
             personal
                 .put(
                     ROOT,
-                    tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
-                    tilo_desktop_model::projection::RoomLayout::Personal.id(),
+                    tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY,
+                    tilo_desktop_model::projection::WorkspaceLayout::Personal.id(),
                 )
                 .unwrap();
             personal.commit();

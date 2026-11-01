@@ -113,6 +113,7 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
 }
 
 pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
+/// The stored action type documents carry; it keeps its spelling.
 pub const GOVERNANCE_ACTION_TYPE: &str = "tilo.room.governance.v1";
 
 /// One of the workspace's governance actions, as its published door builds it.
@@ -609,7 +610,7 @@ pub fn governance_resource_with_access(
                 ActionParam::required_owned(
                     "node",
                     ParamType::Text,
-                    "Where, below the room: \"app:so.tilo.notes\", \"app:so.tilo.mail/**/action:send\", or \"\" for the whole room",
+                    "Where, below the workspace: \"app:so.tilo.notes\", \"app:so.tilo.mail/**/action:send\", or \"\" for the whole workspace",
                 )
                 .picking(tilo_actions::Pick::Node),
                 ActionParam::required_owned(
@@ -689,7 +690,7 @@ pub fn governance_resource_with_access(
                 ActionParam::required_owned(
                     "rules",
                     ParamType::Array,
-                    "Rules: {\"node\": path below the room, \"kinds\": [\"read\"|\"undoable\"|\"outside\"], \"answer\": \"allow\"|\"ask\"|\"deny\"}",
+                    "Rules: {\"node\": path below the workspace, \"kinds\": [\"read\"|\"undoable\"|\"outside\"], \"answer\": \"allow\"|\"ask\"|\"deny\"}",
                 )
                 .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128})),
             ],
@@ -2057,11 +2058,11 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
             }
         }
     }
-    let below_room = node.within_workspace();
-    if below_room.is_root() {
+    let below_workspace = node.within_workspace();
+    if below_workspace.is_root() {
         return t("workspace-settings-scope-workspace");
     }
-    tilo_action_policy::describe_node(&below_room, &Named(apps))
+    tilo_action_policy::describe_node(&below_workspace, &Named(apps))
 }
 
 pub fn expiry_label(expiry: Expiry) -> String {
@@ -5093,7 +5094,7 @@ mod members_pane_tests {
     }
 
     #[test]
-    fn governance_publishes_typed_room_actions() {
+    fn governance_publishes_typed_workspace_actions() {
         let mut ws = Workspace::new(WorkspaceId(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
@@ -5254,7 +5255,7 @@ mod agents_pane_tests {
                 assert_eq!(
                     edit.granted.len(),
                     2,
-                    "reading the room, and no governing it"
+                    "reading the workspace, and no governing it"
                 );
                 assert_eq!(
                     ws.agent_members_at(tilo_clock::unix_now()),
@@ -5407,7 +5408,7 @@ mod agents_pane_tests {
 
         let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
         let rows = agents_pane_rows(&ws, pane);
-        assert_eq!(rows.len(), 1, "listed with the room's agents");
+        assert_eq!(rows.len(), 1, "listed with the workspace's agents");
         assert_eq!(rows[0].agent, principal);
         assert_eq!(rows[0].kinds, KindSet::READ, "only what it was granted");
         assert_eq!(
@@ -5504,7 +5505,7 @@ mod bots_pane_tests {
     }
 
     #[test]
-    fn the_rooms_bots_are_listed_under_the_agents_and_only_a_requested_one_is_removed_here() {
+    fn the_workspace_bots_are_listed_under_the_agents_and_only_a_requested_one_is_removed_here() {
         let mut ws = Workspace::new(WorkspaceId::from(19), "bots-test");
         ws.set_owner("owner-user");
         ws.bots
@@ -5528,7 +5529,7 @@ mod bots_pane_tests {
         assert!(rows[0].remove_rect.area() > 0.0, "a member asked for it");
         assert!(
             rows[1].remove_rect.area() <= 0.0,
-            "the room's operator runs it; it is removed where it was installed"
+            "the workspace's operator runs it; it is removed where it was installed"
         );
         assert!(rows[0].row_rect.y1 <= rows[1].row_rect.y0);
         assert_eq!(

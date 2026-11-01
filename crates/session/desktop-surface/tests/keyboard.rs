@@ -443,7 +443,7 @@ struct Source {
 
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room().to_string();
+        let workspace = workspace.room().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
             app_id: APP.into(),
@@ -458,9 +458,9 @@ impl TileSource for Source {
             opens: &[],
             create: factory,
         };
-        let records = self.owners.open(APP, &room).unwrap();
+        let records = self.owners.open(APP, &workspace).unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
+            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &workspace)
                 .unwrap(),
         );
         let permissions =

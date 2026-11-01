@@ -3912,7 +3912,7 @@ impl ChromeState {
         address: &str,
     ) -> bool {
         self.tree().desktop.workspaces.iter().any(|workspace| {
-            if workspace.room().to_string() != target.room {
+            if workspace.room().to_string() != target.workspace {
                 return false;
             }
             let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room()));

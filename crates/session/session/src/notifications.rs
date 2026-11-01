@@ -167,7 +167,7 @@ pub(crate) fn shown(
     notification.scheduled_target = sent
         .scheduled
         .map(|occurrence| ScheduledNotificationTarget {
-            room: occurrence.room,
+            workspace: occurrence.room,
             token: occurrence.token,
             occurrence_ms: occurrence.occurrence_ms,
             calendar_alarm: occurrence.calendar_alarm,
@@ -353,7 +353,7 @@ impl SessionNotifications {
             {
                 choosing
                     .borrow_mut()
-                    .push((target.room.clone(), target.uri.clone()));
+                    .push((target.workspace.clone(), target.uri.clone()));
             }
             // Choosing answers the sender, with a token its app may raise
             // its window by: the loop mints it.

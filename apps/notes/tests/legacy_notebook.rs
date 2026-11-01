@@ -128,7 +128,7 @@ fn a_workspace_notebook_from_before_the_record_opens_with_its_notes() {
         loose,
         tag,
     } = legacy();
-    let mut app = TestApp::<NotesShell>::with_room_record(&mut doc).unwrap();
+    let mut app = TestApp::<NotesShell>::with_workspace_record(&mut doc).unwrap();
     assert!(app.record().is_package_primary());
 
     let state = shown(&app);

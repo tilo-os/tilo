@@ -20,7 +20,7 @@ impl DesktopCommandSink for ShellCommands<'_> {
     fn source(&mut self, room: RoomId) -> Result<CommandSource, String> {
         let heads = self.chrome.tree_mut().doc.get_heads();
         Ok(CommandSource {
-            room: room.to_string(),
+            workspace: room.to_string(),
             heads: heads.into_iter().map(|head| head.0).collect(),
         })
     }

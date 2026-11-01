@@ -306,11 +306,11 @@ pub fn workspace_shares(
     };
     // What one person was given beyond their role in the workspace: a grant on a
     // part of it, or a file reached outside the sandbox's own.
-    let room = ws.node();
+    let node = ws.node();
     let cx = tilo_desktop_model::context_at(now);
     for grant in &ws.policy.grants {
-        if grant.node == room
-            || !grant.node.is_within(&room)
+        if grant.node == node
+            || !grant.node.is_within(&node)
             || grant.answer != tilo_action_policy::Answer::Allow
             || !grant.is_live(&cx)
         {
@@ -618,7 +618,7 @@ mod press_tests {
 }
 
 #[cfg(test)]
-mod room_tests {
+mod workspace_tests {
     use super::*;
     use collab_types::caps::{CapOverride, Expiry};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -675,8 +675,8 @@ mod room_tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn room_access_distinguishes_members_shares_and_expired_grants() {
-        fn a_room_only_you_own_reads_as_private() {
+    fn workspace_access_distinguishes_members_shares_and_expired_grants() {
+        fn a_workspace_only_you_own_reads_as_private() {
             let tree = tree_with(vec![ws("Home")]);
             let cards = workspace_cards(&tree);
             assert_eq!(cards.len(), 1);
@@ -685,7 +685,7 @@ mod room_tests {
             assert_eq!(workspace_shares_label(&cards[0]), None);
         }
 
-        fn a_member_makes_the_room_read_as_shared_with_them() {
+        fn a_member_makes_the_workspace_read_as_shared_with_them() {
             let mut w = ws("Design");
             w.admit("ada", collab_types::Role::Editor);
             w.collaborators.push(Collaborator::new("ada", "Ada"));
@@ -788,8 +788,8 @@ mod room_tests {
             assert_eq!(workspace_access_label(card), "Shared with ada and 3 others");
         }
 
-        a_room_only_you_own_reads_as_private();
-        a_member_makes_the_room_read_as_shared_with_them();
+        a_workspace_only_you_own_reads_as_private();
+        a_member_makes_the_workspace_read_as_shared_with_them();
         a_file_grant_is_a_share_and_not_a_membership();
         two_grants_on_one_path_are_one_share_with_two_holders();
         write_grants_are_marked_writable();
@@ -802,7 +802,7 @@ mod room_tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn room_presence_is_who_is_here_now_and_is_attached_to_tabs() {
+    fn workspace_presence_is_who_is_here_now_and_is_attached_to_tabs() {
         fn presence_is_who_is_here_now_not_who_is_a_member() {
             let mut w = ws("Design");
             for who in ["ada", "bob"] {
@@ -820,7 +820,7 @@ mod room_tests {
             );
         }
 
-        fn a_room_you_are_not_in_does_not_report_you_as_here() {
+        fn a_workspace_you_are_not_in_does_not_report_you_as_here() {
             let here = ws("Home");
             let elsewhere = ws("Design");
             let tree = tree_with(vec![here, elsewhere]);
@@ -832,7 +832,7 @@ mod room_tests {
             assert_eq!(
                 workspace_presence_label(&cards[1]),
                 None,
-                "you cannot be in two rooms at once"
+                "you cannot be in two workspaces at once"
             );
         }
 
@@ -891,7 +891,7 @@ mod room_tests {
             assert_eq!(
                 apps,
                 [ui::widget::AppKind::Editor, ui::widget::AppKind::Browser],
-                "the room row names each open app once, in tree order"
+                "the workspace row names each open app once, in tree order"
             );
         }
 
@@ -936,7 +936,7 @@ mod room_tests {
         }
 
         presence_is_who_is_here_now_not_who_is_a_member();
-        a_room_you_are_not_in_does_not_report_you_as_here();
+        a_workspace_you_are_not_in_does_not_report_you_as_here();
         spatial_projection_preserves_strip_group_and_tab_nesting();
         collaborator_focus_is_attached_to_the_tab_not_the_workspace_header();
     }

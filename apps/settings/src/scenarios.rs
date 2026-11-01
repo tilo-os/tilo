@@ -506,7 +506,7 @@ fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>
 fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting {
     use ui::tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
     let workspace = |room: &str, name: &str, on_relay| HostedWorkspace {
-        room: room.into(),
+        workspace: room.into(),
         name: name.into(),
         on_relay,
     };

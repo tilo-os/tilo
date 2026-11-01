@@ -92,7 +92,7 @@ pub trait ResourceApp: 'static {
     /// opens and the first one creates; without this the framework copies
     /// the earlier windows' records into it value by value
     /// (`adopt_windows`).
-    const ROOM_RECORD: bool = false;
+    const WORKSPACE_RECORD: bool = false;
     /// Each window shows a resource of its own: a document an editor opened
     /// (Word Processor, Code Editor, Sheets), a terminal session. A window
     /// that names none starts a new one, and two windows show two of them
@@ -167,14 +167,14 @@ pub trait ResourceApp: 'static {
     /// it must build widgets and nothing else.
     fn view(cx: &mut ViewCx<Self::Resource>) -> Element;
 
-    /// The window shows before the room's record is read: an app that keeps
+    /// The window shows before the workspace's record is read: an app that keeps
     /// what its first frame shows beside the record (a tilolang app's
     /// index) opens a record this device holds off the frame, shows
     /// [`Self::opening`] meanwhile, and builds [`Self::view`] once the record
-    /// is had. Only for an app that keeps one record per room.
+    /// is had. Only for an app that keeps one record per workspace.
     const OPENS_BEFORE_RECORD: bool = false;
 
-    /// What the window shows while the room's record is read off the frame
+    /// What the window shows while the workspace's record is read off the frame
     /// ([`Self::OPENS_BEFORE_RECORD`]); `None` waits for the record. What it
     /// returns is handed to [`Self::view`] once the record is had, as a
     /// service lent to the window ([`RecordEnv::take_lent`](super::RecordEnv::take_lent)):
@@ -204,7 +204,7 @@ pub trait ResourceApp: 'static {
     /// ([`RecordId::identify_file`]), a record derived from it
     /// ([`RecordId::derived`]), a minted one. `None`, the default, opens the
     /// record the app would open anyway: the one the window showed last, else
-    /// the room's default. Asked by a launcher that picks the record (the
+    /// the workspace's default. Asked by a launcher that picks the record (the
     /// command line, a test host), before the record is opened, so it must
     /// not depend on anything but `input`.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
@@ -254,7 +254,7 @@ pub trait ResourceApp: 'static {
         &[]
     }
 
-    /// Whether the app takes part in the workspace runtime of the room it is
+    /// Whether the app takes part in the workspace runtime of the workspace it is
     /// launched in. An app that only runs on this device (an imager on a
     /// platform without the runtime) says no.
     const ATTACHES_RUNTIME: bool = true;
@@ -353,12 +353,12 @@ pub trait ResourceApp: 'static {
     }
 }
 
-/// What [`ResourceApp::opening`] builds with: who the window is for, the room, and the record
+/// What [`ResourceApp::opening`] builds with: who the window is for, the workspace, and the record
 /// on its way.
 pub struct OpeningCx<'a> {
     pub(crate) me: &'a str,
     pub(crate) device: &'a str,
-    pub(crate) room: String,
+    pub(crate) workspace: String,
     pub(crate) files: ui_core::storage::AppFiles,
     pub(crate) record: ui_core::record::RecordOpening,
 }
@@ -376,10 +376,10 @@ impl OpeningCx<'_> {
         self.device
     }
 
-    /// The room the window shows, as [`RecordEnv::room`](super::RecordEnv::room) names it.
+    /// The workspace the window shows, as [`RecordEnv::workspace`](super::RecordEnv::workspace) names it.
     #[must_use]
-    pub fn room(&self) -> &str {
-        &self.room
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     /// The app's private file areas, as [`RecordEnv::storage`](super::RecordEnv::storage) gives
@@ -389,7 +389,7 @@ impl OpeningCx<'_> {
         self.files.clone()
     }
 
-    /// The room's record, being read off the frame: what a write before it is had waits for
+    /// The workspace's record, being read off the frame: what a write before it is had waits for
     /// ([`RecordOpening::document`](ui_core::record::RecordOpening::document)).
     #[must_use]
     pub fn record(&self) -> &ui_core::record::RecordOpening {
@@ -424,13 +424,13 @@ pub struct FileHistory {
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
 /// app's host — its settings, files and secrets on this device — when the
 /// record is created in a window. A participant without one (an agent, a
-/// room service: [`seed_record`](super::seed_record)) creates it with no
+/// workspace service: [`seed_record`](super::seed_record)) creates it with no
 /// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
     pub(crate) me: &'a str,
     pub(crate) device: &'a str,
     pub(crate) host: Option<&'a HostContext>,
-    pub(crate) room: Option<&'a str>,
+    pub(crate) workspace: Option<&'a str>,
 }
 
 impl SeedCx<'_> {
@@ -445,14 +445,14 @@ impl SeedCx<'_> {
         self.device
     }
 
-    /// The host-selected room of a new record, and its display name. An
-    /// ordinary restore has no creation scope. A windowless room participant
+    /// The host-selected workspace of a new record, and its display name. An
+    /// ordinary restore has no creation scope. A windowless workspace participant
     /// carries its explicit route without supplying device services or secrets.
     pub fn creation_workspace(&self) -> Option<(&str, &str)> {
         self.host
             .and_then(HostContext::creation_workspace)
             .map(|workspace| (workspace.id.as_str(), workspace.name.as_str()))
-            .or_else(|| self.room.map(|room| (room, room)))
+            .or_else(|| self.workspace.map(|workspace| (workspace, workspace)))
     }
 
     /// The app's host on this device; `None` for a participant without a
@@ -461,10 +461,10 @@ impl SeedCx<'_> {
         self.host
     }
 
-    /// What the app's windows in this room kept, one record each, from
-    /// before it [kept one record per room](ResourceApp::ROOM_RECORD): every
+    /// What the app's windows in this workspace kept, one record each, from
+    /// before it [kept one record per workspace](ResourceApp::WORKSPACE_RECORD): every
     /// window default record of its kind on this device, read-only and in
-    /// id order. The room's record is created once, so a seed that copies
+    /// id order. The workspace's record is created once, so a seed that copies
     /// these into it migrates them exactly once; the records themselves are
     /// left as they were. Empty for any other record, and without a host.
     pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
@@ -809,9 +809,9 @@ pub(crate) fn build_root<A: ResourceApp>(
     if let Some(effects) = effects {
         cx.env.effects = effects;
     }
-    // A record the room may hold shows once the room's holdings arrived;
+    // A record the workspace may hold shows once the workspace's holdings arrived;
     // the app's view says nothing about it. Holdings already here (no
-    // shell hosts the window, or the room synced) need no stand-in.
+    // shell hosts the window, or the workspace synced) need no stand-in.
     let content: Element = match awaiting {
         Some(holdings) if workspace_pending(&holdings) => cx.arriving_workspace(&holdings, A::view),
         _ => A::view(&mut cx),
@@ -833,11 +833,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     root
 }
 
-/// Whether the room's holdings are still on their way.
+/// Whether the workspace's holdings are still on their way.
 fn workspace_pending(
     holdings: &ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>,
 ) -> bool {
-    holdings.with(|room| room.ready().is_none())
+    holdings.with(|workspace| workspace.ready().is_none())
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
@@ -943,12 +943,12 @@ fn new_record<A: ResourceApp>(
         me: &author,
         device: context.device_id(),
         host: Some(context),
-        room: None,
+        workspace: None,
     });
     // What the app's windows kept, one record each, before it kept one per
     // workspace; an app that adopts them in its own seed
-    // (`ResourceApp::ROOM_RECORD`) has done so.
-    let windows = if A::ROOM_RECORD {
+    // (`ResourceApp::WORKSPACE_RECORD`) has done so.
+    let windows = if A::WORKSPACE_RECORD {
         Vec::new()
     } else {
         context.window_records()
@@ -1101,7 +1101,7 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
             .then(|| context.person_records().cloned())
             .flatten(),
         device: Some(context.device_id().to_owned()),
-        room: Some((
+        records: Some((
             context.records().clone(),
             context.author().0.clone(),
             context.live_permissions(),
@@ -1155,13 +1155,13 @@ fn create_component(
     if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
     }
-    // The room's record is being read off the frame: the window shows what the app shows
+    // The workspace's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.
     if let Some(record) = context.record_opening() {
         let opening = OpeningCx {
             me: &context.author().0,
             device: context.device_id(),
-            room: context.records().home(),
+            workspace: context.records().home(),
             files: context.files(),
             record: record.clone(),
         };
@@ -1170,8 +1170,8 @@ fn create_component(
         }
         record.take_in(true).map_err(LaunchError::Record)?;
     }
-    // A record of its own, or the room's record an app keeps one of
-    // (`ResourceApp::ROOM_RECORD`), opened for the first time.
+    // A record of its own, or the workspace's record an app keeps one of
+    // (`ResourceApp::WORKSPACE_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
         || context.creation_workspace().is_some();
     record_content(&mut context);
@@ -1203,8 +1203,8 @@ fn create_component(
     let run = match context.capture().cloned() {
         Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?
             .driven_by_drive(capture.is_driven()),
-        // The room's record, not on this device when the window opened:
-        // the room may hold it, so the view waits for what the room holds.
+        // The workspace's record, not on this device when the window opened:
+        // the workspace may hold it, so the view waits for what the workspace holds.
         None => Run::live(context.content().cloned())
             .in_private(context.is_private())
             .awaiting_workspace(
@@ -1416,7 +1416,7 @@ pub(crate) fn role_permissions(
 }
 
 /// Prepare `definition` on `host`: the record a launch named, else the one
-/// the instance showed last, else the room's default.
+/// the instance showed last, else the workspace's default.
 #[cfg(tilo_native_runner)]
 pub(crate) fn prepare_on(
     host: &mut ApplicationHost,
@@ -1435,7 +1435,7 @@ pub(crate) fn prepare_on(
         _ => host.prepare_default(
             definition,
             instance,
-            RecordCheckout::new(RecordId::room_default(), kind),
+            RecordCheckout::new(RecordId::workspace_default(), kind),
             None,
             inputs,
         ),
@@ -1899,7 +1899,7 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     };
     // An input surface types into other apps' fields: nothing drives it
     // without a person. It is a session service the compositor starts
-    // without a room, so it has no workspace runtime to attach to.
+    // without a workspace, so it has no workspace runtime to attach to.
     if A::BEHAVIOUR.window == ui_core::application::WindowRole::InputSurface {
         spec.disable_headless().runtime_attachment(|_| false)
     } else {
