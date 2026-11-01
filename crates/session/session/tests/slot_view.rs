@@ -14,6 +14,7 @@
     clippy::panic,
     clippy::indexing_slicing,
     clippy::significant_drop_tightening,
+    clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed step is the assertion, and the session \
               lives until the app it starts is done"
 )]
@@ -216,9 +217,8 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
         before,
         "and the menu itself is the same reading it was"
     );
-    assert_eq!(
+    assert!(
         session.surfaces().running("window-menu"),
-        true,
         "the view the person bound is what draws the slot"
     );
 

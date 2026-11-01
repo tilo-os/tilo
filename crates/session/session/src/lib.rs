@@ -2167,7 +2167,6 @@ impl Session {
             .read(mount::shell::WINDOW_MENU)
             .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
         let settings = self.read(mount::slots::BINDINGS);
-        let bound = self.slots.bound(VIEW, SHIPPED, settings.as_ref());
         match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
             mount::slots::Mount::Nothing => {}
             mount::slots::Mount::Stop => self.surfaces.stop(VIEW),
@@ -2188,7 +2187,9 @@ impl Session {
                     .keyboard(surfaces::Keyboard::OnDemand);
                 if let Err(error) = self.start_surface(&surface) {
                     tracing::warn!(%error, "the window menu view did not start");
-                    self.slots.failed(VIEW, bound);
+                    if let Some(tried) = self.slots.running(VIEW).cloned() {
+                        self.slots.failed(VIEW, tried);
+                    }
                 }
             }
         }
