@@ -7,6 +7,7 @@
     reason = "test support: failing the calling test is the point"
 )]
 
+use crate::SpawnUnderEnvLock as _;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -109,6 +110,14 @@ impl Build {
             .join(format!("{bin}{}", env::consts::EXE_SUFFIX))
     }
 
+    /// The file beside this build's binaries in which a nextest run records
+    /// that it built `package`'s `bin`, and whose lock the run's test
+    /// processes take while one of them builds it.
+    fn run_record(&self, package: &str, bin: &str) -> PathBuf {
+        self.directory
+            .join(format!(".tilo-test-env-built-{package}-{bin}"))
+    }
+
     /// Cargo's arguments naming this build's profile: the default profile's
     /// own for `debug`, which `--profile dev` and `--profile test` build in
     /// too.
@@ -121,7 +130,14 @@ impl Build {
     }
 }
 
-/// Build `bin` unless this process built it already.
+/// Build `bin` unless this process, or another test process of this nextest
+/// run, built it already.
+///
+/// Nextest starts every test in a process of its own, and a run starts dozens
+/// at once: each asking Cargo for the same binary queued them on Cargo's build
+/// lock, one workspace resolution after another. The first process of a run
+/// builds it, holding a lock on a file beside the binary, and records the
+/// run's id there; the others wait on that lock and find the id.
 fn build_once(package: &str, bin: &str) {
     static BUILT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
     // Held across the build: two tests of this process never compile the same
@@ -131,8 +147,36 @@ fn build_once(package: &str, bin: &str) {
     if built.contains(&key) {
         return;
     }
-    build_binary(package, bin);
+    match env::var("NEXTEST_RUN_ID") {
+        Ok(run) if !run.is_empty() => once_per_run(&build().run_record(package, bin), &run, || {
+            build_binary(package, bin);
+        }),
+        _ => build_binary(package, bin),
+    }
     built.push(key);
+}
+
+/// Run `build` unless a process of nextest run `run` ran it under `record`
+/// already: the first holds `record`'s lock while it builds, then writes the
+/// run's id into it.
+fn once_per_run(record: &Path, run: &str, build: impl FnOnce()) {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&record)
+        .unwrap_or_else(|error| panic!("open {}: {error}", record.display()));
+    // Released when `file` closes, also when the build below panics.
+    file.lock()
+        .unwrap_or_else(|error| panic!("lock {}: {error}", record.display()));
+    let recorded = std::fs::read_to_string(record).unwrap_or_default();
+    if recorded.trim() == run {
+        return;
+    }
+    build();
+    std::fs::write(record, run)
+        .unwrap_or_else(|error| panic!("record the build in {}: {error}", record.display()));
 }
 
 /// Run Cargo for one binary of `package`.
@@ -150,7 +194,7 @@ fn build_binary(package: &str, bin: &str) {
     if let Some(directory) = env::var_os("CARGO_MANIFEST_DIR") {
         command.current_dir(directory);
     }
-    let output = command.output().unwrap_or_else(|error| {
+    let output = command.output_locked().unwrap_or_else(|error| {
         panic!(
             "cannot run {} to build {package}'s `{bin}`: {error}",
             cargo.to_string_lossy()
@@ -229,6 +273,19 @@ mod tests {
                 Path::new("/work/target/ci")
                     .join(format!("tilo-lock-screen{}", env::consts::EXE_SUFFIX))
             );
+        }
+
+        phase a_nextest_run_builds_a_sibling_once_across_its_processes;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let record = directory.path().join("record");
+            let builds = std::cell::Cell::new(0);
+            let count = || builds.set(builds.get() + 1);
+            once_per_run(&record, "run-a", count);
+            once_per_run(&record, "run-a", count);
+            assert_eq!(builds.get(), 1, "a second process of the run builds nothing");
+            once_per_run(&record, "run-b", count);
+            assert_eq!(builds.get(), 2, "the next run builds again");
         }
 
         phase a_test_binaries_own_package_is_the_one_the_run_built;

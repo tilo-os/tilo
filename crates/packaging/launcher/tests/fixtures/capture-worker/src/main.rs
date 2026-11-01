@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 static STOP: AtomicBool = AtomicBool::new(false);
 #[repr(C)]
 struct Passwd {
@@ -100,7 +101,7 @@ fn main() {
     assert!(
         std::process::Command::new("/run/tilo/migration/output/forbidden-exec")
             .arg("should-never-run")
-            .spawn()
+            .spawn_locked()
             .is_err()
     );
     let socket = "/run/tilo/app/provider.sock";
@@ -239,7 +240,7 @@ fn original_read(args: &[String]) {
             "--directory=/run/tilo/migration/source",
             "group-only",
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         archive.status.success(),
@@ -304,7 +305,7 @@ fn original_read(args: &[String]) {
                 "mounted-file",
             ])
             .arg(std::ffi::OsStr::from_bytes(b"raw-\xff"))
-            .output()
+            .output_locked()
             .unwrap();
         assert!(archive.status.success());
         assert!(
@@ -427,7 +428,7 @@ fn original_openpgp() {
                 .env("TMPDIR", "/run/tilo/app")
                 .arg(format!("--repo={repo}"))
                 .args(args)
-                .output()
+                .output_locked()
                 .unwrap()
         };
         let initialized = run(&["init", "--mode=archive"]);

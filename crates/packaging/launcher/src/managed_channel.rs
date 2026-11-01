@@ -19,6 +19,8 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Installed canonical owner callback. Success means the exact actual PID/start
 /// binding is durable; any error after spawn is an uncertain launch, never a retry.
@@ -517,7 +519,7 @@ fn enrolled_current_executable_recheck_detects_exec_with_same_start() {
             .args(["-c", "printf ready; read -r answer; exec /usr/bin/sleep 30"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap(),
     );
     let child = &mut cleanup.0;
@@ -607,7 +609,7 @@ mod received_rights_tests {
                 "-c",
                 "test -d /proc/self/fd && test -x /usr/bin/readlink || exit 97; for fd in /proc/self/fd/*; do /usr/bin/readlink \"$fd\" 2>/dev/null || :; done",
             ])
-            .output()
+            .output_locked()
             .expect("real Linux exec is required for FD inheritance qualification");
         assert!(child.status.success());
         assert!(

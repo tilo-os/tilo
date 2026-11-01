@@ -290,7 +290,7 @@ struct Scanned {
 pub struct Filtered {
     base: Merged,
     keep: Keep,
-    /// The most the listing can have: the run's length, as the index counts it.
+    /// The most the listing can have: the run's length as the open writes leave it.
     most: usize,
     /// The entries checked so far, from the run's first in order, each kept or not.
     scanned: RefCell<Vec<Scanned>>,
@@ -313,13 +313,15 @@ impl std::fmt::Debug for Filtered {
 }
 
 impl Filtered {
-    /// The run `base` (as the open writes leave it) of the entries `keep` holds of, `most`
-    /// being the most it can hold (the run's length when the index counts it).
-    pub fn new(base: Merged, keep: Keep, most: usize) -> Self {
+    /// The run `base` (as the open writes leave it) of the entries `keep` holds of. The most
+    /// it can hold is the run's own length, with the items the open writes added to it: a
+    /// bound counted from the index alone left out what was just written, and a list sized
+    /// by it showed none of that.
+    pub fn new(base: Merged, keep: Keep) -> Self {
         Self {
+            most: base.len(),
             base,
             keep,
-            most,
             scanned: RefCell::new(Vec::new()),
             at: Cell::new(0),
             kept: Cell::new(0),
@@ -501,7 +503,7 @@ mod tests {
     #[test]
     fn a_filtered_run_keeps_what_it_checks_and_reads_only_as_far_as_a_page_needs() {
         // Longer than a page of checks, so reading the first row does not read the run.
-        let filtered = Filtered::new(numbered(200), Box::new(even), 200);
+        let filtered = Filtered::new(numbered(200), Box::new(even));
         assert_eq!(
             filtered.len(),
             200,
@@ -518,7 +520,7 @@ mod tests {
     #[test]
     fn a_filtered_run_finds_where_a_kept_item_is_and_that_a_dropped_one_is_not() {
         let locate: Locate = Box::new(|id: &str| Some(vec![(id.to_owned(), id.to_owned())]));
-        let filtered = Filtered::new(numbered(200), Box::new(even), 200).locating(locate);
+        let filtered = Filtered::new(numbered(200), Box::new(even)).locating(locate);
         assert_eq!(filtered.position("0004"), Some(Some(2)));
         assert!(
             !filtered.len_is_exact(),
@@ -534,7 +536,7 @@ mod tests {
 
     #[test]
     fn counting_a_filtered_run_reads_it_to_its_end() {
-        let filtered = Filtered::new(numbered(200), Box::new(even), 200);
+        let filtered = Filtered::new(numbered(200), Box::new(even));
         assert_eq!(filtered_ids(&filtered, 200).len(), 100);
         assert_eq!(filtered.len(), 100, "the count once every entry is checked");
     }

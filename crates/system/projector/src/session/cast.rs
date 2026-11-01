@@ -520,6 +520,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::process::{Command, Stdio};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use tilo_projector::VideoPacket;
 
@@ -699,7 +700,7 @@ mod tests {
                 .args(["h264parse", "hlssink2"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
+                .status_locked()
                 .is_err()
             {
                 panic!("the test host is missing the packaged GStreamer inspection tool");
@@ -710,7 +711,7 @@ mod tests {
                         .arg(element)
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
-                        .status()
+                        .status_locked()
                         .expect("inspect GStreamer element")
                         .success(),
                     "required GStreamer element {element} is unavailable"

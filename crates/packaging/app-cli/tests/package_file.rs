@@ -12,6 +12,7 @@
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
 
@@ -26,7 +27,7 @@ fn app(args: &[&str]) -> Output {
         .args(args)
         // No terminal: the person cannot be asked.
         .stdin(Stdio::null())
-        .output()
+        .output_locked()
         .unwrap()
 }
 

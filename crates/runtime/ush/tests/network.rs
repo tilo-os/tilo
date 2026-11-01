@@ -19,6 +19,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId};
 use ush::records::Records;
@@ -114,7 +115,7 @@ fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Outpu
     for (k, v) in env {
         cmd.env(k, v);
     }
-    cmd.output().expect("tilo-ush runs")
+    cmd.output_locked().expect("tilo-ush runs")
 }
 
 fn network_unavailable() -> Option<String> {

@@ -828,6 +828,7 @@ mod different_uid_native {
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::process::CommandExt;
+    use tilo_test_env::SpawnUnderEnvLock as _;
     const CHILD: &str = "TILO_RETAINED_EXECUTING_PEER_TEST";
     const SELECTOR: &str = "setup::installed_retained_actor::different_uid_native::root_observes_actual_nonroot_task_without_inferring_original_credentials";
 
@@ -885,7 +886,7 @@ mod different_uid_native {
                 let _ = self.0.wait();
             }
         }
-        let mut child = OwnedChild(command.spawn().expect("actual different-UID child"));
+        let mut child = OwnedChild(command.spawn_locked().expect("actual different-UID child"));
         drop((executable, socket, child_stream));
         root_stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))

@@ -19,6 +19,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn helper() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-firstboot-files")
@@ -268,7 +269,7 @@ impl Transaction {
             .env("FAIL_STAGE", fail)
             .env("TERMINATE", if terminate { "1" } else { "0" })
             .env("PATH", path)
-            .output()
+            .output_locked()
             .unwrap();
         let text = format!(
             "{}{}",
@@ -605,7 +606,7 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
             "FIXTURE_PASSWORD_FAILURE",
             if fail_password { "1" } else { "0" },
         )
-        .output()
+        .output_locked()
         .unwrap();
     assert_transport(root, full_name, fail_password, &output);
     output

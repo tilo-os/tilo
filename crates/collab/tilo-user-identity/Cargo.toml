@@ -114,6 +114,7 @@ workspace-hack = { version = "0.1" }
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/tilo on the developer's machine.
 tempfile.workspace = true

@@ -2,6 +2,7 @@
 //! native window, mocked importer, or alternate app host is involved.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -67,7 +68,7 @@ impl Fixture {
         command
             .stdout(Stdio::from(std::fs::File::create(stdout).unwrap()))
             .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
-        let mut child = command.spawn().unwrap();
+        let mut child = command.spawn_locked().unwrap();
         let started = ui::time::now();
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {

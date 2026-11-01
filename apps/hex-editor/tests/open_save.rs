@@ -15,6 +15,7 @@ use hex_editor::HexEditor;
 use hex_editor::HexEditorShell;
 use hex_editor::actions::HexEffect;
 use hex_editor::resource::hex_editor::DeleteBytes;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
@@ -360,7 +361,7 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().unwrap();
+    let output = command.output_locked().unwrap();
     assert!(
         output.status.success(),
         "{}",

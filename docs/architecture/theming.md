@@ -87,7 +87,7 @@ and a theme sets them through one document:
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
 | `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible), `contrast` (the spread of role sizes, 0.5–1.5, stock 1), `weights` of the `body`, `label` and `heading` tiers | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively; `curve` (`spring`, `eased` or `none`); `duration_scale` | the shared UI springs, `motion_character` | `tokens/motion.rs`, `theme_document.rs` (`ThemeMotion`) |
-| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`), `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`), `pixelated` (what lies below shown as square cells of `cell` logical pixels, softened first by `blur`, under the ground at `cover`) or `shader` (the theme's own surface shader, [below](#a-surface-shader)); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`: a painter set and its parameters; `RoleFinishes`), `part_paint/builtin.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
+| `material` | For each surface role (`window`, `control`, `floating`, `bar`) the painter set that draws it and its parameters: `block` (flat, square, borders only), `default` (opaque, or translucent given `blur`, `tint`, `saturation`), `glass` (translucent plus `refraction` at the rim, `edge_highlight`, `specular`), `pixelated` (what lies below shown as square cells of `cell` logical pixels, softened first by `blur`, under the ground at `cover`), `liquid` (a lens: within `band` of the rounded rim what lies below is bent inward by up to `refraction`, red and blue set apart by `dispersion`, the flat middle straight and softened only by `blur`, under the ground at `tint`, with a thin specular rim of `edge_highlight` lit from `light_angle` degrees) or `shader` (the theme's own surface shader, [below](#a-surface-shader)); `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `RoleFinishes`, `surfaces.material`, `tokens.selector` | `tokens/finish.rs` (`Finish`: a painter set and its parameters; `RoleFinishes`), `part_paint/builtin.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
 | `depth` | `shadow { strength }`, `outline` or `none`: how a raised surface stands off what is below it | the elevation shadows | `tokens/finish.rs` (`Depth`) |
 | `response` | How the shared components answer the pointer: for `hover` and `press`, how far the fill `lift`s toward the next surface step (0–2), how much of the accent it carries (`tint`, 0–0.25), the control's `scale` about its centre (0.7–1.15) and its lit inner edge (`glow`, 0–0.5). Optional: absent is the stock response (hover half a step; press a step, 0.97, a 0.2 edge), or with `motion.curve: none` the still one (the same lifts, nothing scaling, no edge) | `tokens.response`, read by `selection_tier`, `selection_tier_on`, `selector_tier` | `tokens/response.rs` (`Response`) |
 
@@ -150,7 +150,7 @@ that a document may state it in, and a **usable** band, no wider, that the
 theme is built at. A document that leaves out a parameter with no default,
 states one the set does not declare, or states a value outside the admitted
 band is refused. A value outside the usable band is clamped when the theme
-is built. `default`, `glass`, `block`, `pixelated` and `shader` are the toolkit's built-in sets
+is built. `default`, `glass`, `block`, `pixelated`, `liquid` and `shader` are the toolkit's built-in sets
 (`part_paint::builtin`), and those names are reserved. A theme's own set
 registers under any other name (`register_painter_set`), and a set named by
 a document but not installed is refused like an unknown field.
@@ -203,8 +203,8 @@ The shipped presets (`Preset`, `Theme::ALL`):
 | High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
 | High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
 
-Glass, Glass light, Block, Block light and Pixelated are plain documents in
-`crates/sdk/ui-core/themes/`.
+Glass, Glass light, Block, Block light, Pixelated and Liquid Glass are plain
+documents in `crates/sdk/ui-core/themes/`.
 
 ### Validation and legibility
 
@@ -214,10 +214,11 @@ ink on the ink side of every surface, status chroma ≤ 0.13, presence
 lightness 0.35–0.90 and chroma 0.04–0.20, window radius 0–40, density
 0.5–2, base size 10–24, motion 0–2, and every material parameter inside the
 admitted band its painter set declares; the built-in sets admit blur 0–64,
-tint 0–1, saturation 0–2, refraction 0–32, edge highlight and specular
-0–0.5). A value admitted but outside the usable band (radius above 28,
-density outside 0.75–1.5, base size outside 12–18, blur above 48) is
-clamped when the theme is built.
+tint 0–1, saturation 0–2, refraction 0–32, band 0–64, dispersion 0–0.5,
+light angle 0–360, edge highlight and specular 0–0.5). A value admitted but
+outside the usable band (radius above 28, density outside 0.75–1.5, base
+size outside 12–18, blur above 48, band above 48) is clamped when the theme
+is built.
 
 Legibility is measured on the materialized colours against the floors in
 `tokens/contrast.rs` (`FLOORS`). They are WCAG 2.x ratios, and text floors
@@ -556,12 +557,19 @@ Verified against the code at the time of writing:
   and sends it to every app window; collaborators receive it with the
   person's presence and paint them in it.
 - **The material.** Each surface role names its painter set (`block`,
-  `default`, `glass`, `pixelated`, `shader`) in `material`, and one path (`fill_role`,
+  `default`, `glass`, `pixelated`, `liquid`, `shader`) in `material`, and one path (`fill_role`,
   `control_face`) paints windows, menus, buttons, fields, dropdowns, toggle
-  groups and the top bar from it. Glass adds a lens refraction pass, a rim
+  groups and the top bar from it. Glass adds a lens refraction, a rim
   light and a specular sheen; Pixelated runs the backdrop pass at one texel
-  per cell and draws it unsmoothed. Glass, Glass light, Block, Block light
-  and Pixelated ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
+  per cell and draws it unsmoothed; Liquid bends the backdrop along the
+  rounded rim like a convex lens, leaves the middle sharp and lights a thin
+  rim from the theme's light angle. A lens (Glass's or Liquid's) is evaluated
+  in the backdrop pass itself: its last blur pass takes its kernel about the
+  displaced point (`backdrop::Refraction`), so a bent surface costs one
+  displaced lookup and a settled one draws nothing new. Backdrops the
+  compositor provides and a strip over the published desktop are shown
+  unbent today. Glass, Glass light, Block, Block light, Pixelated and Liquid
+  Glass ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
   `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating

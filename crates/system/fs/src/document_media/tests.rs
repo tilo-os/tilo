@@ -1,4 +1,5 @@
 use runtime_fs::blobs::{BlobClient, BlobPrincipal, MAX_READ_CHUNK, write_handoff};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::*;
 
@@ -286,7 +287,7 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
         ])
         .env(PROOF_SOCKET, &socket)
         .env(PROOF_HASH, &stored.hash)
-        .output()
+        .output_locked()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

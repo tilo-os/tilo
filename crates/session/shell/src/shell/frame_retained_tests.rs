@@ -3847,6 +3847,7 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
         blur_px: 20.0,
         sampling: ui::backdrop::Sampling::Smooth,
         cell_px: 0.0,
+        refraction: ui::backdrop::Refraction::NONE,
         layer: 0,
         below: Scene::new(),
         ground: Color::BLACK,

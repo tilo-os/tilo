@@ -14,6 +14,7 @@
     reason = "test support: failing to set up the fixture is the test's answer"
 )]
 
+use crate::SpawnUnderEnvLock as _;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -71,7 +72,7 @@ impl PrivateBus {
             .arg(&config)
             .args(["--nofork", "--print-address=1"])
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("the session bus needs dbus-daemon, which the builder image installs");
         let mut address = String::new();
         std::io::BufReader::new(daemon.stdout.take().unwrap())

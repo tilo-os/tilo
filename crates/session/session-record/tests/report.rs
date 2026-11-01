@@ -16,6 +16,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_session_record::value::Value;
 
@@ -28,7 +29,7 @@ fn report(root: &Path, extra: &[&str]) -> Output {
         .arg("--root")
         .arg(root)
         .args(extra)
-        .output()
+        .output_locked()
         .expect("reporter")
 }
 

@@ -7,6 +7,7 @@
     reason = "test assertions and native protocol fixture"
 )]
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn bench_input_accepts_only_bounded_visible_commands() {
@@ -71,7 +72,7 @@ fn native_persistent_click_key_rename_and_finish() {
         .arg(&out)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
@@ -204,7 +205,7 @@ fn dismissed_palette_semantics_match_observation_after_bounded_frames() {
         .arg(&out)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());

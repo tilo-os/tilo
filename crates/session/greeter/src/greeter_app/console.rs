@@ -762,6 +762,7 @@ mod authentication_tests {
     use crate::greeter_app::AuthScenario;
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const SECRET: &str = "console-test-secret-never-published";
 
@@ -926,7 +927,7 @@ mod authentication_tests {
                 "--nocapture",
             ])
             .env("TILO_GREETER_DIAGNOSTICS_START_FIXTURE", &socket)
-            .output()
+            .output_locked()
             .unwrap();
         daemon.join().unwrap();
         assert!(
@@ -1182,7 +1183,7 @@ mod authentication_tests {
             ])
             .env("TILO_GREETER_CONSOLE_AUTH_FIXTURE", door)
             .env("GREETD_SOCK", &socket)
-            .output()
+            .output_locked()
             .unwrap();
         server.join().unwrap();
         assert!(

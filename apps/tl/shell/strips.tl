@@ -164,9 +164,12 @@ view place_content(a: Arrangement, p: ArrangementPlace) {
 /// What stands where a place's content goes: its record drawn through the view the place names
 /// (its type's default view when it names none), as its own app's code, or the well the app's
 /// window shows in when the place has no record this shell can draw (a terminal, a legacy
-/// window).
+/// window). A run of the session's agent is the shell's own resource, so its place is the
+/// conversation over it (shell.md §8.1), drawn here as any other view of the shell is.
 view place_view(p: ArrangementPlace) {
-    if let r = placed_resource(p.record) {
+    if let r = placed_run(p.record) {
+        conversation(r)
+    } else if let r = placed_resource(p.record) {
         if p.shown_as != "" or meta(r).opens {
             show(r, view: p.shown_as)
         } else {

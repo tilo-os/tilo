@@ -342,6 +342,8 @@ impl Music {
 mod tests {
     use super::*;
     #[cfg(feature = "audio")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    #[cfg(feature = "audio")]
     use ui::widget::Widget;
 
     #[cfg(feature = "audio")]
@@ -1496,7 +1498,7 @@ mod tests {
             .env("XDG_CONFIG_HOME", dir.path().join("config"))
             .env("XDG_CACHE_HOME", dir.path().join("cache"))
             .current_dir(dir.path())
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

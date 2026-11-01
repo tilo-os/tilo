@@ -5,6 +5,8 @@
     reason = "test prerequisites must fail explicitly"
 )]
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 #[test]
 fn an_unreadable_video_cannot_produce_a_successful_capture() {
     let output_path = std::env::temp_dir().join(format!(
@@ -21,7 +23,9 @@ fn an_unreadable_video_cannot_produce_a_successful_capture() {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().expect("run the production video capture");
+    let output = command
+        .output_locked()
+        .expect("run the production video capture");
     assert!(!output.status.success());
     assert!(!output_path.exists(), "an undecoded video is not a capture");
     let error = String::from_utf8_lossy(&output.stderr);

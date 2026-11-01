@@ -577,6 +577,15 @@ fn backdrop_frame(
                     ui::backdrop::Sampling::Smooth
                 },
                 cell_px: f64::from(backdrop.cell_px),
+                refraction: {
+                    let [strength, band, radius, dispersion] = backdrop.refraction.map(f64::from);
+                    ui::backdrop::Refraction {
+                        strength,
+                        band,
+                        radius,
+                        dispersion,
+                    }
+                },
                 below: Scene::from(backdrop.below),
                 ground: Color::new(backdrop.ground),
             })

@@ -10,6 +10,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The old names, as `tilo` lists them in `src/aliases.rs`.
 fn moved() -> Vec<String> {
@@ -43,7 +44,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
         let out = Command::new(&alias)
             .args(["--help", "x y"])
             .env("TILO_LIBEXEC_DIR", &libexec)
-            .output()
+            .output_locked()
             .unwrap();
         assert!(out.status.success(), "{name}: {out:?}");
         assert_eq!(
@@ -58,7 +59,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
     let out = Command::new(bin.join("tilo-vm"))
         .arg("--help")
         .env("TILO_LIBEXEC_DIR", &libexec)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!out.status.success());
     assert_eq!(

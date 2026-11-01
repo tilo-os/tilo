@@ -37,6 +37,7 @@ use tilo_rollback::exec::Real;
 use tilo_rollback::lockout;
 use tilo_rollback::policy::Workspace;
 use tilo_seal::envelope::PasswordParams;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::require_capability;
 use tilo_test_env::swtpm::Swtpm;
 use zeroize::Zeroizing;
@@ -251,7 +252,7 @@ impl Machine {
         let out = Command::new("cryptsetup")
             .args(["luksDump", "--dump-json-metadata"])
             .arg(&self.device)
-            .output()
+            .output_locked()
             .unwrap();
         let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         let mut slots: Vec<String> = meta["keyslots"]
@@ -276,7 +277,7 @@ impl Machine {
             .arg("--link-vk-to-keyring")
             .arg(format!("@u::%user:{description}"))
             .arg(&self.device)
-            .status()
+            .status_locked()
             .unwrap()
             .success();
         std::fs::remove_file(&file).unwrap();
@@ -290,7 +291,7 @@ impl Machine {
             .args(["open", "--test-passphrase", "--key-file"])
             .arg(&file)
             .arg(&self.device)
-            .status()
+            .status_locked()
             .unwrap()
             .success();
         std::fs::remove_file(&file).unwrap();
@@ -350,7 +351,7 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
             .arg("--key-file")
             .arg(&pass)
             .arg(&device)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );
@@ -364,7 +365,7 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
             .args(pbkdf)
             .arg(&device)
             .arg(&rec)
-            .status()
+            .status_locked()
             .unwrap()
             .success()
     );
@@ -1180,7 +1181,7 @@ fn token_types(device: &Path) -> Vec<String> {
     let out = Command::new("cryptsetup")
         .args(["luksDump", "--dump-json-metadata"])
         .arg(device)
-        .output()
+        .output_locked()
         .unwrap();
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     meta["tokens"]

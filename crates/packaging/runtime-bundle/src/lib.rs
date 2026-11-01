@@ -1569,6 +1569,7 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[cfg(unix)]
     #[test]
@@ -1718,7 +1719,7 @@ mod tests {
             .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
             .arg(&fonts)
             .args(["--scope", "product"])
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             prepared.status.success(),

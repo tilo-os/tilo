@@ -384,6 +384,7 @@ pub(crate) fn not_permitted() -> test_control::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn scope() -> AppScope {
         AppScope {
@@ -437,7 +438,7 @@ mod tests {
                 // stretches the test past it, and its parent's record with it.
                 .args(["-c", "sleep infinity & echo $!; wait"])
                 .stdout(std::process::Stdio::piped())
-                .spawn()
+                .spawn_locked()
                 .expect("shell");
             let mut line = String::new();
             std::io::BufRead::read_line(
@@ -476,7 +477,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::process::Command::new("kill")
                 .arg(self.program.to_string())
-                .status();
+                .status_locked();
             let _ = self.shell.wait();
         }
     }

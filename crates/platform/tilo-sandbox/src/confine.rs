@@ -451,6 +451,7 @@ mod sys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Before anything confines itself, no process has declared it starts no
     /// program.
@@ -481,7 +482,7 @@ mod tests {
                 "confine::tests::confined_child_declares_it_starts_no_program",
             ])
             .env(NO_EXEC_PROBE_ENV, &root)
-            .status()
+            .status_locked()
             .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         if cfg!(target_os = "linux") && status.code() == Some(PROBE_UNENFORCEABLE) {
@@ -545,7 +546,7 @@ mod tests {
                 "confine::tests::confined_child_reads_only_its_paths",
             ])
             .env(PROBE_ENV, &root)
-            .status()
+            .status_locked()
             .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         if cfg!(target_os = "linux") && status.code() == Some(PROBE_UNENFORCEABLE) {
@@ -579,7 +580,7 @@ mod tests {
                 "confine::tests::confined_child_with_socket_pairs_makes_a_pair_and_no_endpoint",
             ])
             .env(PAIR_PROBE_ENV, &root)
-            .status()
+            .status_locked()
             .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         if cfg!(target_os = "linux") && status.code() == Some(PROBE_UNENFORCEABLE) {
@@ -652,7 +653,7 @@ mod tests {
                 "confine::tests::address_space_cap_reports_whether_it_holds",
             ])
             .env(CAP_PROBE_ENV, (512_u64 << 20).to_string())
-            .status()
+            .status_locked()
             .unwrap();
         let expected = if cfg!(target_os = "linux") { 0 } else { 2 };
         assert_eq!(status.code(), Some(expected), "cap probe: {status}");
@@ -700,7 +701,10 @@ mod tests {
         if UnixDatagram::bind(allowed.join("sock")).is_ok() {
             failures |= 16;
         }
-        if std::process::Command::new("/bin/echo").status().is_ok() {
+        if std::process::Command::new("/bin/echo")
+            .status_locked()
+            .is_ok()
+        {
             failures |= 32;
         }
         if crate::shm::from_bytes("probe", b"ok").is_err() {

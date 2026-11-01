@@ -74,21 +74,12 @@ view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, foc
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool) {
-    let shown = placed_resource(p.record)
     ui.WindowFrame(name: .some(place_title(p)), focused: focused, fill) {
         controls: {
             frame_buttons(a, p)
         }
         body: {
-            if let r = shown {
-                if meta(r).opens {
-                    show(r, fill)
-                } else {
-                    ui.WindowWell(place: p.key, min: 12rem, fill)
-                }
-            } else {
-                ui.WindowWell(place: p.key, min: 12rem, fill)
-            }
+            place_view(p, fill)
         }
     }
 }
@@ -134,7 +125,7 @@ view action_bar(a: Arrangement, room: BarRoom) {
             if let r = placed_resource(p.record) {
                 action_run(place_title(p), actions(r), room)
             } else {
-                window_commands(a, p)
+                window_commands(a, p, room)
             }
         }
     }
@@ -257,9 +248,10 @@ fn placed_resource(record: Text) -> Option<host.Resource> {
 }
 
 /// The shell's own commands on a window whose record it cannot read (a foreign surface): its
-/// name, moving it to another row, and closing it.
-view window_commands(a: Arrangement, p: ArrangementPlace) {
-    ui.MenuButton(place_title(p), role: .bar) {
+/// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
+/// window's icon alone, as an app's window's one menu is.
+view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
+    ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one and space.width < 18.0, role: .bar) {
         for r in a.rows {
             if r.key != p.strip {
                 ui.MenuItem(r.name, icon: .navigation) {

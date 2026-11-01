@@ -197,13 +197,14 @@ mod tests {
     use super::*;
     use std::process::{Command, Stdio};
     use std::time::Instant;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[allow(clippy::unwrap_used, reason = "a test helper fails loudly")]
     fn sleeper(seconds: &str) -> Child {
         Command::new("sleep")
             .arg(seconds)
             .stdin(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap()
     }
 

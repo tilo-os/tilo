@@ -21,6 +21,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, mpsc};
 use tilo_files::native::atomic::lease::{AcquireError, FileLease, LeaseMode};
 use tilo_lock::MutexRecover as _;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const CHILD_MARKER: &str = "TILO_ATOMIC_FILE_LEASE_CHILD";
 const CHILD_PATH: &str = "TILO_ATOMIC_FILE_LEASE_PATH";
@@ -285,7 +286,7 @@ impl LeaseChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut child = Self {
             child: Some(child),

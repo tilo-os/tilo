@@ -1016,6 +1016,7 @@ fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io
 mod tests {
     use super::*;
     use crate::model::{sample_source, sample_targets};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Target identity, confirmation and job admission.
     #[test]
@@ -1396,7 +1397,7 @@ mod tests {
             let work = tempfile::tempdir().unwrap();
             let mut child = Command::new("sh")
                 .args(["-c", "sleep 0.05"])
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             let (tx, _rx) = std::sync::mpsc::channel();
             let control = JobControl::new();
@@ -1529,7 +1530,7 @@ mod tests {
                 .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
                 .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
                 .env("TILO_INSTALLER_PROFILE_OUT_DIR", &out)
-                .status()
+                .status_locked()
                 .unwrap();
             assert!(status.success());
 

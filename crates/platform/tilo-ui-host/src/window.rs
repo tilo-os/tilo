@@ -960,6 +960,14 @@ impl AppWindow {
 
     // ----- what the person did -------------------------------------------------------------
 
+    /// Whether the window holds something for the app it has not sent yet: a layout that gave
+    /// a view a new space ([`Self::follow_spaces`]) tells the app at the next
+    /// [`Self::flush`], and a host that flushes only when it has work owes one then.
+    #[must_use]
+    pub fn telling(&self) -> bool {
+        !self.out.is_empty()
+    }
+
     /// Send the app what the person did since the last frame: one batch.
     pub fn flush(&mut self) {
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {

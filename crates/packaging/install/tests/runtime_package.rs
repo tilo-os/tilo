@@ -10,6 +10,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -225,7 +226,7 @@ bin = "bin/app"
                 self.path("trusted-runtime-publishers.txt"),
             )
             .args(args)
-            .output()
+            .output_locked()
             .expect("spawn tilo-install");
         (
             out.status.success(),
@@ -592,7 +593,7 @@ fn signed_engine_runtime_preserves_executable_permissions_on_install() {
         "resource acquired execute bits"
     );
     let process = Command::new(host)
-        .output()
+        .output_locked()
         .expect("installed signed engine must execute");
     assert!(process.status.success());
     assert_eq!(process.stdout, b"engine started\n");
@@ -620,7 +621,7 @@ fn app_host_unit_covers_the_canonical_signed_runtime_destination() {
             "--require-publisher",
             &hex_key(&env.publisher),
         ])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         output.status.success(),
@@ -693,7 +694,12 @@ fn host_runtime_directory_setup_preserves_existing_permissions() {
         .map(|word| word.replace("%h", env.home.path().to_str().unwrap()))
         .collect();
     assert_eq!(words[0], "/usr/bin/mkdir");
-    let prepare = || Command::new(&words[0]).args(&words[1..]).status().unwrap();
+    let prepare = || {
+        Command::new(&words[0])
+            .args(&words[1..])
+            .status_locked()
+            .unwrap()
+    };
     let root = env.path(".local/share/tilo-runtime");
     assert!(prepare().success());
     assert_eq!(

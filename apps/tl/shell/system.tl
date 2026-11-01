@@ -13,12 +13,6 @@ type Control (origin: session.control) {
     has_level: Bool
 }
 
-/// One menu of the focused app, as the bar shows it after the system's.
-type AppMenu {
-    title: Text (title)
-    entries: List<Text>
-}
-
 /// Turns a control on or off, or sets its level: what a tile's press does, and what an agent
 /// or a shortcut does for the person.
 action toggle_control(s: Shell, control: Control) (icon: .settings_2, label: "Change") {

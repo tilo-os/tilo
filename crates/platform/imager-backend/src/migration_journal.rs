@@ -1182,6 +1182,7 @@ mod tests {
     use super::*;
     use crate::test_support::isolated;
     use std::{fs, io::Write, path::PathBuf, sync::atomic::Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn decoded_document<T: serde::de::DeserializeOwned>(path: &Path) -> T {
         let journal = MigrationJournal::open(path).unwrap();
@@ -1653,7 +1654,7 @@ mod tests {
             .env("TILO_JOURNAL_FIXTURE", f.1.parent().unwrap())
             .env("TILO_JOURNAL_BOUNDARY", boundary)
             .env("TILO_JOURNAL_BOUNDARY_COUNT", count)
-            .output()
+            .output_locked()
             .unwrap();
         assert_eq!(
             output.status.code(),
@@ -1808,7 +1809,7 @@ mod tests {
                 .env("TILO_FIFO_RACE_WORKER", source.parent().unwrap())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
                 .unwrap()

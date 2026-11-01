@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::{Command, Output};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::Value;
 
@@ -10,7 +11,7 @@ fn tilo_app(dir: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(dir)
         .env_remove("TILO_UI_PATH")
-        .output()
+        .output_locked()
         .expect("run tilo-app")
 }
 
@@ -35,7 +36,7 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
             .env("PATH", dir.path())
             .env("CARGO", dir.path().join("missing-cargo"))
             .env_remove("TILO_UI_PATH")
-            .output()
+            .output_locked()
             .unwrap()
     };
     let index = run(&["guide", "--json"]);
@@ -126,7 +127,7 @@ fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
             .env("PATH", dir.path())
             .env("CARGO", dir.path().join("missing-cargo"))
             .env_remove("TILO_UI_PATH")
-            .output()
+            .output_locked()
             .unwrap()
     };
     for alias in ["permissions", "roles", "access"] {
@@ -243,7 +244,7 @@ fn focused_examples_show_one_example_offline_outside_a_checkout() {
         .env("PATH", dir.path())
         .env("CARGO", dir.path().join("missing-cargo"))
         .env_remove("TILO_UI_PATH")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(
@@ -406,7 +407,7 @@ fn child_process_output_moves_to_stderr() {
         .arg("755")
         .arg(&draft)
         .arg(&builder)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(installed.success());
     let output = tilo_app(
@@ -469,7 +470,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .arg(checkout.join("crates/sdk/ui-core"))
         .current_dir(dir.path())
         .env_remove("TILO_UI_PATH")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(new.status.success(), "{new:?}");
 
@@ -486,7 +487,7 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .arg(&app)
         .env("CARGO", &cargo)
         .env("CARGO_GUARD_MARKER", &marker)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success(), "{output:?}");
     let report = document(&output);

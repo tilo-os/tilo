@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -154,7 +156,10 @@ pub(super) fn in_a_process_of_its_own(test: &str) -> bool {
     let exe = exe.to_str().expect("a UTF-8 path");
     let name = test_name(test);
     let args = ["--exact", name.as_str(), "--nocapture", "--test-threads=1"];
-    let mut command = if unshare("true", &[]).status().is_ok_and(|s| s.success()) {
+    let mut command = if unshare("true", &[])
+        .status_locked()
+        .is_ok_and(|s| s.success())
+    {
         let mut command = unshare(exe, &args);
         command.env(OWN_PROCESS, "1");
         command
@@ -166,7 +171,7 @@ pub(super) fn in_a_process_of_its_own(test: &str) -> bool {
     };
     let output = command
         .stderr(std::process::Stdio::inherit())
-        .output()
+        .output_locked()
         .expect("start the test in a process of its own");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

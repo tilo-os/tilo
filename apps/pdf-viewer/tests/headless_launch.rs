@@ -9,6 +9,7 @@
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[cfg(windows)]
 fn assert_default_main_stack() {
@@ -116,7 +117,7 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     command
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
-    let mut child = command.spawn().unwrap();
+    let mut child = command.spawn_locked().unwrap();
     let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {

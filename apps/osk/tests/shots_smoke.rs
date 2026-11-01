@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -18,7 +19,7 @@ fn osk_shots_flag_writes_png() {
     let status = Command::new(bin)
         .arg("--shots")
         .arg(&out)
-        .status()
+        .status_locked()
         .expect("spawn osk --shots");
     assert!(status.success(), "osk --shots exited with {status:?}");
 

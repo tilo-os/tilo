@@ -290,6 +290,7 @@ mod tests {
     use super::*;
     use package_store::registry::Registry;
     use std::process::Command;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn bundle(root: &Path, seed: &str, payload: &[u8]) -> BundleManifest {
         let host = root.join("host");
@@ -502,7 +503,7 @@ mod tests {
         let bound = tilo_test_env::hang_bound().as_secs().to_string();
         let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--die-with-parent", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
             .arg("--bind").arg(root.path()).arg(root.path()).args(["--setenv", CASE]).arg(root.path())
-            .arg("--").arg(std::env::current_exe().unwrap()).args(["--exact", "daemon::runtime_retention::tests::held_and_partial_selections_retain_only_their_exact_runtime_and_trust", "--nocapture"]).output().unwrap();
+            .arg("--").arg(std::env::current_exe().unwrap()).args(["--exact", "daemon::runtime_retention::tests::held_and_partial_selections_retain_only_their_exact_runtime_and_trust", "--nocapture"]).output_locked().unwrap();
         assert!(
             output.status.success(),
             "{} {}",

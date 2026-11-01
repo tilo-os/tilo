@@ -251,6 +251,7 @@ mod netns {
         net::{IpAddr, Ipv4Addr},
         time::Instant,
     };
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const CHILD: &str = "TILO_IROH_NETNS_CHILD";
 
@@ -266,7 +267,7 @@ mod netns {
             .arg(std::env::current_exe().expect("this test binary"))
             .args(["--exact", name, "--nocapture", "--test-threads=1"])
             .env(CHILD, "1")
-            .output()
+            .output_locked()
             .expect("util-linux unshare runs");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

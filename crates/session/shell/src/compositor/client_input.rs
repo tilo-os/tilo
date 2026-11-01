@@ -42,6 +42,28 @@ use tilo_desktop::notifications::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
 
+/// The evdev key a key event presses on this seat.
+///
+/// A physical key or a named key says it itself ([`evdev_keycode`]). A
+/// character synthesised without a physical key (a peer's or the test
+/// harness's `Key::Character`) is the key the seat's keymap puts it on, the
+/// one a client reading the code through that keymap types it with: `y` is
+/// evdev 21 on a US keymap and 44 on a German one. The modifiers the keymap
+/// needs for it are not part of the key; they are the event stream's own.
+fn seat_keycode(state: &mut State, key: &winit::event::KeyEvent) -> Option<u32> {
+    if let Some(code) = evdev_keycode(key) {
+        return Some(code);
+    }
+    let winit::keyboard::Key::Character(text) = &key.logical_key else {
+        return None;
+    };
+    let mut chars = text.chars();
+    let (Some(ch), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    state.seat_stroke(ch).map(|stroke| stroke.key)
+}
+
 /// Linux `BTN_LEFT`. The Wayland pointer protocol carries raw evdev button codes, not an enum, so the winit `MouseButton` has to be mapped back.
 const BTN_LEFT: u32 = 0x110;
 
@@ -1445,7 +1467,7 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return;
     };
-    let Some(code) = evdev_keycode(key) else {
+    let Some(code) = seat_keycode(state, key) else {
         return;
     };
     state.set_client_keyboard_focus(None);
@@ -2146,7 +2168,7 @@ pub fn deliver_held_key_release(state: &mut State, event: &WindowEvent) -> bool 
     {
         return false;
     }
-    let Some(code) = evdev_keycode(key) else {
+    let Some(code) = seat_keycode(state, key) else {
         return false;
     };
     if !state.client_input.forwarded_keys.contains(&code)
@@ -2198,7 +2220,7 @@ fn route_keyboard_input(
             !captured && state.client_input.keyboard_focus.is_some()
         };
     }
-    let Some(code) = evdev_keycode(key) else {
+    let Some(code) = seat_keycode(state, key) else {
         return false;
     };
     if pressed {
