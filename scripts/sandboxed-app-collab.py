@@ -291,7 +291,7 @@ class Session:
     # -- sandboxes ---------------------------------------------------
 
     def launch_sandboxed(self, launcher: str, payload_root: str, manifest: str,
-                         room: str, instruction: str, log_path: str
+                         workspace_id: str, instruction: str, log_path: str
                          ) -> subprocess.Popen:
         """Start the probe under `tilo-launcher`, in a real sandbox.
 
@@ -305,7 +305,7 @@ class Session:
             "--manifest", manifest,
             "--payload-root", payload_root,
             "--minimal-libs",
-            "--workspace-id", room,
+            "--workspace-id", workspace_id,
             "--open", instruction,
         ]
         lg = open(log_path, "w")
@@ -450,9 +450,9 @@ def main() -> int:
                 break
             time.sleep(0.5)
         claim("the peer joined", joined, True)
-        room = host.active_workspace()["room"]
-        claim("both sessions are in one workspace", peer.active_workspace()["room"], room)
-        note(f"workspace = {room}")
+        workspace_id = host.active_workspace()["room"]
+        claim("both sessions are in one workspace", peer.active_workspace()["room"], workspace_id)
+        note(f"workspace id = {workspace_id}")
         for s in sessions:
             s.key("Escape")
 
@@ -476,7 +476,7 @@ def main() -> int:
         reader_log = os.path.join(out, "peer-reader.log")
         payload, manifest = staged[peer.name]
         reader = peer.launch_sandboxed(args.launcher_bin, payload, manifest,
-                                       room, f"read:{args.wait}", reader_log)
+                                       workspace_id, f"read:{args.wait}", reader_log)
         launched.append(reader)
         # The reader has to be subscribed before the writer publishes:
         # the broker fans an op to whoever is listening now, and a late
@@ -501,7 +501,7 @@ def main() -> int:
         writer_log = os.path.join(out, "host-writer.log")
         payload, manifest = staged[host.name]
         writer = host.launch_sandboxed(args.launcher_bin, payload, manifest,
-                                       room, f"write:{marker}", writer_log)
+                                       workspace_id, f"write:{marker}", writer_log)
         launched.append(writer)
         writer_rc = writer.wait(timeout=90)
         claim("the sandboxed writer published its edit", writer_rc, 0)

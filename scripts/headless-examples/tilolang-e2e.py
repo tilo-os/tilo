@@ -405,12 +405,12 @@ def check_read(session: Session) -> dict:
     reads a native app's content: the workspace's records, then one of them by its id."""
     action = until("tilolang Notes' 'Read the content'",
                    lambda: app_action(session, app_id("notes"), "Read the content"))
-    room = value_of(session.invoke("app-actions", action["id"]))
+    answer = value_of(session.invoke("app-actions", action["id"]))
     # Notes' root record, whatever its type is called: the one record of the app's own kinds.
     prefix = f"tl.{app_id('notes')}."
-    notebook = next((r for r in room.get("records", []) if r.get("kind", "").startswith(prefix)), None)
+    notebook = next((r for r in answer.get("records", []) if r.get("kind", "").startswith(prefix)), None)
     if notebook is None:
-        raise Failed(f"the workspace's read lists no record of Notes: {json.dumps(room)[:2000]}")
+        raise Failed(f"the workspace's read lists no record of Notes: {json.dumps(answer)[:2000]}")
     kind = notebook["kind"]
     read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
     # The collection of notes, whatever the root calls it: its field listing Notes' notes.
@@ -420,7 +420,7 @@ def check_read(session: Session) -> dict:
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
     native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
     return {
-        "records": len(room["records"]),
+        "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},
         "native": sorted(value_of(session.invoke("app-actions", native["id"]))),
     }

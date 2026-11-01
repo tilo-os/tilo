@@ -1592,8 +1592,8 @@ SHARED_SESSION_LOG = (
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        room = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
-        ctx.vm.invoke("actions", f"workspace.select.{room}")
+        workspace_id = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
+        ctx.vm.invoke("actions", f"workspace.select.{workspace_id}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 

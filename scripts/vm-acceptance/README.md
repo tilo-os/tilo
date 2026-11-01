@@ -48,8 +48,8 @@ guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in micro-VMs with
 KVM on `disk-100g` x86-64 nodes, so a run needs no laptop memory. It runs in shards
 (`SHARDS` in run.py: `session`, `apps`, `window`, `shell`), each a check of its own,
-`vm-acceptance/<shard>`, booting a VM of its own: t runs them side by side where there is
-room, caches each on its own and runs only a failed one again. The checks that judge a whole
+`vm-acceptance/<shard>`, booting a VM of its own: t runs them side by side where the node has
+capacity, caches each on its own and runs only a failed one again. The checks that judge a whole
 session (P03, R07, A16) judge each shard's.
 
 ```bash
