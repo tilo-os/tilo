@@ -1,7 +1,7 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedRoom, Rooms, StatePeer, SystemTime};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use tilo_agent_participant::room_actions::{ViewDocument, ViewReadPolicy};
+use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
@@ -27,7 +27,7 @@ impl GovernedRoom {
         let standing = peer.permissions(device, now).ok()?.standing();
         let sandbox = peer.governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
-            room: self.room().to_owned(),
+            workspace: self.room().to_owned(),
             standing,
             sandbox,
             unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),

@@ -2,7 +2,7 @@
 //!
 //! A plan that edits a picture or a drawing is planned better when the
 //! model sees it: what a canvas `look` rendered, a PDF page, a scan someone
-//! put in the room. Pictures reach the model three ways, each through the
+//! put in the workspace. Pictures reach the model three ways, each through the
 //! same `Eyes` that budgets them and keeps the conversation's text honest
 //! about what was shown:
 //!
@@ -11,17 +11,17 @@
 //! - [`LOOK_CONTENT`] shows a picture kept as content by its address, one
 //!   this conversation was shown;
 //! - a re-plan's first turn carries the newest picture the task's steps
-//!   looked at, and the room's pictures its steps read since its last plan;
+//!   looked at, and the workspace's pictures its steps read since its last plan;
 //! - a read asked to read content as text that answers it is a picture
 //!   ([`read_picture`]) shows the picture, as [`LOOK_CONTENT`] would.
 //!
 //! Every picture is at most [`MOST_PICTURE_SIDE`] pixels a side and
 //! [`MOST_PICTURE_BYTES`] bytes, a PNG or a JPEG. A picture an app rendered
 //! within those passes through as it is; anything else (one too large, a
-//! room's picture that may carry where and when it was taken) is decoded,
+//! workspace's picture that may carry where and when it was taken) is decoded,
 //! shrunk and written out again in a confined worker
 //! (`worker::shrink_picture`), never in the host: a picture someone put in
-//! the room is untrusted input. Pictures always follow the request's stable
+//! the workspace is untrusted input. Pictures always follow the request's stable
 //! prefix (instructions, tools, the apps' reference), so a provider's prompt
 //! cache keeps working, and no picture's bytes are ever logged.
 
@@ -56,11 +56,24 @@ pub const LOOK_CONTENT: &str = "look_content";
 /// whatever its provider's default ([`crate::PlanModel::sees`]).
 pub const VISION_ENV: &str = "TILO_AGENT_VISION";
 
-/// Lets agents show the room's own pictures (scans, photos people put in
-/// the room) to their model's provider: `1`/`on`/`all` for every agent, or
+/// Lets agents show the workspace's own pictures (scans, photos people put in
+/// the workspace) to their model's provider: `1`/`on`/`all` for every agent, or
 /// a comma-separated list of agent ids or labels. Off by default; pictures
 /// an app rendered (a canvas look, a PDF page) are always shown.
-pub const ROOM_PICTURES_ENV: &str = "TILO_AGENT_ROOM_PICTURES";
+pub const WORKSPACE_PICTURES_ENV: &str = "TILO_AGENT_WORKSPACE_PICTURES";
+
+/// The name [`WORKSPACE_PICTURES_ENV`] was set under before: still read, so a
+/// host that sets it keeps showing the workspace's pictures.
+pub const WORKSPACE_PICTURES_ENV_RETIRED: &str = "TILO_AGENT_ROOM_PICTURES";
+
+/// The setting [`workspace_pictures_allowed`] reads: [`WORKSPACE_PICTURES_ENV`],
+/// or the name it was set under before ([`WORKSPACE_PICTURES_ENV_RETIRED`]).
+#[must_use]
+pub fn pictures_setting() -> Option<String> {
+    std::env::var(WORKSPACE_PICTURES_ENV)
+        .or_else(|_| std::env::var(WORKSPACE_PICTURES_ENV_RETIRED))
+        .ok()
+}
 
 /// The prefix of a content address.
 const CONTENT_PREFIX: &str = "tilo.content:";
@@ -72,12 +85,12 @@ pub const PICTURE_FORMAT: &str = "picture";
 /// Why a picture is not shown to a model that is not shown pictures.
 pub const NOT_SEEING: &str = "this agent's model is not shown pictures";
 
-/// Why one of the room's own pictures is not shown where the agent may not
-/// show them ([`ROOM_PICTURES_ENV`]).
-pub const ROOM_WITHHELD: &str = "this agent is not shown the room's pictures";
+/// Why one of the workspace's own pictures is not shown where the agent may not
+/// show them ([`WORKSPACE_PICTURES_ENV`]).
+pub const WORKSPACE_WITHHELD: &str = "this agent is not shown the workspace's pictures";
 
 /// The refusal of the picture `name` for `why` ([`NOT_SEEING`],
-/// [`ROOM_WITHHELD`]): plain, so the model plans without it rather than
+/// [`WORKSPACE_WITHHELD`]): plain, so the model plans without it rather than
 /// trying another way to see it.
 #[must_use]
 pub fn withheld(name: &str, why: &str) -> String {
@@ -506,9 +519,9 @@ impl From<bool> for Sight {
     }
 }
 
-/// Whether an agent shows the room's own pictures to its model's provider.
+/// Whether an agent shows the workspace's own pictures to its model's provider.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RoomPictures {
+pub enum WorkspacePictures {
     /// Not shown: the default.
     #[default]
     Withheld,
@@ -516,16 +529,16 @@ pub enum RoomPictures {
     Shown,
 }
 
-impl From<bool> for RoomPictures {
+impl From<bool> for WorkspacePictures {
     fn from(shown: bool) -> Self {
         if shown { Self::Shown } else { Self::Withheld }
     }
 }
 
-/// Whether the agent `agent_id`, shown as `label`, may show the room's own
-/// pictures to its model, as [`ROOM_PICTURES_ENV`] reads `setting`.
+/// Whether the agent `agent_id`, shown as `label`, may show the workspace's own
+/// pictures to its model, as [`WORKSPACE_PICTURES_ENV`] reads `setting`.
 #[must_use]
-pub fn room_pictures_allowed(agent_id: &str, label: &str, setting: Option<&str>) -> bool {
+pub fn workspace_pictures_allowed(agent_id: &str, label: &str, setting: Option<&str>) -> bool {
     crate::profile::named_on(agent_id, label, setting)
 }
 
@@ -683,14 +696,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn room_pictures_are_off_unless_turned_on_for_every_agent_or_by_name() {
-        assert!(!room_pictures_allowed("a1", "Ada", None));
-        assert!(!room_pictures_allowed("a1", "Ada", Some("0")));
-        assert!(room_pictures_allowed("a1", "Ada", Some("1")));
-        assert!(room_pictures_allowed("a1", "Ada", Some("on")));
-        assert!(room_pictures_allowed("a1", "Ada", Some("b2, a1")));
-        assert!(room_pictures_allowed("a1", "Ada", Some("ada")));
-        assert!(!room_pictures_allowed("a1", "Ada", Some("b2,Bob")));
+    fn workspace_pictures_are_off_unless_turned_on_for_every_agent_or_by_name() {
+        assert!(!workspace_pictures_allowed("a1", "Ada", None));
+        assert!(!workspace_pictures_allowed("a1", "Ada", Some("0")));
+        assert!(workspace_pictures_allowed("a1", "Ada", Some("1")));
+        assert!(workspace_pictures_allowed("a1", "Ada", Some("on")));
+        assert!(workspace_pictures_allowed("a1", "Ada", Some("b2, a1")));
+        assert!(workspace_pictures_allowed("a1", "Ada", Some("ada")));
+        assert!(!workspace_pictures_allowed("a1", "Ada", Some("b2,Bob")));
         assert_eq!(vision_setting(Some("off")), Some(false));
         assert_eq!(vision_setting(Some("1")), Some(true));
         assert_eq!(vision_setting(Some("maybe")), None);

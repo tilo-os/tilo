@@ -40,7 +40,7 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{ROOM, enrol, start_host, wait_for};
+use support::{ROOM as WORKSPACE, enrol, start_host, wait_for};
 
 const EBOOK: &str = "so.tilo.ebook";
 
@@ -175,7 +175,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "Careful agent",
         [0x7c, 0x3a, 0xed],
         DelegateScope {
-            rooms: vec![ROOM.into()],
+            rooms: vec![WORKSPACE.into()],
             apps: vec![EBOOK.into()],
         },
         now,
@@ -191,7 +191,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         ParticipantConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
-            room: ROOM.into(),
+            workspace: WORKSPACE.into(),
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {

@@ -118,22 +118,32 @@ pub async fn run() {
     );
     let state = crate::support::scratch_dir();
     let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
-    let rooms = hosted.relay.rooms().unwrap();
-    let room = rooms.create("Mounted resource acceptance").await.unwrap();
+    let workspaces = hosted.relay.rooms().unwrap();
+    let workspace = workspaces
+        .create("Mounted resource acceptance")
+        .await
+        .unwrap();
     let mut native = if encrypted_restart {
         assert_ne!(
             publisher.cert.user_public_key, host.cert.user_public_key,
             "the cold encrypted source belongs to another person"
         );
-        admit_person(&hosted, &host, &room.room, &publisher, MemberRole::Editor).await;
-        open_admitted_peer(&hosted, &publisher, &host, &room.room).await
+        admit_person(
+            &hosted,
+            &host,
+            &workspace.room,
+            &publisher,
+            MemberRole::Editor,
+        )
+        .await;
+        open_admitted_peer(&hosted, &publisher, &host, &workspace.room).await
     } else {
-        Browser::open_room(&hosted, &publisher, &host, &room.room).await
+        Browser::open_workspace(&hosted, &publisher, &host, &workspace.room).await
     };
     let seed = if voice_journey {
-        rooms
+        workspaces
             .prepare_application(
-                &room.room,
+                &workspace.room,
                 &host.cert,
                 &common::catalogue(),
                 "so.tilo.chat",
@@ -141,9 +151,9 @@ pub async fn run() {
             )
             .await
             .unwrap();
-        let mut canonical = rooms
+        let mut canonical = workspaces
             .author_application(
-                &room.room,
+                &workspace.room,
                 &host.cert,
                 &common::catalogue(),
                 "so.tilo.chat",
@@ -167,7 +177,7 @@ pub async fn run() {
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &room.room,
+        &workspace.room,
         &source_author,
         tilo_agent_participant::ReplicaActor::Owner,
         seed,
@@ -217,11 +227,11 @@ pub async fn run() {
         "label": "Fixture selection", "span": {"start": 6, "end": 7, "unit": "Chars"}});
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: room.room.clone(),
+        cluster_id: workspace.room.clone(),
         record: source.wire_record().into(),
     };
     let part = chat::parts::part(0);
-    let messages_route = part_route(&room.room, &part);
+    let messages_route = part_route(&workspace.room, &part);
     let provider = record_provider(&messages_route);
     let shared = on_messages(
         &mut source,
@@ -232,8 +242,8 @@ pub async fn run() {
     let (shared, _) = published_message(&source, &shared);
     if voice_journey {
         let fixture_doc = source.read(Clone::clone).unwrap();
-        Box::pin(rooms.author_application(
-            &room.room,
+        Box::pin(workspaces.author_application(
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -353,7 +363,7 @@ pub async fn run() {
         } else {
             MemberRole::Viewer
         };
-        admit_person(&hosted, &host, &room.room, recipient, role).await;
+        admit_person(&hosted, &host, &workspace.room, recipient, role).await;
     }
     if encrypted_restart {
         let barrier = native.peer.barrier().unwrap();
@@ -361,7 +371,7 @@ pub async fn run() {
         let retained = hosted
             .relay
             .room_records()
-            .retained(room.workspace_id)
+            .retained(workspace.workspace_id)
             .await
             .unwrap();
         let expected =
@@ -379,11 +389,11 @@ pub async fn run() {
         hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
         println!("MOUNTED_RESOURCE_STAGE={{\"stage\":\"remote-encrypted-source-host-restarted\"}}");
     }
-    let rooms = hosted.relay.rooms().unwrap();
+    let workspaces = hosted.relay.rooms().unwrap();
     let reader_identity = hex::encode(recipient.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
-        "origin": hosted.web.origin, "room": room.room,
+        "origin": hosted.web.origin, "workspace": workspace.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
         "record": route.record, "messages": ui::record::chain_resource_id(&chat::parts::chain()),
         "channelId": channel.id,
@@ -507,9 +517,9 @@ pub async fn run() {
             } else if event["stage"] == "revoke" {
                 let started = std::time::Instant::now();
                 println!("MOUNTED_RESOURCE_REVOCATION={{\"state\":\"requested\"}}");
-                let completion = rooms
+                let completion = workspaces
                     .remove_member(
-                        &room.room,
+                        &workspace.room,
                         &host.cert,
                         RemoveMemberRequest {
                             request_id: [33; 32],

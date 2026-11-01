@@ -1,6 +1,6 @@
 //! Whether a new build of a package can take over a running one in place.
 //!
-//! A running app keeps its state outside its module: resources in the room record, by
+//! A running app keeps its state outside its module: resources in the workspace record, by
 //! declaration id; `window` and `lens` state in the runtime, by window and declaration id;
 //! scroll, selection and the open detail in the window. A new module can take over all of it
 //! when it reads that state as the old one wrote it. [`compare`] says whether it does, and when

@@ -1,9 +1,9 @@
 //! Page actions on records nobody has open, answered by the host.
 //!
 //! The host runs `tilo_relay::agents::start`, whose app-serving plane now
-//! also answers the room's records ([`tilo_agent_participant::RoomActions`]).
+//! also answers the workspace's records ([`tilo_agent_participant::WorkspaceActions`]).
 //! A browser session creates a Sheets and a Slides record and closes them;
-//! no agent exists. The page then lists the room's catalogue, runs a record's
+//! no agent exists. The page then lists the workspace's catalogue, runs a record's
 //! action through the host, retries it under the same id, reuses the id for
 //! another request, is asked to confirm a destructive action, and cancels an
 //! invocation queued behind another. Every change the host makes arrives as
@@ -30,31 +30,31 @@ pub(crate) mod support;
 
 mod common;
 #[cfg(test)]
-#[path = "room_actions/encrypted_resource.rs"]
+#[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]
-#[path = "room_actions/feedback_journey.rs"]
+#[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
-#[path = "room_actions/governed_agent.rs"]
+#[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
 #[cfg(test)]
-#[path = "room_actions/governed_sealed.rs"]
+#[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
-#[path = "room_actions/member_own.rs"]
+#[path = "workspace_actions/member_own.rs"]
 mod member_own;
-#[path = "room_actions/resource_support.rs"]
+#[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
-#[path = "room_actions/share_link.rs"]
+#[path = "workspace_actions/share_link.rs"]
 mod share_link;
 
 #[cfg(not(test))]
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
-// Room actions hold each record in a confined app worker: this binary,
+// Workspace actions hold each record in a confined app worker: this binary,
 // started again.
 tilo_agent_participant::app_worker!();
 
@@ -82,7 +82,7 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{Device, ROOM, enrol, ready, start_peer};
+use support::{Device, ROOM as WORKSPACE, enrol, ready, start_peer};
 
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
@@ -103,18 +103,19 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let state = support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
-    let room = hosted
+    let workspace = hosted
         .relay
         .rooms()
         .unwrap()
         .create("Native resource fixture")
         .await
         .unwrap();
-    let mut browser = Browser::open_room(&hosted, &browser_device, &host, &room.room).await;
+    let mut browser =
+        Browser::open_workspace(&hosted, &browser_device, &host, &workspace.room).await;
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &room.room,
+        &workspace.room,
         "ada",
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -171,7 +172,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(serde_json::to_value(&shared.reference).unwrap(), reference);
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: room.room.clone(),
+        cluster_id: workspace.room.clone(),
         record: source.wire_record().into(),
     };
     browser
@@ -179,14 +180,14 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .publish(record, &source.take_mutation().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
-    let route = resource_support::part_route(&room.room, &part);
+    let route = resource_support::part_route(&workspace.room, &part);
     for (changed, mutation) in source.take_record_mutations() {
         assert_eq!(changed, part);
         browser.peer.publish(route.clone(), &mutation).unwrap();
     }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
-        &room.room,
+        &workspace.room,
         "ada",
         ui::permissions::Role::Owner,
     );
@@ -282,7 +283,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let locator = page.locator.unwrap();
     assert_eq!(locator.origin, hosted.web.origin);
-    assert_eq!(locator.room, room.room);
+    assert_eq!(locator.room, workspace.room);
     assert_eq!(
         locator.host_device,
         hex::encode(host.cert.device_public_key)
@@ -321,17 +322,18 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             .is_err(),
         "a missing exact source must not create a record, keys or a locator"
     );
-    let other_room = hosted
+    let other_workspace = hosted
         .relay
         .rooms()
         .unwrap()
         .create("Isolated resource fixture")
         .await
         .unwrap();
-    let mut other = Browser::open_room(&hosted, &browser_device, &host, &other_room.room).await;
+    let mut other =
+        Browser::open_workspace(&hosted, &browser_device, &host, &other_workspace.room).await;
     assert!(
         other.catalogue(query.clone()).await.is_err(),
-        "an exact reference from another room must not produce views or a locator"
+        "an exact reference from another workspace must not produce views or a locator"
     );
     other.peer.close();
     let ordinary = browser
@@ -359,7 +361,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     for revoke_on_read in [false, true] {
         let link = Arc::new(DeliveryReadFixture {
-            member: tilo_agent_participant::room_actions::RoomMember {
+            member: tilo_agent_participant::workspace_actions::WorkspaceMember {
                 endpoint: tilo_agent_participant::HostEndpoint {
                     host: Host::Https(support::https::DevHttps::new(
                         hosted.web.addr,
@@ -377,11 +379,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             revoked: std::sync::atomic::AtomicBool::new(false),
             locator_reads: std::sync::atomic::AtomicUsize::new(0),
         });
-        let actions = tilo_agent_participant::RoomActions::new(Arc::new(common::catalogue));
+        let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
         actions.attach(link.clone()).unwrap();
         let answer = actions
             .serve(
-                room.workspace_id,
+                workspace.workspace_id,
                 &caller,
                 RemoteActionMessage::CatalogueRequest {
                     correlation: 1,
@@ -422,7 +424,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
 
 /// Deterministically changes authority after a real Chat snapshot is read.
 struct DeliveryReadFixture {
-    member: tilo_agent_participant::room_actions::RoomMember,
+    member: tilo_agent_participant::workspace_actions::WorkspaceMember,
     caller: tilo_actions::remote::Caller,
     route: DocumentRoute,
     bytes: Vec<u8>,
@@ -431,11 +433,11 @@ struct DeliveryReadFixture {
     locator_reads: std::sync::atomic::AtomicUsize,
 }
 
-impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixture {
+impl tilo_agent_participant::workspace_actions::WorkspaceRecordsLink for DeliveryReadFixture {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
-    fn member(&self) -> tilo_agent_participant::room_actions::RoomMember {
+    fn member(&self) -> tilo_agent_participant::workspace_actions::WorkspaceMember {
         self.member.clone()
     }
     fn view_read_policy(
@@ -444,7 +446,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
-    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
         if self.revoked.load(std::sync::atomic::Ordering::SeqCst)
             || caller != &self.caller
             || self.route.workspace_id().ok() != Some(workspace)
@@ -453,8 +455,8 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         {
             return None;
         }
-        Some(tilo_agent_participant::room_actions::ViewReadPolicy {
-            room: self.route.cluster_id.clone(),
+        Some(tilo_agent_participant::workspace_actions::ViewReadPolicy {
+            workspace: self.route.cluster_id.clone(),
             standing: ui::permissions::Standing::person(
                 ui::permissions::policy::WorkspacePolicy::new(
                     &self.route.cluster_id,
@@ -471,7 +473,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         workspace: u64,
         caller: &tilo_actions::remote::Caller,
         source: &DocumentRoute,
-    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+    ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
         if source != &self.route
             || self
                 .view_read_policy(workspace, caller, &source.app_id, &source.record)
@@ -481,14 +483,14 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         }
         self.revoked
             .store(self.revoke_on_read, std::sync::atomic::Ordering::SeqCst);
-        Ok(tilo_agent_participant::room_actions::ViewDocument {
+        Ok(tilo_agent_participant::workspace_actions::ViewDocument {
             bytes: self.bytes.clone(),
             revision: "fixture-source".into(),
         })
     }
     fn view_locator(
         &self,
-        room: &str,
+        workspace: &str,
         provider: &str,
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         self.locator_reads
@@ -496,7 +498,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: "https://fixture.tilo.invalid".into(),
             web_entry: Some("https://fixture.tilo.invalid/qos-runtime/".into()),
-            room: room.into(),
+            room: workspace.into(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.into(),
         })
@@ -522,7 +524,7 @@ async fn start_browser(
     start_lending(root, host, state, page, None).await
 }
 
-/// A host lending its rooms' reporters `feedback_reviewer`.
+/// A host lending its workspaces' reporters `feedback_reviewer`.
 async fn start_lending(
     root: &SigningKey,
     host: &Device,
@@ -585,16 +587,21 @@ struct Browser {
     answers: Vec<RemoteActionMessage>,
     correlation: u64,
     workspace: u64,
-    room: String,
+    cluster_id: String,
 }
 
 impl Browser {
     async fn open(hosted: &Hosted, device: &Device, host: &Device) -> Self {
-        Self::open_room(hosted, device, host, ROOM).await
+        Self::open_workspace(hosted, device, host, WORKSPACE).await
     }
 
-    async fn open_room(hosted: &Hosted, device: &Device, host: &Device, room: &str) -> Self {
-        let workspace = tilo_relay_protocol::room_workspace_id(room).unwrap();
+    async fn open_workspace(
+        hosted: &Hosted,
+        device: &Device,
+        host: &Device,
+        cluster_id: &str,
+    ) -> Self {
+        let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
         let https = support::https::DevHttps::new(
             hosted.web.addr,
             hosted.web.certificate_sha256.as_ref().unwrap(),
@@ -606,15 +613,17 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        if room == ROOM {
+        if cluster_id == WORKSPACE {
             // The page asks its host to govern its person's workspace and
             // admit it, as every page does before joining one.
-            peer.join_placed(room, "Workspace").unwrap();
+            peer.join_placed(cluster_id, "Workspace").unwrap();
         } else {
             ready(&[&peer]).await;
             let (reply, answer) = tokio::sync::oneshot::channel();
             peer.rooms_then(
-                tilo_relay_protocol::rooms::RoomsRequest::Enter { room: room.into() },
+                tilo_relay_protocol::rooms::RoomsRequest::Enter {
+                    room: cluster_id.into(),
+                },
                 Box::new(move |result| {
                     let _ = reply.send(result);
                 }),
@@ -638,7 +647,7 @@ impl Browser {
             answers: Vec::new(),
             correlation: 0,
             workspace,
-            room: room.to_owned(),
+            cluster_id: cluster_id.to_owned(),
         }
     }
 
@@ -742,7 +751,7 @@ impl Browser {
         let mut page = Replica::open(
             &common::catalogue(),
             app,
-            &self.room,
+            &self.cluster_id,
             "ada",
             tilo_agent_participant::ReplicaActor::Owner,
             Seed::New,
@@ -750,7 +759,7 @@ impl Browser {
         .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
-            cluster_id: self.room.clone(),
+            cluster_id: self.cluster_id.clone(),
             record: page.wire_record().to_owned(),
         };
         let mutation = page.take_mutation().unwrap();
@@ -775,7 +784,7 @@ impl Browser {
         Replica::open(
             &common::catalogue(),
             &route.app_id,
-            &self.room,
+            &self.cluster_id,
             "ada",
             tilo_agent_participant::ReplicaActor::Owner,
             Seed::Existing {
@@ -896,7 +905,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
-    // A record the host holds keys for. The room's first listing joins it
+    // A record the host holds keys for. The workspace's first listing joins it
     // and waits, once, for every record's keys.
     let open = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -938,7 +947,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
         .await;
     let acted_with_keys = started.elapsed();
     eprintln!(
-        "room actions latency: join and first listing {joined:?}, invoke with keys {acted_with_keys:?}"
+        "workspace actions latency: join and first listing {joined:?}, invoke with keys {acted_with_keys:?}"
     );
     assert!(
         matches!(warm.status, ReceiptStatus::Completed { .. }),
@@ -965,7 +974,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
         .await;
     let acted_while_held = started.elapsed();
     eprintln!(
-        "room actions latency, another record's keys withheld: named catalogue \
+        "workspace actions latency, another record's keys withheld: named catalogue \
          {named_while_held:?}, listing {listed_while_held:?}, invoke {acted_while_held:?}"
     );
     assert!(
@@ -1002,7 +1011,9 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     drop(held);
     let after_keys = browser.receipt(pending.invocation).await;
     let ran_after_keys = released.elapsed();
-    eprintln!("room actions latency: the withheld record ran {ran_after_keys:?} after its keys");
+    eprintln!(
+        "workspace actions latency: the withheld record ran {ran_after_keys:?} after its keys"
+    );
     assert!(
         matches!(after_keys.status, ReceiptStatus::Completed { .. }),
         "{after_keys:?}"
@@ -1019,7 +1030,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
         ))
         .await;
     let refused_after = started.elapsed();
-    eprintln!("room actions latency: a record without keys refused after {refused_after:?}");
+    eprintln!("workspace actions latency: a record without keys refused after {refused_after:?}");
     match &never.status {
         ReceiptStatus::Rejected {
             error: ActionHostError::Unavailable { reason },
@@ -1168,8 +1179,8 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let sheets_provider = record_provider(&sheets);
     let books_provider = record_provider(&books);
 
-    // 1. The catalogue: every record of the room is a provider, and with no
-    // provider named the recent records' actions are listed with the room's
+    // 1. The catalogue: every record of the workspace is a provider, and with no
+    // provider named the recent records' actions are listed with the workspace's
     // "open an app" actions.
     let page = browser.catalogue(CatalogueQuery::default()).await.unwrap();
     let providers: Vec<&str> = page.providers.iter().map(|p| p.provider.as_str()).collect();
@@ -1182,7 +1193,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         "{providers:?}"
     );
     assert!(
-        providers.contains(&format!("workspace:{ROOM}").as_str()),
+        providers.contains(&format!("workspace:{WORKSPACE}").as_str()),
         "{providers:?}"
     );
     let sheets_page = browser
@@ -1395,10 +1406,10 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         Err(ActionHostError::NotCancellable { .. })
     ));
 
-    // 6. The room's "open an app" action creates a record through the host.
+    // 6. The workspace's "open an app" action creates a record through the host.
     let opened = browser
         .invoke(request(
-            &format!("workspace:{ROOM}"),
+            &format!("workspace:{WORKSPACE}"),
             ActionAddress::new(format!("app.{SHEETS}"), "open"),
             InvokeArgument::None,
         ))

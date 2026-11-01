@@ -1,5 +1,5 @@
 //! The workspace's members as tilolang reads them (`workspace.members`, `members(r)`): the
-//! room's own policy, the one the door decides by, read with the person's standing. Nothing
+//! workspace's own policy, the one the door decides by, read with the person's standing. Nothing
 //! here keeps a list of its own: the members are the policy's owner and members with their
 //! roles and the agents its grants name, and who reads a resource is what the policy answers
 //! for each of them.
@@ -20,9 +20,9 @@ use tilolang_runtime::{Principal, ResourceRef};
 use crate::host::Host;
 use crate::meta::MetaExt as _;
 
-/// How the people of the room's policy are the runtime's principals: the person at the window
+/// How the people of the workspace's policy are the runtime's principals: the person at the window
 /// is the runtime's `me` (as the authority maps them back,
-/// [`crate::authority::TiloAuthority`]), a person the room's host paired with a participant is
+/// [`crate::authority::TiloAuthority`]), a person the workspace's host paired with a participant is
 /// that participant, and anyone else is their person id, as presence names them where it names
 /// people.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
     let mut agents: Vec<&str> = policy
         .grants
         .iter()
-        // An agent admitted to the room holds its preset's grants (`agent-member:…`); the
+        // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
         // answers a person gave an agent working for them admit nobody.
         .filter(|grant| grant.id.0.starts_with("agent-member:"))
         .filter_map(|grant| match &grant.subject {
@@ -146,22 +146,22 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
     let standing = standing.clone();
     let people = people.clone();
     Rc::new(move |who: &Principal, target: &ResourceRef| {
-        let room = TreePath::room(standing.room());
+        let workspace = TreePath::room(standing.room());
         let node = match kinds.get(&target.ty) {
-            Some((app, kind, Some(own))) => room
+            Some((app, kind, Some(own))) => workspace
                 .app(app)
                 .kind(kind)
                 .resource(own)
                 .item(target.id_string()),
-            Some((app, kind, None)) => room.app(app).kind(kind).resource(target.id_string()),
-            None => room,
+            Some((app, kind, None)) => workspace.app(app).kind(kind).resource(target.id_string()),
+            None => workspace,
         };
         reads_node(&standing, &people, who, &node)
     })
 }
 
 /// Whether `who` may read `node` by `standing`'s policy: a person by their own party, an
-/// agent by the grants the room gave it.
+/// agent by the grants the workspace gave it.
 fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &TreePath) -> bool {
     let policy = &standing.policy;
     let party = match who.0.strip_prefix("agent:") {
@@ -183,11 +183,11 @@ mod tests {
     use tilo_action_policy::{Grant, KindSet, Role, WorkspacePolicy};
 
     fn standing() -> Standing {
-        let mut policy = WorkspacePolicy::new("room", "ada");
+        let mut policy = WorkspacePolicy::new("workspace", "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
         policy.members.insert("cy".to_owned(), Role::Viewer);
         policy.grants.extend(AgentPreset::Contributor.grants(
-            "room",
+            "workspace",
             "planner",
             &Subject::person("ada"),
         ));
@@ -195,7 +195,7 @@ mod tests {
         policy.grants.push(Grant::new(
             "hide-secret",
             Subject::person("cy"),
-            TreePath::room("room")
+            TreePath::room("workspace")
                 .app("notes")
                 .kind("tl.notes.Note")
                 .resource("secret"),
@@ -206,7 +206,7 @@ mod tests {
         Standing::person(policy, "ada")
     }
 
-    /// Cy works from a device the room's host paired with them; Bo is named as themselves.
+    /// Cy works from a device the workspace's host paired with them; Bo is named as themselves.
     fn people() -> People {
         People::new(
             "me",
@@ -239,7 +239,7 @@ mod tests {
     fn who_reads_a_resource_is_what_the_policy_answers_for_each_person() {
         let (standing, people) = (standing(), people());
         let node = |id: &str| {
-            TreePath::room("room")
+            TreePath::room("workspace")
                 .app("notes")
                 .kind("tl.notes.Note")
                 .resource(id)
@@ -248,7 +248,7 @@ mod tests {
         for who in all {
             assert!(
                 reads_node(&standing, &people, &Principal::new(who), &node("open")),
-                "{who} reads what the room holds"
+                "{who} reads what the workspace holds"
             );
         }
         let secret: Vec<&str> = all

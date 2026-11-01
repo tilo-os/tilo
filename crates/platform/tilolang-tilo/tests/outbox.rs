@@ -1,4 +1,4 @@
-//! Outside effects wait in the room record for the device that owns them: approved twice, the
+//! Outside effects wait in the workspace record for the device that owns them: approved twice, the
 //! letter leaves once.
 
 use automerge::AutoCommit;
@@ -9,8 +9,8 @@ use crate::fixtures::Replica;
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
 
-/// A letters room with one draft and an agent's suggestion to send it, on `ada`'s replica.
-fn suggested_room() -> (Replica, tilolang_runtime::ResourceRef) {
+/// A letters workspace with one draft and an agent's suggestion to send it, on `ada`'s replica.
+fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
     let meta = packages[0].meta.clone();
     let desk = ada.host.root_of("test.letters").unwrap();
@@ -46,7 +46,7 @@ fn suggested_room() -> (Replica, tilolang_runtime::ResourceRef) {
 
 #[test]
 fn two_replicas_approving_the_same_suggestion_deliver_the_letter_once() {
-    let (mut ada, invocation) = suggested_room();
+    let (mut ada, invocation) = suggested_workspace();
     let mut grace = ada.fork("grace", &[(LETTERS, LETTERS_IDS)]);
     let (sent_by_ada, sent_by_grace) = (MemorySink::new(), MemorySink::new());
     ada.host.runtime().set_sink(sent_by_ada.clone());
@@ -86,7 +86,7 @@ fn two_replicas_approving_the_same_suggestion_deliver_the_letter_once() {
 
 #[test]
 fn approving_one_suggestion_twice_on_one_replica_queues_it_once() {
-    let (mut ada, invocation) = suggested_room();
+    let (mut ada, invocation) = suggested_workspace();
     let sink = MemorySink::new();
     ada.host.runtime().set_sink(sink.clone());
     let approve = |ada: &Replica| {
@@ -113,7 +113,7 @@ fn approving_one_suggestion_twice_on_one_replica_queues_it_once() {
 #[test]
 fn a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice() {
     use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
-    let (mut ada, invocation) = suggested_room();
+    let (mut ada, invocation) = suggested_workspace();
     let sink = MemorySink::new();
     ada.host.runtime().set_sink(sink.clone());
     ada.host
@@ -143,7 +143,7 @@ fn a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_t
 }
 
 /// What committing the action queued under `ticket` through the host's resource needs of a
-/// room, and what the commit is offered as.
+/// workspace, and what the commit is offered as.
 fn commit_need(
     replica: &Replica,
     ticket: u64,
@@ -166,9 +166,9 @@ fn commit_need(
 #[test]
 fn a_commit_needs_what_the_action_it_carries_is() {
     use tilo_actions::ActionKind::{Outside, Undoable};
-    let (ada, invocation) = suggested_room();
+    let (ada, invocation) = suggested_workspace();
     // Creating the root is a change of the record. The host offers its commit as one, which a
-    // room whose grants let the app author the record allows.
+    // workspace whose grants let the app author the record allows.
     let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
     fresh.host.root_of("test.letters").unwrap();
     let created = fresh.host.take_committed();

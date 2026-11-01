@@ -1,4 +1,4 @@
-//! `tilolang-host`: the process the session starts as a tilolang host, for one room and author.
+//! `tilolang-host`: the process the session starts as a tilolang host, for one workspace and author.
 //!
 //! It holds its door (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
 //! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the door, its instances' windows

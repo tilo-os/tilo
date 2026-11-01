@@ -1,24 +1,30 @@
-//! The room's content, answered to a member that asks for it.
+//! The workspace's content, answered to a member that asks for it.
 //!
 //! What an agent's records import or make (a source a video project
-//! places, a still it drew) is kept in the room's content store on the
+//! places, a still it drew) is kept in the workspace's content store on the
 //! agent's host, and a record names it by address alone. A member whose
-//! record references such content and who lacks it asks the room on its
+//! record references such content and who lacks it asks the workspace on its
 //! presence ([`PeerEvent::ContentWanted`](tilo_browser_peer::PeerEvent)),
-//! as every device asks; the agent answers from the room's store, to that
+//! as every device asks; the agent answers from the workspace's store, to that
 //! member alone, in the pieces any member answers with. So a person's
 //! editor, or an agent on another host, reads what this agent put in the
-//! room, as the room lets it read the record.
+//! workspace, as the workspace lets it read the record.
 
 use tilo_content::ContentStore;
 
 use super::AgentParticipant;
 
 impl AgentParticipant {
-    /// Answer `request`, the room's member `from` asking for content, from
-    /// the room's store.
+    /// Answer `request`, the workspace's member `from` asking for content, from
+    /// the workspace's store.
     pub(super) fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
-        let pieces = answer(&self.device(), &from, request, &self.room, &self.content);
+        let pieces = answer(
+            &self.device(),
+            &from,
+            request,
+            &self.workspace,
+            &self.content,
+        );
         for piece in pieces {
             if self
                 .peer
@@ -33,18 +39,18 @@ impl AgentParticipant {
 }
 
 /// The frames that answer `request` from device `asker`, sent by `device`:
-/// the pieces of the content `room`'s store keeps, or word that it keeps
-/// none, which content of another room always is.
+/// the pieces of the content `workspace`'s store keeps, or word that it keeps
+/// none, which content of another workspace always is.
 pub(super) fn answer(
     device: &[u8; 32],
     asker: &[u8; 32],
     request: &[u8],
-    room: &str,
+    workspace: &str,
     content: &ContentStore,
 ) -> Vec<Vec<u8>> {
     tilo_browser_peer::content::answer(device, asker, request, |_app, cluster, hash| {
         cluster
-            .eq_ignore_ascii_case(room)
+            .eq_ignore_ascii_case(workspace)
             .then(|| content.read(hash))
             .flatten()
     })

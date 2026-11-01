@@ -42,7 +42,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
         // seed a shot or a layout check of that window starts from, so there is no upper bound.
         assert!(!meta.scenarios.is_empty(), "{app} declares a scenario");
         for (i, scenario) in meta.scenarios.iter().enumerate() {
-            // Each scenario in a room of its own, as a shot starts from one.
+            // Each scenario in a workspace of its own, as a shot starts from one.
             let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
             // A scenario may attach the roots of the packages it uses (Today's apps).
             for package in &loaded {

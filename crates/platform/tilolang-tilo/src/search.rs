@@ -1,4 +1,4 @@
-//! What search finds of a room: the text of every record and item of every package.
+//! What search finds of a workspace: the text of every record and item of every package.
 //!
 //! Every `Text` and `RichText` field of a type is searchable by default (a rich text by its text
 //! as the person searching reads it: a reference to a resource they hold by what it is called
@@ -128,7 +128,7 @@ pub fn group_of(meta: &Meta) -> String {
     meta.title.clone()
 }
 
-/// Every hit of the room, by package and path, read from the indexes now: what a window
+/// Every hit of the workspace, by package and path, read from the indexes now: what a window
 /// publishes to the session's search index, which is what search finds things through. One pass
 /// over each package's index. Each text is as the window's person reads it: the index matches a
 /// query against what they read, never against the title of a resource they do not hold.

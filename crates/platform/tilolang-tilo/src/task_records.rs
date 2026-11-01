@@ -1,4 +1,4 @@
-//! An agent task's reads of a room's records, outside their apps
+//! An agent task's reads of a workspace's records, outside their apps
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! The task reads each app's record itself: the door hands it the record's committed content
@@ -28,11 +28,11 @@ use crate::host::Host;
 
 /// Where a task gets a record's committed content: the door, as the task.
 pub trait RecordSource {
-    /// The record `record` (empty for the app's record of the room) of the app `app`: its
-    /// content (an Automerge document), or `None` when the room holds no such record.
+    /// The record `record` (empty for the app's record of the workspace) of the app `app`: its
+    /// content (an Automerge document), or `None` when the workspace holds no such record.
     ///
     /// # Errors
-    /// Why it cannot be read: the task may not, or the room's records are not here.
+    /// Why it cannot be read: the task may not, or the workspace's records are not here.
     fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
@@ -112,7 +112,7 @@ impl RecordReads {
 
     /// Take in `change`, what the record's origin applied for this task to the record of the
     /// app `app`: what this program and every later one of the task reads holds it, without
-    /// waiting for the room. A record this program has not read is read whole when it is next
+    /// waiting for the workspace. A record this program has not read is read whole when it is next
     /// read, with the change in it.
     ///
     /// # Errors

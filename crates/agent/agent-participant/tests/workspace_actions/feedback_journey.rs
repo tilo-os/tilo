@@ -5,7 +5,7 @@ use ui::feedback::{Destination, Draft, Submission};
 async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: browser.room.clone(),
+        cluster_id: browser.cluster_id.clone(),
         record: String::new(),
     };
     let deadline = tilo_test_env::hang_deadline();
@@ -21,12 +21,12 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     assert_eq!(
         source.wire_record(),
         "",
-        "room-primary storage ids never cross the wire"
+        "workspace-primary storage ids never cross the wire"
     );
     let mut doc = source.read(Clone::clone).unwrap();
     assert!(
         !chat::projection::read(&doc).channel_rows().is_empty(),
-        "the production seed opens the room's channels"
+        "the production seed opens the workspace's channels"
     );
     chat::demo::insert_category(&mut doc, "feedback-category", "Feedback").unwrap();
     chat::demo::insert_channel(
@@ -91,21 +91,21 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&identity, &host, state.path()).await;
-    let room = hosted
+    let workspace = hosted
         .relay
         .rooms()
         .unwrap()
         .create("Feedback fixture")
         .await
         .unwrap();
-    let mut browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
     let person = hex::encode(identity.verifying_key().to_bytes());
     hosted
         .relay
         .rooms()
         .unwrap()
         .prepare_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -132,7 +132,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mutation = queued.take_mutation().unwrap();
     browser.peer.close();
     drop(browser);
-    browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
     publish_participant(&mut browser, &route, &mutation);
     submit_local_participant(&mut browser, &route, &submission, &person);
     assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
@@ -147,7 +147,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     )
     .await;
     let value = output.value.unwrap();
-    assert_eq!(value["record"]["roomId"], room.room);
+    assert_eq!(value["record"]["roomId"], workspace.room);
     assert_eq!(value["record"]["appId"], "so.tilo.chat");
     assert_eq!(value["record"]["recordId"], "");
     let receipt: ui::feedback::Receipt = serde_json::from_value(value["content"].clone()).unwrap();
@@ -209,7 +209,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
     let restored = start(&identity, &host, state.path()).await;
-    let mut returning = Browser::open_room(&restored, &device, &host, &room.room).await;
+    let mut returning = Browser::open_workspace(&restored, &device, &host, &workspace.room).await;
     let after = resolved_status(&mut returning, &submission).await;
     assert_signed_canonical(&mut returning, &submission, &host.cert, &device.cert).await;
     assert_eq!(
@@ -228,7 +228,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     restored.relay.shutdown().await;
 }
 
-/// A review model the room's host lends: what the host names it.
+/// A review model the workspace's host lends: what the host names it.
 struct LentModel(std::sync::Mutex<Vec<String>>);
 
 impl tilo_agent_participant::FeedbackReviewer for LentModel {
@@ -249,7 +249,7 @@ impl tilo_agent_participant::FeedbackReviewer for LentModel {
     }
 }
 
-/// The room's host lends its admitted reporters its review model: a
+/// The workspace's host lends its admitted reporters its review model: a
 /// report's review prompt is asked of it through the feedback admission,
 /// the answer names the model and holds only quotes from the texts asked
 /// about, and a prompt that is not the review contract is never asked.
@@ -272,7 +272,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         Some(model.clone() as Arc<dyn tilo_agent_participant::FeedbackReviewer>),
     )
     .await;
-    let room = hosted
+    let workspace = hosted
         .relay
         .rooms()
         .unwrap()
@@ -284,7 +284,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .rooms()
         .unwrap()
         .prepare_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -292,7 +292,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         )
         .await
         .unwrap();
-    let mut browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.room).await;
     let route = create_feedback_record(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
@@ -349,7 +349,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let room = hosted
+    let workspace = hosted
         .relay
         .rooms()
         .unwrap()
@@ -361,7 +361,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .rooms()
         .unwrap()
         .prepare_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
@@ -369,7 +369,8 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         )
         .await
         .unwrap();
-    let mut owner_browser = Browser::open_room(&hosted, &owner_device, &host, &room.room).await;
+    let mut owner_browser =
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
     let route = create_feedback_record(&mut owner_browser).await;
     owner_browser
         .peer
@@ -381,12 +382,12 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     admit_person(
         &hosted,
         &host,
-        &room.room,
+        &workspace.room,
         &guest_device,
         MemberRole::Commenter,
     )
     .await;
-    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &room.room).await;
+    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.room).await;
     let submission = approved(&route);
     let submit = || {
         request(
@@ -446,7 +447,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     hosted.relay.shutdown().await;
 }
 
-/// File a report, waiting out an owner still joining the room.
+/// File a report, waiting out an owner still joining the workspace.
 async fn filed_once(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatus {
     let deadline = tilo_test_env::hang_deadline();
     loop {

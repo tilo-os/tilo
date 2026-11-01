@@ -1,6 +1,6 @@
 //! Publishing tilolang resources on the action door.
 //!
-//! Every resource in the room record is published as a `tilo_actions::ResourceSpec` of kind
+//! Every resource in the workspace record is published as a `tilo_actions::ResourceSpec` of kind
 //! `tl.<app>.<Type>`, with one typed action per tilolang action whose subject is its type. The
 //! desktop agent, the runtime door, shortcuts and grants therefore reach tilolang actions with
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
@@ -57,7 +57,7 @@ pub struct PlanRequest<'a> {
 
 /// Runs a tilolang action as a planner and records what it wrote.
 ///
-/// The implementation is the host's runtime: a transaction over a copy of the room record
+/// The implementation is the host's runtime: a transaction over a copy of the workspace record
 /// collects the module's mutations as edits, and nothing is committed here.
 pub trait Planner: Send + Sync {
     /// # Errors
@@ -78,7 +78,7 @@ pub trait Committer: Send + Sync {
     /// Nothing is queued under the ticket.
     fn encoded(&self, ticket: u64) -> Result<EncodedAction, String>;
 
-    /// What committing the action queued under `ticket` needs of a room
+    /// What committing the action queued under `ticket` needs of a workspace
     /// ([`DynAction::need`]).
     ///
     /// # Errors
@@ -228,7 +228,7 @@ struct TypeActions {
 
 impl ActionTypes {
     /// What a record of the type `schema` is called when no text in it names it: a package's
-    /// root (one per room) by the package's title, another by its type. Never by its id.
+    /// root (one per workspace) by the package's title, another by its type. Never by its id.
     fn untitled(&self, schema: &crate::schema::TypeSchema) -> String {
         untitled(&self.meta, schema)
     }
@@ -404,7 +404,7 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
     resource
 }
 
-/// What a room publishes of its records, kept up to date by republishing only what changed.
+/// What a workspace publishes of its records, kept up to date by republishing only what changed.
 ///
 /// A record is republished in its cached tree where a change reached it, at that resource's
 /// depth: an item whose own field changed has its label read again (and so do the items holding

@@ -2,7 +2,7 @@
 //! "Errors that teach"): `grep`, `find`, the chaining functions, `read`, `describe` and `print`,
 //! over every app the task may read.
 //!
-//! Two rooms' worth of records: Tasks and a journal in one, Notes, Chat and Board with their
+//! Two workspaces' worth of records: Tasks and a journal in one, Notes, Chat and Board with their
 //! scenarios in the other. The task's programs run in a host of the task's own, which reads
 //! each app's record itself as the door hands it over (`task_records`): no app's host answers
 //! what a program asks.

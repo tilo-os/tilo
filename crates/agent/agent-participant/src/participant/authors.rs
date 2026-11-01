@@ -1,12 +1,12 @@
 //! Whose documents a step may land in when it names none.
 //!
 //! A written document (a letter, an evidence pack) is its writer's: several
-//! agents of a room given tasks in the same Word Processor each write their
+//! agents of a workspace given tasks in the same Word Processor each write their
 //! own. A step naming no record, an open the host makes for a task and the
 //! documents a task is offered never put an agent into a document another
 //! member is writing unless the task names that document (its title or its
 //! id). Records that are filled in together (a workbook, a form, a channel)
-//! are not written documents, and a step naming none still finds the room's
+//! are not written documents, and a step naming none still finds the workspace's
 //! one record of their app.
 
 use tilo_actions::door::ActionDescriptor;
@@ -39,7 +39,7 @@ impl AgentParticipant {
     }
 
     /// Whether the record at `route` is a written document another member
-    /// of the room wrote in (or opened new for a task of theirs), which this
+    /// of the workspace wrote in (or opened new for a task of theirs), which this
     /// agent never changed and `task` does not name: a step naming no record
     /// does not land in it, and it is not opened for the task.
     pub(super) fn others_document(&mut self, route: &DocumentRoute, task: &str) -> bool {
@@ -83,7 +83,7 @@ impl AgentParticipant {
     /// Set aside, of `open` (each with what it publishes) and `known`
     /// (each with its title), the written documents of other members that
     /// `task` does not name and its steps (`touched`) never acted on: they
-    /// are offered to open by their record like any the room has, not with
+    /// are offered to open by their record like any the workspace has, not with
     /// their operations, as a write or an import planned there would land
     /// in their document. Returns them.
     pub(super) fn set_aside_others_documents(

@@ -1,4 +1,4 @@
-//! Undo in a room two people and an agent work in, with the shipped Notes and Tasks apps: each
+//! Undo in a workspace two people and an agent work in, with the shipped Notes and Tasks apps: each
 //! person's undo takes back their own step and leaves everybody else's edits standing, and it
 //! is never refused because somebody else changed the same record since.
 
@@ -9,7 +9,7 @@ use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
-use tilolang_tilo::instance::room::HostHistoryEdit;
+use tilolang_tilo::instance::record::HostHistoryEdit;
 
 use crate::fixtures::{Replica, field_id};
 use crate::legibility::call;
@@ -27,8 +27,8 @@ fn packages() -> [(&'static str, &'static str); 2] {
     [(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)]
 }
 
-/// Ada's room with the two apps, and Ben's replica of it.
-fn room() -> (Replica, Replica) {
+/// Ada's workspace with the two apps, and Ben's replica of it.
+fn workspace() -> (Replica, Replica) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &packages());
     ada.host
         .runtime()
@@ -100,7 +100,7 @@ fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
 fn history(r: &mut Replica, edit: &HistoryEdit) {
     let payload = serde_json::to_vec(edit).unwrap();
     let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
-    let context = ActionContext::for_resource("room", "history", "history")
+    let context = ActionContext::for_resource("workspace", "history", "history")
         .with_invoker(ActionInvoker::actor(r.name.clone()));
     tilo_actions::apply_local_with_context(
         &mut r.doc,
@@ -154,7 +154,7 @@ fn shared_note(ada: &mut Replica, ben: &mut Replica, body: &str) -> ResourceRef 
 
 #[test]
 fn two_people_typing_in_one_note_each_undo_only_their_own_text() {
-    let (mut ada, mut ben) = room();
+    let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "Shopping.\nChores.");
     type_at(&mut ada, &note, "Shopping.", " Milk and eggs.");
     type_at(&mut ben, &note, "Chores.", " Bins out.");
@@ -174,7 +174,7 @@ fn two_people_typing_in_one_note_each_undo_only_their_own_text() {
 
 #[test]
 fn two_people_typing_in_one_paragraph_each_undo_only_their_own_words() {
-    let (mut ada, mut ben) = room();
+    let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "The fox jumps.");
     // Concurrently, in the same paragraph: neither has seen the other's words.
     type_at(&mut ada, &note, "The", " quick");
@@ -197,7 +197,7 @@ fn two_people_typing_in_one_paragraph_each_undo_only_their_own_words() {
 
 #[test]
 fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title_is_undone() {
-    let (mut ada, mut ben) = room();
+    let (mut ada, mut ben) = workspace();
     let task = target(&call(
         &ada,
         "ada",
@@ -248,7 +248,7 @@ fn a_task_retitled_by_somebody_else_since_keeps_their_title_when_its_first_title
 
 #[test]
 fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
-    let (mut ada, mut ben) = room();
+    let (mut ada, mut ben) = workspace();
     let tasks = root(&ada, TASKS_APP);
     let milk = target(&call(
         &ada,
@@ -306,7 +306,7 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
 
 #[test]
 fn an_agent_run_undone_while_a_person_edited_the_same_note_keeps_the_persons_edits() {
-    let (mut ada, mut ben) = room();
+    let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "Plan the trip.");
     call(
         &ada,

@@ -1,10 +1,10 @@
-//! [`TiloStore`]: the runtime's [`Store`] over the room record.
+//! [`TiloStore`]: the runtime's [`Store`] over the workspace record.
 //!
 //! The runtime reads and mutates resources through the `Store` trait and expects its own commits
-//! to be visible at once. The room record, though, belongs to the framework: every change to it
+//! to be visible at once. The workspace record, though, belongs to the framework: every change to it
 //! is a recorded action committed by the executor, so it carries the invoker, the group and the
 //! encoded action, and replays on every peer. The store therefore writes to a **mirror**, a
-//! replica of the room record, and reads from each package's **index** ([`crate::index`]):
+//! replica of the workspace record, and reads from each package's **index** ([`crate::index`]):
 //!
 //! * a transaction applies each mutation to the mirror as it is made and records it as a
 //!   [`DynEdit`]; what it changed is derived, field by field, into the index's **overlay** (the
@@ -12,7 +12,7 @@
 //! * committing queues a [`DynAction`] for the host, which commits it through the executor
 //!   ([`TiloStore::take_committed`]). The mirror keeps what the store wrote as its open
 //!   transaction, never as a change of its own;
-//! * when the room record moves on (the executor applied the queued action, or a peer's change
+//! * when the workspace record moves on (the executor applied the queued action, or a peer's change
 //!   arrived), [`TiloStore::sync_from`] drops the mirror's open transaction and the overlay,
 //!   applies the record's new changes to the mirror, derives what they changed into each index
 //!   (stamped with the record's heads) and tells each subscriber exactly which fields of which
@@ -293,7 +293,7 @@ mod versions;
 mod written;
 use versions::{NO_VERSIONS, note_versions};
 
-/// Gives the store the room record when it opened without it: for a write, or a field no index
+/// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
 
@@ -302,13 +302,13 @@ struct Inner {
     /// transaction; `None` until it is had (see [`TiloStore::detached`]). Shared with the
     /// snapshots taken of it until it changes.
     mirror: Option<Arc<Doc>>,
-    /// The heads of the room record the mirror holds every change of.
+    /// The heads of the workspace record the mirror holds every change of.
     seen: Vec<ChangeHash>,
     /// What the store wrote into the mirror since it last caught up with the record, oldest
     /// first: the mirror's open transaction.
     local: Vec<LocalWrite>,
     stats: StoreStats,
-    /// Every resource of the room: its app and type.
+    /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
     /// Per package, its index.
     apps: BTreeMap<AppId, AppIndex>,
@@ -365,7 +365,7 @@ struct Inner {
 }
 
 /// The store as it was when taken, to read on another thread: each package's index as its last
-/// commit left it, with the store's writes over it. Taking one copies nothing of the room.
+/// commit left it, with the store's writes over it. Taking one copies nothing of the workspace.
 pub struct Snapshot {
     index: BTreeMap<DocId, (AppId, TypeId)>,
     apps: BTreeMap<AppId, Arc<idx::Snapshot>>,
@@ -534,7 +534,7 @@ pub struct Checkpoint {
     overlay: Arc<Overlay>,
 }
 
-/// The runtime's store over the room record. A cheap handle: clones share the mirror.
+/// The runtime's store over the workspace record. A cheap handle: clones share the mirror.
 #[derive(Clone)]
 pub struct TiloStore {
     inner: Rc<RefCell<Inner>>,
@@ -694,7 +694,7 @@ impl TiloStore {
         store
     }
 
-    /// A store without the record yet, reading the indexes kept in `dir`: what opens a room
+    /// A store without the record yet, reading the indexes kept in `dir`: what opens a workspace
     /// before its record is loaded. Packages whose index is missing show nothing until the
     /// record is had ([`Self::sync_from`], or the [`Loader`]).
     #[must_use]
@@ -749,7 +749,7 @@ impl TiloStore {
     }
 
     /// Keep the indexes of packages loaded from now on in `dir`, rather than in memory: a
-    /// window's room, opened again later, reads them instead of building them.
+    /// window's workspace, opened again later, reads them instead of building them.
     pub fn set_index_dir(&self, dir: PathBuf) {
         self.mutate().index_dir = Some(dir);
     }
@@ -759,7 +759,7 @@ impl TiloStore {
         device.clone_into(&mut self.mutate().device);
     }
 
-    /// How the store gets the room record when it opened without it.
+    /// How the store gets the workspace record when it opened without it.
     pub fn set_loader(&self, loader: Loader) {
         self.mutate().loader = Some(loader);
     }
@@ -937,7 +937,7 @@ impl TiloStore {
         }
     }
 
-    /// Bring the store up to date with the room record: when the record's heads moved, the
+    /// Bring the store up to date with the workspace record: when the record's heads moved, the
     /// store's own writes are dropped from the mirror and the overlay (the record holds them
     /// now, or will), the record's new changes are applied to the mirror and derived into each
     /// index, and each subscriber is told which fields of which resources changed. A store
@@ -1052,7 +1052,7 @@ impl TiloStore {
         })
     }
 
-    /// Whether the store holds the room record (else it reads indexes alone).
+    /// Whether the store holds the workspace record (else it reads indexes alone).
     #[must_use]
     pub fn has_record(&self) -> bool {
         self.inner.borrow().mirror.is_some()
@@ -1298,7 +1298,7 @@ impl TiloStore {
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
     ///
     /// # Errors
-    /// The room record cannot be had, or holds no such resource.
+    /// The workspace record cannot be had, or holds no such resource.
     pub fn migrated(&self, doc: &str, migration: &str) -> Result<bool, StoreError> {
         self.load_record()?;
         let inner = self.inner.borrow();
@@ -1324,7 +1324,7 @@ impl TiloStore {
             .collect()
     }
 
-    /// The record of the resource `doc`, as the runtime sees it now: read from the room
+    /// The record of the resource `doc`, as the runtime sees it now: read from the workspace
     /// record, which is had first if the store opened without it.
     ///
     /// # Errors
@@ -1380,7 +1380,7 @@ impl TiloStore {
         inner
     }
 
-    /// Have the room record, if the store opened without it: from the loader.
+    /// Have the workspace record, if the store opened without it: from the loader.
     fn load_record(&self) -> Result<(), StoreError> {
         let loader = {
             let mut inner = self.inner.borrow_mut();
@@ -1390,14 +1390,16 @@ impl TiloStore {
             inner.loader.take()
         };
         let Some(mut loader) = loader else {
-            return Err(StoreError::Backend("the room record is not loaded".into()));
+            return Err(StoreError::Backend(
+                "the workspace record is not loaded".into(),
+            ));
         };
         let record = loader();
         let mut inner = self.mutate();
         inner.loader = Some(loader);
         let Some(record) = record else {
             return Err(StoreError::Backend(
-                "the room record cannot be loaded".into(),
+                "the workspace record cannot be loaded".into(),
             ));
         };
         inner.attach(&record);
@@ -1506,7 +1508,7 @@ impl TiloStore {
         view.position(&at.id_string(), field, item).ok().flatten()
     }
 
-    /// Create the resource `id` as one committed change: how a per-room singleton gets the same
+    /// Create the resource `id` as one committed change: how a per-workspace singleton gets the same
     /// id on every replica.
     ///
     /// # Errors
@@ -1613,7 +1615,7 @@ impl Inner {
     fn mirror(&self) -> Result<&Doc, StoreError> {
         self.mirror
             .as_deref()
-            .ok_or_else(|| StoreError::Backend("the room record is not loaded".into()))
+            .ok_or_else(|| StoreError::Backend("the workspace record is not loaded".into()))
     }
 
     /// The index of `app` as the store's writes leave it, when it is read from.
@@ -1626,7 +1628,7 @@ impl Inner {
     }
 
     /// The records every index read from holds: what a store without the record knows of
-    /// the room.
+    /// the workspace.
     fn index_docs(&mut self) {
         let mut index = BTreeMap::new();
         for (app, held) in self.apps.iter().filter(|(_, held)| held.ready()) {
@@ -1637,7 +1639,7 @@ impl Inner {
         self.index = index;
     }
 
-    /// Take the room record: the mirror is a copy of it, and each index catches up with it.
+    /// Take the workspace record: the mirror is a copy of it, and each index catches up with it.
     fn attach(&mut self, record: &Doc) {
         self.versions = None;
         self.nested.clear();
@@ -2096,7 +2098,7 @@ impl Inner {
         let applied = {
             let mirror = self
                 .mirror_mut()
-                .ok_or_else(|| StoreError::Backend("the room record is not loaded".into()))?;
+                .ok_or_else(|| StoreError::Backend("the workspace record is not loaded".into()))?;
             apply_edits(mirror, app, std::slice::from_ref(&edit), &seed)
         };
         let write = LocalWrite {
@@ -2458,7 +2460,7 @@ fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreErr
         }
         Mutation::OutboxPush { .. } => {
             return Err(invalid(
-                "outside effects are not stored in the room record yet",
+                "outside effects are not stored in the workspace record yet",
             ));
         }
     };

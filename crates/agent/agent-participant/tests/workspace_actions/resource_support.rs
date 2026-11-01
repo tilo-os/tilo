@@ -1,4 +1,4 @@
-//! Certified admission for resource fixtures; no owner-only room entry.
+//! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{BTreeMap, Browser, Device, Host, Hosted, RevocationList, ready, start_peer, support};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::rooms::IssueInvitationRequest;
@@ -7,9 +7,9 @@ pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
     device: &Device,
     host: &Device,
-    room: &str,
+    cluster_id: &str,
 ) -> Browser {
-    let workspace = tilo_relay_protocol::room_workspace_id(room).unwrap();
+    let workspace = tilo_relay_protocol::room_workspace_id(cluster_id).unwrap();
     let peer = start_peer(
         Host::Https(support::https::DevHttps::new(
             hosted.web.addr,
@@ -30,14 +30,14 @@ pub(super) async fn open_admitted_peer(
         answers: Vec::new(),
         correlation: 0,
         workspace,
-        room: room.into(),
+        cluster_id: cluster_id.to_owned(),
     }
 }
 
 pub(super) async fn admit_person(
     hosted: &Hosted,
     host: &Device,
-    room: &str,
+    workspace: &str,
     device: &Device,
     role: MemberRole,
 ) {
@@ -46,7 +46,7 @@ pub(super) async fn admit_person(
         .rooms()
         .unwrap()
         .issue(
-            room,
+            workspace,
             &host.cert,
             IssueInvitationRequest {
                 request_id: device.cert.device_public_key,
@@ -144,11 +144,11 @@ pub(super) fn published_message(page: &super::Replica, message: &str) -> (String
     (id, kind)
 }
 
-/// The route of `record`, one of the chat's message parts, in `room`.
-pub(super) fn part_route(room: &str, record: &ui::record::RecordId) -> super::DocumentRoute {
+/// The route of `record`, one of the chat's message parts, in `workspace`.
+pub(super) fn part_route(workspace: &str, record: &ui::record::RecordId) -> super::DocumentRoute {
     super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: room.to_owned(),
+        cluster_id: workspace.to_owned(),
         record: record.as_str().to_owned(),
     }
 }

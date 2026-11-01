@@ -1,6 +1,6 @@
 //! Reflection, indexed: who made each resource and when, and who changed it last and when
 //! (`created(r)`, `updated(r)`; language-changes.md, "Reflection"), kept per resource beside its
-//! fields and derived change by change from the room record's log.
+//! fields and derived change by change from the workspace record's log.
 //!
 //! The record holds what each resource is now; the log holds who made each change, when, and
 //! which resources it changed ([`DynAction::changed`]). The index keeps, per resource, the

@@ -1,5 +1,5 @@
-//! `search_room` through `ModelPlanner` with a scripted stand-in for the
-//! model: it searches the room's records by what they hold, then plans to
+//! `search_workspace` through `ModelPlanner` with a scripted stand-in for the
+//! model: it searches the workspace's records by what they hold, then plans to
 //! open the record the search found, by the id the answer showed.
 
 #![allow(
@@ -87,7 +87,7 @@ impl PlanModel for Searches {
 fn route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
-        cluster_id: "room".into(),
+        cluster_id: "workspace".into(),
         record: record.into(),
     }
 }
@@ -102,10 +102,10 @@ fn doc(app: &str, record: &str, title: Option<&str>, text: &str, changed: u64) -
     }
 }
 
-/// A room where the brief for the Q3 partner review is one of many
+/// A workspace where the brief for the Q3 partner review is one of many
 /// documents and not named by its title: a stale version, a decoy sharing
 /// its words, a mail thread about it and filler.
-fn room() -> PlanContext {
+fn workspace() -> PlanContext {
     let mut searchable = vec![
         doc(
             WRITER,
@@ -153,14 +153,14 @@ fn room() -> PlanContext {
             .collect(),
         apps: vec![SLIDES.into(), WRITER.into(), MAIL.into()],
         searchable,
-        room: "room".into(),
+        workspace: "workspace".into(),
         ..PlanContext::default()
     }
 }
 
 #[test]
 fn a_record_found_by_its_text_is_opened_by_the_plan() {
-    let context = room();
+    let context = workspace();
     let (model, answered) = Searches::new("Q3 partner review final agenda");
     let steps = ModelPlanner::new(Box::new(model))
         .plan("make a deck for the Q3 partner review", &context)
@@ -180,7 +180,7 @@ fn a_record_found_by_its_text_is_opened_by_the_plan() {
 
 #[test]
 fn a_mail_thread_is_searched_like_any_record() {
-    let context = room();
+    let context = workspace();
     let (model, _) = Searches::new("Dana deck");
     let steps = ModelPlanner::new(Box::new(model))
         .plan("do what Dana asked", &context)

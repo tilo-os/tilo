@@ -1,15 +1,15 @@
-//! Page actions on any record of a room, answered by the host.
+//! Page actions on any record of a workspace, answered by the host.
 //!
 //! An agent answers `actionsV1` only for the records it has open. A person's
-//! page wants the whole room: every record's actions, whether or not anyone
-//! has it open, the way the old broker offered them. [`RoomActions`] is that
+//! page wants the whole workspace: every record's actions, whether or not anyone
+//! has it open, the way the old broker offered them. [`WorkspaceActions`] is that
 //! service on the host. It serves the `tilo_actions::remote` vocabulary
 //! addressed to the host's own device:
 //!
-//! - **Catalogue.** One browsable provider per record of the room
-//!   (`record:<app>:<record>`, the token agents use) and the room's own
-//!   provider (`workspace:<room>`) offering `app.<app>#open`. A query naming
-//!   no provider lists rows for the records open on the room's shared
+//! - **Catalogue.** One browsable provider per record of the workspace
+//!   (`record:<app>:<record>`, the token agents use) and the workspace's own
+//!   provider (`workspace:<workspace>`) offering `app.<app>#open`. A query naming
+//!   no provider lists rows for the records open on the workspace's shared
 //!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
 //!   naming a record's provider lists every action that record publishes.
 //! - **Invoke.** The record is held as a replica of its resource in its own
@@ -27,23 +27,23 @@
 //!   reports where it stands, and `Cancel` stops one that has not started.
 //!
 //! Document invocations serve the host user's own devices. Anyone else the
-//! room admits may only comment through them (actions on a `comments`
+//! workspace admits may only comment through them (actions on a `comments`
 //! field) and run the actions an app offers every member for themselves
 //! ([`tilo_actions::MEMBER_OWN_TAG`], linking their own account elsewhere),
 //! under their own current standing so the action's door decides: a
 //! commenter cannot publish document changes directly. Exact local
-//! View discovery also serves currently certified room readers, through the
+//! View discovery also serves currently certified workspace readers, through the
 //! host's canonical Read policy; that grants no document invocation authority.
 //! Agents use their own mounts.
 //!
-//! The service joins each room as the host's own device ([`RoomMember`], from
-//! the [`RoomRecordsLink`] the host supplies): a member of the room's
-//! channels like any other, admitted by the room's participants. It reads
+//! The service joins each workspace as the host's own device ([`WorkspaceMember`], from
+//! the [`WorkspaceRecordsLink`] the host supplies): a member of the workspace's
+//! channels like any other, admitted by the workspace's participants. It reads
 //! only records it holds keys for and writes nothing in the clear. When the
-//! host device itself takes part in the room's channels (a room the host
+//! host device itself takes part in the workspace's channels (a workspace the host
 //! governs), it cannot be admitted to them a second time; the host hands the
 //! service the keys it holds instead
-//! ([`RoomRecordsLink::host_keys`]), for each record a request reads or
+//! ([`WorkspaceRecordsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
 mod feedback;
@@ -84,21 +84,21 @@ const COMMIT_WAIT: Duration = Duration::from_secs(10);
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
 /// Records kept held between requests; the least recently used is dropped.
 const MAX_MOUNTED: usize = 24;
-/// How long a request waits for the service to join a room.
+/// How long a request waits for the service to join a workspace.
 const JOIN_WAIT: Duration = Duration::from_secs(30);
-/// How long a request waits, once the room is joined, for the keys of what
-/// it reads: the record it names, or (once per room) every record whose
+/// How long a request waits, once the workspace is joined, for the keys of what
+/// it reads: the record it names, or (once per workspace) every record whose
 /// keys are on their way. A named record whose keys have not arrived by
 /// then is refused, never acted on half seen.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 /// Invocations remembered for retries, status and history.
 const REMEMBERED: usize = 1024;
 
-/// How the service takes part in the host's rooms: as the host's own
-/// device, a member of each room's channels like any other. It opens only
-/// what a room's participants admitted it to and seals everything it writes.
+/// How the service takes part in the host's workspaces: as the host's own
+/// device, a member of each workspace's channels like any other. It opens only
+/// what a workspace's participants admitted it to and seals everything it writes.
 #[derive(Clone)]
-pub struct RoomMember {
+pub struct WorkspaceMember {
     /// The host's endpoint and certificate; the member is the host device.
     pub endpoint: HostEndpoint,
     /// The host device's key, which signs the member's changes.
@@ -110,12 +110,12 @@ pub struct RoomMember {
 /// Current governed read policy supplied by the authenticated host boundary.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ViewReadPolicy {
-    /// Governed room whose current policy authorized the exact source record.
-    pub room: String,
-    /// The certified caller's current standing in the room, including the
+    /// Governed workspace whose current policy authorized the exact source record.
+    pub workspace: String,
+    /// The certified caller's current standing in the workspace, including the
     /// bound of a device that is not theirs.
     pub standing: ui::permissions::Standing,
-    /// The room's current sandbox capabilities.
+    /// The workspace's current sandbox capabilities.
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
@@ -124,7 +124,8 @@ pub struct ViewReadPolicy {
 impl ViewReadPolicy {
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
-            ui::permissions::Actor::person(self.standing.person.clone()).in_room(self.room.clone()),
+            ui::permissions::Actor::person(self.standing.person.clone())
+                .in_room(self.workspace.clone()),
             self.sandbox.clone(),
             self.standing.clone(),
         )
@@ -142,11 +143,11 @@ pub struct ViewDocument {
 
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
-pub trait RoomRecordsLink: Send + Sync {
+pub trait WorkspaceRecordsLink: Send + Sync {
     /// The user root the host chains to: the only person served.
     fn user_public_key(&self) -> [u8; 32];
-    /// How the service joins the host's rooms.
-    fn member(&self) -> RoomMember;
+    /// How the service joins the host's workspaces.
+    fn member(&self) -> WorkspaceMember;
     /// Current certified-device admission and exact record Read capability.
     /// Absence denies; this never inherits document invocation authority.
     fn view_read_policy(
@@ -159,7 +160,7 @@ pub trait RoomRecordsLink: Send + Sync {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host
-    /// must check current certified Read under its room lock before key access
+    /// must check current certified Read under its workspace lock before key access
     /// and again before returning. Missing keys never cause enrollment.
     fn view_document(
         &self,
@@ -170,12 +171,12 @@ pub trait RoomRecordsLink: Send + Sync {
         Err("existing view documents unavailable".into())
     }
     /// The content keys of `route`'s channel, when the host device itself
-    /// takes part in the channels of `route`'s room: it is then already the
+    /// takes part in the channels of `route`'s workspace: it is then already the
     /// channel's member, and the service, which joins as that device, can
     /// only be handed the keys the host holds. `create` opens the channel of
     /// a record the service is about to write for the first time.
     ///
-    /// `None` when the host does not take part in the room's channels: the
+    /// `None` when the host does not take part in the workspace's channels: the
     /// service waits for a participant to admit it over the channel, like
     /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
@@ -190,7 +191,7 @@ pub trait RoomRecordsLink: Send + Sync {
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
         &self,
-        _room: &str,
+        _workspace: &str,
         _provider: &str,
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         None
@@ -307,24 +308,24 @@ impl Job {
 }
 
 /// A request that waited for the worker, or ran, at least this long is
-/// logged: every request of every page of every room waits behind the one
+/// logged: every request of every page of every workspace waits behind the one
 /// before it.
 const SLOW_JOB: Duration = Duration::from_secs(2);
 
 struct Shared {
     ledger: Mutex<Ledger>,
-    link: OnceLock<Arc<dyn RoomRecordsLink>>,
+    link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
 }
 
-/// The host's page actions over every record of its rooms.
+/// The host's page actions over every record of its workspaces.
 #[derive(Clone)]
-pub struct RoomActions {
+pub struct WorkspaceActions {
     shared: Arc<Shared>,
     catalogue: CatalogueFactory,
 }
 
-impl RoomActions {
+impl WorkspaceActions {
     /// A service mounting apps from `catalogue`; it answers once
     /// [`Self::attach`] gives it the host's records.
     #[must_use]
@@ -339,9 +340,9 @@ impl RoomActions {
         }
     }
 
-    /// Start serving `link`'s rooms on the service's own thread. A second
+    /// Start serving `link`'s workspaces on the service's own thread. A second
     /// call is ignored.
-    pub fn attach(&self, link: Arc<dyn RoomRecordsLink>) -> Result<(), String> {
+    pub fn attach(&self, link: Arc<dyn WorkspaceRecordsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
         }
@@ -349,7 +350,7 @@ impl RoomActions {
         let shared = Arc::clone(&self.shared);
         let catalogue = Arc::clone(&self.catalogue);
         std::thread::Builder::new()
-            .name("room-actions".into())
+            .name("workspace-actions".into())
             .spawn(move || Worker::new(link.as_ref(), catalogue(), shared).run(&jobs))
             .map_err(|error| error.to_string())?;
         *self.shared.jobs.lock_recover() = Some(sender);
@@ -370,7 +371,7 @@ impl RoomActions {
     }
 
     /// Whether `caller` may ask the host to run `request` at all. Anyone the
-    /// room admits may ask for a resource's link: it reads where the resource
+    /// workspace admits may ask for a resource's link: it reads where the resource
     /// is shown and grants nothing, and the governed view lookup behind it
     /// applies their own grant. Other people may comment on a record through
     /// the host: the worker runs it under their own current standing, so the
@@ -416,7 +417,7 @@ impl RoomActions {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         let unavailable = || ActionHostError::Unavailable {
-            reason: "the host's room actions are not running".into(),
+            reason: "the host's workspace actions are not running".into(),
         };
         Some(match message {
             RemoteActionMessage::FeedbackRequest { correlation, query } => {
@@ -535,7 +536,7 @@ impl RoomActions {
         };
         if let Err(Job::Feedback { done, .. }) = self.submit(job) {
             done.complete(Err(ActionHostError::Unavailable {
-                reason: "the host's room actions are not running".into(),
+                reason: "the host's workspace actions are not running".into(),
             }));
         }
         answer.map(move |result| RemoteActionMessage::FeedbackResponse {
@@ -572,12 +573,12 @@ impl RoomActions {
 }
 
 /// The host's whole app-serving plane: the agent supervisor's vocabulary
-/// (provider `agents`) and the room's page actions (everything else).
+/// (provider `agents`) and the workspace's page actions (everything else).
 pub struct HostActions {
     /// Answers `agents` requests.
     pub supervisor: crate::control::SupervisorHost,
-    /// Answers requests about records and the room.
-    pub rooms: RoomActions,
+    /// Answers requests about records and the workspace.
+    pub actions: WorkspaceActions,
 }
 
 impl HostActions {
@@ -597,7 +598,7 @@ impl HostActions {
             }
             RemoteActionMessage::Invoke(request) => request.target.provider == AGENTS_PROVIDER,
             RemoteActionMessage::Observe { invocation, .. }
-            | RemoteActionMessage::Cancel { invocation } => !self.rooms.owns(caller, invocation),
+            | RemoteActionMessage::Cancel { invocation } => !self.actions.owns(caller, invocation),
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -613,7 +614,7 @@ impl HostActions {
         if supervisor {
             tilo_actions::remote::serve(&self.supervisor, caller, message)
         } else {
-            self.rooms.serve(workspace_id, caller, message)
+            self.actions.serve(workspace_id, caller, message)
         }
     }
 }
@@ -650,26 +651,26 @@ fn whole(changes: &[Change]) -> Result<Vec<u8>, String> {
 type Change = ([u8; 32], Vec<u8>);
 
 #[derive(Default)]
-struct RoomState {
-    room: Option<String>,
+struct WorkspaceState {
+    workspace: Option<String>,
     /// Each record's changes in the order the member took them.
     records: BTreeMap<DocumentRoute, Vec<Change>>,
     /// When each record last changed, as a position in that order.
     changed: HashMap<DocumentRoute, usize>,
-    /// The records open on the room's shared desktop.
+    /// The records open on the workspace's shared desktop.
     on_desktop: HashSet<String>,
     revision: usize,
 }
 
-/// What a request must have opened before it reads the room.
+/// What a request must have opened before it reads the workspace.
 #[derive(Clone, Copy, Debug)]
 enum Needs<'a> {
-    /// The room joined and nothing sealed: a new record of the room.
+    /// The workspace joined and nothing sealed: a new record of the workspace.
     Joined,
-    /// The room listed: every record whose keys are on their way, waited for
-    /// once per room (the first listing after the join). Later listings show
+    /// The workspace listed: every record whose keys are on their way, waited for
+    /// once per workspace (the first listing after the join). Later listings show
     /// what is open and wait for nothing.
-    Room,
+    Workspace,
     /// One record's actions listed by name: its keys, waited for once. A
     /// listing that gave up on them lists what opened and is not held back
     /// by them again.
@@ -679,7 +680,7 @@ enum Needs<'a> {
     Act { app_id: &'a str, record: &'a str },
 }
 
-/// What a room's earlier waits for keys gave up on.
+/// What a workspace's earlier waits for keys gave up on.
 #[derive(Default)]
 struct GaveUp {
     listed: bool,
@@ -709,7 +710,7 @@ fn sealed_for(
                     == Some(workspace_id)
                 && match needs {
                     Needs::Joined => false,
-                    Needs::Room => !gave_up.listed,
+                    Needs::Workspace => !gave_up.listed,
                     Needs::Read { app_id, record } => {
                         named(route, app_id, record) && !gave_up.records.contains(*route)
                     }
@@ -720,8 +721,8 @@ fn sealed_for(
         .collect()
 }
 
-/// The service's membership of one room.
-struct Room {
+/// The service's membership of one workspace.
+struct Workspace {
     peer: PeerHandle,
     events: PeerEvents,
     /// Signalled whenever the session's status or events change.
@@ -731,13 +732,13 @@ struct Room {
     gave_up: GaveUp,
     /// Every change the member opened or wrote, in order.
     log: Vec<(DocumentRoute, Change)>,
-    /// The shared desktop of the room the log names first, merged as its
+    /// The shared desktop of the workspace the log names first, merged as its
     /// changes arrive; they are admitted only through the isolate.
     desktop: SharedDesktop,
 }
 
-impl Room {
-    fn join(member: &RoomMember, workspace_id: u64) -> Result<Self, String> {
+impl Workspace {
+    fn join(member: &WorkspaceMember, workspace_id: u64) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
         let peer = PeerHandle::start(
             PeerConfig {
@@ -790,11 +791,11 @@ impl Room {
                     };
                     let bytes = bytes_of(&mutation);
                     let digest = change_digest(&document.author, &bytes);
-                    let room = self
+                    let workspace = self
                         .log
                         .first()
                         .map_or(&document.route.cluster_id, |(first, _)| &first.cluster_id);
-                    if document.route == crate::participant::desktop_route(room) {
+                    if document.route == crate::participant::desktop_route(workspace) {
                         self.desktop.receive(bytes.clone());
                     }
                     self.log.push((document.route, (digest, bytes)));
@@ -804,7 +805,7 @@ impl Room {
         }
     }
 
-    /// The records of the room that `needs` reads and that arrived sealed:
+    /// The records of the workspace that `needs` reads and that arrived sealed:
     /// they open once the member holds their keys.
     fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
         sealed_for(
@@ -826,15 +827,15 @@ impl Room {
         &mut self,
         workspace_id: u64,
         needs: Needs<'_>,
-        link: Option<&dyn RoomRecordsLink>,
+        link: Option<&dyn WorkspaceRecordsLink>,
     ) -> Result<(), ActionHostError> {
         let joined = Instant::now()
             .checked_add(JOIN_WAIT)
             .unwrap_or_else(Instant::now);
-        self.settle(workspace_id, joined, |room| room.ready);
+        self.settle(workspace_id, joined, |workspace| workspace.ready);
         if !self.ready {
             return Err(ActionHostError::Unavailable {
-                reason: "the host has not joined the room yet".into(),
+                reason: "the host has not joined the workspace yet".into(),
             });
         }
         let keyed = Instant::now()
@@ -846,18 +847,18 @@ impl Room {
         let mut handed = HashSet::new();
         if let Some(link) = link
             && let Needs::Act { app_id, record } = needs
-            && let Some(room) = self.room_id(workspace_id)
+            && let Some(workspace) = self.cluster_id(workspace_id)
         {
             let route = DocumentRoute {
                 app_id: app_id.to_owned(),
-                cluster_id: room,
+                cluster_id: workspace,
                 record: record.to_owned(),
             };
             self.take_host_keys(vec![route], needs, link, &mut handed)?;
         }
         loop {
-            self.settle(workspace_id, keyed, |room| {
-                let sealed = room.sealed(workspace_id, needs);
+            self.settle(workspace_id, keyed, |workspace| {
+                let sealed = workspace.sealed(workspace_id, needs);
                 sealed.is_empty()
                     || (link.is_some() && sealed.iter().any(|route| !handed.contains(route)))
             });
@@ -882,14 +883,14 @@ impl Room {
                     ),
                 })
             }
-            Needs::Room | Needs::Read { .. } => {
+            Needs::Workspace | Needs::Read { .. } => {
                 if !sealed.is_empty() {
                     tracing::info!(
                         records = sealed.len(),
-                        "room actions: listing without what has not opened: its keys have not arrived"
+                        "workspace actions: listing without what has not opened: its keys have not arrived"
                     );
                 }
-                if matches!(needs, Needs::Room) {
+                if matches!(needs, Needs::Workspace) {
                     self.gave_up.listed = true;
                 }
                 self.gave_up.records.extend(sealed);
@@ -900,7 +901,7 @@ impl Room {
     }
 
     /// Hold the keys the host device hands over for `routes`
-    /// ([`RoomRecordsLink::host_keys`]), noting each in `handed`. The
+    /// ([`WorkspaceRecordsLink::host_keys`]), noting each in `handed`. The
     /// session then opens what it held for them and wakes the wait. A record
     /// to act on whose keys the host refuses is refused at once; a listing
     /// goes on without it.
@@ -908,7 +909,7 @@ impl Room {
         &self,
         routes: Vec<DocumentRoute>,
         needs: Needs<'_>,
-        link: &dyn RoomRecordsLink,
+        link: &dyn WorkspaceRecordsLink,
         handed: &mut HashSet<DocumentRoute>,
     ) -> Result<(), ActionHostError> {
         for route in routes {
@@ -929,27 +930,27 @@ impl Room {
                         });
                     }
                     tracing::info!(app = %route.app_id, record = %route.record, %reason,
-                        "room actions: listing without a record the host holds no keys to");
+                        "workspace actions: listing without a record the host holds no keys to");
                 }
             }
         }
         Ok(())
     }
 
-    /// The id of the room `workspace_id` names, from what the member has
+    /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it.
-    fn room_id(&self, workspace_id: u64) -> Option<String> {
-        let of_room = |route: &DocumentRoute| {
+    fn cluster_id(&self, workspace_id: u64) -> Option<String> {
+        let of_workspace = |route: &DocumentRoute| {
             tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
         };
-        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_room(route)) {
+        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_workspace(route)) {
             return Some(route.cluster_id.clone());
         }
         self.peer
             .status()
             .routes
             .into_keys()
-            .find(|route| of_room(route))
+            .find(|route| of_workspace(route))
             .map(|route| route.cluster_id)
     }
 
@@ -993,11 +994,11 @@ fn change_digest(author: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
 }
 
 struct Worker {
-    member: RoomMember,
+    member: WorkspaceMember,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     participant: String,
-    rooms: HashMap<u64, Room>,
+    workspaces: HashMap<u64, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
@@ -1021,7 +1022,7 @@ fn commit_failed(message: String, retryable: bool) -> Outcome {
 
 /// Everything `app` changed since the last take, each with its route: the
 /// held record's own (`None`: the holder's route) first, then each record
-/// held beside it on the route of the same app and room its id names.
+/// held beside it on the route of the same app and workspace its id names.
 fn take_all(
     app: &ConfinedReplica,
     holder: &DocumentRoute,
@@ -1047,13 +1048,13 @@ fn take_all(
 }
 
 impl Worker {
-    fn new(link: &dyn RoomRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+    fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
         Self {
             participant: hex::encode(link.user_public_key()),
             member: link.member(),
             catalogue,
             shared,
-            rooms: HashMap::new(),
+            workspaces: HashMap::new(),
             mounted: BTreeMap::new(),
             beside: HashMap::new(),
             clock: 0,
@@ -1071,7 +1072,7 @@ impl Worker {
                     kind,
                     waited_ms = waited.as_millis(),
                     ran_ms = ran.as_millis(),
-                    "room actions: a request waited or ran long"
+                    "workspace actions: a request waited or ran long"
                 );
             }
         }
@@ -1124,33 +1125,35 @@ impl Worker {
         self.shared.ledger.lock_recover()
     }
 
-    /// The member's view of `workspace_id`, joining the room first and
+    /// The member's view of `workspace_id`, joining the workspace first and
     /// holding the keys of what `needs` reads, and every change the mounted
     /// records have not merged yet.
     fn refresh(
         &mut self,
         workspace_id: u64,
         needs: Needs<'_>,
-    ) -> Result<RoomState, ActionHostError> {
-        if !self.rooms.contains_key(&workspace_id) {
-            let room = Room::join(&self.member, workspace_id)
+    ) -> Result<WorkspaceState, ActionHostError> {
+        if !self.workspaces.contains_key(&workspace_id) {
+            let workspace = Workspace::join(&self.member, workspace_id)
                 .map_err(|reason| ActionHostError::Unavailable { reason })?;
-            self.rooms.insert(workspace_id, room);
+            self.workspaces.insert(workspace_id, workspace);
         }
-        let room =
-            self.rooms
+        let workspace =
+            self.workspaces
                 .get_mut(&workspace_id)
                 .ok_or_else(|| ActionHostError::Unavailable {
-                    reason: "the room was not joined".into(),
+                    reason: "the workspace was not joined".into(),
                 })?;
-        room.wait_for(
+        workspace.wait_for(
             workspace_id,
             needs,
             self.shared.link.get().map(|link| &**link),
         )?;
-        let mut state = RoomState::default();
-        for (position, (route, change)) in room.log.iter().enumerate() {
-            state.room.get_or_insert_with(|| route.cluster_id.clone());
+        let mut state = WorkspaceState::default();
+        for (position, (route, change)) in workspace.log.iter().enumerate() {
+            state
+                .workspace
+                .get_or_insert_with(|| route.cluster_id.clone());
             state.changed.insert(route.clone(), position);
             state
                 .records
@@ -1158,8 +1161,8 @@ impl Worker {
                 .or_default()
                 .push(change.clone());
         }
-        state.revision = room.log.len();
-        state.on_desktop.clone_from(room.desktop.tabs());
+        state.revision = workspace.log.len();
+        state.on_desktop.clone_from(workspace.desktop.tabs());
         for (route, mounted) in &mut self.mounted {
             if let Some(changes) = state.records.get(route) {
                 for (digest, bytes) in changes {
@@ -1168,7 +1171,7 @@ impl Worker {
                             .app
                             .apply(&DocumentMutation::Incremental(bytes.clone()))
                     {
-                        tracing::warn!(%error, "room actions: a change did not merge");
+                        tracing::warn!(%error, "workspace actions: a change did not merge");
                     }
                 }
             }
@@ -1184,7 +1187,7 @@ impl Worker {
                             .app
                             .apply_record(&record, &DocumentMutation::Incremental(bytes.clone()))
                     {
-                        tracing::warn!(%error, "room actions: a change to a part did not merge");
+                        tracing::warn!(%error, "workspace actions: a change to a part did not merge");
                     }
                 }
             }
@@ -1192,9 +1195,13 @@ impl Worker {
         Ok(state)
     }
 
-    /// The record at `route`, mounted from what the room retains: a part of
+    /// The record at `route`, mounted from what the workspace retains: a part of
     /// a chain held beside its app's own record, in that record's mount.
-    fn mount(&mut self, route: &DocumentRoute, state: &RoomState) -> Result<&mut Mounted, String> {
+    fn mount(
+        &mut self,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<&mut Mounted, String> {
         let holder = if is_part(&route.record) {
             self.mount_part(route, state)?
         } else {
@@ -1217,7 +1224,7 @@ impl Worker {
     fn mount_part(
         &mut self,
         route: &DocumentRoute,
-        state: &RoomState,
+        state: &WorkspaceState,
     ) -> Result<DocumentRoute, String> {
         if let Some(holder) = self.beside.get(route).cloned()
             && self.mounted.contains_key(&holder)
@@ -1228,7 +1235,7 @@ impl Worker {
         let changes = state
             .records
             .get(route)
-            .ok_or_else(|| format!("the room has no record {}", route.record))?;
+            .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
         let record = reads::record_id(&route.record)?;
         let bytes = whole(changes)?;
         let holders: Vec<DocumentRoute> = state
@@ -1273,15 +1280,15 @@ impl Worker {
         ))
     }
 
-    /// The record at `route` itself, mounted from what the room retains.
-    fn mount_own(&mut self, route: &DocumentRoute, state: &RoomState) -> Result<(), String> {
+    /// The record at `route` itself, mounted from what the workspace retains.
+    fn mount_own(&mut self, route: &DocumentRoute, state: &WorkspaceState) -> Result<(), String> {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
             let changes = state
                 .records
                 .get(route)
-                .ok_or_else(|| format!("the room has no record {}", route.record))?;
+                .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
             while self.mounted.len() >= MAX_MOUNTED {
                 let Some(oldest) = self
                     .mounted
@@ -1324,9 +1331,9 @@ impl Worker {
         Ok(())
     }
 
-    /// Records of the room an app of the catalogue opens: those on the
+    /// Records of the workspace an app of the catalogue opens: those on the
     /// shared desktop first, then the most recently changed.
-    fn records(&self, state: &RoomState) -> Vec<DocumentRoute> {
+    fn records(&self, state: &WorkspaceState) -> Vec<DocumentRoute> {
         let on_desktop = &state.on_desktop;
         let mut routes: Vec<DocumentRoute> = state
             .records
@@ -1356,7 +1363,7 @@ impl Worker {
         let first = link
             .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
             .ok_or_else(refuse)?;
-        let route = record_of(provider, &first.room).ok_or_else(refuse)?;
+        let route = record_of(provider, &first.workspace).ok_or_else(refuse)?;
         let source = link
             .view_document(workspace, caller, &route)
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
@@ -1373,7 +1380,7 @@ impl Worker {
         let fresh = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or_else(refuse)?;
-        if fresh.room != first.room
+        if fresh.workspace != first.workspace
             || fresh.standing != first.standing
             || fresh.sandbox != first.sandbox
         {
@@ -1389,7 +1396,7 @@ impl Worker {
             .collect();
         let mut page = CataloguePage::from_rows(source.revision, rows, query);
         if !page.rows.is_empty() {
-            page.locator = link.view_locator(&fresh.room, provider);
+            page.locator = link.view_locator(&fresh.workspace, provider);
         }
         Ok(page)
     }
@@ -1407,26 +1414,28 @@ impl Worker {
             return Ok(page);
         }
         // A record named by its provider waits for its own keys; a listing
-        // waits for the room's once.
+        // waits for the workspace's once.
         let named = query
             .provider
             .as_deref()
             .and_then(|provider| record_of(provider, ""));
-        let needs = named.as_ref().map_or(Needs::Room, |route| Needs::Read {
-            app_id: &route.app_id,
-            record: &route.record,
-        });
+        let needs = named
+            .as_ref()
+            .map_or(Needs::Workspace, |route| Needs::Read {
+                app_id: &route.app_id,
+                record: &route.record,
+            });
         let state = self.refresh(workspace_id, needs)?;
         let revision = state.revision.to_string();
-        let Some(room) = state.room.clone() else {
+        let Some(cluster_id) = state.workspace.clone() else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
         let routes = self.records(&state);
-        let workspace = workspace_provider(&room);
+        let own_provider = workspace_provider(&cluster_id);
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
-            Some(provider) if provider == workspace => Vec::new(),
+            Some(provider) if provider == own_provider => Vec::new(),
             Some(provider) => {
-                let route = record_of(provider, &room)
+                let route = record_of(provider, &cluster_id)
                     .filter(|route| routes.contains(route))
                     .ok_or(ActionHostError::UnknownAction)?;
                 vec![route]
@@ -1439,7 +1448,7 @@ impl Worker {
             let mut descriptors = match self.mount(route, &state) {
                 Ok(mounted) => live_actions(&mounted.app),
                 Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "room actions: a record did not mount");
+                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
                     continue;
                 }
             };
@@ -1464,9 +1473,9 @@ impl Worker {
         if query
             .provider
             .as_deref()
-            .is_none_or(|provider| provider == workspace)
+            .is_none_or(|provider| provider == own_provider)
         {
-            rows.extend(self.open_rows(&room));
+            rows.extend(self.open_rows(&cluster_id));
         }
         let mut page = CataloguePage::from_rows(revision, rows, query);
         if query.provider.is_none() {
@@ -1475,14 +1484,14 @@ impl Worker {
                 .map(|route| CatalogueProvider {
                     provider: record_provider(route),
                     app_id: route.app_id.clone(),
-                    room: room.clone(),
+                    room: cluster_id.clone(),
                     record_id: route.record.clone(),
                     browsable: true,
                 })
                 .chain(std::iter::once(CatalogueProvider {
-                    provider: workspace,
+                    provider: own_provider,
                     app_id: String::new(),
-                    room: room.clone(),
+                    room: cluster_id.clone(),
                     record_id: String::new(),
                     browsable: false,
                 }))
@@ -1502,7 +1511,7 @@ impl Worker {
         let link = self.shared.link.get()?;
         route.cluster_id = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)?
-            .room;
+            .workspace;
         let mut read = reads::CanonicalRead::prepare(
             &self.catalogue,
             link.as_ref(),
@@ -1511,7 +1520,7 @@ impl Worker {
             &route,
         )
         .ok()?;
-        // Document rows retain their existing room revision and invocation
+        // Document rows retain their existing workspace revision and invocation
         // path. Only an exact registered-read target uses this source revision.
         let target = query.target.as_ref()?;
         let descriptors = read.operations();
@@ -1531,10 +1540,10 @@ impl Worker {
         ))
     }
 
-    fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
+    fn open_rows(&self, workspace: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
-            .map(|definition| open_row(room, definition.app_id()))
+            .map(|definition| open_row(workspace, definition.app_id()))
             .collect()
     }
 
@@ -1564,14 +1573,14 @@ impl Worker {
         match &outcome {
             Ok(_) => {
                 tracing::info!(provider = %target.provider, resource = %target.address.resource,
-                action = %target.address.action, "room actions: succeeded");
+                action = %target.address.action, "workspace actions: succeeded");
             }
             Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
                 resource = %target.address.resource, action = %target.address.action,
-                code = %error.code, message = %error.message, "room actions: failed"),
+                code = %error.code, message = %error.message, "workspace actions: failed"),
             Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
                 resource = %target.address.resource, action = %target.address.action,
-                code = error.code(), %error, "room actions: refused"),
+                code = error.code(), %error, "workspace actions: refused"),
         }
         let mut ledger = self.ledger();
         ledger.running = None;
@@ -1639,7 +1648,7 @@ impl Worker {
             return Ok(output);
         }
         // Acting on a record waits for that record's keys and no other's;
-        // opening an app on a new record needs only the room.
+        // opening an app on a new record needs only the workspace.
         let named = record_of(&request.target.provider, "");
         let needs = named.as_ref().map_or(Needs::Joined, |route| Needs::Act {
             app_id: &route.app_id,
@@ -1655,11 +1664,13 @@ impl Worker {
         {
             return Err(Outcome::Rejected(ActionHostError::StaleRevision));
         }
-        let room = state.room.clone();
+        let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
-        if let Some(room) = workspace_provider_room(&target.provider) {
-            if !owner || tilo_relay_protocol::room_workspace_id(room).ok() != Some(workspace_id) {
+        if let Some(workspace) = workspace_provider_room(&target.provider) {
+            if !owner
+                || tilo_relay_protocol::room_workspace_id(workspace).ok() != Some(workspace_id)
+            {
                 return Err(Outcome::Rejected(ActionHostError::UnknownAction));
             }
             let app = target
@@ -1670,10 +1681,10 @@ impl Worker {
                 .filter(|app| self.catalogue.get(app).is_some())
                 .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
                 .to_owned();
-            return self.open_new(workspace_id, room, &app);
+            return self.open_new(workspace_id, workspace, &app);
         }
-        let room = room.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let route = record_of(&target.provider, &room)
+        let workspace = workspace.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        let route = record_of(&target.provider, &workspace)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         // An empty resource names the record's own: a caller that knows the
@@ -1759,7 +1770,7 @@ impl Worker {
     /// the record any member may ask for themselves
     /// ([`tilo_actions::MEMBER_OWN_TAG`]: linking their own account
     /// elsewhere): run in a worker of its own as `caller`, with the standing
-    /// the room's policy gives them now, so the action's door and its own
+    /// the workspace's policy gives them now, so the action's door and its own
     /// checks decide what they may do. Its answer goes to `caller` alone, in
     /// the receipt. The host then
     /// publishes the change like its own, keeps its held copy current and
@@ -1773,7 +1784,11 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         caller: &Caller,
-        (route, state, contract): (&DocumentRoute, &RoomState, &tilo_actions::ActionContract),
+        (route, state, contract): (
+            &DocumentRoute,
+            &WorkspaceState,
+            &tilo_actions::ActionContract,
+        ),
         (address, arguments, confirmed): (
             &tilo_actions::door::ActionAddress,
             &serde_json::Map<String, serde_json::Value>,
@@ -1801,7 +1816,9 @@ impl Worker {
             .and_then(|link| {
                 link.view_read_policy(workspace_id, caller, &route.app_id, &route.record)
             })
-            .filter(|policy| policy.room == route.cluster_id && policy.standing.person == *person)
+            .filter(|policy| {
+                policy.workspace == route.cluster_id && policy.standing.person == *person
+            })
             .ok_or_else(refused)?;
         let unavailable =
             |reason: String| Outcome::Rejected(ActionHostError::Unavailable { reason });
@@ -1856,7 +1873,7 @@ impl Worker {
                         .and_then(|record| mounted.app.apply_record(&record, &mutation))
                 };
                 if let Err(error) = merged {
-                    tracing::warn!(%error, "room actions: a member's change did not merge here");
+                    tracing::warn!(%error, "workspace actions: a member's change did not merge here");
                 }
             }
             self.commit_durably(workspace_id, &changed, &mutation)
@@ -1889,7 +1906,7 @@ impl Worker {
             return Ok(None);
         };
         let route = DocumentRoute {
-            cluster_id: policy.room,
+            cluster_id: policy.workspace,
             ..hint
         };
         let Ok(mut read) = reads::CanonicalRead::prepare(
@@ -1949,14 +1966,14 @@ impl Worker {
     fn open_new(
         &mut self,
         workspace_id: u64,
-        room: &str,
+        workspace: &str,
         app: &str,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
         let hosted = ConfinedReplica::open(
             &self.catalogue,
             app,
-            room,
+            workspace,
             &self.participant,
             &crate::ReplicaActor::Owner,
             Seed::New,
@@ -1964,10 +1981,10 @@ impl Worker {
         .map_err(|error| refused(error.to_string()))?;
         let route = DocumentRoute {
             app_id: app.to_owned(),
-            cluster_id: room.to_owned(),
+            cluster_id: workspace.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
-        // When the host device takes part in the room's channels, it opens a
+        // When the host device takes part in the workspace's channels, it opens a
         // new record's channel for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
         if let Some(keys) = self
@@ -1981,9 +1998,9 @@ impl Worker {
                     reason: format!("the host holds no keys to a new {app} record: {reason}"),
                 })
             })?;
-            self.rooms
+            self.workspaces
                 .get(&workspace_id)
-                .ok_or_else(|| refused("the room was not joined".into()))?
+                .ok_or_else(|| refused("the workspace was not joined".into()))?
                 .peer
                 .install_channel_keys(route.clone(), keys)
                 .map_err(refused)?;
@@ -2012,14 +2029,14 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        let room = self
-            .rooms
+        let workspace = self
+            .workspaces
             .get_mut(&workspace_id)
-            .ok_or("the room was not joined")?;
-        room.peer.publish(route.clone(), mutation)?;
+            .ok_or("the workspace was not joined")?;
+        workspace.peer.publish(route.clone(), mutation)?;
         let bytes = bytes_of(mutation);
         let digest = change_digest(&self.member.endpoint.host_cert.device_public_key, &bytes);
-        room.log.push((route.clone(), (digest, bytes)));
+        workspace.log.push((route.clone(), (digest, bytes)));
         if let Some(mounted) = self.mounted.get_mut(route) {
             mounted.seen.insert(digest);
         } else if let Some(holder) = self.beside.get(route)
@@ -2045,9 +2062,9 @@ impl Worker {
     ) -> Result<(), String> {
         self.commit(workspace_id, route, mutation)?;
         let saved = self
-            .rooms
+            .workspaces
             .get(&workspace_id)
-            .ok_or("the room was not joined")?
+            .ok_or("the workspace was not joined")?
             .peer
             .barrier()?;
         match saved.recv_timeout(COMMIT_WAIT) {
@@ -2206,13 +2223,13 @@ mod tests {
     use tilo_browser_peer::session::RouteStatus;
     use tilo_peer_state::document_frame::DocumentRoute;
 
-    const ROOM: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
-    const OTHER_ROOM: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
+    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    const OTHER_WORKSPACE: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
 
-    fn route(room: &str, app: &str, record: &str) -> DocumentRoute {
+    fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: app.into(),
-            cluster_id: room.into(),
+            cluster_id: workspace.into(),
             record: record.into(),
         }
     }
@@ -2226,10 +2243,10 @@ mod tests {
 
     #[test]
     fn a_request_waits_only_for_the_keys_of_what_it_reads() {
-        let workspace = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
-        let a = route(ROOM, "so.tilo.sheets", "a");
-        let b = route(ROOM, "so.tilo.sheets", "b");
-        let elsewhere = route(OTHER_ROOM, "so.tilo.sheets", "a");
+        let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+        let a = route(WORKSPACE, "so.tilo.sheets", "a");
+        let b = route(WORKSPACE, "so.tilo.sheets", "b");
+        let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
         let mut routes = BTreeMap::new();
         routes.insert(a, sealed(0));
         routes.insert(b.clone(), sealed(3));
@@ -2271,9 +2288,9 @@ mod tests {
             "a record is named by its app and id together"
         );
         assert_eq!(
-            sealed_for(&routes, workspace, Needs::Room, &fresh),
+            sealed_for(&routes, workspace, Needs::Workspace, &fresh),
             std::slice::from_ref(&b),
-            "the first listing waits for this room's sealed records only"
+            "the first listing waits for this workspace's sealed records only"
         );
         assert!(sealed_for(&routes, workspace, Needs::Joined, &fresh).is_empty());
 
@@ -2282,7 +2299,7 @@ mod tests {
             records: HashSet::from([b.clone()]),
         };
         assert!(
-            sealed_for(&routes, workspace, Needs::Room, &waited).is_empty(),
+            sealed_for(&routes, workspace, Needs::Workspace, &waited).is_empty(),
             "later listings wait for nothing"
         );
         assert!(

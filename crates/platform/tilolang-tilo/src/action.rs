@@ -28,7 +28,7 @@ pub const ACTION_TYPE: &str = "tl.action";
 /// The key of the map in a resource that holds the migrations that ran on it, by action id.
 pub const MIGRATED_KEY: &str = "$migrated";
 
-/// The key of the map in the room record that holds every tilolang resource.
+/// The key of the map in the workspace record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
 /// The facet naming the authorship chain of a change, so history can say "you, via Alex's
@@ -42,7 +42,7 @@ pub const EDIT_TEXT_ACTION: &str = "edit-text";
 pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
-/// per-room root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
+/// per-workspace root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
 /// History reads it as the platform's creation of the resource.
 pub const CREATE_ACTION: &str = tilo_actions::CREATE_ACTION;
 
@@ -242,7 +242,7 @@ fn ensure_map(
 impl DynAction {
     /// What this action is, by what it writes: one that queues an outside effect reaches outside
     /// the record, as the package action that planned it is declared to; every other one is an
-    /// undoable change of the record. What a room's grants must allow to commit it.
+    /// undoable change of the record. What a workspace's grants must allow to commit it.
     #[must_use]
     pub fn need(&self) -> tilo_actions::ActionNeed {
         tilo_actions::ActionNeed::of(if self.edits.iter().any(DynEdit::reaches_outside) {
@@ -1212,7 +1212,7 @@ pub fn app_records(doc: &Doc, app: &str) -> Vec<automerge::ObjId> {
         .collect()
 }
 
-/// The records map of `app` (in `records`, the room's `tl` map) that holds the resource `id`:
+/// The records map of `app` (in `records`, the workspace's `tl` map) that holds the resource `id`:
 /// its own, or that of an id it was published as before.
 fn stored_map(
     doc: &Doc,

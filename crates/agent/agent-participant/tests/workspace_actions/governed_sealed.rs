@@ -1,10 +1,10 @@
-//! Room actions on sealed records of a room the host itself governs.
+//! Workspace actions on sealed records of a workspace the host itself governs.
 //!
-//! A node (a host certified to own workspaces) governs the room and takes
-//! part in its channels. Its room actions join as the same device, so they
+//! A node (a host certified to own workspaces) governs the workspace and takes
+//! part in its channels. Its workspace actions join as the same device, so they
 //! are handed the node's keys through the relay's admission decision rather
 //! than admitted to each channel a second time. The host owner's page acts
-//! on a sealed record through the host; another member of the room sees the
+//! on a sealed record through the host; another member of the workspace sees the
 //! change arrive sealed and authored by the host; that member is refused
 //! when it asks the host to act; and a new record the host opens goes out
 //! sealed on a channel the members can join.
@@ -122,7 +122,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let host_key = host.cert.device_public_key;
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let room = hosted
+    let workspace = hosted
         .relay
         .rooms()
         .unwrap()
@@ -132,13 +132,13 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     admit_person(
         &hosted,
         &host,
-        &room.room,
+        &workspace.room,
         &member_device,
         MemberRole::Editor,
     )
     .await;
-    let mut page = Browser::open_room(&hosted, &page_device, &host, &room.room).await;
-    let mut member = open_admitted_peer(&hosted, &member_device, &host, &room.room).await;
+    let mut page = Browser::open_workspace(&hosted, &page_device, &host, &workspace.room).await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.room).await;
 
     // The owner's page writes a Sheets record. It is sealed on its channel,
     // which this host takes part in.
@@ -146,7 +146,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     page.peer.barrier().unwrap().recv().unwrap().unwrap();
     let written = until_retained(
         &hosted,
-        room.workspace_id,
+        workspace.workspace_id,
         &route,
         page_device.cert.device_public_key,
         1,
@@ -183,7 +183,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         ))
         .await;
     let took = started.elapsed();
-    eprintln!("room actions on a sealed record of a governed room: invoke {took:?}");
+    eprintln!("workspace actions on a sealed record of a governed workspace: invoke {took:?}");
     assert!(
         matches!(acted.status, ReceiptStatus::Completed { .. }),
         "{acted:?}"
@@ -192,13 +192,13 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         took < Duration::from_secs(5),
         "the host waited for keys it already holds: {took:?}"
     );
-    let by_host = until_retained(&hosted, room.workspace_id, &route, host_key, 1).await;
+    let by_host = until_retained(&hosted, workspace.workspace_id, &route, host_key, 1).await;
     assert!(
         by_host.iter().all(|sealed| *sealed),
         "the host's change is delivered, sealed on the record's channel: {by_host:?}"
     );
 
-    // Another member of the room opens it and sees the sheet.
+    // Another member of the workspace opens it and sees the sheet.
     until_authored(&mut member, &route, host_key).await;
     let seen = member.mount(&route);
     assert!(
@@ -207,7 +207,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         sheet_names(&seen)
     );
 
-    // That member, an editor of the room, is no person the host's room
+    // That member, an editor of the workspace, is no person the host's workspace
     // actions serve: refused before anything is queued, so nothing runs.
     let refused = member
         .invoke(request(
@@ -228,7 +228,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         .invoke(InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
-            target: application_open_target(&room.room, SHEETS),
+            target: application_open_target(&workspace.room, SHEETS),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -241,7 +241,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         panic!("the owner opens a new Sheets record through the host: {opened:?}");
     };
     assert_eq!(
-        retained_by(&hosted, room.workspace_id, &route, host_key)
+        retained_by(&hosted, workspace.workspace_id, &route, host_key)
             .await
             .len(),
         by_host.len(),
@@ -262,10 +262,10 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         .to_owned();
     let created = DocumentRoute {
         app_id: SHEETS.into(),
-        cluster_id: room.room.clone(),
+        cluster_id: workspace.room.clone(),
         record,
     };
-    let first = until_retained(&hosted, room.workspace_id, &created, host_key, 1).await;
+    let first = until_retained(&hosted, workspace.workspace_id, &created, host_key, 1).await;
     assert!(
         first.iter().all(|sealed| *sealed),
         "a record the host creates is delivered sealed, not held for keys: {first:?}"

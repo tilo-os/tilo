@@ -1,30 +1,30 @@
 //! `tilolang bench <package>`: the runtime's share of the performance budgets
 //! ([`over_budget`]), measured headlessly.
 //!
-//! A room is seeded with N items in the package's root collection (or, for a root that refers to
+//! A workspace is seeded with N items in the package's root collection (or, for a root that refers to
 //! other packages' roots, as a board does, in theirs), and each scenario runs the path a frame
 //! takes through the runtime: the change reaches the store, the views that read it run again,
 //! and the patches for the host come out. Drawing is the host's share and is not measured here.
 //! Each scenario prints one JSON record per item count in the format of `tools/perf/record.py`.
 //!
-//! * `open`: a host over the seeded room, its index kept from an earlier session, loads the
+//! * `open`: a host over the seeded workspace, its index kept from an earlier session, loads the
 //!   compiled module and opens the root view, to its first tree; `ready`, until publication
-//!   has read the room; `load`, loading the room's record from its saved bytes;
-//!   `index_build`, building the package's index from the record, as a room opened for the
+//!   has read the workspace; `load`, loading the workspace's record from its saved bytes;
+//!   `index_build`, building the package's index from the record, as a workspace opened for the
 //!   first time (or with an index it cannot trust) does off the frame.
 //! * `search_entries`: what a live window publishes to the session's search index, every
 //!   resource with text read as hits, again and again; beside it, the first time after opening
 //!   (`first_ms`, finding `first_hits`), and until every hit is read (`complete_ms`).
-//! * `first_frame`: from the saved room to the first frame, the record loading on a thread of
+//! * `first_frame`: from the saved workspace to the first frame, the record loading on a thread of
 //!   its own while the window opens over the index; `first_write`, the first change right
 //!   after that frame, which waits for the record.
 //! * `keystroke`: one character typed where a person types: into the title of an item in the
 //!   item's own window, or, when items have none, into the main window's first text input. The
-//!   change goes through the executor into the room and back, and the views are brought up to
+//!   change goes through the executor into the workspace and back, and the views are brought up to
 //!   date. A package with no text to type into (a counter) gets `press`: its main window's
 //!   first button.
 //! * `peer_edit`: another replica retitles an item, or bumps the root's counter; the change
-//!   merges into the room and the main view is brought up to date.
+//!   merges into the workspace and the main view is brought up to date.
 //! * `peer_post`: for a package whose items hold a collection of their own, another replica
 //!   posts into an item (a message into a conversation), each time another: a change of the
 //!   item, which a list sorted by when its items last changed moves to the top.
@@ -33,7 +33,7 @@
 //!   toggle filter) is chosen and the list shows the first page of what it holds: a filtered
 //!   query read from the index's columns. Every third seeded item has its flags (Bool fields)
 //!   set, so a filter holds of some items and not of others.
-//! * `memory_anon`: an app process's anonymous memory with the room open, measured in a
+//! * `memory_anon`: an app process's anonymous memory with the workspace open, measured in a
 //!   process of its own.
 //! * `idle`: ten seconds with nothing happening: how often the process was woken, and how
 //!   many views ran.
@@ -43,7 +43,7 @@
 //!   among its categories, [`List::places`]) holds a few at every size: N grows only here.
 //!
 //! Beside its times each scenario records the work it did ([`Work`]), in counts that do not
-//! depend on the machine; `tests/budgets.rs` holds those to how they grow with the room. The
+//! depend on the machine; `tests/budgets.rs` holds those to how they grow with the workspace. The
 //! times are held to the budgets here, on the machine they are for, with `--budgets`
 //! ([`over_budget`]): a recorded local check, not a test, since times depend on the machine
 //! and its load.
@@ -109,7 +109,7 @@ pub struct BenchConfig {
     pub budgets: bool,
     /// Also run what is measured in time alone, which counts no [`Work`]: loading the record,
     /// the first frame over the index, search over every entry, re-indexing and republishing the
-    /// whole room, idle wakeups; and every sample of an open (the first counts its work). Off, a
+    /// whole workspace, idle wakeups; and every sample of an open (the first counts its work). Off, a
     /// run does the work a gate on the counts reads, and nothing else.
     pub timings: bool,
     pub env: Env,
@@ -486,7 +486,7 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
     }
     let action = &action;
     let context = ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("room"),
+        action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
         &action.kind,
     )
@@ -524,19 +524,19 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize) -> Result<(), String> {
     execute(doc, &action, "seed")
 }
 
-/// A room seeded with `n` items: the record, ready for a host.
-fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
+/// A workspace seeded with `n` items: the record, ready for a host.
+fn seeded_workspace(shape: &Shape, n: usize) -> Result<Doc, String> {
     let mut doc = Doc::new();
     seed(&mut doc, shape, n)?;
-    // A window opens a room it loads, from storage or a peer: the seeded record, saved and
+    // A window opens a workspace it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
 }
 
-/// The room record a window of the last of `packages` opens with `n` items, as the bench seeds
-/// it: what a measurement of the real window installs as the room's document.
+/// The workspace record a window of the last of `packages` opens with `n` items, as the bench seeds
+/// it: what a measurement of the real window installs as the workspace's document.
 ///
-/// With no items it is the room before anything was made, whatever the root holds.
+/// With no items it is the workspace before anything was made, whatever the root holds.
 ///
 /// # Errors
 /// The package's root has nothing to seed, or seeding fails.
@@ -553,22 +553,22 @@ pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
         .map(|p| &p.meta)
         .filter(|m| m.app != main.meta.app)
         .collect();
-    seeded_room(&shape_of(&main.meta, &others)?, n)
+    seeded_workspace(&shape_of(&main.meta, &others)?, n)
 }
 
 fn root_id(shape: &Shape) -> String {
     format!("root-{}", shape.root_ty)
 }
 
-/// One machine's window onto the room: the record, the host and the open views.
-struct Room {
+/// One machine's window onto the workspace: the record, the host and the open views.
+struct Workspace {
     doc: Doc,
     host: Host,
     list: ViewInstance,
     phases: Phases,
     published: Publications,
     planner: std::sync::Arc<dyn Planner>,
-    /// The index the room reads, removed with it.
+    /// The index the workspace reads, removed with it.
     _index: Option<IndexDir>,
 }
 
@@ -590,7 +590,7 @@ impl IndexDir {
         &self.0
     }
 
-    /// A copy of the indexes, for a room that changes them.
+    /// A copy of the indexes, for a workspace that changes them.
     fn copy(&self) -> Result<Self, String> {
         let copy = Self::new()?;
         for entry in std::fs::read_dir(&self.0).map_err(|e| e.to_string())? {
@@ -652,7 +652,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
 struct Phases {
     /// The runtime's own transaction: the edit through the bound control.
     edit: Vec<f64>,
-    /// The executor committing the runtime's action into the room record.
+    /// The executor committing the runtime's action into the workspace record.
     execute: Vec<f64>,
     /// The store catching up with the record.
     sync: Vec<f64>,
@@ -725,7 +725,7 @@ impl Phases {
 /// The time every change the bench makes is recorded at.
 const BENCH_TIME: &str = "2026-06-29T09:00:00Z";
 
-impl Room {
+impl Workspace {
     fn open(
         doc: Doc,
         packages: &[Compiled],
@@ -770,7 +770,7 @@ impl Room {
                 list.row(&key, i).map_err(|e| e.to_string())?;
             }
         }
-        // The first frame starts publication; it reads the room off the frame.
+        // The first frame starts publication; it reads the workspace off the frame.
         let indexing = Instant::now();
         let mut phases = Phases::default();
         phases.open_host.push(ms(hosted.duration_since(start)));
@@ -794,7 +794,7 @@ impl Room {
         })
     }
 
-    /// Wait for publication to have read the room, and take it in.
+    /// Wait for publication to have read the workspace, and take it in.
     fn settle(&mut self) {
         self.host.wait_index();
         self.published.settle(&self.host, &self.planner);
@@ -828,14 +828,14 @@ impl Room {
 }
 
 /// The work a scenario did, in counts that do not depend on the machine or its load: what
-/// tests hold to how it grows with the room, where times only say how long it took here.
+/// tests hold to how it grows with the workspace, where times only say how long it took here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
     /// Boundaries rendered (a view call run).
     pub renders: u64,
     /// References to collection items built (one per item a view read as a value).
     pub items: u64,
-    /// Of the room record: resources found by walking it, field values read, collections
+    /// Of the workspace record: resources found by walking it, field values read, collections
     /// listed by walking their entries, and those entries. A store reading its index reads
     /// none of them; deriving changes into the index reads what they changed.
     pub located: u64,
@@ -856,15 +856,15 @@ pub struct Work {
 }
 
 impl Work {
-    fn of(room: &Room, others: &[&ViewInstance]) -> Self {
-        let reads = room.host.store().read_stats();
+    fn of(workspace: &Workspace, others: &[&ViewInstance]) -> Self {
+        let reads = workspace.host.store().read_stats();
         let renders = others
             .iter()
             .map(|view| view.stats().renders)
-            .fold(room.list.stats().renders, u64::saturating_add);
+            .fold(workspace.list.stats().renders, u64::saturating_add);
         Self {
             renders,
-            items: room.host.runtime().items_built(),
+            items: workspace.host.runtime().items_built(),
             located: reads.doc.located,
             fields: reads.doc.fields,
             listings: reads.doc.listings,
@@ -974,7 +974,7 @@ impl Work {
         Self::from_json(record.meta.get("work")?)
     }
 
-    /// The work of the first change of a record that changes the room, apart from its steady
+    /// The work of the first change of a record that changes the workspace, apart from its steady
     /// changes (see [`Changes`]).
     #[must_use]
     pub fn first_of_record(record: &Record) -> Option<Self> {
@@ -1012,7 +1012,7 @@ const BUDGETS: &[(&str, usize, f64)] = &[
 ];
 
 /// The records over their budget in [`BUDGETS`], one line each; `report` gets a line for each
-/// record a budget holds. Frame budgets are for a room of 10k items (or a room with no items,
+/// record a budget holds. Frame budgets are for a workspace of 10k items (or a workspace with no items,
 /// a counter's); memory for 1k.
 pub fn over_budget(records: &[Record], report: &mut dyn FnMut(String)) -> Vec<String> {
     let mut over = Vec::new();
@@ -1050,10 +1050,10 @@ pub fn over_budget(records: &[Record], report: &mut dyn FnMut(String)) -> Vec<St
     over
 }
 
-/// What the samples of a scenario that changes the room took and did. The first change apart:
-/// it is the first a writer the room did not hold yet makes (the executor's here, a peer's),
+/// What the samples of a scenario that changes the workspace took and did. The first change apart:
+/// it is the first a writer the workspace did not hold yet makes (the executor's here, a peer's),
 /// and Automerge numbers a new actor anew through the whole record, work that grows with the
-/// room once per writer. The rest are the steady changes the budgets are for.
+/// workspace once per writer. The rest are the steady changes the budgets are for.
 #[derive(Default)]
 struct Changes {
     samples: Vec<f64>,
@@ -1253,8 +1253,8 @@ impl Sized<'_> {
         }
     }
 
-    fn open(&self) -> Result<Room, String> {
-        Room::open(
+    fn open(&self) -> Result<Workspace, String> {
+        Workspace::open(
             self.base.clone(),
             self.packages,
             &self.meta.app,
@@ -1274,10 +1274,10 @@ impl Sized<'_> {
     }
 }
 
-/// The sizes of the rooms the scenarios run in: each of `sizes`. A root without a collection
-/// holds no items to count: one room, of none. A sidebar of places holds its few places at every
-/// size: one room, of them; what grows is a place's own collection ([`thread`]).
-fn room_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
+/// The sizes of the workspaces the scenarios run in: each of `sizes`. A root without a collection
+/// holds no items to count: one workspace, of none. A sidebar of places holds its few places at every
+/// size: one workspace, of them; what grows is a place's own collection ([`thread`]).
+fn workspace_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
     if shape.list.as_ref().is_some_and(|l| l.places) {
         vec![PLACES]
     } else if shape.subject().is_some() {
@@ -1311,7 +1311,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         .filter(|m| m.app != meta.app)
         .collect();
     let shape = shape_of(&meta, &others)?;
-    let counts = room_sizes(&shape, &config.sizes);
+    let counts = workspace_sizes(&shape, &config.sizes);
     let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
     let mut out = Recorder {
         records: Vec::new(),
@@ -1328,7 +1328,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
     for record in engines::workloads(config, &packages, &short)? {
         out.push(record);
     }
-    // A room of `n` items seeded as `base`, its indexes kept from an earlier session.
+    // A workspace of `n` items seeded as `base`, its indexes kept from an earlier session.
     let sized = |n: usize, base: Doc| -> Result<Sized<'_>, String> {
         let (index, index_build) = prepare_index(&base, &packages)?;
         Ok(Sized {
@@ -1344,7 +1344,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_room(&shape, n)?)?;
+        let sized = sized(n, seeded_workspace(&shape, n)?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -1380,37 +1380,39 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
     Ok(out.records)
 }
 
-/// The scenarios that change a room of the size after it opened, in one window onto it.
+/// The scenarios that change a workspace of the size after it opened, in one window onto it.
 fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
-    let mut room = sized.open()?;
+    let mut workspace = sized.open()?;
     engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
-    room.settle();
+    workspace.settle();
     if sized.config.timings {
-        for record in index_everything(sized, &room) {
+        for record in index_everything(sized, &workspace) {
             out.push(record);
         }
     }
-    room.frame(&mut [])?;
-    room.phases.take();
-    if sized.shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
-        match keystroke(sized, &mut room)? {
+    workspace.frame(&mut [])?;
+    workspace.phases.take();
+    if sized.shape.subject().is_some()
+        || text_input(&workspace.host, workspace.list.tree()).is_some()
+    {
+        match keystroke(sized, &mut workspace)? {
             Some(record) => out.push(record),
             None => eprintln!("tilolang bench: keystroke not measured: nothing to type into"),
         }
     } else {
-        out.push(press(sized, &mut room)?);
+        out.push(press(sized, &mut workspace)?);
     }
-    out.push(peer_edit(sized, &mut room)?);
+    out.push(peer_edit(sized, &mut workspace)?);
     let more = [
-        peer_post(sized, &mut room)?,
-        scroll(sized, &mut room)?,
-        filter(sized, &mut room)?,
+        peer_post(sized, &mut workspace)?,
+        scroll(sized, &mut workspace)?,
+        filter(sized, &mut workspace)?,
     ];
     for record in more.into_iter().flatten() {
         out.push(record);
     }
     if sized.config.timings {
-        out.push(idle(sized, &mut room)?);
+        out.push(idle(sized, &mut workspace)?);
     }
     Ok(())
 }
@@ -1430,36 +1432,36 @@ fn anon_mib() -> Option<f64> {
     Some(f64::from(kib) / 1024.0)
 }
 
-/// The room a memory child loads, saved, and the package it opens it with.
-const MEMORY_ROOM: &str = "TILOLANG_BENCH_MEMORY_ROOM";
+/// The workspace a memory child loads, saved, and the package it opens it with.
+const MEMORY_WORKSPACE: &str = "TILOLANG_BENCH_MEMORY_WORKSPACE";
 const MEMORY_PACKAGE: &str = "TILOLANG_BENCH_MEMORY_PACKAGE";
 const MEMORY_INDEX: &str = "TILOLANG_BENCH_MEMORY_INDEX";
 /// How a memory child reports.
 const MEMORY_LINE: &str = "tilolang-bench-memory-anon-mib=";
 
 /// How the memory scenario gets a process of its own: this program, run again with these
-/// arguments, does what [`memory_child`] says when it finds the room in its environment.
+/// arguments, does what [`memory_child`] says when it finds the workspace in its environment.
 #[derive(Clone, Debug)]
 pub struct Isolation {
     pub program: PathBuf,
     pub args: Vec<String>,
 }
 
-/// An app process's anonymous memory with a room of the size open: a process of its own (seeding
-/// a room leaves the bench's own process with memory the allocator keeps) loads the saved room,
-/// opens the main view and its first page, lets search and publication read the room, and runs a
+/// An app process's anonymous memory with a workspace of the size open: a process of its own (seeding
+/// a workspace leaves the bench's own process with memory the allocator keeps) loads the saved workspace,
+/// opens the main view and its first page, lets search and publication read the workspace, and runs a
 /// frame. It loads the packages by compiling their source, which a launcher does not.
 fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
-    let room = std::env::temp_dir().join(format!(
-        "tilolang-bench-{}-{}.room",
+    let workspace = std::env::temp_dir().join(format!(
+        "tilolang-bench-{}-{}.workspace",
         std::process::id(),
         sized.n
     ));
-    std::fs::write(&room, sized.base.clone().save()).map_err(|e| e.to_string())?;
+    std::fs::write(&workspace, sized.base.clone().save()).map_err(|e| e.to_string())?;
     let index = sized.index.copy()?;
     let output = std::process::Command::new(&isolation.program)
         .args(&isolation.args)
-        .env(MEMORY_ROOM, &room)
+        .env(MEMORY_WORKSPACE, &workspace)
         .env(MEMORY_PACKAGE, &sized.config.package)
         .env(MEMORY_INDEX, index.path())
         .env(
@@ -1467,7 +1469,7 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
             sized.config.engine.kind.name(),
         )
         .output();
-    let _ = std::fs::remove_file(&room);
+    let _ = std::fs::remove_file(&workspace);
     let output = output.map_err(|e| format!("the memory process: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mib = stdout
@@ -1488,39 +1490,39 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
 /// other process.
 #[must_use]
 pub fn memory_child() -> Option<Result<(), String>> {
-    let room = std::env::var_os(MEMORY_ROOM)?;
+    let workspace = std::env::var_os(MEMORY_WORKSPACE)?;
     let package = std::env::var_os(MEMORY_PACKAGE)?;
     let index = std::env::var_os(MEMORY_INDEX).map(PathBuf::from);
     Some(
-        measure_memory(Path::new(&room), Path::new(&package), index).map(|mib| {
+        measure_memory(Path::new(&workspace), Path::new(&package), index).map(|mib| {
             println!("{MEMORY_LINE}{mib}");
         }),
     )
 }
 
-fn measure_memory(room: &Path, package: &Path, index: Option<PathBuf>) -> Result<f64, String> {
+fn measure_memory(workspace: &Path, package: &Path, index: Option<PathBuf>) -> Result<f64, String> {
     let packages = compile(package)?;
     for compiled in &packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
     }
     let app = packages.last().ok_or("no package")?.meta.app.clone();
-    let doc =
-        Doc::load(&std::fs::read(room).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let doc = Doc::load(&std::fs::read(workspace).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
     // The parent's directory, which it removes.
     let index = index.map(IndexDir);
-    let mut room = Room::open(doc, &packages, &app, false, index)?;
-    room.settle();
-    room.frame(&mut [])?;
-    // A live window publishes what search finds of the room as it opens.
-    std::hint::black_box(crate::search::every_hit(&room.host));
-    room.host.wait_index();
-    std::hint::black_box(crate::search::every_hit(&room.host));
+    let mut workspace = Workspace::open(doc, &packages, &app, false, index)?;
+    workspace.settle();
+    workspace.frame(&mut [])?;
+    // A live window publishes what search finds of the workspace as it opens.
+    std::hint::black_box(crate::search::every_hit(&workspace.host));
+    workspace.host.wait_index();
+    std::hint::black_box(crate::search::every_hit(&workspace.host));
     anon_mib().ok_or_else(|| "the process's memory is not readable".to_owned())
 }
 
-/// Opening the package's main view on a room of the size, through the first frame; and until
-/// search and publication, which read the room off the frame, have it all. Beside them, loading
-/// the room's record from its saved bytes, which opening a room from disk adds first: the one
+/// Opening the package's main view on a workspace of the size, through the first frame; and until
+/// search and publication, which read the workspace off the frame, have it all. Beside them, loading
+/// the workspace's record from its saved bytes, which opening a workspace from disk adds first: the one
 /// part of opening that reads the whole record, and grows with it.
 fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
@@ -1530,26 +1532,26 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut live = tilolang_runtime::LiveStats::default();
     let mut work = None;
     for _ in 0..sized.config.open_samples() {
-        // Each sample opens a room of its own, from a store that read nothing yet.
+        // Each sample opens a workspace of its own, from a store that read nothing yet.
         let allocated = allocations();
         let start = Instant::now();
-        let mut room = sized.open()?;
+        let mut workspace = sized.open()?;
         samples.push(ms(start.elapsed()));
-        live = room.list.stats();
-        let mut opened = Work::of(&room, &[]);
+        live = workspace.list.stats();
+        let mut opened = Work::of(&workspace, &[]);
         opened.allocations = opened.allocations.saturating_sub(allocated);
         work.get_or_insert(opened);
-        room.settle();
+        workspace.settle();
         ready.push(ms(start.elapsed()));
-        nodes = room.list.tree().count();
-        phases.publish.append(&mut room.phases.publish);
-        phases.wasm.append(&mut room.phases.wasm);
-        phases.imports.append(&mut room.phases.imports);
-        phases.compile.append(&mut room.phases.compile);
-        phases.open_host.append(&mut room.phases.open_host);
-        phases.open_load.append(&mut room.phases.open_load);
-        phases.open_view.append(&mut room.phases.open_view);
-        phases.open_rows.append(&mut room.phases.open_rows);
+        nodes = workspace.list.tree().count();
+        phases.publish.append(&mut workspace.phases.publish);
+        phases.wasm.append(&mut workspace.phases.wasm);
+        phases.imports.append(&mut workspace.phases.imports);
+        phases.compile.append(&mut workspace.phases.compile);
+        phases.open_host.append(&mut workspace.phases.open_host);
+        phases.open_load.append(&mut workspace.phases.open_load);
+        phases.open_view.append(&mut workspace.phases.open_view);
+        phases.open_rows.append(&mut workspace.phases.open_rows);
     }
     let mut extra = with_work(phases.take(), work.unwrap_or_default());
     if let Json::Object(m) = &mut extra {
@@ -1581,7 +1583,7 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     Ok(records)
 }
 
-/// The room's record, loading on a thread of its own: what a window opening over its index
+/// The workspace's record, loading on a thread of its own: what a window opening over its index
 /// takes when it is ready, or waits for when it needs it.
 struct Loading {
     thread: Option<std::thread::JoinHandle<Result<Doc, String>>>,
@@ -1610,7 +1612,7 @@ impl Loading {
     }
 }
 
-/// From the saved room to the first frame of a window opening over its index while the
+/// From the saved workspace to the first frame of a window opening over its index while the
 /// record loads beside it (and to the record had and taken in, in its meta); and the first
 /// change right after that frame, which waits for the record: not measured for a package
 /// with nothing to type into (the shell's bar, which only the session changes).
@@ -1717,17 +1719,17 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
 
 /// What a live window publishes to the session's search index right after it opens: every
 /// resource with text, read as hits ([`crate::search::every_hit`]), the first time and again.
-/// `None` for a room without text.
+/// `None` for a workspace without text.
 fn search_entries(sized: &Sized<'_>) -> Result<Option<Record>, String> {
-    let mut room = sized.open()?;
-    room.settle();
+    let mut workspace = sized.open()?;
+    workspace.settle();
     let start = Instant::now();
-    let first = crate::search::every_hit(&room.host);
+    let first = crate::search::every_hit(&workspace.host);
     let first_ms = ms(start.elapsed());
     let first_hits = first.len();
     // What is still being taken in, taken in, and every hit read again.
-    room.host.wait_index();
-    let hits = crate::search::every_hit(&room.host);
+    workspace.host.wait_index();
+    let hits = crate::search::every_hit(&workspace.host);
     let complete_ms = ms(start.elapsed());
     if hits.is_empty() {
         return Ok(None);
@@ -1735,7 +1737,7 @@ fn search_entries(sized: &Sized<'_>) -> Result<Option<Record>, String> {
     let mut samples = Vec::new();
     for _ in 0..sized.config.samples {
         let start = Instant::now();
-        std::hint::black_box(crate::search::every_hit(&room.host));
+        std::hint::black_box(crate::search::every_hit(&workspace.host));
         samples.push(ms(start.elapsed()));
     }
     Ok(Some(sized.record(
@@ -1753,26 +1755,26 @@ fn search_entries(sized: &Sized<'_>) -> Result<Option<Record>, String> {
 
 /// What the window did on every change before search and publication were incremental:
 /// index and publish every record anew.
-fn index_everything(sized: &Sized<'_>, room: &Room) -> [Record; 2] {
+fn index_everything(sized: &Sized<'_>, workspace: &Workspace) -> [Record; 2] {
     let (mut search, mut publish) = (Vec::new(), Vec::new());
     for _ in 0..sized.config.samples.min(5) {
         let start = Instant::now();
-        for (package, _, doc) in room.host.records() {
-            if let Ok(record) = room.host.store().record(&doc) {
+        for (package, _, doc) in workspace.host.records() {
+            if let Ok(record) = workspace.host.store().record(&doc) {
                 std::hint::black_box(crate::search::hits(
                     &package.meta,
                     &record,
                     &doc,
-                    room.host.store(),
+                    workspace.host.store(),
                 ));
             }
         }
         search.push(ms(start.elapsed()));
         let start = Instant::now();
-        for (package, type_name, doc) in room.host.records() {
-            let label = room.host.label_of(&doc);
-            if let Ok(record) = room.host.store().record(&doc) {
-                let types = crate::publish::ActionTypes::new(&package.meta, &room.planner);
+        for (package, type_name, doc) in workspace.host.records() {
+            let label = workspace.host.label_of(&doc);
+            if let Ok(record) = workspace.host.store().record(&doc) {
+                let types = crate::publish::ActionTypes::new(&package.meta, &workspace.planner);
                 std::hint::black_box(crate::publish::publish_tree(
                     &types, &record, &type_name, &doc, &label,
                 ));
@@ -1869,8 +1871,9 @@ fn typing(
 
 /// Typing one letter a frame where a person types in the package: into the title of an item
 /// in the item's own window, or else into the main window's first text input.
-fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
-    let Some((mut typing, mut text)) = typing(sized, &room.host, room.list.tree())? else {
+fn keystroke(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
+    let Some((mut typing, mut text)) = typing(sized, &workspace.host, workspace.list.tree())?
+    else {
         return Ok(None);
     };
     let mut changes = Changes::default();
@@ -1878,36 +1881,39 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
         text.push('x');
         let value = match &typing {
             Typing::Item(editor, input) => typed(editor, input, &text),
-            Typing::Main(input) => typed(&room.list, input, &text),
+            Typing::Main(input) => typed(&workspace.list, input, &text),
         };
         let editor_of = |typing: &Typing| match typing {
             Typing::Item(editor, _) => Some(editor.stats().renders),
             Typing::Main(_) => None,
         };
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let editor_before = editor_of(&typing);
         let start = Instant::now();
         let patches = match &mut typing {
             Typing::Item(editor, input) => {
                 editor.edit(input, &value).map_err(|e| e.to_string())?;
-                room.phases.edit.push(ms(start.elapsed()));
-                room.frame(&mut [editor.as_mut()])?
+                workspace.phases.edit.push(ms(start.elapsed()));
+                workspace.frame(&mut [editor.as_mut()])?
             }
             Typing::Main(input) => {
-                room.list.edit(input, &value).map_err(|e| e.to_string())?;
-                room.phases.edit.push(ms(start.elapsed()));
-                room.frame(&mut [])?
+                workspace
+                    .list
+                    .edit(input, &value)
+                    .map_err(|e| e.to_string())?;
+                workspace.phases.edit.push(ms(start.elapsed()));
+                workspace.frame(&mut [])?
             }
         };
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[]).since(before);
+        let mut done = Work::of(workspace, &[]).since(before);
         if let (Some(after), Some(before)) = (editor_of(&typing), editor_before) {
             done.renders = done.renders.saturating_add(after.saturating_sub(before));
         }
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, mut extra) = changes.into_record(room.phases.take());
+    let (samples, mut extra) = changes.into_record(workspace.phases.take());
     if let Json::Object(m) = &mut extra {
         let into = match typing {
             Typing::Item(..) => "item window",
@@ -1919,24 +1925,25 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
 }
 
 /// Pressing the main window's first button, one press a frame.
-fn press(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let button = first_of(room.list.tree(), "ui.Button").ok_or("the main window has no button")?;
+fn press(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String> {
+    let button =
+        first_of(workspace.list.tree(), "ui.Button").ok_or("the main window has no button")?;
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        room.list.press(&button).map_err(|e| e.to_string())?;
-        room.phases.edit.push(ms(start.elapsed()));
-        let patches = room.frame(&mut [])?;
+        workspace.list.press(&button).map_err(|e| e.to_string())?;
+        workspace.phases.edit.push(ms(start.elapsed()));
+        let patches = workspace.frame(&mut [])?;
         if patches == 0 {
             return Err(format!("pressing {button} changed nothing on screen"));
         }
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[]).since(before);
+        let mut done = Work::of(workspace, &[]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(sized.record("press", "ms", samples, extra))
 }
 
@@ -1952,7 +1959,7 @@ fn first_of(node: &UiNode, kind: &str) -> Option<String> {
 /// the root it is in.
 fn peer_change<'a>(
     sized: &Sized<'a>,
-    room: &Room,
+    workspace: &Workspace,
     sample: usize,
 ) -> Result<(&'a Shape, Edit<DynRecord>), String> {
     let shape = sized.shape;
@@ -1960,7 +1967,7 @@ fn peer_change<'a>(
         let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
             vec![
-                Segment::Item(Id::from_raw(item_id(sized.target(room.list.tree())))),
+                Segment::Item(Id::from_raw(item_id(sized.target(workspace.list.tree())))),
                 Segment::Field(title),
             ],
             EditOp::Replace {
@@ -1977,12 +1984,12 @@ fn peer_change<'a>(
     Ok((shape, edit))
 }
 
-/// A peer changing what is on screen, its change merged into the room.
-fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let mut peer = room.doc.fork();
+/// A peer changing what is on screen, its change merged into the workspace.
+fn peer_edit(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String> {
+    let mut peer = workspace.doc.fork();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
-        let (subject, edit) = peer_change(sized, room, sample)?;
+        let (subject, edit) = peer_change(sized, workspace, sample)?;
         let action = DynAction {
             app: subject.app.clone(),
             kind: format!("tl.{}.edit", subject.app),
@@ -1995,19 +2002,20 @@ fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
             }],
         };
         execute(&mut peer, &action, "peer")?;
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        room.doc
+        workspace
+            .doc
             .merge_incoming(&mut peer)
             .map_err(|e| e.to_string())?;
-        room.phases.edit.push(ms(start.elapsed()));
-        let patches = room.frame(&mut [])?;
+        workspace.phases.edit.push(ms(start.elapsed()));
+        let patches = workspace.frame(&mut [])?;
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[]).since(before);
+        let mut done = Work::of(workspace, &[]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(sized.record("peer_edit", "ms", samples, extra))
 }
 
@@ -2015,7 +2023,7 @@ fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
 /// another item: the item's own collection gains an item, which is a change of the item, so a
 /// list sorted by when its items last changed moves it to the top. Only for a package whose
 /// list items hold a collection of their own.
-fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
     let Some((subject, list)) = sized.shape.subject() else {
         return Ok(None);
     };
@@ -2023,9 +2031,9 @@ fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
         return Ok(None);
     };
     let principals = thread::principals(sized.packages);
-    let mut peer = room.doc.fork();
+    let mut peer = workspace.doc.fork();
     let mut changes = Changes::default();
-    let first = sized.target(room.list.tree());
+    let first = sized.target(workspace.list.tree());
     for sample in 0..sized.config.samples {
         let item = first.saturating_add(sample).min(sized.n.saturating_sub(1));
         let id = format!("post-{sample:06}");
@@ -2058,28 +2066,29 @@ fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
             }],
         };
         execute(&mut peer, &action, "peer")?;
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        room.doc
+        workspace
+            .doc
             .merge_incoming(&mut peer)
             .map_err(|e| e.to_string())?;
-        let patches = room.frame(&mut [])?;
+        let patches = workspace.frame(&mut [])?;
         let took = ms(start.elapsed());
-        let mut done = Work::of(room, &[]).since(before);
+        let mut done = Work::of(workspace, &[]).since(before);
         done.patches = patches as u64;
         changes.push(took, done);
     }
-    let (samples, extra) = changes.into_record(room.phases.take());
+    let (samples, extra) = changes.into_record(workspace.phases.take());
     Ok(Some(sized.record("peer_post", "ms", samples, extra)))
 }
 
 /// A virtual list scrolled a few rows a frame: it shows the rows that came into view and
 /// forgets those that left. Only for a package whose main view is a `list` frame.
-fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
-    let Some(list) = frame_list(room.list.tree()) else {
+fn scroll(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
+    let Some(list) = frame_list(workspace.list.tree()) else {
         return Ok(None);
     };
-    let len = room.list.list_len(&list).unwrap_or(0);
+    let len = workspace.list.list_len(&list).unwrap_or(0);
     let mut samples = Vec::new();
     let mut work = Work::default();
     let mut first = 0usize;
@@ -2089,17 +2098,17 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
             next = 0;
         }
         let shown = next..next.saturating_add(PAGE).min(len);
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        room.list.hide_rows(&list, shown.clone());
+        workspace.list.hide_rows(&list, shown.clone());
         for i in shown {
-            room.list.row(&list, i).map_err(|e| e.to_string())?;
+            workspace.list.row(&list, i).map_err(|e| e.to_string())?;
         }
         samples.push(ms(start.elapsed()));
-        work = work.max(Work::of(room, &[]).since(before));
+        work = work.max(Work::of(workspace, &[]).since(before));
         first = next;
     }
-    let stats = room.list.stats();
+    let stats = workspace.list.stats();
     let extra = json!({
         "rows_per_frame": SCROLL_STEP,
         "shown": PAGE,
@@ -2141,40 +2150,49 @@ fn chosen(node: &UiNode) -> Option<String> {
 /// besides the one it starts on, and back to that one (all of the items, for `std.list`): the
 /// first page of a filtered query, as the window shows it, and the list again. Only for a
 /// package whose main view lists places.
-fn filter(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+fn filter(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
     let mut found = Vec::new();
-    places(room.list.tree(), &mut found);
-    let start = chosen(room.list.tree()).unwrap_or_else(|| "all".to_owned());
+    places(workspace.list.tree(), &mut found);
+    let start = chosen(workspace.list.tree()).unwrap_or_else(|| "all".to_owned());
     let (Some((_, all)), Some((_, place))) = (
         found.iter().find(|(key, _)| *key == start).cloned(),
         found.iter().find(|(key, _)| *key != start).cloned(),
     ) else {
         return Ok(None);
     };
-    let Some(list) = frame_list(room.list.tree()) else {
+    let Some(list) = frame_list(workspace.list.tree()) else {
         return Ok(None);
     };
     let mut samples = Vec::new();
     let mut work = Work::default();
     for _ in 0..sized.config.samples {
-        let before = Work::of(room, &[]);
+        let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        room.list
+        workspace
+            .list
             .fire(&place, "select")
             .map_err(|e| e.to_string())?;
-        let mut patches = room.frame(&mut [])?;
-        let shown = room.list.list_len(&list).unwrap_or(0).min(PAGE);
+        let mut patches = workspace.frame(&mut [])?;
+        let shown = workspace.list.list_len(&list).unwrap_or(0).min(PAGE);
         for i in 0..shown {
-            room.list.row(&list, i).map_err(|e| e.to_string())?;
+            workspace.list.row(&list, i).map_err(|e| e.to_string())?;
         }
-        patches =
-            patches.saturating_add(room.list.poll_patches().map_err(|e| e.to_string())?.len());
+        patches = patches.saturating_add(
+            workspace
+                .list
+                .poll_patches()
+                .map_err(|e| e.to_string())?
+                .len(),
+        );
         samples.push(ms(start.elapsed()));
-        let mut done = Work::of(room, &[]).since(before);
+        let mut done = Work::of(workspace, &[]).since(before);
         done.patches = patches as u64;
         work = work.max(done);
-        room.list.fire(&all, "select").map_err(|e| e.to_string())?;
-        room.frame(&mut [])?;
+        workspace
+            .list
+            .fire(&all, "select")
+            .map_err(|e| e.to_string())?;
+        workspace.frame(&mut [])?;
     }
     let extra = json!({ "shown": PAGE });
     Ok(Some(sized.record(
@@ -2185,16 +2203,16 @@ fn filter(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
     )))
 }
 
-/// The room left alone: after a frame, nothing runs until something changes.
-fn idle(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    room.frame(&mut [])?;
+/// The workspace left alone: after a frame, nothing runs until something changes.
+fn idle(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String> {
+    workspace.frame(&mut [])?;
     let (own_before, others_before) = context_switches();
     let start = Instant::now();
     std::thread::sleep(sized.config.idle);
     let (own_after, others_after) = context_switches();
     let secs = start.elapsed().as_secs_f64();
     // A frame the loop would run now does nothing: nothing changed.
-    let patches = room.frame(&mut [])?;
+    let patches = workspace.frame(&mut [])?;
     // The sleep itself switches the calling thread out once.
     let wakeups = own_after
         .saturating_sub(own_before)

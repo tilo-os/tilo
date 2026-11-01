@@ -1,9 +1,9 @@
-//! Finding the room's records by what they hold.
+//! Finding the workspace's records by what they hold.
 //!
-//! A planner is shown the records it has open and the room's others by
+//! A planner is shown the records it has open and the workspace's others by
 //! title. A task that says "the Q3 partner review" without its title, or
 //! names a record among stale copies and decoys, needs the records' text:
-//! [`SEARCH_ROOM`] ranks every record the agent may open by the request's
+//! [`SEARCH_WORKSPACE`] ranks every record the agent may open by the request's
 //! words (BM25 over each record's plain text, its title weighted more, a
 //! phrase found whole counted more again; the most recently changed first
 //! among equals) and answers with the best, a snippet or two of each, and
@@ -22,8 +22,8 @@ use automerge::{ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef};
 use tilo_agent::surface;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-/// The planning tool that searches the room's records.
-pub const SEARCH_ROOM: &str = "search_room";
+/// The planning tool that searches the workspace's records.
+pub const SEARCH_WORKSPACE: &str = "search_workspace";
 
 /// The most bytes of one record's text kept for search: its start and its
 /// end (where a thread's latest messages are) when it holds more.
@@ -71,7 +71,7 @@ const STOPWORDS: &[&str] = &[
     "or", "the", "this", "that", "to", "with",
 ];
 
-/// One record of the room a search ranks.
+/// One record of the workspace a search ranks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchDoc {
     /// The record.
@@ -589,7 +589,7 @@ fn label(doc: &SearchDoc) -> String {
     label
 }
 
-/// The answer to one [`SEARCH_ROOM`] call over `docs`: the best records
+/// The answer to one [`SEARCH_WORKSPACE`] call over `docs`: the best records
 /// for its `query` (of its `app`, when given), each with its app, title,
 /// how recently it changed, its snippets and the id that opens it, which
 /// is revealed so a plan may name it.
@@ -604,7 +604,7 @@ pub fn answer(
         .map(str::trim)
         .filter(|query| !query.is_empty())
     else {
-        return format!("{SEARCH_ROOM} needs a `query`.");
+        return format!("{SEARCH_WORKSPACE} needs a `query`.");
     };
     let app = input
         .get("app")
@@ -616,7 +616,7 @@ pub fn answer(
     {
         let apps: BTreeSet<&str> = docs.iter().map(|doc| doc.route.app_id.as_str()).collect();
         return format!(
-            "No record of {app} in this room. Apps with records: {}.",
+            "No record of {app} in this workspace. Apps with records: {}.",
             apps.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
@@ -667,13 +667,13 @@ pub fn answer(
     text
 }
 
-/// The [`SEARCH_ROOM`] tool definition. Short: every planning request
+/// The [`SEARCH_WORKSPACE`] tool definition. Short: every planning request
 /// carries it.
 #[must_use]
 pub fn definition() -> tilo_model_gateway::host_backend::protocol::ToolDefinition {
     tilo_model_gateway::host_backend::protocol::ToolDefinition {
-        name: SEARCH_ROOM.into(),
-        description: "Search the room's documents (all apps, open or not) by their text and \
+        name: SEARCH_WORKSPACE.into(),
+        description: "Search the workspace's documents (all apps, open or not) by their text and \
             titles. Answers the best matches with snippets and the id that opens each."
             .into(),
         input_schema: serde_json::json!({
@@ -696,7 +696,7 @@ mod tests {
     fn route(app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: app.into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: record.into(),
         }
     }
@@ -711,9 +711,9 @@ mod tests {
         }
     }
 
-    /// The room of a "deck for the Q3 partner review" task: the brief it
+    /// The workspace of a "deck for the Q3 partner review" task: the brief it
     /// means, a stale copy, decoys sharing some of its words, and others.
-    fn room() -> Vec<SearchDoc> {
+    fn workspace() -> Vec<SearchDoc> {
         let filler = "Weekly sync notes. Action items assigned to the team. ".repeat(20);
         vec![
             doc(
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn the_record_holding_the_phrase_ranks_first_and_unrelated_ones_not_at_all() {
-        let docs = room();
+        let docs = workspace();
         let hits = search(&docs, "Q3 partner review", None, MOST_HITS);
         let order: Vec<&str> = hits
             .iter()
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn snippets_show_the_matching_passage_within_bounds() {
-        let docs = room();
+        let docs = workspace();
         let hits = search(&docs, "Q3 partner review", None, 1);
         let snippets = &hits[0].snippets;
         assert!(!snippets.is_empty() && snippets.len() <= MOST_SNIPPETS);
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn an_answer_names_and_reveals_the_open_ids_of_its_records() {
-        let mut docs = room();
+        let mut docs = workspace();
         docs[3].open = true;
         let mut revealed = tilo_agent::tools::Revealed::new();
         let text = answer(

@@ -4,7 +4,7 @@
 //! are runs in a confined app worker ([`crate::worker::ConfinedRead`]), which
 //! is handed the retained source and the caller's current policy and nothing
 //! else.
-use super::{AppCatalogue, Caller, DocumentRoute, RoomRecordsLink, ViewReadPolicy};
+use super::{AppCatalogue, Caller, DocumentRoute, ViewReadPolicy, WorkspaceRecordsLink};
 use crate::worker::ConfinedRead;
 use tilo_actions::{
     ActionDescriptor, ActionOutput,
@@ -25,14 +25,14 @@ pub(super) struct CanonicalRead {
 impl CanonicalRead {
     pub(super) fn prepare(
         catalogue: &AppCatalogue,
-        link: &dyn RoomRecordsLink,
+        link: &dyn WorkspaceRecordsLink,
         workspace: u64,
         caller: &Caller,
         route: &DocumentRoute,
     ) -> Result<Self, String> {
         let admitted = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
-            .filter(|policy| policy.room == route.cluster_id)
+            .filter(|policy| policy.workspace == route.cluster_id)
             .ok_or("canonical read not permitted")?;
         // This source is replayed from retained, signature-verified host storage
         // under current certified Read and existing keys. The worker's
@@ -70,7 +70,7 @@ impl CanonicalRead {
 
     pub(super) fn recheck(
         &mut self,
-        link: &dyn RoomRecordsLink,
+        link: &dyn WorkspaceRecordsLink,
         workspace: u64,
         caller: &Caller,
         route: &DocumentRoute,
@@ -78,7 +78,7 @@ impl CanonicalRead {
         let fresh = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or("canonical read permission retired")?;
-        if fresh.room != self.admitted.room
+        if fresh.workspace != self.admitted.workspace
             || fresh.standing != self.admitted.standing
             || fresh.sandbox != self.admitted.sandbox
         {
@@ -89,7 +89,7 @@ impl CanonicalRead {
 
     pub(super) fn invoke(
         &mut self,
-        link: &dyn RoomRecordsLink,
+        link: &dyn WorkspaceRecordsLink,
         workspace: u64,
         caller: &Caller,
         route: &DocumentRoute,

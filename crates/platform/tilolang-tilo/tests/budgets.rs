@@ -3,9 +3,9 @@
 //!
 //! The gate holds the work each scenario does, in counts that do not depend on the machine or
 //! its load ([`Work`]), as docs/measurements/performance.md has pull requests gate: what a
-//! window shows, and what a change re-renders, patches and reads, is the same in a room of 10k
-//! items as in one of 1k. Opening over the index a room kept reads no more of it at 10k than at
-//! 1k: the pages of the rows it shows, and nothing of the room's record.
+//! window shows, and what a change re-renders, patches and reads, is the same in a workspace of 10k
+//! items as in one of 1k. Opening over the index a workspace kept reads no more of it at 10k than at
+//! 1k: the pages of the rows it shows, and nothing of the workspace's record.
 //!
 //! The budgets in time and memory depend on the machine and what else runs on it, so no test
 //! asserts them: the bench checks and records them on the machine they are for,
@@ -31,7 +31,7 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 const SMALL: usize = 1000;
 const LARGE: usize = 10_000;
 
-/// The scenarios of a room that change it after it opened.
+/// The scenarios of a workspace that change it after it opened.
 const CHANGES: &[&str] = &[
     "keystroke",
     "press",
@@ -129,7 +129,7 @@ fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut
 }
 
 fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
-    // Opening over the room's index shows the same at 10k as at 1k and reads the same: of the
+    // Opening over the workspace's index shows the same at 10k as at 1k and reads the same: of the
     // index, the directories and pages of what it shows; of the record, nothing that grows.
     for scenario in ["open", "thread_open"] {
         let Some((small, large)) = both(records, scenario, Work::of_record) else {
@@ -139,7 +139,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
         for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
             if at_large != at_small {
                 misses.push(format!(
-                    "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: opening reads the room"
+                    "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: opening reads the workspace"
                 ));
             }
         }
@@ -151,7 +151,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
         for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
             if at_large != at_small {
                 misses.push(format!(
-                    "{app} filter: {name} {at_large} at 10k, {at_small} at 1k: a filter reads the room"
+                    "{app} filter: {name} {at_large} at 10k, {at_small} at 1k: a filter reads the workspace"
                 ));
             }
         }
@@ -169,13 +169,13 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 
     for scenario in CHANGES {
         // A steady change: the same on screen and in the store, it loads nothing, and the
-        // allocations it makes do not grow with the room.
+        // allocations it makes do not grow with the workspace.
         if let Some((small, large)) = both(records, scenario, Work::of_record) {
             same_shown(app, scenario, (small, large), misses);
             for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
                 if at_large != at_small {
                     misses.push(format!(
-                        "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: a change loads the room again"
+                        "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: a change loads the workspace again"
                     ));
                 }
             }
@@ -210,13 +210,13 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
     }
 }
 
-/// The runtime does the work of what `app` shows, whatever the size of its room.
+/// The runtime does the work of what `app` shows, whatever the size of its workspace.
 fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
     let mut misses = Vec::new();
     gate(app, &bench(app), &mut misses);
     assert!(
         misses.is_empty(),
-        "more work in a larger room:\n{}",
+        "more work in a larger workspace:\n{}",
         misses.join("\n")
     );
 }

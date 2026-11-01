@@ -1,4 +1,4 @@
-//! Two replicas of one room: concurrent edits converge, history names the invoker, and a peer
+//! Two replicas of one workspace: concurrent edits converge, history names the invoker, and a peer
 //! that never loaded the wasm module replays what the origin recorded.
 
 use std::fmt::Write as _;
@@ -20,7 +20,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Ada's replica with the counter loaded and its root created, and Grace's fork of it.
-fn counter_room() -> (Replica, Replica, tilolang_runtime::Meta) {
+fn counter_workspace() -> (Replica, Replica, tilolang_runtime::Meta) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]);
     let counter = packages[0].clone();
     ada.host.root_of(APP).unwrap();
@@ -31,7 +31,7 @@ fn counter_room() -> (Replica, Replica, tilolang_runtime::Meta) {
 
 #[test]
 fn two_replicas_pressing_the_button_concurrently_read_two() {
-    let (mut ada, mut grace, meta) = counter_room();
+    let (mut ada, mut grace, meta) = counter_workspace();
     let (view_ada, view_grace) = (ada.view(APP), grace.view(APP));
     view_ada.press(&button_key(&view_ada)).unwrap();
     view_grace.press(&button_key(&view_grace)).unwrap();
@@ -45,7 +45,7 @@ fn two_replicas_pressing_the_button_concurrently_read_two() {
 
 #[test]
 fn a_view_open_over_a_replica_follows_a_collaborators_press() {
-    let (mut ada, mut grace, _) = counter_room();
+    let (mut ada, mut grace, _) = counter_workspace();
     let mut view_ada = ada.view(APP);
     let before = view_ada.tree().clone();
     let view_grace = grace.view(APP);
@@ -59,7 +59,7 @@ fn a_view_open_over_a_replica_follows_a_collaborators_press() {
 
 #[test]
 fn history_names_the_invoker_and_the_verb() {
-    let (mut ada, mut grace, meta) = counter_room();
+    let (mut ada, mut grace, meta) = counter_workspace();
     let (view_ada, view_grace) = (ada.view(APP), grace.view(APP));
     view_ada.press(&button_key(&view_ada)).unwrap();
     view_grace.press(&button_key(&view_grace)).unwrap();
@@ -91,14 +91,14 @@ fn history_names_the_invoker_and_the_verb() {
 
 #[test]
 fn a_peer_without_the_wasm_module_replays_the_recorded_actions() {
-    let (mut ada, _, meta) = counter_room();
+    let (mut ada, _, meta) = counter_workspace();
     let base = ada.doc.fork();
     let view = ada.view(APP);
     for _ in 0..2 {
         view.press(&button_key(&view)).unwrap();
         ada.commit();
     }
-    // The peer holds a copy of the room and the decoder, and no runtime and no module.
+    // The peer holds a copy of the workspace and the decoder, and no runtime and no module.
     let mut peer = base;
     let registry = ActionRegistry::with(register_actions);
     let pressed: Vec<_> = ada.log.iter().skip(1).collect();
@@ -112,7 +112,7 @@ fn a_peer_without_the_wasm_module_replays_the_recorded_actions() {
     assert_eq!(peer.get_heads(), ada.doc.get_heads(), "the same changes");
 }
 
-fn todo_room() -> (Replica, Replica, tilolang_runtime::Meta, String) {
+fn todo_workspace() -> (Replica, Replica, tilolang_runtime::Meta, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let todo = packages[0].clone();
     let root = ada.host.root_of("so.tilo.todo").unwrap();
@@ -156,7 +156,7 @@ fn item_ids(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec
 
 #[test]
 fn concurrent_inserts_and_moves_of_a_collection_converge() {
-    let (mut ada, mut grace, meta, root) = todo_room();
+    let (mut ada, mut grace, meta, root) = todo_workspace();
     plan(&mut ada, &meta, &root, "add", json!({"text": "milk"}));
     ada.sync_with(&mut grace);
     plan(&mut ada, &meta, &root, "add", json!({"text": "eggs"}));
@@ -184,7 +184,7 @@ fn concurrent_inserts_and_moves_of_a_collection_converge() {
 
 #[test]
 fn concurrent_moves_to_a_place_converge_where_each_person_meant() {
-    let (mut ada, mut grace, meta, root) = todo_room();
+    let (mut ada, mut grace, meta, root) = todo_workspace();
     for text in ["a", "b", "c", "d"] {
         plan(&mut ada, &meta, &root, "add", json!({ "text": text }));
     }
@@ -243,7 +243,7 @@ fn concurrent_moves_to_a_place_converge_where_each_person_meant() {
 
 #[test]
 fn a_set_and_text_edited_concurrently_merge() {
-    let (mut ada, mut grace, meta, root) = todo_room();
+    let (mut ada, mut grace, meta, root) = todo_workspace();
     plan(&mut ada, &meta, &root, "tag", json!({"t": "home"}));
     plan(&mut grace, &meta, &root, "tag", json!({"t": "work"}));
     ada.sync_with(&mut grace);
@@ -259,7 +259,7 @@ fn a_set_and_text_edited_concurrently_merge() {
 
 #[test]
 fn planning_an_action_leaves_the_mirror_as_it_was() {
-    let (ada, _grace, meta, root) = todo_room();
+    let (ada, _grace, meta, root) = todo_workspace();
     let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
     let args = json!({"text": "milk"}).as_object().cloned().unwrap();
     for _ in 0..3 {
@@ -276,12 +276,12 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
     }
     assert!(
         item_ids(&ada, &meta, &root).is_empty(),
-        "only the door's commit changes the room"
+        "only the door's commit changes the workspace"
     );
 }
 
 #[test]
-fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
+fn a_new_version_of_a_package_keeps_the_workspace_and_its_views_run_the_new_code() {
     fn buttons(node: &tilolang_runtime::UiNode, out: &mut Vec<tilolang_runtime::UiNode>) {
         if node.kind == "ui.Button" {
             out.push(node.clone());
@@ -290,7 +290,7 @@ fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
             buttons(child, out);
         }
     }
-    let (mut ada, _grace, meta) = counter_room();
+    let (mut ada, _grace, meta) = counter_workspace();
     let view = ada.view(APP);
     view.press(&button_key(&view)).unwrap();
     ada.commit();
@@ -306,7 +306,11 @@ fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
     let package = ada.host.load_compiled(&compiled).unwrap();
     assert_ne!(package.id, before, "a new module");
     assert_eq!(ada.host.packages().len(), 1, "it replaced the old version");
-    assert_eq!(count(&ada.root(APP), &meta), 1, "the room kept its state");
+    assert_eq!(
+        count(&ada.root(APP), &meta),
+        1,
+        "the workspace kept its state"
+    );
     let view = ada.view(APP);
     let label = |node: &tilolang_runtime::UiNode| node.props.get("label").cloned();
     let mut found = Vec::new();

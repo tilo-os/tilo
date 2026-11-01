@@ -1,5 +1,5 @@
-//! Two windows of one room, each an instance without the toolkit, committing through the
-//! collab client: what one window's runtime planned reaches the other's room record and its
+//! Two windows of one workspace, each an instance without the toolkit, committing through the
+//! collab client: what one window's runtime planned reaches the other's workspace record and its
 //! runtime.
 
 use std::cell::RefCell;
@@ -14,13 +14,13 @@ use collaboration::{
 };
 use tilo_render_protocol::patch::local::{End, pair};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::{NameHost, Principal};
 
 use crate::fixtures::{APP, COUNTER};
 
-/// The counter, loaded with the ids the room's first window gave its types.
+/// The counter, loaded with the ids the workspace's first window gave its types.
 struct Counter {
     ids: RefCell<String>,
 }
@@ -55,7 +55,7 @@ impl NameHost for Alone {
 
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 
-/// One end of a room's route as the broker relays it: what one replica sends reaches the
+/// One end of a workspace's route as the broker relays it: what one replica sends reaches the
 /// other as the signed document envelope the broker delivers.
 struct Relay {
     route: RouteSpec,
@@ -101,12 +101,12 @@ fn delivered(
     mutation: &collab_types::DocumentMutation,
 ) -> Result<CollabEvent, String> {
     let record = route.record.as_deref().unwrap_or("");
-    let room = route.cluster_id.to_string();
+    let workspace = route.cluster_id.to_string();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().map_err(|error| error.to_string())?,
-        collab_types::document_artifact_id(&route.app_id, &room, record),
+        collab_types::document_artifact_id(&route.app_id, &workspace, record),
         collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::document_attestation_id(&route.app_id, &room, record),
+        collab_types::document_attestation_id(&route.app_id, &workspace, record),
         collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         0,
@@ -121,7 +121,7 @@ fn delivered(
 
 type Queue = Arc<Mutex<VecDeque<CollabEvent>>>;
 
-/// One end of a room's route whose collab client fills up: while `busy`, it takes no document
+/// One end of a workspace's route whose collab client fills up: while `busy`, it takes no document
 /// change (`TransportError::Busy`, as the broker transport's queue says under fast typing); what
 /// it takes reaches the other replica as [`Relay`] relays it.
 struct Crowded {
@@ -173,7 +173,7 @@ impl CollabTransport for Crowded {
 /// A window of the counter for `me`, its instance over `doc`, committing on `route`.
 struct Window {
     instance: Instance,
-    room: RoomRecord,
+    workspace: InstanceRecord,
     _patches: End,
 }
 
@@ -227,10 +227,10 @@ fn window_over(
         Rc::new(Alone),
         Box::new(app_end),
     );
-    let room = RoomRecord::new(doc, manager, route.clone(), me);
+    let workspace = InstanceRecord::new(doc, manager, route.clone(), me);
     Window {
         instance,
-        room,
+        workspace,
         _patches: window_end,
     }
 }
@@ -259,13 +259,13 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
         automerge::AutoCommit::new(),
     );
 
-    // Ada's window opens over the empty room: its runtime plans the counter's root, and the
-    // room path commits it to her record and sends it.
+    // Ada's window opens over the empty workspace: its runtime plans the counter's root, and the
+    // workspace path commits it to her record and sends it.
     let mut committed = Vec::new();
     for _ in 0..100 {
-        ada.instance.sync(Some(ada.room.doc()));
+        ada.instance.sync(Some(ada.workspace.doc()));
         ada.instance.update();
-        committed.extend(ada.room.commit(&mut ada.instance).unwrap());
+        committed.extend(ada.workspace.commit(&mut ada.instance).unwrap());
         if !committed.is_empty() {
             break;
         }
@@ -276,7 +276,7 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     );
     let ada_root = ada.instance.host().unwrap().root_of(APP).unwrap();
     assert!(
-        !ada.room.doc().clone().get_changes(&[]).is_empty(),
+        !ada.workspace.doc().clone().get_changes(&[]).is_empty(),
         "the root is in ada's record"
     );
 
@@ -284,12 +284,12 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     // reads ada's root.
     assert!(
         !grace_inbox.borrow().is_empty(),
-        "the room relayed the change"
+        "the workspace relayed the change"
     );
-    assert!(grace.room.receive(&mut grace.instance));
+    assert!(grace.workspace.receive(&mut grace.instance));
     assert_eq!(
-        grace.room.doc().clone().get_heads(),
-        ada.room.doc().clone().get_heads(),
+        grace.workspace.doc().clone().get_heads(),
+        ada.workspace.doc().clone().get_heads(),
         "grace holds what ada committed"
     );
     let grace_root = grace.instance.host().unwrap().root_of(APP).unwrap();
@@ -299,7 +299,7 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     );
 }
 
-/// `who` adds one to the counter at `root` in their window: the runtime plans it and the room
+/// `who` adds one to the counter at `root` in their window: the runtime plans it and the workspace
 /// path commits it.
 fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) {
     let host = window.instance.host().unwrap();
@@ -325,14 +325,14 @@ fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who:
         .unwrap();
     let queued =
         tilolang_tilo::instance::queue_commits(&host, &window.instance.outgoing(), first, None);
-    assert!(!queued.is_empty(), "the edit is queued for the room");
-    let committed = window.room.commit(&mut window.instance).unwrap();
+    assert!(!queued.is_empty(), "the edit is queued for the workspace");
+    let committed = window.workspace.commit(&mut window.instance).unwrap();
     assert_eq!(committed, queued, "the edit is committed, never refused");
     window.instance.update();
 }
 
 #[test]
-fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_room_once_it_can() {
+fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once_it_can() {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let (ada_inbox, grace_inbox): (Queue, Queue) = (Queue::default(), Queue::default());
     let (full, never) = (Arc::new(AtomicBool::new(false)), Arc::default());
@@ -364,45 +364,45 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_room_once_it_c
         automerge::AutoCommit::new(),
     );
     for _ in 0..100 {
-        ada.instance.sync(Some(ada.room.doc()));
+        ada.instance.sync(Some(ada.workspace.doc()));
         ada.instance.update();
-        if !ada.room.commit(&mut ada.instance).unwrap().is_empty() {
+        if !ada.workspace.commit(&mut ada.instance).unwrap().is_empty() {
             break;
         }
     }
     let root = ada.instance.host().unwrap().root_of(APP).unwrap();
-    assert!(grace.room.receive(&mut grace.instance));
+    assert!(grace.workspace.receive(&mut grace.instance));
     grace.instance.update();
 
     // Ada's collab client is full: what she does is committed to her record all the same, and
-    // waits there for the room.
+    // waits there for the workspace.
     full.store(true, Ordering::SeqCst);
     add_one(&mut ada, &root, "ada");
     add_one(&mut ada, &root, "ada");
     assert_eq!(value_at(&ada.instance, &root), 2, "ada's window keeps both");
-    assert!(ada.room.unsent(), "both wait for the room");
+    assert!(ada.workspace.unsent(), "both wait for the workspace");
     assert!(grace_inbox.lock().unwrap().is_empty(), "nothing went out");
 
     // Meanwhile grace's change reaches ada: what ada made still waits to go, never taken for
     // sent.
     add_one(&mut grace, &root, "grace");
-    assert!(ada.room.receive(&mut ada.instance));
+    assert!(ada.workspace.receive(&mut ada.instance));
     assert!(
-        ada.room.unsent(),
-        "what ada made still waits for the room after grace's change came in"
+        ada.workspace.unsent(),
+        "what ada made still waits for the workspace after grace's change came in"
     );
 
-    // The client has room again: ada's next frame hands the room all of it, as one change.
+    // The client has workspace again: ada's next frame hands the workspace all of it, as one change.
     full.store(false, Ordering::SeqCst);
-    assert!(ada.room.commit(&mut ada.instance).unwrap().is_empty());
-    assert!(!ada.room.unsent(), "everything went out");
+    assert!(ada.workspace.commit(&mut ada.instance).unwrap().is_empty());
+    assert!(!ada.workspace.unsent(), "everything went out");
     assert_eq!(grace_inbox.lock().unwrap().len(), 1, "as one change");
-    assert!(grace.room.receive(&mut grace.instance));
+    assert!(grace.workspace.receive(&mut grace.instance));
     grace.instance.update();
     ada.instance.update();
     assert_eq!(
-        grace.room.doc().clone().get_heads(),
-        ada.room.doc().clone().get_heads(),
+        grace.workspace.doc().clone().get_heads(),
+        ada.workspace.doc().clone().get_heads(),
         "grace holds everything ada made while her client was full"
     );
     assert_eq!(
@@ -425,7 +425,7 @@ fn value_at(instance: &Instance, root: &tilolang_tilo::runtime::ResourceRef) -> 
     }
 }
 
-/// The room as its host holds it: ada's window made the counter's root. The root, and the room's
+/// The workspace as its host holds it: ada's window made the counter's root. The root, and the workspace's
 /// history.
 fn made_by_ada(
     route: &RouteSpec,
@@ -441,21 +441,21 @@ fn made_by_ada(
         automerge::AutoCommit::new(),
     );
     for _ in 0..100 {
-        ada.instance.sync(Some(ada.room.doc()));
+        ada.instance.sync(Some(ada.workspace.doc()));
         ada.instance.update();
-        if !ada.room.commit(&mut ada.instance).unwrap().is_empty() {
+        if !ada.workspace.commit(&mut ada.instance).unwrap().is_empty() {
             break;
         }
     }
     let root = ada.instance.host().unwrap().root_of(APP).unwrap();
-    (root, ada.room.doc().clone().save())
+    (root, ada.workspace.doc().clone().save())
 }
 
-/// A room another host governs: the record is the broker's committed read, the window's edit is a
+/// A workspace another host governs: the record is the broker's committed read, the window's edit is a
 /// step of its own that the person's Undo takes back (and Redo brings back), each sent on the
-/// room's route, and the record's on-disk copy keeps up with it.
+/// workspace's route, and the record's on-disk copy keeps up with it.
 /// How many versions the record's History lists as `person`'s.
-fn steps_of(record: &RoomRecord, person: &str) -> usize {
+fn steps_of(record: &InstanceRecord, person: &str) -> usize {
     let listed = record
         .view_history(br#"{"op":"history","last":null}"#)
         .unwrap()
@@ -470,9 +470,9 @@ fn steps_of(record: &RoomRecord, person: &str) -> usize {
 }
 
 #[test]
-fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
-    let room_id = uuid::Uuid::new_v4();
-    let route = RouteSpec::app(APP, room_id);
+fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
+    let workspace_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, workspace_id);
     let platform = Rc::new(Counter {
         ids: RefCell::new(String::new()),
     });
@@ -481,11 +481,11 @@ fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
 
     // Grace's window opens on a connection whose route the broker reads committed.
     let (manager, _) =
-        CollaborationManager::native_initial_fixture_for_test(APP, room_id, committed);
+        CollaborationManager::native_initial_fixture_for_test(APP, workspace_id, committed);
     let profile = tempfile::tempdir().unwrap();
     let documents: Rc<dyn durable_store::DurableStore> =
         Rc::new(app_state::FsStore::new(profile.path()));
-    let mut record = RoomRecord::open(manager, &documents, "grace").unwrap();
+    let mut record = InstanceRecord::open(manager, &documents, "grace").unwrap();
     let (app_end, _patches) = pair();
     let mut instance = Instance::new(
         Config {
@@ -506,12 +506,12 @@ fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
     assert_eq!(
         instance.host().unwrap().root_of(APP).unwrap(),
         root,
-        "grace's window reads the root the room's committed read holds"
+        "grace's window reads the root the workspace's committed read holds"
     );
     assert_eq!(value_at(&instance, &root), 0);
     assert_eq!(record.can_undo(), (false, false), "nothing of hers yet");
 
-    // Grace adds one: the runtime plans it, the room path commits and sends it.
+    // Grace adds one: the runtime plans it, the workspace path commits and sends it.
     let host = instance.host().unwrap();
     let increment = host
         .package(APP)
@@ -534,7 +534,7 @@ fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
         )
         .unwrap();
     let queued = tilolang_tilo::instance::queue_commits(&host, &instance.outgoing(), first, None);
-    assert!(!queued.is_empty(), "the edit is queued for the room");
+    assert!(!queued.is_empty(), "the edit is queued for the workspace");
     let sent = record.commit(&mut instance).unwrap();
     assert_eq!(sent, queued);
     instance.update();
@@ -565,7 +565,8 @@ fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
     );
     let heads = record.doc().clone().get_heads();
     let mut store =
-        collaboration::record::save::room_document(&documents, APP, &room_id.to_string()).unwrap();
+        collaboration::record::save::room_document(&documents, APP, &workspace_id.to_string())
+            .unwrap();
     drop(record);
     let mut stored = store
         .load_complete()

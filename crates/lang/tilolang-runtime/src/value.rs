@@ -22,7 +22,7 @@ pub struct ResourceRef {
 }
 
 impl ResourceRef {
-    /// Whether this names a package's per-room root (`root-<type id>`), which the host makes
+    /// Whether this names a package's per-workspace root (`root-<type id>`), which the host makes
     /// the first time it is opened; until then it reads as it would start.
     #[must_use]
     pub fn is_unmade_root(&self) -> bool {

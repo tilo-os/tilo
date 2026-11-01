@@ -1383,7 +1383,7 @@ impl AppWindow {
     }
 
     /// Tell the app `message` with the next batch: what the embedder knows that the app does
-    /// not, such as the names of the room's participants.
+    /// not, such as the names of the workspace's participants.
     pub fn tell(&mut self, message: ToApp) {
         self.out.push(message);
     }

@@ -32,10 +32,11 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::room_actions::RoomMember;
+use tilo_agent_participant::workspace_actions::WorkspaceMember;
 use tilo_agent_participant::{
     AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, FeedbackReviewer,
-    HostActions, HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost, Witness,
+    HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness, WorkspaceActions,
+    WorkspaceRecordsLink,
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -300,9 +301,9 @@ struct HostActionsPlane(HostActions);
 /// The app-serving plane of a host that runs no agents: the rooms' page
 /// actions alone. A member's own actions on a room record (linking their
 /// account on the room's Discord from the profile card) need nothing more.
-struct RoomRecordsPlane(RoomActions);
+struct WorkspaceRecordsPlane(WorkspaceActions);
 
-impl crate::AppServingPlane for RoomRecordsPlane {
+impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn serve(
         &self,
         workspace_id: u64,
@@ -339,14 +340,14 @@ impl crate::AppServingPlane for HostActionsPlane {
 /// The relay's own device, as the room actions service joins its rooms.
 struct RelayRecordsLink {
     user_public_key: [u8; 32],
-    member: RoomMember,
+    member: WorkspaceMember,
     rooms: Option<crate::rooms::Rooms>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
 }
 
-impl RoomRecordsLink for RelayRecordsLink {
+impl WorkspaceRecordsLink for RelayRecordsLink {
     fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
         self.feedback_reviewer.clone()
     }
@@ -355,7 +356,7 @@ impl RoomRecordsLink for RelayRecordsLink {
         self.user_public_key
     }
 
-    fn member(&self) -> RoomMember {
+    fn member(&self) -> WorkspaceMember {
         self.member.clone()
     }
 
@@ -365,7 +366,7 @@ impl RoomRecordsLink for RelayRecordsLink {
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
-    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
+    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
         self.member.runtime.block_on(
             self.rooms
                 .as_ref()?
@@ -378,7 +379,7 @@ impl RoomRecordsLink for RelayRecordsLink {
         workspace: u64,
         caller: &tilo_actions::remote::Caller,
         source: &tilo_peer_state::document_frame::DocumentRoute,
-    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+    ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
         self.member.runtime.block_on(
             self.rooms
                 .as_ref()
@@ -449,7 +450,7 @@ pub async fn start_serving_records(
     let host_cert = identity.device_cert.clone();
     let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
     cfg.services.app_serving = true;
-    let plane = Arc::new(RoomRecordsPlane(RoomActions::new(catalogue)));
+    let plane = Arc::new(WorkspaceRecordsPlane(WorkspaceActions::new(catalogue)));
     let web_entry = cfg.web_entry.clone();
     let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
     attach_records(&plane.0, &relay, &host_cert, web_entry, feedback_reviewer)?;
@@ -458,20 +459,20 @@ pub async fn start_serving_records(
 
 /// Give `rooms` the records `relay` holds, joined as its own device.
 fn attach_records(
-    rooms: &RoomActions,
+    actions: &WorkspaceActions,
     relay: &Relay,
     host_cert: &DeviceCert,
     web_entry: Option<String>,
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
 ) -> Result<(), RelayError> {
-    rooms
+    actions
         .attach(Arc::new(RelayRecordsLink {
             user_public_key: relay.room_records().user_public_key(),
             rooms: relay.rooms().cloned(),
             browser_origin: Arc::clone(&relay.browser_origin),
             web_entry,
             feedback_reviewer,
-            member: RoomMember {
+            member: WorkspaceMember {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
                 key: relay.room_records().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
@@ -523,7 +524,7 @@ async fn start_inner(
     cfg.services.app_serving = true;
     let plane = Arc::new(HostActionsPlane(HostActions {
         supervisor: SupervisorHost(agents.supervisor().clone()),
-        rooms: RoomActions::new(catalogue),
+        actions: WorkspaceActions::new(catalogue),
     }));
     let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
@@ -534,7 +535,7 @@ async fn start_inner(
         None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
     };
     attach_records(
-        &plane.0.rooms,
+        &plane.0.actions,
         &relay,
         &host_cert,
         web_entry,

@@ -2,7 +2,7 @@
 //!
 //! The runtime asks before every invocation it makes on its own (a flow's step, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the
-//! person's authority in the room ([`Standing`]), bounded by whoever acts for them (an agent, by
+//! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
 //! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
 //! its application ([`Subject::App`]); code a person or an agent wrote (an embedded block) is
@@ -28,21 +28,21 @@ use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal};
 
 use crate::meta::{MetaExt as _, action_kind};
 
-/// Where the host reads the person's standing in the room, each time it decides.
+/// Where the host reads the person's standing in the workspace, each time it decides.
 pub type StandingSource = dyn Fn() -> Option<Standing>;
 
 /// The standing of `person` holding nothing: for a host that only reads, so that nothing its
 /// runtime might invoke runs.
 pub fn holding_nothing(person: &str) -> impl Fn() -> Option<Standing> + 'static {
     let standing = Standing::person(
-        tilo_action_policy::WorkspacePolicy::new(NO_ROOM, format!("{person}'s owner")),
+        tilo_action_policy::WorkspacePolicy::new(NO_WORKSPACE, format!("{person}'s owner")),
         person,
     );
     move || Some(standing.clone())
 }
 
-/// The room a host without a standing decides in.
-const NO_ROOM: &str = "local";
+/// The workspace a host without a standing decides in.
+const NO_WORKSPACE: &str = "local";
 
 #[derive(Default)]
 struct State {
@@ -68,7 +68,7 @@ pub struct TiloAuthority {
 }
 
 impl TiloAuthority {
-    /// The authority of a host for `viewer`, the person at the window, whose standing in the room
+    /// The authority of a host for `viewer`, the person at the window, whose standing in the workspace
     /// `standing` reads.
     pub fn new(viewer: Principal, standing: impl Fn() -> Option<Standing> + 'static) -> Self {
         Self {
@@ -142,7 +142,7 @@ pub fn migration_of(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix(MIGRATION_PREFIX)?.split_once('@')
 }
 
-/// The subject a principal is in the room's policy: an agent by its id, a person by theirs.
+/// The subject a principal is in the workspace's policy: an agent by its id, a person by theirs.
 fn principal_subject(id: &str) -> Subject {
     match id.strip_prefix("agent:") {
         Some(agent) => Subject::agent(agent),
@@ -167,8 +167,8 @@ impl Authority for TiloAuthority {
     fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let standing = (self.standing)();
         let state = self.state.borrow();
-        let room = standing.as_ref().map_or(NO_ROOM, Standing::room);
-        let room_grants: &[Grant] = standing
+        let workspace = standing.as_ref().map_or(NO_WORKSPACE, Standing::room);
+        let workspace_grants: &[Grant] = standing
             .as_ref()
             .map_or(&[], |standing| &standing.policy.grants);
         let kind = state
@@ -176,7 +176,7 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::room(room).app(&action.app).kind(kind);
+        let node = TreePath::room(workspace).app(&action.app).kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
         let own = standing
@@ -200,12 +200,12 @@ impl Authority for TiloAuthority {
             _ => person,
         });
         // A migration is the platform running the package's own update of its records on the
-        // room's origin: no person's grants decide it, the package's code still bounds it.
+        // workspace's origin: no person's grants decide it, the package's code still bounds it.
         let migration = migration_of(&invoker.0).is_some();
         let person_party = match (&standing, person, agent) {
             _ if migration => Party::default().owning(TreePath::root()),
             (Some(standing), Some(person), _) => standing.policy.party(person),
-            // An agent nobody delegated: only what the room grants it.
+            // An agent nobody delegated: only what the workspace grants it.
             (Some(standing), None, _) => standing
                 .policy
                 .party_of(Subject::agent(agent_id(&invoker.0))),
@@ -213,9 +213,11 @@ impl Authority for TiloAuthority {
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => {
-                Some(roles::agent_delegation(room, agent_id(&invoker.0), person))
-            }
+            (Some(_), Some(person)) => Some(roles::agent_delegation(
+                workspace,
+                agent_id(&invoker.0),
+                person,
+            )),
             _ => None,
         };
         // Each author of the code that led here, once, with what it holds of its own.
@@ -232,12 +234,12 @@ impl Authority for TiloAuthority {
                 (Subject::app(app.clone()), Some(app))
             };
             let trusted = state.trusted.contains(module);
-            let mut own = authorship::code_grants(room, &subject, trusted);
+            let mut own = authorship::code_grants(workspace, &subject, trusted);
             if let Some(app) = &of_app
                 && action.own
                 && *module == action.module
             {
-                own.push(roles::app_authorship(room, app, subject.clone()));
+                own.push(roles::app_authorship(workspace, app, subject.clone()));
             }
             match authors.iter_mut().find(|(known, _, _)| *known == subject) {
                 Some((_, held, _)) if trusted => held.extend(own),
@@ -250,16 +252,16 @@ impl Authority for TiloAuthority {
         let earlier = crate::schema::earlier_ids();
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
-            policy = policy.bounded_by(delegation.party(room_grants));
+            policy = policy.bounded_by(delegation.party(workspace_grants));
         }
         for (subject, own, of_app) in &authors {
-            // The room's grants bound an application's code; a block's author holds only what
+            // The workspace's grants bound an application's code; a block's author holds only what
             // its code may.
-            let room = if *of_app { room_grants } else { &[] };
+            let workspace = if *of_app { workspace_grants } else { &[] };
             policy = policy.bounded_by(authorship::code_party_in(
                 subject,
                 own,
-                room,
+                workspace,
                 Some(&earlier),
             ));
         }
@@ -275,7 +277,7 @@ mod tests {
     use tilo_action_policy::{ActionKind, WorkspacePolicy};
     use tilolang_runtime::meta::EffectClass;
 
-    const ROOM: &str = "room";
+    const WORKSPACE: &str = "workspace";
     const PERSON: &str = "ada";
     const APP: &str = "so.tilo.lang.todo";
 
@@ -302,7 +304,7 @@ mod tests {
     }
 
     fn authority(grants: Vec<Grant>) -> TiloAuthority {
-        let mut policy = WorkspacePolicy::new(ROOM, PERSON);
+        let mut policy = WorkspacePolicy::new(WORKSPACE, PERSON);
         policy.grants.extend(grants);
         let standing = Standing::person(policy, PERSON);
         let authority = TiloAuthority::new(Principal::new(PERSON), move || Some(standing.clone()));
@@ -317,7 +319,7 @@ mod tests {
     fn a_package_whose_records_are_each_members_own_is_its_persons_alone() {
         let ada = "ab".repeat(32);
         let owner = "ef".repeat(32);
-        let mut policy = WorkspacePolicy::new(ROOM, owner.clone());
+        let mut policy = WorkspacePolicy::new(WORKSPACE, owner.clone());
         policy
             .members
             .insert(ada.clone(), tilo_action_policy::Role::Editor);
@@ -330,20 +332,20 @@ mod tests {
             state.apps.insert(module(), APP.to_owned());
         }
         let change = info(EffectClass::Undoable, true);
-        let room_owner = Principal::new(owner);
-        // Shared, the room's owner may change what the package holds.
+        let workspace_owner = Principal::new(owner);
+        // Shared, the workspace's owner may change what the package holds.
         assert_eq!(
-            authority.decide(&room_owner, &[module()], &change),
+            authority.decide(&workspace_owner, &[module()], &change),
             Decision::Allow
         );
-        // Each member's own, it is Ada's record: only she acts on it, not even the room's owner.
+        // Each member's own, it is Ada's record: only she acts on it, not even the workspace's owner.
         authority.state.borrow_mut().own.insert(APP.to_owned());
         assert_eq!(
             authority.decide(&Principal::new(ada), &[module()], &change),
             Decision::Allow
         );
         assert_eq!(
-            authority.decide(&room_owner, &[module()], &change),
+            authority.decide(&workspace_owner, &[module()], &change),
             Decision::Deny
         );
     }
@@ -351,7 +353,7 @@ mod tests {
     #[test]
     fn the_persons_agent_answer_denies_the_agent() {
         let answer = agent_answers::grant(
-            ROOM,
+            WORKSPACE,
             "helper",
             (&AnswerScope::app(APP), ActionKind::Undoable),
             Answer::Deny,
@@ -418,7 +420,7 @@ mod tests {
         let stranger = ModuleHash::principal("person:stranger");
         let outside = info(EffectClass::Outside, false);
         assert_eq!(authority.decide(&me, &[stranger], &outside), Decision::Ask);
-        // Trusted code reaching outside asks too, unless the room grants its app that.
+        // Trusted code reaching outside asks too, unless the workspace grants its app that.
         assert_eq!(
             authority.decide(&me, &[module()], &info(EffectClass::Outside, true)),
             Decision::Ask
@@ -426,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rooms_denials_reach_the_runtime() {
+    fn the_workspaces_denials_reach_the_runtime() {
         let me = Principal::new("bob");
         // Bob is no member: nothing he invokes runs.
         let authority = authority(Vec::new());
@@ -436,7 +438,7 @@ mod tests {
         let denied = Grant::new(
             "deny-todo",
             Subject::app(APP),
-            TreePath::room(ROOM),
+            TreePath::room(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -474,11 +476,11 @@ mod tests {
             Decision::Allow
         );
 
-        // The room's denial of Todo's code holds for Tasks' code.
+        // The workspace's denial of Todo's code holds for Tasks' code.
         let app_denied = Grant::new(
             "deny-todo",
             Subject::app(APP),
-            TreePath::room(ROOM),
+            TreePath::room(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -489,7 +491,7 @@ mod tests {
         );
         // The person's answer for their agent on Todo holds on Tasks.
         let answer = agent_answers::grant(
-            ROOM,
+            WORKSPACE,
             "helper",
             (&AnswerScope::app(APP), ActionKind::Undoable),
             Answer::Deny,
@@ -503,11 +505,11 @@ mod tests {
             Decision::Deny
         );
         // A grant on Todo's node, `room/app:todo/**`, decides for a member on Tasks.
-        let mut policy = WorkspacePolicy::new(ROOM, PERSON);
+        let mut policy = WorkspacePolicy::new(WORKSPACE, PERSON);
         let node_denied = Grant::new(
             "no-todo-for-bob",
             Subject::person("bob"),
-            TreePath::room(ROOM).app(APP).rest(),
+            TreePath::room(WORKSPACE).app(APP).rest(),
             tilo_action_policy::KindSet::ALL,
             Answer::Deny,
             Subject::person(PERSON),
@@ -515,7 +517,7 @@ mod tests {
         let editor = Grant::new(
             "bob-edits",
             Subject::person("bob"),
-            TreePath::room(ROOM),
+            TreePath::room(WORKSPACE),
             tilo_action_policy::KindSet::ALL,
             Answer::Allow,
             Subject::person(PERSON),
@@ -529,7 +531,7 @@ mod tests {
             bob.decide(&Principal::new("bob"), std::slice::from_ref(&tasks), &own),
             Decision::Deny
         );
-        // Another app of the room is not Todo's.
+        // Another app of the workspace is not Todo's.
         let notes = ActionInfo {
             app: "so.tilo.lang.notes".to_owned(),
             ..action(EffectClass::Undoable)

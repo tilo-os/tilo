@@ -1,4 +1,4 @@
-//! The index: what the room record holds of one package's resources, kept on disk, paged, and
+//! The index: what the workspace record holds of one package's resources, kept on disk, paged, and
 //! stamped with the record heads it reflects (docs/designs/app-language/search.md, "Who indexes").
 //!
 //! The store reads lists, filters and the fields rows show from the index, not from the
@@ -26,11 +26,11 @@
 //! Apps own neither their pixels nor their storage, so the index belongs with the committed
 //! documents, in the platform's storage service, where the search host would query the same
 //! index instead of keeping a copy of its own. For now it is kept in the app's cache directory,
-//! per room ([`room_dir`]), and only the app reads it. The storage service holds the
-//! committed documents only of rooms a host governs: the rooms this device minted, joined with
+//! per workspace ([`workspace_dir`]), and only the app reads it. The storage service holds the
+//! committed documents only of workspaces a host governs: the workspaces this device minted, joined with
 //! a direct invite, or keeps as a person's own still go through the shell's own engine, and
 //! their records live in the app's profile. Moved now, the index would have no record to be
-//! derived from in those rooms, or would need a second path for them. Once every room's
+//! derived from in those workspaces, or would need a second path for them. Once every workspace's
 //! committed documents live in one storage service (the shell's two engines made one), the
 //! index moves there: derived beside the record as each change commits, read by apps and the
 //! search host through the committed-document reads they already make.
@@ -228,7 +228,7 @@ impl IndexReads {
     }
 }
 
-/// One package's index in one workspace: a file, or memory for a room nobody keeps.
+/// One package's index in one workspace: a file, or memory for a workspace nobody keeps.
 pub struct Index {
     app: String,
     /// The schema of the package's records it was built for.
@@ -273,11 +273,11 @@ pub fn file_of(dir: &Path, app: &str) -> PathBuf {
     dir.join(format!("{name}.index"))
 }
 
-/// The directory of the indexes of the room `room` (the workspace a window's launch names),
-/// under `base`: known before the room's record is, so a window opens over them first.
+/// The directory of the indexes of the workspace `workspace` (the workspace a window's launch names),
+/// under `base`: known before the workspace's record is, so a window opens over them first.
 #[must_use]
-pub fn room_dir(base: &Path, room: &str) -> PathBuf {
-    let name: String = room
+pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
+    let name: String = workspace
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {
@@ -287,17 +287,17 @@ pub fn room_dir(base: &Path, room: &str) -> PathBuf {
             }
         })
         .collect();
-    base.join("rooms").join(name)
+    base.join("workspaces").join(name)
 }
 
-/// The directory of the indexes of the record `record` of the room `room` under `base`: the
-/// room's ([`room_dir`]) for the workspace's record of an app, and one of its own for another
+/// The directory of the indexes of the record `record` of the workspace `workspace` under `base`: the
+/// workspace's ([`workspace_dir`]) for the workspace's record of an app, and one of its own for another
 /// record (a member's own), so what one record holds is never shown as another's.
 #[must_use]
-pub fn record_dir(base: &Path, room: &str, record: Option<&str>) -> PathBuf {
+pub fn record_dir(base: &Path, workspace: &str, record: Option<&str>) -> PathBuf {
     match record {
-        None => room_dir(base, room),
-        Some(record) => room_dir(base, &format!("{room}~{record}")),
+        None => workspace_dir(base, workspace),
+        Some(record) => workspace_dir(base, &format!("{workspace}~{record}")),
     }
 }
 
@@ -348,7 +348,7 @@ impl Index {
             .create(path);
         let db = match opened {
             Ok(db) => db,
-            // Another index holds the file (a second window on the room): it is not this one's
+            // Another index holds the file (a second window on the workspace): it is not this one's
             // to empty.
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(IndexError::Io("the index is open elsewhere".into()));
@@ -376,7 +376,7 @@ impl Index {
         }
     }
 
-    /// An empty index of `app` in memory, for a room that is not kept on disk.
+    /// An empty index of `app` in memory, for a workspace that is not kept on disk.
     ///
     /// # Errors
     /// Memory cannot be had for it.

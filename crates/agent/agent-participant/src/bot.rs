@@ -1,4 +1,4 @@
-//! Installed bots on the room's host: what a bot reads of the records it
+//! Installed bots on the workspace's host: what a bot reads of the records it
 //! watches.
 
 pub mod door;
@@ -20,7 +20,7 @@ pub use item_json::item_json;
 /// was before (at the change's parents) and after (at the change).
 #[must_use]
 pub fn events_since(
-    room: &str,
+    workspace: &str,
     record: &str,
     kind: &str,
     doc: &automerge::Automerge,
@@ -40,7 +40,7 @@ pub fn events_since(
         else {
             continue;
         };
-        let mut event = dispatch::event_of(room, record, kind, &hash.to_string(), &context);
+        let mut event = dispatch::event_of(workspace, record, kind, &hash.to_string(), &context);
         if let Some(item) = &event.item {
             event.before = item_json(doc, &parents, &item.id);
             event.after = item_json(doc, &[hash], &item.id);
@@ -84,7 +84,7 @@ mod tests {
         doc.put(&m1, "text", "edited").unwrap();
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let events = events_since(
-            "room",
+            "workspace",
             "rec",
             "chat.workspace",
             doc.document(),
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(event.after.as_ref().unwrap()["text"], "edited");
         assert_eq!(heads, &hex(&doc.get_heads()));
         assert!(
-            events_since("room", "rec", "chat.workspace", doc.document(), heads).is_empty(),
+            events_since("workspace", "rec", "chat.workspace", doc.document(), heads).is_empty(),
             "nothing is read twice past the heads it returned"
         );
     }

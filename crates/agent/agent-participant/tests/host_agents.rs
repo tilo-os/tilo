@@ -72,7 +72,7 @@ use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
 };
 
-use support::{Device, ROOM, enrol, ready, start_peer, workspace};
+use support::{Device, ROOM as WORKSPACE, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -82,7 +82,7 @@ struct Hosted {
     relay: Relay,
     web: WebHandle,
     agents: AgentHost,
-    /// The host's device, whose own documents the room holds too.
+    /// The host's device, whose own documents the workspace holds too.
     device: [u8; 32],
 }
 
@@ -246,7 +246,7 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join_placed(ROOM, "Workspace").unwrap();
+        peer.join_placed(WORKSPACE, "Workspace").unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
@@ -404,7 +404,7 @@ impl Browser {
                 let page = match Replica::open(
                     &catalogue,
                     app,
-                    ROOM,
+                    WORKSPACE,
                     "ada",
                     tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
@@ -569,7 +569,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "label": "Writer",
-                    "rooms": [ROOM],
+                    "rooms": [WORKSPACE],
                     "apps": [NOTES, SHEETS],
                     "expiresInSecs": 3600,
                 })
@@ -604,7 +604,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Create a new note titled \"Groceries\"",
-                    "room": ROOM,
+                    "room": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -636,13 +636,13 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         "{:?}",
         info.tasks[0]
     );
-    assert_eq!(info.room.as_deref(), Some(ROOM));
+    assert_eq!(info.room.as_deref(), Some(WORKSPACE));
     let steps: Vec<_> = info.tasks[0]
         .steps
         .iter()
         .map(|step| step.action.as_str())
         .collect();
-    // The room has no Notes record yet: the step names what a new one
+    // The workspace has no Notes record yet: the step names what a new one
     // publishes and opens that record itself.
     assert_eq!(steps, ["new-note"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
@@ -678,7 +678,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     drop(presence);
 
     // 4. The host restarts. The agent resumes from the state directory and
-    // edits the room's existing sheet, not a new one.
+    // edits the workspace's existing sheet, not a new one.
     browser.peer.close();
     hosted.agents.flush();
     let saved = std::fs::read_to_string(hosted.agents.state_file()).unwrap();
@@ -719,7 +719,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     assert_eq!(
         bodies.len(),
         sheets_before.max(1),
-        "it reopened the room's sheet"
+        "it reopened the workspace's sheet"
     );
     assert!(
         bodies
@@ -825,7 +825,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 }
 
-/// The record a document route names. A room-record app (Notes, Chat)
+/// The record a document route names. A workspace-record app (Notes, Chat)
 /// publishes its package-primary record under the empty record id.
 fn route_record(record: &str) -> ui::record::RecordId {
     if record.is_empty() {
@@ -864,7 +864,7 @@ impl Page {
         let mut page = Replica::open(
             &common::catalogue(),
             app,
-            ROOM,
+            WORKSPACE,
             "ada",
             tilo_agent_participant::ReplicaActor::Owner,
             Seed::New,
@@ -872,7 +872,7 @@ impl Page {
         .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
-            cluster_id: ROOM.into(),
+            cluster_id: WORKSPACE.into(),
             record: page.wire_record().to_owned(),
         };
         browser
@@ -901,7 +901,7 @@ impl Page {
                 let mut app = Replica::open(
                     &common::catalogue(),
                     SHEETS,
-                    ROOM,
+                    WORKSPACE,
                     "bea",
                     tilo_agent_participant::ReplicaActor::Owner,
                     Seed::Existing {
@@ -980,7 +980,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     // The person opens a workbook before any agent exists, and it is in the
-    // room (sealed and durable on the host) before the agent arrives.
+    // workspace (sealed and durable on the host) before the agent arrives.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
@@ -992,7 +992,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "label": "Writer",
-                    "rooms": [ROOM],
+                    "rooms": [WORKSPACE],
                     "apps": [SHEETS],
                     "expiresInSecs": 3600,
                 })
@@ -1020,7 +1020,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Add a new sheet named \"Budget\"",
-                    "room": ROOM,
+                    "room": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -1054,7 +1054,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         })
         .await;
 
-    // A reload: a new session replays the room and rebuilds the workbook
+    // A reload: a new session replays the workspace and rebuilds the workbook
     // from what the host kept.
     let reloaded_device = enrol(&root, "browser, reloaded", DeviceCapabilities::member());
     let mut reloaded = Browser::open(&hosted, &reloaded_device, &host).await;
@@ -1069,7 +1069,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             let replayed = Replica::open(
                 &common::catalogue(),
                 SHEETS,
-                ROOM,
+                WORKSPACE,
                 "ada",
                 tilo_agent_participant::ReplicaActor::Owner,
                 Seed::Existing {
@@ -1123,7 +1123,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "label": "Writer",
-                    "rooms": [ROOM],
+                    "rooms": [WORKSPACE],
                     "apps": [SHEETS],
                     "expiresInSecs": 3600,
                 })
@@ -1151,7 +1151,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Add a new sheet named \"Budget\"",
-                    "room": ROOM,
+                    "room": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -1246,7 +1246,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             SUPERVISOR_RESOURCE,
             REQUEST_GRANT_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"label": "Writer", "rooms": [ROOM], "apps": [SHEETS], "expiresInSecs": 3600})
+                serde_json::json!({"label": "Writer", "rooms": [WORKSPACE], "apps": [SHEETS], "expiresInSecs": 3600})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1268,7 +1268,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"grant": grant, "task": "Add a new sheet named \"Budget\"", "room": ROOM})
+                serde_json::json!({"grant": grant, "task": "Add a new sheet named \"Budget\"", "room": WORKSPACE})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1431,7 +1431,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
             InvokeArgument::Json(
                 serde_json::json!({
                     "label": "Careful",
-                    "rooms": [ROOM],
+                    "rooms": [WORKSPACE],
                     "apps": [EBOOK],
                     "expiresInSecs": 3600,
                 })
@@ -1456,7 +1456,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "room": ROOM })
+                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "room": WORKSPACE })
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1470,7 +1470,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let question = asked(&mut device).await;
     assert_eq!(question.agent_id, grant);
     assert_eq!(question.agent_label, "Careful");
-    assert_eq!(question.room, ROOM);
+    assert_eq!(question.room, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
     assert_eq!(question.resource_label, "Books");
@@ -1572,7 +1572,7 @@ async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> St
             SUPERVISOR_RESOURCE,
             REQUEST_GRANT_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"label": label, "rooms": [ROOM], "apps": apps,
+                serde_json::json!({"label": label, "rooms": [WORKSPACE], "apps": apps,
                                    "expiresInSecs": 3600})
                 .as_object()
                 .unwrap()
@@ -1593,18 +1593,18 @@ async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> St
     grant
 }
 
-/// One written step of the room's Chat.
+/// One written step of the workspace's Chat.
 fn chat_step(resource: &str, action: &str, arguments: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({"app": CHAT, "resource": resource, "action": action, "arguments": arguments})
 }
 
-/// Two agents talk in the room's Chat. Its messages are kept in parts
+/// Two agents talk in the workspace's Chat. Its messages are kept in parts
 /// beside the chat record: what one agent posts goes out on its part's own
 /// route, the other, holding the chat record, has it there, and the chat
 /// names it by the label the poster's person gave it, which the poster
 /// introduced itself with on opening the chat.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
+async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -1618,7 +1618,7 @@ async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
     let poster = approved_grant(&mut browser, "Poster", &[CHAT]).await;
     let channel = chat::record::CHAT_CHANNEL;
 
-    // The reader starts the room's chat (its first channels) and holds it.
+    // The reader starts the workspace's chat (its first channels) and holds it.
     let begin = serde_json::json!([chat_step(
         "chat.workspace",
         "begin-chat",
@@ -1626,7 +1626,7 @@ async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
     )]);
     let spawn = |grant: &str, task: &serde_json::Value| {
         InvokeArgument::Json(
-            serde_json::json!({"grant": grant, "task": task.to_string(), "room": ROOM})
+            serde_json::json!({"grant": grant, "task": task.to_string(), "room": WORKSPACE})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -1697,7 +1697,7 @@ async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
             .cloned()
             .expect("the export is kept as content");
         let exported: serde_json::Value =
-            serde_json::from_slice(&hosted.agents.content(ROOM, &address).unwrap()).unwrap();
+            serde_json::from_slice(&hosted.agents.content(WORKSPACE, &address).unwrap()).unwrap();
         let posted = exported["messages"]
             .as_array()
             .unwrap()

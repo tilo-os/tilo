@@ -429,7 +429,7 @@ impl Runtime {
         Ok(self.core.store.borrow_mut().create(&record)?)
     }
 
-    /// Create the per-room root of a type, by id or by a name one loaded package declares: the
+    /// Create the per-workspace root of a type, by id or by a name one loaded package declares: the
     /// resource `root T` and a named root reach (`root-<type id>`).
     ///
     /// # Errors

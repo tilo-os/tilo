@@ -7,7 +7,7 @@ use ui::record::RecordId;
 
 use super::process::Process;
 use super::proto::{Mode, Reply, Request};
-use crate::room_actions::ViewReadPolicy;
+use crate::workspace_actions::ViewReadPolicy;
 
 fn json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, String> {
     serde_json::to_string(value).map_err(|error| error.to_string())
@@ -38,7 +38,7 @@ pub(crate) struct ConfinedRead {
 }
 
 impl ConfinedRead {
-    /// Mount `record` of `app_id` in `room` over `source` under `policy`.
+    /// Mount `record` of `app_id` in `workspace` over `source` under `policy`.
     ///
     /// # Errors
     ///
@@ -46,7 +46,7 @@ impl ConfinedRead {
     /// mount.
     pub(crate) fn prepare(
         app_id: &str,
-        room: &str,
+        workspace: &str,
         record: &RecordId,
         source: Vec<u8>,
         policy: &ViewReadPolicy,
@@ -54,7 +54,7 @@ impl ConfinedRead {
         let mut process = Process::start(Mode::Read)?;
         done(process.call(&Request::ReadPrepare {
             app_id: app_id.to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             record: record.as_str().to_owned(),
             source,
             policy: json(policy)?,

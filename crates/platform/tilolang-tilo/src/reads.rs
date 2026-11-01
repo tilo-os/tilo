@@ -1,4 +1,4 @@
-//! Reading one field of one resource straight from the room record, and naming the fields a
+//! Reading one field of one resource straight from the workspace record, and naming the fields a
 //! set of Automerge changes wrote.
 //!
 //! A read walks from the record's root to the resource's map (`tl/<app>/<id>`), to the item's

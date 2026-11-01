@@ -13,7 +13,7 @@ use tilo_desktop::feedback::transport::{
 };
 use ui::feedback::{Error, Receipt, Submission};
 
-use super::{AppCatalogue, DocumentRoute, RoomMember, RoomRecordsLink, reads, record_of};
+use super::{AppCatalogue, DocumentRoute, WorkspaceMember, WorkspaceRecordsLink, reads, record_of};
 
 fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
     ActionHostError::Unavailable {
@@ -26,7 +26,7 @@ fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
 /// A prompt that is not exactly the review contract is not asked, and the
 /// model's answer goes back holding only quotes from the texts asked about.
 pub(super) fn answer_and_review(
-    link: &Arc<dyn RoomRecordsLink>,
+    link: &Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
     workspace: u64,
     caller: Caller,
@@ -64,7 +64,7 @@ pub(super) fn answer_and_review(
 }
 
 pub(super) fn answer(
-    link: &Arc<dyn RoomRecordsLink>,
+    link: &Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
     workspace: u64,
     caller: Caller,
@@ -86,12 +86,12 @@ pub(super) fn answer(
         })
         .ok_or_else(|| unavailable("feedback source mismatch"))?;
     if caller.room().is_some_and(|room| room != destination.room) {
-        return Err(unavailable("feedback caller room mismatch"));
+        return Err(unavailable("feedback caller workspace mismatch"));
     }
     let caller = caller.in_room(destination.room.clone());
     let policy = link
         .view_read_policy(workspace, &caller, &route.app_id, &route.record)
-        .filter(|policy| policy.room == route.cluster_id)
+        .filter(|policy| policy.workspace == route.cluster_id)
         .ok_or_else(|| unavailable("certified feedback admission unavailable"))?;
     let member = link.member();
     let cert = &member.endpoint.host_cert;
@@ -143,7 +143,7 @@ pub(super) fn answer(
         )
         .map_err(|error| unavailable(&error))?;
         // `None` while the report or its picture is still on its way here
-        // (the host asks the room for the picture once the report lands):
+        // (the host asks the workspace for the picture once the report lands):
         // the reporter stays admitted and asks again.
         service
             .receipt_when_kept(&submission, &enrollment)
@@ -157,7 +157,7 @@ pub(super) fn answer(
     let fresh = link
         .view_read_policy(workspace, &caller, "so.tilo.chat", "")
         .filter(|fresh| {
-            fresh.room == policy.room
+            fresh.workspace == policy.workspace
                 && fresh.standing == policy.standing
                 && fresh.sandbox == policy.sandbox
         })
@@ -206,7 +206,7 @@ fn admission(
 }
 
 struct RetainedSource {
-    link: Arc<dyn RoomRecordsLink>,
+    link: Arc<dyn WorkspaceRecordsLink>,
     catalogue: AppCatalogue,
     workspace: u64,
     caller: Caller,
@@ -288,7 +288,7 @@ impl CanonicalReceiptSource for RetainedSource {
 }
 struct OwnerSigner {
     owner: Caller,
-    member: RoomMember,
+    member: WorkspaceMember,
 }
 impl ReceiptSigner for OwnerSigner {
     fn owner(&self) -> &Caller {

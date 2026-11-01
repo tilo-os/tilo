@@ -1,22 +1,22 @@
-//! A member asks the room's host to run a record's member-own actions for
+//! A member asks the workspace's host to run a record's member-own actions for
 //! them: linking their own Discord account by signing in with Discord,
 //! whose round trip the host starts and answers to the asking device alone.
 use super::*;
 
-/// The Discord connector's room record, by its record provider.
-fn guild(room: &str) -> String {
+/// The Discord connector's workspace record, by its record provider.
+fn guild(workspace: &str) -> String {
     record_provider(&DocumentRoute {
         app_id: "so.tilo.discord".into(),
-        cluster_id: room.into(),
+        cluster_id: workspace.into(),
         record: String::new(),
     })
 }
 
 /// `action` on the guild record's own resource, named the way a desktop
 /// that holds no connector code names it.
-fn on_guild(room: &str, action: &str, arguments: serde_json::Value) -> InvokeRequest {
+fn on_guild(workspace: &str, action: &str, arguments: serde_json::Value) -> InvokeRequest {
     request(
-        &guild(room),
+        &guild(workspace),
         ActionAddress::new("", action),
         match arguments {
             serde_json::Value::Object(arguments) => InvokeArgument::Json(arguments),
@@ -64,11 +64,11 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let rooms = hosted.relay.rooms().unwrap();
-    let room = rooms.create("Bridged room").await.unwrap();
-    rooms
+    let workspaces = hosted.relay.rooms().unwrap();
+    let workspace = workspaces.create("Bridged workspace").await.unwrap();
+    workspaces
         .prepare_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -76,11 +76,12 @@ async fn a_member_links_their_discord_account_through_the_host() {
         )
         .await
         .unwrap();
-    let mut owner_browser = Browser::open_room(&hosted, &owner_device, &host, &room.room).await;
+    let mut owner_browser =
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
     let connected = answered(
         &mut owner_browser,
         on_guild(
-            &room.room,
+            &workspace.room,
             "connect",
             serde_json::json!({"guild_id": "1", "name": "Tilo"}),
         ),
@@ -93,19 +94,19 @@ async fn a_member_links_their_discord_account_through_the_host() {
     admit_person(
         &hosted,
         &host,
-        &room.room,
+        &workspace.room,
         &guest_device,
         MemberRole::Editor,
     )
     .await;
-    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &room.room).await;
+    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &workspace.room).await;
 
-    // The room's host offers signing in with Discord, as the bridge's bot
+    // The workspace's host offers signing in with Discord, as the bridge's bot
     // says it at each start.
     let page = "https://discord.test/oauth2/authorize?client_id=1&scope=identify";
-    rooms
+    workspaces
         .author_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -131,7 +132,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         let reading = value(
             &answered(
                 &mut visitor,
-                on_guild(&room.room, "my-link", serde_json::json!({})),
+                on_guild(&workspace.room, "my-link", serde_json::json!({})),
             )
             .await,
         );
@@ -151,7 +152,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let start = value(
         &answered(
             &mut visitor,
-            on_guild(&room.room, &connect, serde_json::json!({})),
+            on_guild(&workspace.room, &connect, serde_json::json!({})),
         )
         .await,
     );
@@ -166,8 +167,8 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let guest_person = hex::encode(guest_device.cert.user_public_key);
     let owner_person = hex::encode(owner_device.cert.user_public_key);
     loop {
-        let saved = rooms
-            .record_document(&room.room, "so.tilo.discord", "")
+        let saved = workspaces
+            .record_document(&workspace.room, "so.tilo.discord", "")
             .await
             .unwrap()
             .expect("the governor holds the Discord record");
@@ -195,7 +196,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     let refused = answered(
         &mut visitor,
         on_guild(
-            &room.room,
+            &workspace.room,
             "connect",
             serde_json::json!({"guild_id": "2", "name": "Other"}),
         ),
@@ -213,11 +214,11 @@ async fn a_member_links_their_discord_account_through_the_host() {
     hosted.relay.shutdown().await;
 }
 
-/// What the room's governor commits itself (connecting the bridge, a bot
-/// completing a link a member started) reaches the room actions the host
-/// runs, which read the room through a session of the host's own device.
+/// What the workspace's governor commits itself (connecting the bridge, a bot
+/// completing a link a member started) reaches the workspace actions the host
+/// runs, which read the workspace through a session of the host's own device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_hosts_room_actions_read_what_the_governor_commits() {
+async fn the_hosts_workspace_actions_read_what_the_governor_commits() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Bridge host", 1);
     let host = enrol(
         &owner,
@@ -227,11 +228,11 @@ async fn the_hosts_room_actions_read_what_the_governor_commits() {
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let rooms = hosted.relay.rooms().unwrap();
-    let room = rooms.create("Bridged room").await.unwrap();
-    rooms
+    let workspaces = hosted.relay.rooms().unwrap();
+    let workspace = workspaces.create("Bridged workspace").await.unwrap();
+    workspaces
         .prepare_application(
-            &room.room,
+            &workspace.room,
             &host.cert,
             &common::catalogue(),
             "so.tilo.discord",
@@ -239,19 +240,20 @@ async fn the_hosts_room_actions_read_what_the_governor_commits() {
         )
         .await
         .unwrap();
-    let mut owner_browser = Browser::open_room(&hosted, &owner_device, &host, &room.room).await;
+    let mut owner_browser =
+        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.room).await;
     let reading = value(
         &answered(
             &mut owner_browser,
-            on_guild(&room.room, "my-link", serde_json::json!({})),
+            on_guild(&workspace.room, "my-link", serde_json::json!({})),
         )
         .await,
     );
     assert_eq!(reading["connected"], false, "{reading}");
 
     tilo_relay::room_bots::discord::connect(
-        rooms,
-        &room.room,
+        workspaces,
+        &workspace.room,
         &host.cert,
         &tilo_relay::room_bots::discord::DiscordLink {
             guild_id: "1".into(),
@@ -268,7 +270,7 @@ async fn the_hosts_room_actions_read_what_the_governor_commits() {
         let reading = value(
             &answered(
                 &mut owner_browser,
-                on_guild(&room.room, "my-link", serde_json::json!({})),
+                on_guild(&workspace.room, "my-link", serde_json::json!({})),
             )
             .await,
         );
@@ -277,7 +279,7 @@ async fn the_hosts_room_actions_read_what_the_governor_commits() {
         }
         assert!(
             Instant::now() < deadline,
-            "the host's room actions never read the governor's commit: {reading}"
+            "the host's workspace actions never read the governor's commit: {reading}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

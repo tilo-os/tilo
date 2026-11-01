@@ -1,4 +1,4 @@
-//! Search and publication follow the room by what changed: one retyped item is reindexed and
+//! Search and publication follow the workspace by what changed: one retyped item is reindexed and
 //! republished alone, and what they hold always equals indexing and publishing everything anew.
 
 use std::rc::Rc;
@@ -81,13 +81,13 @@ fn item_ids(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec
 }
 
 /// Ada's list with three items.
-fn room() -> (Replica, tilolang_runtime::Meta, String) {
-    let (ada, meta, root, _) = room_with_ids();
+fn workspace() -> (Replica, tilolang_runtime::Meta, String) {
+    let (ada, meta, root, _) = workspace_with_ids();
     (ada, meta, root)
 }
 
-/// As [`room`], with the package's ids lock, for a peer to load the same package.
-fn room_with_ids() -> (Replica, tilolang_runtime::Meta, String, String) {
+/// As [`workspace`], with the package's ids lock, for a peer to load the same package.
+fn workspace_with_ids() -> (Replica, tilolang_runtime::Meta, String, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let meta = packages[0].meta.clone();
     let ids = packages[0].ids.clone();
@@ -123,7 +123,7 @@ fn indexed(replica: &Replica) -> Vec<String> {
 
 #[test]
 fn search_reads_the_index_the_lists_read() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
 
     let ids = item_ids(&ada, &meta, &root);
@@ -140,7 +140,7 @@ fn search_reads_the_index_the_lists_read() {
 
 #[test]
 fn search_follows_a_peer_and_matches_a_full_index() {
-    let (mut ada, meta, root, lock) = room_with_ids();
+    let (mut ada, meta, root, lock) = workspace_with_ids();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut grace, &meta, &root, &ids[2], "rye bread");
@@ -193,7 +193,7 @@ fn published_anew(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) 
 
 #[test]
 fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
     assert_eq!(published.settle(&ada.host, &planner), vec![root.clone()]);
@@ -256,7 +256,7 @@ fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
 /// the next reader take a new one.
 #[test]
 fn readers_share_a_snapshot_until_the_mirror_changes() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     let first = ada.host.store().snapshot();
     assert!(Arc::ptr_eq(&first, &ada.host.store().snapshot()));
     let ids = item_ids(&ada, &meta, &root);
@@ -285,7 +285,7 @@ fn readers_share_a_snapshot_until_the_mirror_changes() {
 /// A republish reads it again only where a change can move it, and gets it right each time.
 #[test]
 fn the_label_follows_whatever_names_the_record() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
     published.settle(&ada.host, &planner);
@@ -368,7 +368,7 @@ fn labels(resource: &ResourceSpec, out: &mut Vec<(String, String)>) {
 /// reader holding an earlier revision learns those labels alone, until an item is added.
 #[test]
 fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
     published.settle(&ada.host, &planner);
@@ -428,7 +428,7 @@ fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
 
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
-    let (ada, meta, root) = room();
+    let (ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let before = indexed(&ada);
     let mut published = Publications::new(&ada.host);
@@ -456,10 +456,10 @@ fn planning_an_action_changes_nothing_anyone_follows() {
 
 #[test]
 fn the_first_publication_does_not_hold_up_the_frame() {
-    let (mut ada, meta, root) = room();
+    let (mut ada, meta, root) = workspace();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
-    // The frame that starts it returns at once; the room is read on another thread.
+    // The frame that starts it returns at once; the workspace is read on another thread.
     assert!(published.update(&ada.host, &planner).is_empty());
     assert!(published.is_building());
     // A change while it reads is taken in after what it read.
@@ -486,7 +486,7 @@ impl Planner for Counting {
 
 #[test]
 fn publishing_plans_no_action_until_one_runs() {
-    let (ada, _meta, root) = room();
+    let (ada, _meta, root) = workspace();
     let counting = Arc::new(Counting::default());
     let planner: Arc<dyn Planner> = counting.clone();
     let mut published = Publications::new(&ada.host);
@@ -802,7 +802,7 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
     use tilolang_runtime::store::{FieldKey, FieldSpec, Splice, Store as _};
     use tilolang_runtime::value::{ResourceRef, Value};
 
-    let (mut ada, meta, root, lock) = room_with_ids();
+    let (mut ada, meta, root, lock) = workspace_with_ids();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
     let items = field_id(&meta, "TodoList", "items");
     let list_ty = meta
@@ -901,7 +901,7 @@ fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
     use tilolang_runtime::store::{FieldSpec, Store as _};
     use tilolang_runtime::value::{ResourceRef, Value};
 
-    let (mut ada, meta, root, lock) = room_with_ids();
+    let (mut ada, meta, root, lock) = workspace_with_ids();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
     let items = field_id(&meta, "TodoList", "items");
     let done = field_id(&meta, "Item", "done");

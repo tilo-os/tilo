@@ -197,8 +197,8 @@ fn kept(replica: &Replica) -> tilolang_tilo::index::Contents {
     replica.host.store().index_contents(APP).unwrap()
 }
 
-/// Ada's room with a list, and the package's ids lock.
-fn room() -> (Replica, String, String) {
+/// Ada's workspace with a list, and the package's ids lock.
+fn workspace() -> (Replica, String, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let lock = packages[0].ids.clone();
     let root = ada.host.root_of(APP).unwrap();
@@ -210,7 +210,7 @@ fn room() -> (Replica, String, String) {
 fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
     for seed in [7_u64, 1234, 98_765] {
         let mut rng = Rng(seed);
-        let (mut ada, root, lock) = room();
+        let (mut ada, root, lock) = workspace();
         let mut grace = ada.fork("grace", &[(TODO, &lock)]);
         for step in 0..60 {
             // Each writes on its own, and now and then they meet.
@@ -243,7 +243,7 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
 
 #[test]
 fn what_the_store_writes_reads_back_before_the_record_holds_it() {
-    let (mut ada, root, lock) = room();
+    let (mut ada, root, lock) = workspace();
     for step in 0..4 {
         let action = plan(
             &ada,
@@ -350,7 +350,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
 
 #[test]
 fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
-    let (mut ada, root, lock) = room();
+    let (mut ada, root, lock) = workspace();
     for step in 0..5 {
         let action = plan(
             &ada,
@@ -366,7 +366,7 @@ fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
     assert_eq!(first.store().stats().builds, 2, "built the first time");
     drop(first);
 
-    // The room moves on while no window keeps the index.
+    // The workspace moves on while no window keeps the index.
     let mut rng = Rng(42);
     for step in 0..20 {
         random_change(&mut rng, &mut ada, &root, step);
@@ -402,7 +402,7 @@ fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
 
 #[test]
 fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() {
-    let (mut ada, root, lock) = room();
+    let (mut ada, root, lock) = workspace();
     for step in 0..5 {
         let action = plan(
             &ada,
@@ -458,7 +458,7 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
 
 #[test]
 fn a_corrupt_index_is_built_anew_and_never_read() {
-    let (mut ada, root, lock) = room();
+    let (mut ada, root, lock) = workspace();
     for text in ["milk", "eggs", "oat milk"] {
         let action = plan(&ada, "add", json!({ "text": text }), &root);
         ada.apply(&action);
@@ -532,7 +532,7 @@ fn published(host: &Host) -> Vec<String> {
 
 #[test]
 fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() {
-    let (mut ada, root, lock) = room();
+    let (mut ada, root, lock) = workspace();
     for step in 0..5 {
         let action = plan(
             &ada,
@@ -568,7 +568,7 @@ fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() 
         "the record not walked"
     );
 
-    // A change committed to the room is published as soon as the window has it.
+    // A change committed to the workspace is published as soon as the window has it.
     let action = plan(&ada, "add", json!({ "text": "late arrival" }), &root);
     ada.apply(&action);
     host.sync_from(&ada.doc);

@@ -79,7 +79,7 @@ fn read_once(sees: bool, context: &PlanContext) -> (String, usize, ScanReads) {
 #[test]
 fn a_read_of_a_picture_shows_it_to_a_model_that_sees() {
     let mut context = look_context();
-    context.room_pictures = true;
+    context.workspace_pictures = true;
     let (answered, shown, reads) = read_once(true, &context);
     assert_eq!(shown, 1, "{answered}");
     assert!(answered.contains("Shown as a picture."), "{answered}");
@@ -90,7 +90,7 @@ fn a_read_of_a_picture_shows_it_to_a_model_that_sees() {
     assert!(!answered.contains("Not read"), "{answered}");
 }
 
-/// Where the agent may not show the room's pictures, or its model sees
+/// Where the agent may not show the workspace's pictures, or its model sees
 /// none, the read is refused saying so, and a blind model's read fetches
 /// nothing.
 #[test]
@@ -99,12 +99,13 @@ fn a_read_of_a_picture_is_refused_plainly_where_it_is_not_shown() {
     assert_eq!(shown, 0);
     assert!(
         answered.starts_with("Not read: passport.jpg (tilo.content:")
-            && answered.contains("is a picture, and this agent is not shown the room's pictures"),
+            && answered
+                .contains("is a picture, and this agent is not shown the workspace's pictures"),
         "{answered}"
     );
 
     let mut context = look_context();
-    context.room_pictures = true;
+    context.workspace_pictures = true;
     let (answered, shown, reads) = read_once(false, &context);
     assert_eq!(shown, 0);
     assert!(
@@ -117,7 +118,7 @@ fn a_read_of_a_picture_is_refused_plainly_where_it_is_not_shown() {
     );
 }
 
-/// The room's pictures a task's steps read are shown on the re-plan's
+/// The workspace's pictures a task's steps read are shown on the re-plan's
 /// first turn, where the agent may show them.
 #[test]
 fn a_replan_shows_the_pictures_its_steps_read() {
@@ -130,7 +131,7 @@ fn a_replan_shows_the_pictures_its_steps_read() {
         let mut context = look_context();
         context.request = Some("read the scans, then say which passport is valid".into());
         context.read_pictures = vec![reads.scan.clone()];
-        context.room_pictures = allowed;
+        context.workspace_pictures = allowed;
         planner
             .plan_reading("say which passport is valid", &context, &mut reads)
             .unwrap();
@@ -143,7 +144,11 @@ fn a_replan_shows_the_pictures_its_steps_read() {
                 "{text}"
             );
         } else {
-            assert_eq!(pictures(&first), 0, "the room's pictures stay withheld");
+            assert_eq!(
+                pictures(&first),
+                0,
+                "the workspace's pictures stay withheld"
+            );
         }
     }
 }

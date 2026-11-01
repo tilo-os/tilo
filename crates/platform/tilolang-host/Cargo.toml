@@ -15,7 +15,7 @@ name = "tilolang-host"
 path = "src/main.rs"
 
 [dependencies]
-tilolang-tilo = { path = "../tilolang-tilo", features = ["room"] }
+tilolang-tilo = { path = "../tilolang-tilo", features = ["record"] }
 # Each instance's connection to its room, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
 # The door the session hands instances over.

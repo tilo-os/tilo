@@ -1,9 +1,9 @@
-//! The tilolang host: one process per room and author, without the toolkit, that runs each of
-//! that author's tilolang apps in that room as an instance of its own
+//! The tilolang host: one process per workspace and author, without the toolkit, that runs each of
+//! that author's tilolang apps in that workspace as an instance of its own
 //! (`docs/designs/app-language/ui-host.md`, step 2b).
 //!
 //! The host has no app identity. The session starts it as the launch kind "tilolang host", keyed
-//! by the room and the author as the launcher attributes it, in a sandbox narrower than any
+//! by the workspace and the author as the launcher attributes it, in a sandbox narrower than any
 //! app's: it holds only its door and its storage. Everything an instance is arrives over the door
 //! from the session (`runtime_portal::tilolang_host`): its broker connection and its
 //! identity-service connection, which the session opened and attested as that app's launch, its
@@ -11,13 +11,13 @@
 //! instance says to the app from the session's own record of the connection, never from the
 //! host.
 //!
-//! Each instance ([`hosted::Hosted`]) holds its room record with its undo log and save state,
+//! Each instance ([`hosted::Hosted`]) holds its workspace record with its undo log and save state,
 //! publishes the app's actions and runs what the broker delivers, all on its own connection, and
 //! drives its window with component patches; the window sends back what the person did.
 //!
-//! **Storage.** One directory per room and author, granted to the host at its start, keyed by
-//! package inside: `<storage>/<package>/documents` holds the room record's on-disk copy, and
-//! `<storage>/<package>/indexes` the room's indexes.
+//! **Storage.** One directory per workspace and author, granted to the host at its start, keyed by
+//! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
+//! `<storage>/<package>/indexes` the workspace's indexes.
 
 pub mod hosted;
 pub mod phrases;
@@ -41,21 +41,21 @@ use tilolang_tilo::bundle::Bundle;
 
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
-use tilolang_tilo::instance::room::RoomRecord;
+use tilolang_tilo::instance::record::InstanceRecord;
 
-/// The record kind of an app's room record: every tilolang package keeps its resources in it.
+/// The record kind of an app's workspace record: every tilolang package keeps its resources in it.
 pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
 
-/// The route an instance of `meta`'s package for `person` in `room` joins: the person's own
+/// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// record of the workspace for an app whose records are each member's own (`records: .own`),
 /// which only their devices are admitted to, else the workspace's record of the app.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
-    room: uuid::Uuid,
+    workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    route_under(meta, &meta.app, room, person)
+    route_under(meta, &meta.app, workspace, person)
 }
 
 /// [`route_of`], for the records the app keeps under `records`: its own id, or for an app
@@ -65,12 +65,12 @@ pub fn route_of(
 pub fn route_under(
     meta: &tilolang_tilo::tilolang::PackageMeta,
     records: &str,
-    room: uuid::Uuid,
+    workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
     match tilolang_tilo::own_record(meta, person) {
-        Some(record) => collaboration::RouteSpec::record(records.to_owned(), room, record),
-        None => collaboration::RouteSpec::app(records.to_owned(), room),
+        Some(record) => collaboration::RouteSpec::record(records.to_owned(), workspace, record),
+        None => collaboration::RouteSpec::app(records.to_owned(), workspace),
     }
 }
 
@@ -89,12 +89,12 @@ pub enum AdmitError {
          say it had before"
     )]
     Records { app: String, records: String },
-    #[error("the room `{0}` is no room id")]
-    Room(String),
-    #[error("the instance's connection could not join its room: {0}")]
+    #[error("the workspace `{0}` is no workspace id")]
+    Workspace(String),
+    #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
     #[error(transparent)]
-    Open(#[from] tilolang_tilo::instance::room::RoomError),
+    Open(#[from] tilolang_tilo::instance::record::RecordError),
     #[error("the window's connection is unusable: {0}")]
     Window(std::io::Error),
 }
@@ -233,7 +233,7 @@ impl TilolangHost {
         }
     }
 
-    /// Where the instances of `app` keep their room record's copy and indexes.
+    /// Where the instances of `app` keep their workspace record's copy and indexes.
     ///
     /// # Errors
     /// The package's directory cannot be made.
@@ -495,8 +495,8 @@ impl TilolangHost {
             Some(records) => records.clone(),
             None => request.app.clone(),
         };
-        let room = uuid::Uuid::parse_str(&request.room)
-            .map_err(|_| AdmitError::Room(request.room.clone()))?;
+        let workspace = uuid::Uuid::parse_str(&request.room)
+            .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         let _scope = self.scope.enter();
@@ -504,14 +504,14 @@ impl TilolangHost {
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            route_under(&bundle.meta, &records, room, &request.person),
+            route_under(&bundle.meta, &records, workspace, &request.person),
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
         Ok(Stage::Joining {
             spec: Spec {
                 app: request.app,
-                room: request.room,
+                workspace: request.room,
                 instance: request.instance,
                 person: request.person,
             },
@@ -547,7 +547,8 @@ impl TilolangHost {
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
-        let record = RoomRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
+        let record =
+            InstanceRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
         if let Some(change) = opening.change.take() {
             // A change at the record's origin: the record and the package, no instance.
             let applier = hosted::Applier::open(
@@ -726,7 +727,7 @@ impl TilolangHost {
             open
         });
         // A change runs, is answered, and ends once the session let go of its connection: the
-        // room was handed what it wrote by then.
+        // workspace was handed what it wrote by then.
         for applier in &mut self.appliers {
             changed |= applier.turn();
         }

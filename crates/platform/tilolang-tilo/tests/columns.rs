@@ -110,13 +110,13 @@ view main(b: Board) {
 const APP: &str = "so.tilo.tasks";
 const NOW: &str = "2026-10-27T10:00:00Z";
 
-struct Room {
+struct Workspace {
     ada: Replica,
     meta: Meta,
     board: ResourceRef,
 }
 
-impl Room {
+impl Workspace {
     fn new() -> Self {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TASKS, "")]);
         let meta = packages[0].meta.clone();
@@ -266,7 +266,7 @@ impl Room {
         self.ada.host.store().read_stats().evaluated
     }
 
-    /// The index as kept, and as a store reading the room anew builds it.
+    /// The index as kept, and as a store reading the workspace anew builds it.
     fn kept_and_anew(
         &mut self,
     ) -> (
@@ -280,8 +280,8 @@ impl Room {
     }
 }
 
-/// An action of a change, and what it is given in the room as it is.
-type Step = Box<dyn Fn(&Room) -> Vec<Value>>;
+/// An action of a change, and what it is given in the workspace as it is.
+type Step = Box<dyn Fn(&Workspace) -> Vec<Value>>;
 
 const QUERIES: &[&str] = &[
     "",
@@ -316,15 +316,15 @@ const QUERIES: &[&str] = &[
 
 #[test]
 fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change() {
-    let mut room = Room::new();
+    let mut workspace = Workspace::new();
     for q in QUERIES {
-        assert_eq!(room.listed(q), room.anew(q), "`{q}`");
+        assert_eq!(workspace.listed(q), workspace.anew(q), "`{q}`");
     }
-    assert_eq!(room.listed("status:waiting"), ["a", "d"]);
-    assert_eq!(room.listed("is:open sort:-effort"), ["b", "c", "a"]);
+    assert_eq!(workspace.listed("status:waiting"), ["a", "d"]);
+    assert_eq!(workspace.listed("is:open sort:-effort"), ["b", "c", "a"]);
     // A named filter, a value, a range in its own order and a membership are runs of a
     // column: no task is checked one by one.
-    let before = room.evaluated();
+    let before = workspace.evaluated();
     for q in [
         "is:open",
         "status:blocked",
@@ -332,70 +332,78 @@ fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change()
         "tags:home",
         "due:none",
     ] {
-        room.listed(q);
+        workspace.listed(q);
     }
-    assert_eq!(room.evaluated(), before, "answered from the columns");
+    assert_eq!(workspace.evaluated(), before, "answered from the columns");
 
     // Every kind of change, each followed by the columns as a build from the record finds.
-    let board = room.board.clone();
+    let board = workspace.board.clone();
     let steps: Vec<(&str, Step)> = vec![
         (
             "check",
-            Box::new(|r: &Room| vec![Value::resource(&r.tasks()[0])]),
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0])]),
         ),
         (
             "set_effort",
-            Box::new(|r: &Room| vec![Value::resource(&r.tasks()[2]), Value::Int(9)]),
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[2]), Value::Int(9)]),
         ),
         (
             "tag",
-            Box::new(|r: &Room| vec![Value::resource(&r.tasks()[1]), Value::text("home")]),
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[1]), Value::text("home")]),
         ),
         (
             "untag",
-            Box::new(|r: &Room| vec![Value::resource(&r.tasks()[0]), Value::text("home")]),
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0]), Value::text("home")]),
         ),
         (
             "add",
-            Box::new(move |_: &Room| {
+            Box::new(move |_: &Workspace| {
                 vec![Value::resource(&board), Value::text("e"), Value::Int(4)]
             }),
         ),
         (
             "move_first",
-            Box::new(|r: &Room| vec![Value::resource(&r.board), Value::resource(&r.tasks()[4])]),
+            Box::new(|r: &Workspace| {
+                vec![Value::resource(&r.board), Value::resource(&r.tasks()[4])]
+            }),
         ),
         (
             "remove",
-            Box::new(|r: &Room| vec![Value::resource(&r.board), Value::resource(&r.tasks()[2])]),
+            Box::new(|r: &Workspace| {
+                vec![Value::resource(&r.board), Value::resource(&r.tasks()[2])]
+            }),
         ),
         (
             "check",
-            Box::new(|r: &Room| vec![Value::resource(&r.tasks()[0])]),
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0])]),
         ),
     ];
     for (action, args) in steps {
-        let args = args(&room);
-        room.call(action, args);
+        let args = args(&workspace);
+        workspace.call(action, args);
         for q in QUERIES {
-            assert_eq!(room.listed(q), room.anew(q), "`{q}` after {action}");
+            assert_eq!(
+                workspace.listed(q),
+                workspace.anew(q),
+                "`{q}` after {action}"
+            );
         }
-        let (kept, anew) = room.kept_and_anew();
+        let (kept, anew) = workspace.kept_and_anew();
         assert_eq!(kept, anew, "the columns after {action}");
     }
 }
 
 #[test]
 fn a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace() {
-    let room = Room::new();
-    let store = room.ada.host.store();
+    let workspace = Workspace::new();
+    let store = workspace.ada.host.store();
     let clock = Clock::at(NOW).unwrap();
     let select = |ty: &str, q: &str| -> Vec<String> {
-        let meta = room.ty(ty);
-        let resolved = resolve(&find(q).unwrap(), meta, &room.meta.enums, &clock).unwrap();
+        let meta = workspace.ty(ty);
+        let resolved = resolve(&find(q).unwrap(), meta, &workspace.meta.enums, &clock).unwrap();
         let pred = store_pred(&resolved.pred, meta, APP).unwrap();
         let title = field_id(
-            &room.meta,
+            &workspace.meta,
             ty,
             if ty == "Task" { "title" } else { "subject" },
         );
@@ -403,7 +411,7 @@ fn a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace() 
             .select(&meta.id, &pred, resolved.order.as_ref())
             .unwrap()
             .iter()
-            .map(|r| match room.ada.host.runtime().read(r, &title) {
+            .map(|r| match workspace.ada.host.runtime().read(r, &title) {
                 Ok(Value::Text(t)) => t,
                 other => panic!("{other:?}"),
             })
@@ -424,12 +432,13 @@ fn a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace() 
 
 #[test]
 fn facet_counts_are_read_from_the_columns() {
-    let room = Room::new();
-    let store = room.ada.host.store();
-    let task = room.ty("Task");
-    let field = |name: &str| field_id(&room.meta, "Task", name);
+    let workspace = Workspace::new();
+    let store = workspace.ada.host.store();
+    let task = workspace.ty("Task");
+    let field = |name: &str| field_id(&workspace.meta, "Task", name);
     let case = |name: &str| {
-        room.meta
+        workspace
+            .meta
             .enums
             .iter()
             .flat_map(|e| e.variants.iter())
@@ -441,8 +450,8 @@ fn facet_counts_are_read_from_the_columns() {
     let _ = task;
     let status = store
         .facets(
-            &room.board,
-            &field_id(&room.meta, "Board", "tasks"),
+            &workspace.board,
+            &field_id(&workspace.meta, "Board", "tasks"),
             &field("status"),
         )
         .unwrap();
@@ -456,8 +465,8 @@ fn facet_counts_are_read_from_the_columns() {
     );
     let open = store
         .facets(
-            &room.board,
-            &field_id(&room.meta, "Board", "tasks"),
+            &workspace.board,
+            &field_id(&workspace.meta, "Board", "tasks"),
             "=open",
         )
         .unwrap();

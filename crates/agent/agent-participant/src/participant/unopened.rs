@@ -1,4 +1,4 @@
-//! Records of the room the agent has seen but not opened.
+//! Records of the workspace the agent has seen but not opened.
 //!
 //! Nothing reads such a record until the agent opens it, except the shared
 //! desktop, whose tabs say which records people have open. So:
@@ -16,7 +16,7 @@
 //!   cost the agent's thread work in proportion to the record's history for
 //!   every change someone makes, in records it may never open.
 //!
-//! **Admission.** Every byte here comes from the room's members, and this
+//! **Admission.** Every byte here comes from the workspace's members, and this
 //! is the host's process, beside its device key. So none of it reaches
 //! Automerge here before a `tilo-automerge-isolate` worker has made the
 //! same call on it ([`admit`]): changes go to the isolate in batches, as
@@ -31,7 +31,7 @@
 //! would hold had the agent opened it, and what a later concurrent change
 //! or an undo may still build on — plus, packed, at most the size of that
 //! document (or [`TAIL_FLOOR`]) of changes not yet merged. A change the host
-//! delivers again (a reconnect replays the room) merges into what is held
+//! delivers again (a reconnect replays the workspace) merges into what is held
 //! and adds nothing. A change waiting for one it builds on stays unmerged
 //! until that one arrives. Opening a record seeds its replica from this
 //! document ([`Unopened::seed`]).
@@ -43,7 +43,7 @@ use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge_isolate::{Dependencies, Rejected};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-/// The route of a room's shared browser desktop (`tilo-browser-runtime`'s
+/// The route of a workspace's shared browser desktop (`tilo-browser-runtime`'s
 /// replication): its `desktop` value names each tab's record.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 const DESKTOP_RECORD: &str = "desktop";
@@ -58,10 +58,10 @@ const BATCH_BYTES: usize = 8 * 1024 * 1024;
 /// ceiling for changes of a few chunks each.
 const BATCH_CHANGES: usize = 4096;
 
-pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
+pub(crate) fn desktop_route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
-        cluster_id: room.to_owned(),
+        cluster_id: workspace.to_owned(),
         record: DESKTOP_RECORD.to_owned(),
     }
 }
@@ -239,7 +239,7 @@ impl Packed {
     }
 }
 
-/// A room's shared desktop, kept merged: which records people have open.
+/// A workspace's shared desktop, kept merged: which records people have open.
 /// What it takes is admitted through the isolate, a batch per
 /// [`SharedDesktop::admit`].
 pub(crate) struct SharedDesktop {
@@ -322,7 +322,7 @@ impl SharedDesktop {
     }
 }
 
-/// Every record of one room the agent has seen but not opened.
+/// Every record of one workspace the agent has seen but not opened.
 pub(crate) struct Unopened {
     desktop_route: DocumentRoute,
     desktop: Option<SharedDesktop>,
@@ -374,9 +374,9 @@ enum Stamp {
 }
 
 impl Unopened {
-    pub(crate) fn new(room: &str) -> Self {
+    pub(crate) fn new(workspace: &str) -> Self {
         Self {
-            desktop_route: desktop_route(room),
+            desktop_route: desktop_route(workspace),
             desktop: None,
             held: BTreeMap::new(),
             arrived: HashMap::new(),
@@ -435,7 +435,7 @@ impl Unopened {
     }
 
     /// What a replica of `route` is seeded from: its document, saved.
-    /// `None` when the room has no such record; `Err` when the isolate
+    /// `None` when the workspace has no such record; `Err` when the isolate
     /// could not be asked to admit its changes.
     pub(crate) fn seed(&mut self, route: &DocumentRoute) -> Option<Result<Vec<u8>, String>> {
         if *route == self.desktop_route {
@@ -447,7 +447,7 @@ impl Unopened {
     /// What the record at `route` is called, as `read` finds it in the
     /// record's document (saved, admitted through the isolate). Read once
     /// per change of the record: asked again with nothing new, the last
-    /// answer stands, a failed read included. `None` for a record the room
+    /// answer stands, a failed read included. `None` for a record the workspace
     /// does not have, one whose app gives it no name, or one not read.
     pub(super) fn title(
         &mut self,
@@ -497,7 +497,7 @@ impl Unopened {
 
     /// The text of the unopened record at `route`, read as `reading` says,
     /// once per change of it. `None` for the shared desktop, a record the
-    /// room does not have, or one whose changes wait for the isolate.
+    /// workspace does not have, or one whose changes wait for the isolate.
     pub(super) fn text(&mut self, route: &DocumentRoute, reading: Reading) -> Option<Arc<str>> {
         let stamp = Stamp::Unopened(self.arrived.get(route).copied().unwrap_or(0));
         if let Some((at, text)) = self.read_texts(reading).get(route)
@@ -512,7 +512,7 @@ impl Unopened {
     }
 
     /// `read` of the document of the unopened record at `route`. `None`
-    /// for the shared desktop, a record the room does not have, or one
+    /// for the shared desktop, a record the workspace does not have, or one
     /// whose changes wait for the isolate.
     pub(super) fn read<T>(
         &mut self,
@@ -568,7 +568,7 @@ impl Unopened {
 
     /// How many changes the unopened record at `route` holds, counted once
     /// per change of it: whether anyone wrote in it since its genesis.
-    /// `None` for the shared desktop, a record the room does not have, or
+    /// `None` for the shared desktop, a record the workspace does not have, or
     /// one whose changes wait for the isolate.
     pub(super) fn changes(&mut self, route: &DocumentRoute) -> Option<u64> {
         let changed = self.arrived.get(route).copied().unwrap_or(0);
@@ -619,7 +619,7 @@ mod tests {
     fn route(app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: app.into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: record.into(),
         }
     }
@@ -637,7 +637,7 @@ mod tests {
         use tilo_desktop_model::{
             Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
         };
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
         let mut strip = Strip::new(StripId(2), "Main");
         let tabs: Vec<Tab> = (0..20_u64)
             .map(|id| Tab {
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn desktop_records_cost_is_independent_of_history() {
         let desktop_route = route(DESKTOP_APP, DESKTOP_RECORD);
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         unopened.receive(route("sheets", "seen"), AutoCommit::new().save());
         unopened.receive(route("sheets", "rec-open"), AutoCommit::new().save());
         let mut desktop = Desktop::default();
@@ -802,7 +802,7 @@ mod tests {
             .saturating_mul(2);
         let largest = changes.iter().map(Vec::len).max().unwrap();
         let notes = route("so.tilo.notes", "rec-notes");
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         let mut most = 0;
         for change in changes.iter().chain(&changes) {
             unopened.receive(notes.clone(), change.clone());
@@ -815,7 +815,7 @@ mod tests {
         // The bound is not vacuous: one pass of the log alone outweighs it,
         // so a record that kept what arrived would break it. (Each merge
         // folds changes into the document, which is what keeps the peak far
-        // below the log; the second pass is the room replayed on reconnect.)
+        // below the log; the second pass is the workspace replayed on reconnect.)
         assert!(
             received / 2 > document.saturating_mul(2).saturating_add(largest),
             "a {}-byte log's bound is {most} bytes held",
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn open_seeds_from_the_maintained_doc() {
         let (changes, mut doc) = history(500);
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         let notes = route("so.tilo.notes", "rec-notes");
         for change in changes {
             unopened.receive(notes.clone(), change);
@@ -848,7 +848,7 @@ mod tests {
     fn a_title_is_read_once_per_change() {
         let (changes, _) = history(2);
         let notes = route("so.tilo.notes", "rec-notes");
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         let reads = std::cell::Cell::new(0_u32);
         let read = |doc: Vec<u8>| {
             assert!(!doc.is_empty(), "the record's document is read");
@@ -882,7 +882,7 @@ mod tests {
             .unwrap();
         let second = doc.save_incremental();
         let brief = route("so.tilo.word-processor", "rec-brief");
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         assert_eq!(
             unopened.text(&brief, Reading::Plain),
             None,
@@ -916,7 +916,7 @@ mod tests {
     fn a_change_waiting_for_its_dependency_is_kept() {
         let (changes, mut doc) = history(1_000);
         let notes = route("so.tilo.notes", "rec-notes");
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         let (early, late) = changes.split_at(10);
         let (missing, rest) = late.split_first().unwrap();
         for change in early.iter().chain(rest) {
@@ -932,7 +932,7 @@ mod tests {
     fn a_change_that_does_not_load_holds_back_no_other() {
         let (changes, mut doc) = history(1_000);
         let notes = route("so.tilo.notes", "rec-notes");
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         for (index, change) in changes.into_iter().enumerate() {
             if index == 500 {
                 unopened.receive(notes.clone(), b"not a change".to_vec());
@@ -951,7 +951,7 @@ mod tests {
 
     /// Feed `hostile` among a record's changes and the shared desktop's,
     /// through every path that merges them: the record's compactions and
-    /// its seed, the desktop's settle, tabs and seed, and room actions'
+    /// its seed, the desktop's settle, tabs and seed, and workspace actions'
     /// desktop holder on its own. Each hostile input is refused and
     /// dropped; what the valid changes make is intact.
     fn hostile_changes_are_dropped(hostile: &[Vec<u8>]) {
@@ -959,7 +959,7 @@ mod tests {
         let notes = route("so.tilo.notes", "rec-notes");
         let desktop_route = route(DESKTOP_APP, DESKTOP_RECORD);
         let mut desktop = Desktop::default();
-        let mut unopened = Unopened::new("room");
+        let mut unopened = Unopened::new("workspace");
         for (index, change) in changes.iter().enumerate() {
             if index % 1_000 == 10 {
                 for bytes in hostile {
@@ -1014,7 +1014,7 @@ mod tests {
         hostile_changes_are_dropped(&[huge, b"not automerge".to_vec()]);
     }
 
-    /// Room members' bytes reach Automerge only in an isolate worker: input
+    /// Workspace members' bytes reach Automerge only in an isolate worker: input
     /// that panics stock Automerge costs a worker, and would panic this
     /// test had any path decoded it here. Linux only, as the isolate's
     /// workers are: elsewhere it decodes in the calling process by design.

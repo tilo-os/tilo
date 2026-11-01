@@ -119,8 +119,8 @@ try {
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
   writeFileSync(join(evidence, 'mounted-chat-range.png'), initialShot);
-  // Sharing live context reaches outside the record, which a room's viewer
-  // may not; an editor, once the page has learned the role the room gives
+  // Sharing live context reaches outside the record, which a workspace's viewer
+  // may not; an editor, once the page has learned the role the workspace gives
   // them, confirms sharing it and stopping, without video.
   const contextActions = ['live-context-status', 'share-live-context', 'stop-sharing-live-context'];
   if (fixture.disconnectRetry) {
@@ -133,7 +133,7 @@ try {
       const call = action => {
         const descriptor = all.find(row=>row.address.action === action);
         if (!descriptor) throw Error('missing public context action: ' + action);
-        // The room asks an editor before an outside action: they confirm.
+        // The workspace asks an editor before an outside action: they confirm.
         return mount.invokeAction(descriptor.address.resource, action, {}, {confirm:true});
       };
       const before = call('live-context-status');
@@ -176,7 +176,7 @@ try {
     console.error('Page log', JSON.stringify(tab.log ?? []).slice(-6000));
     assert.fail(`Chat shows no "${label}" control among ${JSON.stringify(shown)}`);
   };
-  const linked = '(async()=> { const text = await navigator.clipboard.readText(); return text.includes("/app/#/@") && text.includes(fixture.room); })()';
+  const linked = '(async()=> { const text = await navigator.clipboard.readText(); return text.includes("/app/#/@") && text.includes(fixture.workspace); })()';
   await pressWhenShown('Copy resource link');
   try {
     // The host is asked for its web entry on every copy; Chat gives up after 30 s.

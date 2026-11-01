@@ -502,7 +502,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     );
     ada.commit();
 
-    // The same room, opened by the Chat of channels.
+    // The same workspace, opened by the Chat of channels.
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(CHAT, CHAT_IDS)]);
     later.host.sync_from(&later.doc);
     let sidebar = later.view(APP);

@@ -1,11 +1,11 @@
-//! A delegated agent's own session in a room the host itself governs.
+//! A delegated agent's own session in a workspace the host itself governs.
 //!
-//! A node (a host certified to own workspaces) governs the room and takes
+//! A node (a host certified to own workspaces) governs the workspace and takes
 //! part in its channels. Ada asks for an agent from her page and approves it on her
-//! laptop with a delegation naming the room; the agent runs on the node
+//! laptop with a delegation naming the workspace; the agent runs on the node
 //! under its own device key. When it opens a sealed record it asks the
 //! channel's participants for it like any collaborator: the governor admits
-//! it to the room's roster through the one admission decision, bound to its
+//! it to the workspace's roster through the one admission decision, bound to its
 //! delegation, and a participant admits it to the channel. Its change
 //! arrives at Bob, another member, sealed, signed by the agent's own key and
 //! named on the roster as Ada's agent. Withdrawing the grant takes it off.
@@ -234,7 +234,7 @@ async fn retained_sealed(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself() {
+async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_itself() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (other, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
     let host = enrol(
@@ -247,30 +247,30 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
-    let rooms = hosted.relay.rooms().unwrap().clone();
-    let room = rooms.create("An agent's own session").await.unwrap();
-    let elsewhere = rooms.create("Not the agent's").await.unwrap();
+    let workspaces = hosted.relay.rooms().unwrap().clone();
+    let workspace = workspaces.create("An agent's own session").await.unwrap();
+    let elsewhere = workspaces.create("Not the agent's").await.unwrap();
     admit_person(
         &hosted,
         &host,
-        &room.room,
+        &workspace.room,
         &member_device,
         MemberRole::Editor,
     )
     .await;
-    let mut page = Browser::open_room(&hosted, &page_device, &host, &room.room).await;
-    let mut member = open_admitted_peer(&hosted, &member_device, &host, &room.room).await;
+    let mut page = Browser::open_workspace(&hosted, &page_device, &host, &workspace.room).await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace.room).await;
     let approver = approve_agents(&hosted.relay, owner.clone(), &laptop);
 
     // One consent step: Ada's page asks, her laptop approves the agent with
-    // the delegation of this room and Sheets.
+    // the delegation of this workspace and Sheets.
     let requested = supervise(
         &mut page,
         SUPERVISOR_RESOURCE,
         REQUEST_GRANT_ACTION,
         json(&serde_json::json!({
             "label": "Scribe",
-            "rooms": [room.room],
+            "rooms": [workspace.room],
             "apps": [SHEETS],
             "expiresInSecs": 3600,
         })),
@@ -288,22 +288,22 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     approver.abort();
-    // The approved grant puts the agent on the roster of the room it names,
-    // and of no other room this host governs.
+    // The approved grant puts the agent on the roster of the workspace it names,
+    // and of no other workspace this host governs.
     let deadline = tilo_test_env::hang_deadline();
-    while rooms.agents(&room.room).await.unwrap().is_empty() {
+    while workspaces.agents(&workspace.room).await.unwrap().is_empty() {
         assert!(
             Instant::now() < deadline,
-            "the approved agent never joined the room's roster"
+            "the approved agent never joined the workspace's roster"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        rooms.agents(&elsewhere.room).await.unwrap().is_empty(),
-        "an agent is never on the roster of a room its grant does not name"
+        workspaces.agents(&elsewhere.room).await.unwrap().is_empty(),
+        "an agent is never on the roster of a workspace its grant does not name"
     );
 
-    // The agent works in the governed room under its own key.
+    // The agent works in the governed workspace under its own key.
     let spawned = supervise(
         &mut page,
         SUPERVISOR_RESOURCE,
@@ -311,7 +311,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         json(&serde_json::json!({
             "grant": grant,
             "task": "Add a new sheet named \"Ledger\"",
-            "room": room.room,
+            "room": workspace.room,
         })),
     )
     .await;
@@ -337,8 +337,8 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         panic!(
             "the member never read the agent's sealed change.\nagents: {agents:#?}\n\
              roster: {:?}\nretained by the agent: {:?}\nmember: {}\npage: {}",
-            rooms.agents(&room.room).await,
-            retained_by(&hosted, room.workspace_id, agent_key).await,
+            workspaces.agents(&workspace.room).await,
+            retained_by(&hosted, workspace.workspace_id, agent_key).await,
             member.peer.status().channels,
             page.peer.status().channels,
         );
@@ -347,7 +347,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         "a delegated agent's sealed change reached another member in {:?}",
         started.elapsed()
     );
-    let (count, sealed) = retained_sealed(&hosted, room.workspace_id, &route, agent_key).await;
+    let (count, sealed) = retained_sealed(&hosted, workspace.workspace_id, &route, agent_key).await;
     assert!(
         count > 0 && sealed,
         "the agent writes only sealed: {count}, {sealed}"
@@ -355,7 +355,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     assert_eq!(
         retained_sealed(
             &hosted,
-            room.workspace_id,
+            workspace.workspace_id,
             &route,
             host.cert.device_public_key
         )
@@ -366,7 +366,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     );
 
     // The roster names the agent as Ada's, acting.
-    let roster = rooms.agents(&room.room).await.unwrap();
+    let roster = workspaces.agents(&workspace.room).await.unwrap();
     assert_eq!(roster.len(), 1, "{roster:?}");
     let agent = &roster[0];
     assert_eq!(agent.device_public_key, agent_key);
@@ -375,7 +375,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     assert_eq!(agent.label, "Scribe");
     assert!(agent.acting && agent.withdrawn_at_ns.is_none());
 
-    // Withdrawing the grant takes it off the room at once.
+    // Withdrawing the grant takes it off the workspace at once.
     supervise(
         &mut page,
         &agent_resource(&grant),
@@ -385,7 +385,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     .await;
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let roster = rooms.agents(&room.room).await.unwrap();
+        let roster = workspaces.agents(&workspace.room).await.unwrap();
         if roster
             .iter()
             .any(|agent| agent.device_public_key == agent_key && !agent.acting)
