@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseStep {
-    /// How far the fill steps toward the next surface (`0` no lift, `1`
-    /// one surface step, [`crate::tokens::Colors::lift_on`]).
+    /// How far the fill steps toward the next surface (`1` one surface
+    /// step, [`crate::tokens::Colors::lift_on`]).
     pub lift: f32,
     /// How much of the accent washes into the lift, `0..=0.25`.
     pub tint: f32,
@@ -30,12 +30,13 @@ pub struct ResponseStep {
 }
 
 impl ResponseStep {
-    /// How far a lift may step, in surface steps.
-    pub const LIFT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=2.0;
+    /// How far a lift may step, in surface steps: never none, because a
+    /// theme cannot remove the hover and press lift (`docs/design-language.md`,
+    /// "Theming").
+    pub const LIFT_ADMITTED: std::ops::RangeInclusive<f32> = 0.25..=2.0;
     /// How much accent a lift may carry.
     pub const TINT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.25;
-    /// How far a control may scale about its centre (at least `1`, a
-    /// press only ever shrinks it).
+    /// How far a control may scale about its centre.
     pub const SCALE_ADMITTED: std::ops::RangeInclusive<f32> = 0.7..=1.15;
     /// How strongly the lit inner edge may draw.
     pub const GLOW_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
@@ -53,13 +54,13 @@ impl ResponseStep {
         glow: 0.0,
     };
 
-    /// Every lever finite and inside [`Self::BANDS`].
+    /// Every lever finite and inside its admitted band.
     pub fn validate(&self) -> Result<(), &'static str> {
         let within = |value: f32, band: &std::ops::RangeInclusive<f32>| {
             value.is_finite() && band.contains(&value)
         };
         if !within(self.lift, &Self::LIFT_ADMITTED) {
-            return Err("response lift outside 0..=2");
+            return Err("response lift outside 0.25..=2");
         }
         if !within(self.tint, &Self::TINT_ADMITTED) {
             return Err("response tint outside 0..=0.25");
@@ -221,19 +222,24 @@ mod tests {
     #[test]
     fn out_of_band_levers_are_refused() {
         for bad in [
+            // No lift at all: a theme cannot remove it.
+            ResponseStep::REST,
             ResponseStep {
                 lift: -0.1,
                 ..ResponseStep::REST
             },
             ResponseStep {
+                lift: 1.0,
                 tint: 0.3,
                 ..ResponseStep::REST
             },
             ResponseStep {
+                lift: 1.0,
                 scale: 0.6,
                 ..ResponseStep::REST
             },
             ResponseStep {
+                lift: 1.0,
                 glow: 0.6,
                 ..ResponseStep::REST
             },

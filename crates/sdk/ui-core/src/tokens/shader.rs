@@ -124,7 +124,12 @@ impl Source {
         if !self.time.is_finite() {
             return Err("surface shader time is not a number".to_owned());
         }
-        check(&self.wgsl)
+        check(&self.wgsl)?;
+        // Checked against the grammar is not yet drawable: what the
+        // interpreter cannot run is refused here, at load, rather than
+        // drawn as a fallback on every part.
+        crate::part_paint::shader::probe(&self.wgsl)
+            .map_err(|reason| format!("surface shader cannot be drawn: {reason}"))
     }
 }
 
@@ -372,9 +377,9 @@ fn fs_surface(
             let refused = check(wgsl).expect_err(wgsl);
             assert!(refused.contains(reason), "{wgsl}: {refused}");
         }
-        let bad_type = GOOD.replace("backdrop: vec4<f32>", "backdrop: vec3<f32>");
+        let bad_type = GOOD.replace("ink: vec4<f32>", "ink: vec3<f32>");
         let refused = check(&bad_type).expect_err("wrong input type");
-        assert!(refused.contains("`backdrop` is vec3<f32>"), "{refused}");
+        assert!(refused.contains("`ink` is vec3<f32>"), "{refused}");
         let too_long = Source {
             wgsl: " ".repeat(MAX_SOURCE + 1),
             time: 0.0,

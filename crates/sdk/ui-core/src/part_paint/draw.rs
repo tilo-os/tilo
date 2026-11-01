@@ -204,6 +204,9 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         param.name.hash(&mut hasher);
         param.value.to_bits().hash(&mut hasher);
     }
+    // A theme's surface shader draws the part: another program is another
+    // picture, whatever else is the same.
+    tokens.shader.hash(&mut hasher);
     hasher.finish()
 }
 

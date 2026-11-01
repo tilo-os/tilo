@@ -296,7 +296,12 @@ distribution, user, workspace and accessibility layers. A theme can set:
 - **Density, type and motion:** spacing scale, UI face, reading face,
   base size and whether similar letters are always distinguished, and spring
   character.
-- **Material:** blur strength and tint opacity of floating chrome.
+- **Material:** the finish of each surface role (opaque, glass, block,
+  pixelated, or the theme's own surface shader) and its parameters, such as
+  blur strength and tint opacity of floating chrome.
+- **Response:** how far hover and press lift a control, how much accent the
+  lift carries, how far a press scales it and how bright its edge lights.
+  The lift itself stays: a theme moves the levers, never removes them.
 
 A theme cannot set colours of individual widgets, remove the lift or focus
 ring, or break contrast floors. "Your colour" is part of your identity, not

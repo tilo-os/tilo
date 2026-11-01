@@ -62,7 +62,9 @@ pub struct PaintRequest {
 /// A request, decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    Paint(PaintRequest),
+    /// Boxed: a paint request carries the part's tokens, a theme's shader
+    /// among them, and the other requests are a few bytes.
+    Paint(Box<PaintRequest>),
     Transition {
         part: Part,
         from: States,
@@ -108,7 +110,7 @@ pub fn params_request() -> Vec<u8> {
 pub fn request(bytes: &[u8]) -> Option<Request> {
     let mut input = Reader(bytes);
     let request = match input.u8()? {
-        PAINT => Request::Paint(PaintRequest {
+        PAINT => Request::Paint(Box::new(PaintRequest {
             part: Part::from_index(input.u8()?)?,
             size: Size::new(input.f64()?, input.f64()?),
             state: PartState {
@@ -117,7 +119,7 @@ pub fn request(bytes: &[u8]) -> Option<Request> {
             },
             progress: input.f32()?,
             tokens: input.tokens()?,
-        }),
+        })),
         TRANSITION => Request::Transition {
             part: Part::from_index(input.u8()?)?,
             from: States::from_bits(input.u16()?),
@@ -834,9 +836,16 @@ mod tests {
         // A theme's light is not the stock one: the round trip would hold
         // with a constant, so the encoding is checked to carry the value.
         assert_ne!(light, PartTokens::default().light);
-        // Bytes from before the field existed (here: the same request with
-        // the trailing colour cut) read as the stock white.
-        let older = &bytes[..bytes.len() - 16];
+        // The fields after the light: an empty shader (its length and its
+        // time). Bytes from before a set carried a shader read as none.
+        let shader_tail = 4 + 4;
+        let Some(Request::Paint(unshaded)) = request(&bytes[..bytes.len() - shader_tail]) else {
+            panic!("a request without the shader does not decode");
+        };
+        assert_eq!(unshaded.tokens, tokens);
+        // Bytes from before the light existed (here: the same request with
+        // the trailing colour and shader cut) read as the stock white.
+        let older = &bytes[..bytes.len() - 16 - shader_tail];
         let Some(Request::Paint(before)) = request(older) else {
             panic!("a request without the light does not decode");
         };
@@ -874,7 +883,7 @@ mod tests {
         };
         assert_eq!(
             request(&paint_request(&request_in)),
-            Some(Request::Paint(request_in))
+            Some(Request::Paint(Box::new(request_in)))
         );
         assert_eq!(
             request(&transition_request(

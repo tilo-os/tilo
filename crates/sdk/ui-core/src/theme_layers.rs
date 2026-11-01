@@ -408,11 +408,20 @@ pub fn user_document(
             .get(CUSTOM_THEMES_KEY)?
             .as_array()?
             .iter()
-            .filter_map(|value| serde_json::from_value::<ThemeDocument>(value.clone()).ok())
-            .find(|document| document.id == custom)?,
+            .filter(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(custom))
+            .find_map(|value| {
+                serde_json::from_value::<ThemeDocument>(value.clone())
+                    .map_err(|error| {
+                        tracing::warn!(theme = custom, %error, "a saved theme is not a theme document; the stock theme shows");
+                    })
+                    .ok()
+            })?,
         None => Preset::find(id)?.document(),
     };
-    document.validate().ok()?;
+    if let Some(reason) = crate::theme::Theme::refusal(&document) {
+        tracing::warn!(theme = %document.id, %reason, "a saved theme is refused; the stock theme shows");
+        return None;
+    }
     if let Some(density) = appearance
         .get(DENSITY_KEY)
         .and_then(serde_json::Value::as_f64)

@@ -115,6 +115,9 @@ impl std::fmt::Debug for Finish {
         for param in self.params.iter() {
             out.field(&param.name, &param.value);
         }
+        if !self.shader.is_empty() {
+            out.field("shader", &self.shader);
+        }
         out.finish()
     }
 }

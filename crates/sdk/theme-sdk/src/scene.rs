@@ -120,7 +120,7 @@ pub enum Brush {
 /// A surface shader as it travels from a theme document to the renderer:
 /// WGSL and the static `time` it is given. It is checked when the theme is
 /// read, before it reaches here.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ShaderSource {
     pub wgsl: String,
     /// The `time` input, in hundredths of a second (exact, so it encodes

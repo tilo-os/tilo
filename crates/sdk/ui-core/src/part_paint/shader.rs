@@ -25,6 +25,13 @@ use crate::tokens::shader;
 /// grid this caps to; it never costs more than this per settled frame.
 pub const MAX_TEXELS: u32 = 512 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread evaluated a shader: an idle part is
+    /// evaluated once and replayed.
+    pub(crate) static EVALUATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Why a shader could not be evaluated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalError(pub String);
@@ -39,6 +46,8 @@ pub fn evaluate(
     tokens: &PartTokens,
     fallback: Color,
 ) -> vello::peniko::ImageData {
+    #[cfg(test)]
+    EVALUATED.with(|count| count.set(count.get() + 1));
     let (width, height) = rail(rect.width(), rect.height());
     let inputs = Inputs::of(tokens, rect, source.time_centis);
     match run(&source.wgsl, &inputs, width, height) {
@@ -51,6 +60,20 @@ pub fn evaluate(
             crate::raster::rgba8(fallback_pixels(fallback, width, height), width, height)
         }
     }
+}
+
+/// Whether the interpreter can draw `wgsl`: one texel over neutral inputs.
+/// The program is straight-line (no loops, branches or mutable
+/// variables), so one texel walks every statement it has; what this
+/// refuses, every part would draw as its fallback.
+///
+/// # Errors
+/// What the interpreter cannot run, as the theme's author reads it.
+pub(crate) fn probe(wgsl: &str) -> Result<(), String> {
+    let inputs = Inputs::of(&PartTokens::default(), Rect::new(0.0, 0.0, 1.0, 1.0), 0);
+    run(wgsl, &inputs, 1, 1)
+        .map(|_| ())
+        .map_err(|error| error.0)
 }
 
 /// The image's size in texels: the part's own size, the same total area
@@ -127,9 +150,9 @@ impl Inputs {
     fn argument(&self, index: usize) -> Option<Value> {
         Some(match index {
             0 => Value::Vec4(self.backdrop),
-            1 => Value::Vec2(half(0.0)), // filled per texel by the caller
+            // `uv` and `position` are filled per texel by the caller.
+            1 | 3 => Value::Vec2(half(0.0)),
             2 => Value::Vec2(self.size),
-            3 => Value::Vec2(half(0.0)),
             4 => Value::Vec4(self.fill),
             5 => Value::Vec4(self.ink),
             6 => Value::Vec4(self.ground),
@@ -256,8 +279,6 @@ impl Value {
 /// A shader in a form the interpreter runs: its expression list and its
 /// statement list, resolved against the module.
 struct Program<'a> {
-    module: &'a naga::Module,
-    function: &'a naga::Function,
     expressions: &'a naga::Arena<naga::Expression>,
     body: &'a naga::Block,
 }
@@ -268,8 +289,6 @@ impl<'a> Program<'a> {
             return Err(EvalError("declares no function".to_owned()));
         };
         Ok(Self {
-            module,
-            function,
             expressions: &function.expressions,
             body: &function.body,
         })
@@ -292,7 +311,7 @@ impl<'a> Program<'a> {
             .map(|(handle, expression)| (handle, expression.clone()))
             .collect();
         for (handle, expression) in standing {
-            let value = self.eval(&expression, inputs, texel, &mut scope)?;
+            let value = self.eval(&expression, inputs, texel, &scope)?;
             scope.put(handle, value);
         }
         self.block(self.body, inputs, texel, &mut scope)
@@ -359,7 +378,7 @@ impl<'a> Program<'a> {
         expression: &naga::Expression,
         inputs: &Inputs,
         texel: Texel,
-        scope: &mut Scope,
+        scope: &Scope,
     ) -> Result<Value, EvalError> {
         Ok(match expression {
             naga::Expression::Literal(literal) => Value::Scalar(literal_value(literal)?),
@@ -387,7 +406,7 @@ impl<'a> Program<'a> {
                     .splat()
                     .ok_or_else(|| EvalError("splats a value a scalar is not".to_owned()))?;
                 let size = vector_len(*size);
-                let mut out = [value; 4];
+                let out = [value; 4];
                 match size {
                     1 => Value::Scalar(out[0]),
                     2 => Value::Vec2([out[0], out[1]]),
@@ -514,9 +533,8 @@ impl<'a> Program<'a> {
             | Op::LessEqual
             | Op::Greater
             | Op::GreaterEqual => {
-                let (a, b) = match (left.splat(), right.splat()) {
-                    (Some(a), Some(b)) => (a, b),
-                    _ => return Err(EvalError("compares a shape a scalar is not".to_owned())),
+                let (Some(a), Some(b)) = (left.splat(), right.splat()) else {
+                    return Err(EvalError("compares a shape a scalar is not".to_owned()));
                 };
                 Some(Value::Bool(match op {
                     Op::Equal => (a - b).abs() <= f32::EPSILON,
@@ -570,11 +588,13 @@ fn math(fun: naga::MathFunction, args: &[Value]) -> Result<Value, EvalError> {
     // of the same width (WGSL's `mix`, `clamp`, `smoothstep` and `step` take
     // a scalar where a vector is expected, broadcast).
     let lanes = |f: &dyn Fn(&[f32; 4]) -> f32| -> Option<Value> {
+        // All scalars is one lane: `clamp(uv.y, 0.0, 1.0)` is a scalar.
         let width = args
             .iter()
             .filter_map(Value::channels)
             .map(<[f32]>::len)
-            .max()?;
+            .max()
+            .unwrap_or(1);
         let mut widened = Vec::with_capacity(args.len());
         for argument in args {
             widened.push(argument.widened(width)?);

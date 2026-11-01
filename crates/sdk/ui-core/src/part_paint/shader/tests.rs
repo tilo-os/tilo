@@ -4,23 +4,14 @@
 
 use super::*;
 use crate::part_paint::ShaderSource;
-use crate::tokens::shader::{self, Source};
+use crate::tokens::shader::Source;
 
 fn tokens() -> PartTokens {
-    let mut tokens = PartTokens::default();
-    tokens.fill = Color::new([0.04, 0.05, 0.06, 1.0]);
-    tokens.ground = Color::new([0.06, 0.07, 0.09, 1.0]);
-    tokens.params = std::sync::Arc::from(vec![
-        crate::part_paint::Param {
-            name: "cover".to_owned(),
-            value: 1.0,
-        },
-        crate::part_paint::Param {
-            name: "time".to_owned(),
-            value: 0.0,
-        },
-    ]);
-    tokens
+    PartTokens {
+        fill: Color::new([0.04, 0.05, 0.06, 1.0]),
+        ground: Color::new([0.06, 0.07, 0.09, 1.0]),
+        ..PartTokens::default()
+    }
 }
 
 fn source(wgsl: &str) -> ShaderSource {
@@ -148,7 +139,93 @@ fn a_huge_part_is_bounded_and_a_tiny_one_has_a_texel() {
 #[test]
 fn the_documented_check_refuses_control_flow() {
     let looping = SOLID.replace("return fill;", "var x = 0.0;\n    loop {\n        x = x + 1.0;\n        if x > 2.0 { break; }\n    }\n    return fill;");
-    assert!(shader::check(&looping).is_err() || shader::check(&looping).is_ok());
-    // What a theme may write is admitted; what it may not is named.
-    assert_eq!(shader::check(SOLID), Ok(()));
+    let refused = Source {
+        wgsl: looping,
+        time: 0.0,
+    }
+    .validate()
+    .expect_err("a loop is refused at load");
+    assert!(refused.contains("cannot be drawn"), "{refused}");
+    // What a theme may write is admitted.
+    let admitted = Source {
+        wgsl: SOLID.to_owned(),
+        time: 0.0,
+    };
+    assert_eq!(admitted.validate(), Ok(()));
+}
+
+/// A settled part in a shader finish is evaluated once and replayed: an
+/// idle surface runs no shader, and another program is another picture.
+#[test]
+fn a_settled_shader_part_is_evaluated_once_and_replayed() {
+    use crate::part_paint::{Moment, Part, States, paint_part, part_tokens};
+    use crate::theme::{Preset, Theme};
+    use crate::tokens::{Finish, SurfaceRole, SurfaceShader};
+    let theme_with = |wgsl: &str| {
+        let mut document = Preset::Dark.document();
+        document.material.window =
+            Finish::named("shader", std::collections::BTreeMap::<String, f32>::new())
+                .expect("the shader set")
+                .with_shader(SurfaceShader {
+                    wgsl: wgsl.to_owned(),
+                    time: 0.0,
+                });
+        Theme::from_document(&document).unwrap_or_else(|| panic!("{:?}", Theme::refusal(&document)))
+    };
+    let paint = |theme: &Theme| {
+        let tokens = part_tokens(
+            theme,
+            SurfaceRole::Window,
+            (
+                theme.tokens.colors.surfaces.content,
+                Color::BLACK,
+                Color::TRANSPARENT,
+            ),
+            theme.tokens.colors.surfaces.base,
+        );
+        paint_part(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            vello::kurbo::Rect::new(0.0, 0.0, 40.0, 30.0),
+            (
+                theme.painter(SurfaceRole::Window),
+                Part::WindowGround,
+                SurfaceRole::Window,
+            ),
+            Moment::settled(States::REST),
+            &tokens,
+            theme,
+        );
+    };
+    let theme = theme_with(SOLID);
+    let before = EVALUATED.with(std::cell::Cell::get);
+    for _ in 0..3 {
+        paint(&theme);
+    }
+    assert_eq!(
+        EVALUATED.with(std::cell::Cell::get) - before,
+        1,
+        "replayed while idle"
+    );
+    let other = theme_with(&SOLID.replace("return fill;", "return ground;"));
+    paint(&other);
+    assert_eq!(
+        EVALUATED.with(std::cell::Cell::get) - before,
+        2,
+        "a new program draws anew"
+    );
+}
+
+/// Functions of scalars alone are one lane: `smoothstep`, `clamp`, `mix`,
+/// `min` and `step` over `f32` draw, they are not refused as a shape.
+#[test]
+fn scalar_only_functions_run() {
+    let scalar = SOLID.replace(
+        "return fill;",
+        "let ramp = smoothstep(0.0, 1.0, clamp(uv.y, 0.0, 1.0));\n    let a = mix(min(ramp, 1.0), step(0.5, uv.x), 0.5);\n    return vec4<f32>(a, a, a, 1.0);",
+    );
+    let rect = vello::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0);
+    let run = super::run(&scalar, &Inputs::of(&tokens(), rect, 0), 4, 4);
+    assert!(run.is_ok(), "{:?}", run.err());
+    assert_eq!(super::probe(&scalar), Ok(()));
 }

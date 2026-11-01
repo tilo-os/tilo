@@ -856,3 +856,61 @@ fn a_body_rebuilt_from_its_path_is_the_same_outline() {
     let smaller = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 13.0).to_path(0.1);
     assert!(!same_outline(&rebuilt, &smaller));
 }
+
+/// Pixelated's floating panel shows what lies below it as cells: one colour
+/// across each cell, and the stripes still there from cell to cell, not
+/// blurred away and not the opaque placeholder. An unblurred finish still
+/// runs the backdrop pass.
+#[test]
+fn a_pixelated_panel_shows_what_lies_below_as_cells() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let seen = render_floating_over_stripes(&theme);
+    let cell = theme
+        .finish(crate::tokens::SurfaceRole::Floating)
+        .params()
+        .iter()
+        .find(|param| param.name == "cell")
+        .map(|param| param.value)
+        .expect("the pixelated floating finish states its cell");
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the shipped cell is a few whole pixels"
+    )]
+    let cell = cell as u32;
+    assert!(cell >= 2, "a cell of {cell} px shows no pixels");
+    // The panel's cells start at its top left (64, 48). Inside one cell,
+    // away from the rim, every pixel is the same colour.
+    let (x0, y0) = (64 + 6 * cell, 48 + 4 * cell);
+    for (dx, dy) in [(1, 0), (0, 1), (cell - 1, cell - 1)] {
+        assert!(
+            close(
+                pixel(&seen, width, x0, y0),
+                pixel(&seen, width, x0 + dx, y0 + dy),
+                2
+            ),
+            "one cell, two colours: {:?} vs {:?}",
+            pixel(&seen, width, x0, y0),
+            pixel(&seen, width, x0 + dx, y0 + dy)
+        );
+    }
+    // Across a row of cells the stripes below still read: what the pass
+    // sampled, not the placeholder's flat ground.
+    let row: Vec<u16> = (0..12)
+        .map(|i| brightness(pixel(&seen, width, 96 + i * cell + 1, y0)))
+        .collect();
+    // The cells are held in the material's band under the ground at
+    // `cover`, so the stripes read faintly but plainly, cell by cell.
+    let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
+    assert!(
+        spread >= 6,
+        "the cells show nothing of the stripes: {row:?}"
+    );
+    let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
+    assert!(
+        row.iter()
+            .any(|value| value.abs_diff(brightness(ground)) > 6),
+        "the cells are the placeholder's flat ground: {row:?}"
+    );
+}

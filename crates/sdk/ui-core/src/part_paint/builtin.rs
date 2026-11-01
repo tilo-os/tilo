@@ -45,6 +45,11 @@ pub const CELL_USABLE: std::ops::RangeInclusive<f32> = 2.0..=32.0;
 /// what they sample. Any, as for Default; legibility is the band's.
 pub const COVER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 
+/// The Shader set's `scale` band: a cell or pattern size, logical pixels.
+pub const SHADER_SCALE_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=64.0;
+/// The Shader set's `phase` band: an offset a pattern starts from.
+pub const SHADER_PHASE_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1000.0;
+
 /// Blur band a document may state, logical pixels.
 pub const BLUR_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
 /// Blur band a theme is built at.
@@ -267,8 +272,9 @@ impl PartPainter for Block {
 /// Pixelated: what lies below the part, sampled at a coarse cell so the
 /// surface shows it as pixels. A window, a panel and a bar show the
 /// backdrop through the cell grid at `cover`; where there is no backdrop
-/// pass (a window's own ground, a control face) the part is its ground in
-/// cells, each one step apart so the pixel grid stays visible.
+/// pass (a window's own ground, a panel outside a recording) the part is
+/// its fill, the ground ink is measured on, and a control face is its
+/// fill.
 struct Pixelated;
 
 impl PartPainter for Pixelated {
@@ -283,6 +289,9 @@ impl PartPainter for Pixelated {
         let path = body(size, tokens).to_path(0.1);
         let cell = tokens.param("cell", 8.0).clamp(1.0, 64.0);
         let cover = tokens.param("cover", 0.85).clamp(0.0, 1.0);
+        // Softening before the cells: none by default, so each cell is the
+        // plain average of what lies below it.
+        let softening = tokens.param("blur", 0.0);
         let mut scene = PartScene::new();
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
@@ -290,7 +299,7 @@ impl PartPainter for Pixelated {
                     scene.fill(
                         path.clone(),
                         Brush::Backdrop {
-                            blur: 0.0,
+                            blur: softening,
                             lens: Lens {
                                 refraction: 0.0,
                                 sampling: Sampling::Blocky,
@@ -302,7 +311,7 @@ impl PartPainter for Pixelated {
                     );
                     scene.fill(path, Brush::Solid(tokens.fill.with_alpha(cover)));
                 } else {
-                    scene.fill(path, Brush::Solid(pixel_cells(tokens, cell)));
+                    scene.fill(path, Brush::Solid(tokens.fill));
                 }
             }
             Part::ControlFace => {
@@ -319,19 +328,9 @@ impl PartPainter for Pixelated {
         vec![
             ParamSpec::new("cell", Some(8.0), CELL_ADMITTED).usable_within(CELL_USABLE),
             ParamSpec::new("cover", Some(0.85), COVER_ADMITTED),
+            ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED).usable_within(BLUR_USABLE),
         ]
     }
-}
-
-/// The ground a Pixelated part stands on where nothing lies below it:
-/// its own fill, stepped a hair further from the ground so the surface
-/// reads as a slightly raised pixel plane rather than plain colour.
-fn pixel_cells(tokens: &PartTokens, _cell: f32) -> Color {
-    let base = crate::color::Oklch::from_color(tokens.fill);
-    // Eighteen per cent of a surface step: visible as a plane, far inside
-    // the band the toolkit holds a material in.
-    let step = if tokens.dark { 0.018 } else { -0.013 };
-    crate::color::oklch(base.l + step, base.c, base.h)
 }
 
 /// Shader: the theme's own WGSL fragment over the fixed input set
@@ -369,8 +368,17 @@ impl PartPainter for Shader {
         Some(PaintedPart::new(scene))
     }
 
+    /// The four numbers a shader reads as `params.xyzw`
+    /// (`crate::tokens::shader::FINISH_PARAMS`), each with the value it
+    /// has when a theme states none.
     fn params(&self) -> Vec<ParamSpec> {
-        vec![ParamSpec::new("cover", Some(1.0), COVER_ADMITTED)]
+        let [tint, saturation, scale, phase] = crate::tokens::shader::FINISH_PARAMS;
+        vec![
+            ParamSpec::new(tint, Some(0.0), COVER_ADMITTED),
+            ParamSpec::new(saturation, Some(1.0), SATURATION_ADMITTED),
+            ParamSpec::new(scale, Some(1.0), SHADER_SCALE_ADMITTED),
+            ParamSpec::new(phase, Some(0.0), SHADER_PHASE_ADMITTED),
+        ]
     }
 }
 

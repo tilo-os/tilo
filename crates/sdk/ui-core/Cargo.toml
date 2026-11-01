@@ -450,6 +450,10 @@ name = "component-catalogue"
 path = "examples/component_catalogue.rs"
 
 [[example]]
+name = "theme-looks"
+path = "examples/theme_looks.rs"
+
+[[example]]
 name = "action-presence"
 path = "examples/action_presence.rs"
 required-features = ["native"]
