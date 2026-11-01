@@ -196,7 +196,10 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         revocations.insert(entry.revoked_device_public_key, entry);
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
+    // The domain stored policies were already dated under: a workspace's
+    // authorization basis keeps its digest, whatever the code around it is
+    // called now.
+    hasher.update(b"tilo-room-media-auth-basis-v1\0");
     crate::postcard_sink::hash_into(
         &(owner_key, members, grants, roster, rows, revocations),
         &mut hasher,

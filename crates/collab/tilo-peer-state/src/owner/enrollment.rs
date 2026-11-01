@@ -36,7 +36,7 @@ pub(crate) fn restore(
     match (&record.enrollment, &record.vouched) {
         (Some(enrollment), None) => validate_enrollment(workspace, record, enrollment)?,
         (None, Some(vouched)) => {
-            crate::owner::vouched::validate(workspace, record, &vouched.bootstrap)?
+            crate::owner::vouched::validate(workspace, record, &vouched.bootstrap)?;
         }
         // A workspace this device's own host keeps was founded here
         // ([`NativeWorkspaceOwner::create_workspace`]): no other device

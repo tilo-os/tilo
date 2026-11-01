@@ -1,6 +1,6 @@
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture};
-use crate::owner::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
+use crate::owner::{DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, RoomId, open_file};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -953,6 +953,43 @@ fn an_owner_file_from_before_the_workspace_host_had_its_name_restores() {
             .unwrap(),
         host,
         "the governor field is the workspace's host"
+    );
+}
+
+#[test]
+fn an_owner_file_from_before_the_storage_named_its_workspaces_restores() {
+    let joined = enrolled();
+    drop(joined.owner);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let workspaces = value
+        .as_object_mut()
+        .expect("a storage object")
+        .remove("workspaces")
+        .expect("the storage names its workspaces");
+    value["rooms"] = workspaces;
+    std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let reopened = open_file(&joined.path).expect("a file from before the rename reads");
+    assert_eq!(
+        reopened.workspaces(),
+        vec![joined.workspace],
+        "the workspaces read under their old key"
+    );
+}
+
+#[test]
+fn a_pending_enrollment_handle_from_before_the_rename_reads() {
+    let id = PendingEnrollmentId::new(RoomId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
+    let mut value = serde_json::to_value(&id).unwrap();
+    let object = value.as_object_mut().expect("a handle object");
+    let workspace = object
+        .remove("workspace")
+        .expect("the handle names its workspace");
+    object.insert("room".into(), workspace);
+    assert_eq!(
+        serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
+        id,
+        "the handle reads under its old key"
     );
 }
 

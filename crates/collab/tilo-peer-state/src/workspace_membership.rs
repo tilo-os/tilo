@@ -784,7 +784,7 @@ mod tests {
                 },
                 [
                     &[0x03, 0x01, b't', 0x06][..],
-                    b"workspace:r",
+                    b"room:r",
                     &[0x01, 0x00, 0x02],
                 ]
                 .concat(),

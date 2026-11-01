@@ -443,7 +443,10 @@ pub struct StatePeer {
 /// source and its certificate.
 #[must_use]
 pub fn workspace_host_actor(device: &[u8; 32]) -> automerge::ActorId {
-    automerge::ActorId::from(blake3::derive_key("tilo workspace host actor v1", device).to_vec())
+    // The salt is the namespace a host's changes were already made under: a
+    // workspace's stored history keeps its host's actor, whatever the code
+    // around it is called now.
+    automerge::ActorId::from(blake3::derive_key("tilo room host actor v1", device).to_vec())
 }
 
 fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
@@ -2956,7 +2959,7 @@ impl StatePeer {
                         }
                     }
                     Ok(receipts)
-                })?
+                })?;
             }
             None if !coverages.is_empty() => crate::coverage::put_all(workspace, coverages)?,
             None => {}
@@ -3241,8 +3244,7 @@ impl StatePeer {
                 })
             })?);
         }
-        // The fields of `DurableV6`/`DurableV5`/`DurableV4` in order: a
-        // postcard struct is its fields' encodings one after the other.
+        // The fields of `DurableV6`/`DurableV5`/`DurableV4`, in order.
         let mut parts: Vec<std::sync::Arc<[u8]>> = Vec::new();
         let mut head = Vec::new();
         if sealed > 0 {
@@ -3251,15 +3253,13 @@ impl StatePeer {
             head = put(&5u32, head)?;
         }
         head = put(&4u32, head)?;
+        let workspace_doc = self.core.workspace_doc.as_ref();
         head = put(
             &(
                 DURABLE_BASE_VERSION,
                 &self.core.workspace,
                 &self.core.owner,
-                self.core
-                    .workspace_doc
-                    .as_ref()
-                    .map(CachedDocument::saved_bytes),
+                workspace_doc.map(CachedDocument::saved_bytes),
                 documents.len(),
             ),
             head,

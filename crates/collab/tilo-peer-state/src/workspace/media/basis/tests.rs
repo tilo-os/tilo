@@ -296,7 +296,7 @@ fn historical_basis(
     let bytes = canonical_bytes(&(owner_key, members, grants, roster, rows, revocations))
         .map_err(|_| MediaPolicyError::Malformed)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo-workspace-media-auth-basis-v1\0");
+    hasher.update(b"tilo-room-media-auth-basis-v1\0");
     hasher.update(&bytes);
     Ok(*hasher.finalize().as_bytes())
 }
