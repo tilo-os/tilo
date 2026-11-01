@@ -49,7 +49,7 @@ use ui::search::system::SearchScope;
 /// The action host as the session's search reaches it: what open apps
 /// publish and run, and running what is chosen by address.
 pub trait AppActions {
-    /// What open apps publish through the action host, by app and room.
+    /// What open apps publish through the action host, by app and workspace.
     fn published(&self) -> Vec<PublishedActions>;
     /// The invocations the action host follows for the person.
     fn jobs(&self) -> Vec<JobEntry>;
@@ -64,17 +64,17 @@ pub trait AppActions {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError>;
-    /// Ask the invocation `invocation` of `app` in `room` to stop.
+    /// Ask the invocation `invocation` of `app` in `workspace` to stop.
     ///
     /// # Errors
     /// The host's refusal: no such invocation, or it cannot be stopped.
-    fn cancel(&self, app: &str, room: &str, invocation: &str) -> Result<(), DoorError>;
-    /// Open `uri` in room `room`, in the app that takes its scheme: a file,
+    fn cancel(&self, app: &str, workspace: &str, invocation: &str) -> Result<(), DoorError>;
+    /// Open `uri` in `workspace`, in the app that takes its scheme: a file,
     /// a Store page, a web address.
     ///
     /// # Errors
     /// Nothing takes it.
-    fn open_uri(&self, room: &str, uri: &str) -> Result<(), DoorError>;
+    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError>;
     /// Start the machine's own app `desktop_id`.
     ///
     /// # Errors
@@ -110,9 +110,9 @@ struct Kept {
     host_apps: Rc<HostApps>,
     content: Option<Rc<IndexedContent>>,
     files: Option<Rc<Files>>,
-    /// Settings' pages and the store's catalogue, for the room they were
-    /// built for.
-    room: Option<(String, Rc<Settings>, Rc<StoreCatalogue>)>,
+    /// Settings' pages and the store's catalogue, for the workspace they
+    /// were built for.
+    workspace: Option<(String, Rc<Settings>, Rc<StoreCatalogue>)>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and
@@ -148,8 +148,8 @@ pub(crate) struct SessionSearch {
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
     notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
-    /// The workspaces the desk shows, by room and the name it gives them:
-    /// what a row of another workspace says.
+    /// The workspaces the desk shows, by id and the name it gives them: what
+    /// a row of another workspace says.
     workspaces: RefCell<Vec<(String, String)>>,
     /// Who is in each workspace and the calls in progress, as the desk and
     /// the presence it holds say: what the empty palette's first group
@@ -197,7 +197,7 @@ impl SessionSearch {
             lists: read,
             content: content.map(|index| Rc::new(IndexedContent::new(index, app_name))),
             files: files.map(|(home, names, content)| Rc::new(Files::new(home, names, content))),
-            room: None,
+            workspace: None,
         };
         Self {
             lists,
@@ -268,7 +268,7 @@ impl SessionSearch {
         *self.here.borrow_mut() = workspaces;
     }
 
-    /// The workspaces this device shows, by room and the name the desk gives
+    /// The workspaces this device shows, by id and the name the desk gives
     /// it: what a row says of a record the workspace in front does not hold.
     pub(crate) fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
         if let Some(records) = &self.records {
@@ -306,7 +306,7 @@ impl SessionSearch {
         if needle.is_empty() {
             return Vec::new();
         }
-        let (settings, catalogue) = self.for_room("");
+        let (settings, catalogue) = self.for_workspace("");
         let kept = self.kept.borrow();
         let mut sources: Vec<Box<dyn Source>> = vec![
             Box::new(settings),
@@ -406,7 +406,7 @@ impl SessionSearch {
 
     /// The lists as last read, with the sources built from them rebuilt
     /// when they were read again since: the machine's apps here, Settings
-    /// and the catalogue at their room's next search.
+    /// and the catalogue at their workspace's next search.
     fn current_lists(&self) -> Arc<AppLists> {
         let latest = self.lists.latest();
         let mut kept = self.kept.borrow_mut();
@@ -415,19 +415,19 @@ impl SessionSearch {
                 latest.host_apps.clone(),
                 &self.preferences.borrow(),
             ));
-            kept.room = None;
+            kept.workspace = None;
             kept.lists = Arc::clone(&latest);
         }
         latest
     }
 
-    /// Settings and the catalogue for `room`, built once per room and
-    /// reading of the lists.
-    fn for_room(&self, room: &str) -> (Rc<Settings>, Rc<StoreCatalogue>) {
+    /// Settings and the catalogue for `workspace`, built once per workspace
+    /// and reading of the lists.
+    fn for_workspace(&self, workspace: &str) -> (Rc<Settings>, Rc<StoreCatalogue>) {
         let lists = self.current_lists();
         let mut kept = self.kept.borrow_mut();
-        if let Some((built, settings, catalogue)) = &kept.room
-            && built == room
+        if let Some((built, settings, catalogue)) = &kept.workspace
+            && built == workspace
         {
             return (Rc::clone(settings), Rc::clone(catalogue));
         }
@@ -442,24 +442,28 @@ impl SessionSearch {
                     .map(str::to_owned)
             })
             .collect();
-        let settings = Rc::new(Settings::changing_in_place(room, &|id| {
+        let settings = Rc::new(Settings::changing_in_place(workspace, &|id| {
             in_place.contains(id)
         }));
-        let catalogue = Rc::new(StoreCatalogue::new(lists.catalogue.clone(), room));
-        kept.room = Some((room.to_owned(), Rc::clone(&settings), Rc::clone(&catalogue)));
+        let catalogue = Rc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
+        kept.workspace = Some((
+            workspace.to_owned(),
+            Rc::clone(&settings),
+            Rc::clone(&catalogue),
+        ));
         (settings, catalogue)
     }
 
-    /// Carry out `target`, chosen in search in the workspace of `room`:
-    /// through the action host, or for the session's own actions through
-    /// `own`, the session's published surface.
+    /// Carry out `target`, chosen in search in `workspace`: through the
+    /// action host, or for the session's own actions through `own`, the
+    /// session's published surface.
     pub(crate) fn perform(
         &self,
-        room: &str,
+        workspace: &str,
         target: Target,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) {
-        if let Err(error) = self.perform_checked(room, target, own) {
+        if let Err(error) = self.perform_checked(workspace, target, own) {
             tracing::warn!(%error, "search row not carried out");
         }
     }
@@ -468,7 +472,7 @@ impl SessionSearch {
     /// has another way to reach the same place needs to know.
     pub(crate) fn perform_checked(
         &self,
-        room: &str,
+        workspace: &str,
         target: Target,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) -> Result<(), DoorError> {
@@ -478,7 +482,7 @@ impl SessionSearch {
                     && invoke.address.resource.as_str() == record_rows::RECORDS_RESOURCE
                     && invoke.address.action.as_str() == record_rows::BRING_HERE =>
             {
-                self.bring_here(room, &invoke)
+                self.bring_here(workspace, &invoke)
             }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
@@ -494,7 +498,10 @@ impl SessionSearch {
             }),
             Target::Launch { app } => self.with_apps(|apps| match host_apps::launched(&app) {
                 Some(desktop_id) => apps.start_host_app(desktop_id),
-                None => apps.invoke(application_open_target(room, &app), serde_json::Map::new()),
+                None => apps.invoke(
+                    application_open_target(workspace, &app),
+                    serde_json::Map::new(),
+                ),
             }),
             Target::Prefer { source, enabled } => {
                 self.prefer(&source, enabled);
@@ -505,7 +512,7 @@ impl SessionSearch {
                 workspace,
                 invocation,
             } => self.with_apps(|apps| apps.cancel(&app, &workspace, &invocation)),
-            Target::Open { uri, .. } => self.with_apps(|apps| apps.open_uri(room, &uri)),
+            Target::Open { uri, .. } => self.with_apps(|apps| apps.open_uri(workspace, &uri)),
             other => {
                 tracing::debug!(?other, "search row the desk carries out");
                 Ok(())
@@ -513,7 +520,7 @@ impl SessionSearch {
         }
     }
 
-    /// Bring the record a row names into the workspace of `room`: the
+    /// Bring the record a row names into `workspace`: the
     /// reference the workspace holds from then on. The record is named as the
     /// row carried it — its id and kind — so what arrives is the record, not
     /// a copy of it.
@@ -522,7 +529,7 @@ impl SessionSearch {
     /// opening it are one gesture. The reference is named first and the
     /// launch reported after it: a record whose file is gone is still one
     /// this workspace now holds, and a refusal to open leaves it held.
-    fn bring_here(&self, room: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
+    fn bring_here(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
         let Some(records) = &self.records else {
             return Err(DoorError::Unavailable {
                 code: "records_unavailable".into(),
@@ -563,7 +570,7 @@ impl SessionSearch {
         }
         let path = id.file_path();
         records.bring_here(
-            room,
+            workspace,
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
         );
@@ -578,7 +585,7 @@ impl SessionSearch {
             return Err(DoorError::Failed(format!("{} is gone", path.display())));
         }
         let uri = file_uri(&path);
-        self.with_apps(|apps| apps.open_uri(room, &uri))
+        self.with_apps(|apps| apps.open_uri(workspace, &uri))
     }
 
     fn with_apps(
@@ -596,22 +603,22 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
-    fn feed(&self, room: &str, scope: SearchScope) -> SearchHostFeed {
-        let (settings, catalogue) = self.for_room(room);
+    fn feed(&self, workspace: &str, scope: SearchScope) -> SearchHostFeed {
+        let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
         // Every workspace's places name their workspace when the search is
         // widened; the one in front needs no name.
         let continue_places = match scope {
             SearchScope::All => Continue::everywhere(
                 &self.places.borrow(),
-                room,
+                workspace,
                 self.open_tabs.borrow().clone(),
                 self.workspaces.borrow().clone(),
                 app_name,
             ),
             SearchScope::ActiveApp | SearchScope::Workspace => Continue::new(
                 &self.places.borrow(),
-                room,
+                workspace,
                 self.open_tabs.borrow().clone(),
                 app_name,
             ),
@@ -624,13 +631,13 @@ impl SearchHost for SessionSearch {
             Box::new(settings),
             Box::new(catalogue),
             Box::new(Rc::clone(&kept.host_apps)),
-            Box::new(Waiting::new(room, self.notifications.borrow().clone())),
+            Box::new(Waiting::new(workspace, self.notifications.borrow().clone())),
             Box::new(continue_places),
         ];
         {
             let downloaded = self.downloaded.borrow();
             sources.push(Box::new(Downloaded::new(
-                room,
+                workspace,
                 downloaded.reading.clone(),
                 &downloaded.published,
             )));
@@ -643,13 +650,13 @@ impl SearchHost for SessionSearch {
         }
         if let Some(records) = &self.records {
             sources.push(Box::new(record_rows::Records::new(
-                room,
-                records.held(room),
+                workspace,
+                records.held(workspace),
             )));
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
-            workspace: room.to_owned(),
+            workspace: workspace.to_owned(),
             actions: self.own.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
@@ -701,7 +708,7 @@ mod tests {
     use super::*;
 
     /// The action host a test session reaches: it notes what search opens in
-    /// which room, and carries out nothing else.
+    /// which workspace, and carries out nothing else.
     struct Opening(Rc<std::cell::RefCell<Vec<(String, String)>>>);
 
     fn unsupported() -> DoorError {
@@ -732,8 +739,10 @@ mod tests {
             Err(unsupported())
         }
 
-        fn open_uri(&self, room: &str, uri: &str) -> Result<(), DoorError> {
-            self.0.borrow_mut().push((room.to_owned(), uri.to_owned()));
+        fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
+            self.0
+                .borrow_mut()
+                .push((workspace.to_owned(), uri.to_owned()));
             Ok(())
         }
 
@@ -777,7 +786,7 @@ mod tests {
     /// The installed apps and the host apps matching `needle` that a search
     /// opened now is fed.
     fn found(search: &SessionSearch, needle: &str) -> (Vec<String>, Vec<String>) {
-        let feed = search.feed("room", SearchScope::Workspace);
+        let feed = search.feed("workspace", SearchScope::Workspace);
         let applications = feed.applications.into_iter().map(|app| app.title).collect();
         let host = feed
             .sources
@@ -955,10 +964,10 @@ mod tests {
     /// shows about it.
     fn places_listed(
         search: &SessionSearch,
-        room: &str,
+        workspace: &str,
         scope: SearchScope,
     ) -> Vec<(String, Vec<String>)> {
-        let feed = search.feed(room, scope);
+        let feed = search.feed(workspace, scope);
         feed.sources
             .iter()
             .find(|source| source.id() == "continue")
@@ -972,10 +981,10 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn place(label: &str, room: &str) -> Place {
+    fn place(label: &str, workspace: &str) -> Place {
         Place {
             app: "so.tilo.notes".into(),
-            workspace: room.into(),
+            workspace: workspace.into(),
             tab: 4,
             label: label.into(),
             value: String::new(),
@@ -1033,7 +1042,7 @@ mod tests {
     fn fixed_lists_keep_what_search_built_from_them() {
         let search = SessionSearch::new(SearchOptions::default(), None);
         let before = Rc::clone(&search.kept.borrow().host_apps);
-        let _ = search.feed("room", SearchScope::Workspace);
+        let _ = search.feed("workspace", SearchScope::Workspace);
         assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));
     }
 }
