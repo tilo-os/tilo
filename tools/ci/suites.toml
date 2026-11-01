@@ -848,6 +848,7 @@ inputs = ["apps/tl/"]
 readers = [
   "crates/session/surface-host/src/shell_part.rs",
   "crates/session/surface-host/src/shell_part/places.rs",
+  "crates/session/surface-host/src/shell_part/tests.rs",
 ]
 
 [[cargo]]
