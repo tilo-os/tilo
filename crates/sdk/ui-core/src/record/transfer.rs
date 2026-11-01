@@ -594,7 +594,7 @@ pub fn install_room_document(
     doc: &mut AutoCommit,
 ) -> Result<Landing, TransferError> {
     app_state::validate_record_namespace(package, workspace)?;
-    let key = StorageKey::room_index(package, workspace);
+    let key = StorageKey::workspace_index(package, workspace);
     let _writer = writer(store, &key)?;
     if store
         .read(&key)?

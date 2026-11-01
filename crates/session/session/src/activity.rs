@@ -377,7 +377,7 @@ fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
 
 /// The records `package`'s index for `room` names, as the store holds it.
 fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCheckout> {
-    let Ok(Some(stored)) = store.read(&StorageKey::room_index(package, room)) else {
+    let Ok(Some(stored)) = store.read(&StorageKey::workspace_index(package, room)) else {
         return Vec::new();
     };
     if stored.bytes.is_empty() {
@@ -580,7 +580,7 @@ mod tests {
 
     /// The person at this desk.
     fn person() -> Caller {
-        Caller::local_person("ada").in_room("room")
+        Caller::local_person("ada").in_workspace("room")
     }
 
     /// A desk of one workspace with Notes open, its activity served from

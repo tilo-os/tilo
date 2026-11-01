@@ -785,7 +785,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     harness.set_session_door(
         ui::RemoteActions::with_host(
             session.clone(),
-            ui::tilo_actions::remote::Caller::local_app("so.tilo.messages").in_room("room"),
+            ui::tilo_actions::remote::Caller::local_app("so.tilo.messages").in_workspace("room"),
         ),
         Some("room".into()),
     );

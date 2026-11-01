@@ -1325,7 +1325,7 @@ impl RecordSet {
             app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
-                StorageKey::room_index(&self.package_id, &self.home),
+                StorageKey::workspace_index(&self.package_id, &self.home),
             ));
         }
         let record = want.id.storage_key();

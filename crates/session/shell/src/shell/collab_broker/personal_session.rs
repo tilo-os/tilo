@@ -123,7 +123,7 @@ impl NativePersonalSession {
         .map_err(|error| error.to_string())?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room)
+                .in_workspace(room)
                 .in_new_execution();
         let person = match broker.certified_person_context(&caller, &presentation) {
             Ok(person) => person,

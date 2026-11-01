@@ -299,7 +299,7 @@ impl ShellOverlayHost {
             .map_or_else(|| to.to_owned(), |row| row.label.clone());
         let workspace = room.to_string();
         let caller = Caller::local_person(chrome.borrow().local_user_for_room(&room))
-            .in_room(workspace.clone());
+            .in_workspace(workspace.clone());
         let refusal = row
             .as_ref()
             .and_then(person_key)

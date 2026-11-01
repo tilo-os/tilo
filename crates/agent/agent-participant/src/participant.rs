@@ -1787,7 +1787,7 @@ impl AgentParticipant {
             self.identity.cert.user_public_key,
             self.identity.cert.device_public_key,
         )
-        .in_room(self.workspace.clone());
+        .in_workspace(self.workspace.clone());
         // The action as the record offers it: what the person is asked.
         let offered = self.apps.get(&route).and_then(|app| {
             app.survey()

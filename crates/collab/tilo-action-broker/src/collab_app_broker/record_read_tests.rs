@@ -207,7 +207,7 @@ impl Fixture {
     fn task(&self, agent: &str) -> Caller {
         Caller::local_agent(agent)
             .acting_for(self.person.clone())
-            .in_room(self.workspace.clone())
+            .in_workspace(self.workspace.clone())
             .in_new_execution()
     }
 
@@ -336,7 +336,7 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
     };
     // The person reads through their own apps' custody, not this door.
     let person = Caller::local_person(f.person.clone())
-        .in_room(f.workspace.clone())
+        .in_workspace(f.workspace.clone())
         .in_new_execution();
     assert!(refused(&person));
     // An agent the person's own device handed its session to carries that device's
@@ -345,11 +345,11 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
     assert!(refused(&handed));
     // An agent acting for nobody, and an app.
     let alone = Caller::local_agent("scribe")
-        .in_room(f.workspace.clone())
+        .in_workspace(f.workspace.clone())
         .in_new_execution();
     assert!(refused(&alone));
     assert!(refused(
-        &Caller::local_app(NOTES).in_room(f.workspace.clone())
+        &Caller::local_app(NOTES).in_workspace(f.workspace.clone())
     ));
     assert_eq!(f.owner.captures.load(Ordering::Acquire), 0);
     drop(f.state);
@@ -397,7 +397,7 @@ fn only_an_agent_task_acting_for_its_person_changes_records_here() {
     let f = fixture();
     let changes = f.state.record_changes().unwrap();
     let person = Caller::local_person(f.person.clone())
-        .in_room(f.workspace.clone())
+        .in_workspace(f.workspace.clone())
         .in_new_execution();
     for caller in [person.clone(), person.delegated_to("scribe")] {
         assert!(matches!(

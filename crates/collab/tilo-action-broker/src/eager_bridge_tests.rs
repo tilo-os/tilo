@@ -69,7 +69,7 @@ mod eager_bridge_tests {
                 let mut fixture = local_directory_fixture();
                 offer(&fixture);
                 let caller =
-                    Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+                    Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
                 let request = request(&fixture);
                 let origin = uncertified_origin(&fixture);
                 let mut response = fixture.state.action_invoke_with_origin(
@@ -109,7 +109,7 @@ mod eager_bridge_tests {
     fn authenticated_eager_queue_is_bounded_without_admission() {
         let mut fixture = local_directory_fixture();
         offer(&fixture);
-        let caller = Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+        let caller = Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
         let origin = uncertified_origin(&fixture);
         let mut waiting = Vec::new();
         for _ in 0..ActionDirectoryRequestQueue::CAPACITY {

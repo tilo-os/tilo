@@ -458,7 +458,7 @@ mod tests {
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let caller =
             Caller::authenticated(root.verifying_key().to_bytes(), here.1.device_public_key)
-                .in_room(ROOM);
+                .in_workspace(ROOM);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         // The other device runs the app's action and this one hears its
@@ -510,7 +510,7 @@ mod tests {
             root.verifying_key().to_bytes(),
             stranger.1.device_public_key,
         )
-        .in_room(ROOM);
+        .in_workspace(ROOM);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         let refused = answered(&actions, &caller, &checked, &request)

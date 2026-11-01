@@ -98,7 +98,7 @@ fn fixture_granting(
         .unwrap()
         .insert(7);
     let caller = Caller::local_person("a1".repeat(32))
-        .in_room(workspace_id)
+        .in_workspace(workspace_id)
         .in_new_execution();
     (state, caller, receiver)
 }
@@ -232,7 +232,7 @@ fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it
     let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
     let workspace = person.room().unwrap().to_owned();
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution()
         .delegated_to("scribe");
     let asked = state
@@ -291,7 +291,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(person.room().unwrap().to_owned())
+        .in_workspace(person.room().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -351,7 +351,7 @@ fn ask_to_update(
     let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_room(person.room().unwrap().to_owned())
+        .in_workspace(person.room().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -571,7 +571,7 @@ async fn wrong_peer_stale_progress_and_post_terminal_updates_emit_nothing() {
 #[test]
 fn actions_without_a_host_minted_run_do_not_invent_execution_presence() {
     let (state, caller, mut app) = fixture();
-    let ordinary = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
     let mut events = state.subscribe_execution_activity();
     assert!(matches!(
         state
@@ -937,7 +937,7 @@ fn continuation_fixture() -> (
         live: true,
     }]);
     let app = state.capture_invocations_for_test(7);
-    let agent = Caller::local_agent("scribe").in_room(workspace_id);
+    let agent = Caller::local_agent("scribe").in_workspace(workspace_id);
     (state, agent, app)
 }
 
@@ -992,7 +992,8 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
         "the denied edit was refused"
     );
     assert!(app.try_recv().is_err(), "the denied edit reaches no app");
-    let owner = Caller::local_person("a1".repeat(32)).in_room(continued.room().unwrap().to_owned());
+    let owner =
+        Caller::local_person("a1".repeat(32)).in_workspace(continued.room().unwrap().to_owned());
     assert!(matches!(
         state
             .action_invoke(&owner, Some(7), None, &invoke("erase"))
@@ -1034,7 +1035,7 @@ fn an_invocation_id_two_callers_share_continues_neither() {
     let shared = tilo_actions::InvocationId::new();
     let start = |person: &str| {
         let caller = Caller::local_person(person)
-            .in_room(workspace.clone())
+            .in_workspace(workspace.clone())
             .in_new_execution();
         state
             .start_invocation_confirmed_for_origin(
@@ -1160,7 +1161,7 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
         "retirement and refused cancellation must not cancel an admitted job"
     );
 
-    let legacy = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
     legacy.retire_execution();
     assert!(matches!(
         state
@@ -1474,18 +1475,18 @@ fn agent_doors() -> [fn(&str) -> Caller; 3] {
     [
         |workspace| {
             Caller::local_agent("scribe")
-                .in_room(workspace.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
         },
         |workspace| {
             Caller::local_agent("scribe")
                 .acting_for("a1".repeat(32))
-                .in_room(workspace.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
         },
         |workspace| {
             Caller::local_person("a1".repeat(32))
-                .in_room(workspace.to_owned())
+                .in_workspace(workspace.to_owned())
                 .in_new_execution()
                 .delegated_to("scribe")
         },
@@ -1558,7 +1559,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
         .to_owned();
     let member = Caller::local_agent("scribe")
         .acting_for(owner.clone())
-        .in_room(workspace.clone())
+        .in_workspace(workspace.clone())
         .in_new_execution();
     assert_eq!(member.acting_for_person(), Some(owner.as_str()));
     assert!(!member.is_session_delegated());
@@ -1575,7 +1576,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
     assert!(app.try_recv().is_err(), "the app never hears of it");
 
     let handed = Caller::local_person(owner)
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution()
         .delegated_to("scribe");
     assert!(handed.is_session_delegated());
@@ -1606,7 +1607,7 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
     action.action = "submit-report".into();
     state.replace_published_surfaces_for_test(surfaces);
     let caller = Caller::authenticated([0xa1; 32], [2; 32])
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution();
     let mut invoke = request();
     invoke.target.address = tilo_actions::ActionAddress::new("store:moderation", "submit-report");

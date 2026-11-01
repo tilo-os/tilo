@@ -822,7 +822,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-        let agent = Caller::local_agent("scribe").in_room(room);
+        let agent = Caller::local_agent("scribe").in_workspace(room);
         let invoke = |request: &InvokeRequest| {
             broker
                 .state()

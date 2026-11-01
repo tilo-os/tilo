@@ -835,7 +835,7 @@ impl Door {
             .app_action_broker()
             .expect("the action broker")
             .start_triggered_shortcut_run(
-                &Caller::local_person(person).in_room(self.room.to_string()),
+                &Caller::local_person(person).in_workspace(self.room.to_string()),
                 &self.room.to_string(),
                 shortcut,
                 trigger,
@@ -2652,7 +2652,7 @@ fn run_interactively(door: &Door, shortcut: &str) -> u64 {
         .app_action_broker()
         .expect("the action broker")
         .start_interactive_shortcut_run(
-            &Caller::local_person(door.session_person()).in_room(door.room.to_string()),
+            &Caller::local_person(door.session_person()).in_workspace(door.room.to_string()),
             &door.room.to_string(),
             shortcut,
             Map::new(),

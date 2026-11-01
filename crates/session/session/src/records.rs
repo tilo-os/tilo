@@ -188,7 +188,7 @@ impl Records {
             .name("tilo-search-bring".into())
             .spawn(move || {
                 let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&data_home));
-                let key = StorageKey::room_index(&package, &room);
+                let key = StorageKey::workspace_index(&package, &room);
                 let mut index = match DocStore::shared(store, key) {
                     Ok(index) => index,
                     Err(error) => {
@@ -257,7 +257,7 @@ fn read_indexes(root: &Path) -> Vec<Held> {
 /// Read without taking a writer: an app of the workspace owns the index, and
 /// a lane of search opening must not wait for it.
 fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCheckout> {
-    let key = StorageKey::room_index(package, room);
+    let key = StorageKey::workspace_index(package, room);
     let stored = match store.read(&key) {
         Ok(Some(stored))
             if !stored.bytes.is_empty()

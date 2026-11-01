@@ -306,7 +306,8 @@ impl AppBrokerState {
                     return;
                 }
             };
-            let caller = Caller::local_person(request.person.clone()).in_room(&request.workspace);
+            let caller =
+                Caller::local_person(request.person.clone()).in_workspace(&request.workspace);
             match self.action_invoke_local_person(&caller, &invoke).await {
                 Some(Ok(_)) => {}
                 Some(Err(error)) => tracing::warn!(%error, "the person's answer was refused"),

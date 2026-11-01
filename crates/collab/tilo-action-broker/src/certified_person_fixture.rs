@@ -109,7 +109,7 @@ pub fn certified_person_fixture_for_seeds(
         certificate.user_public_key,
         certificate.device_public_key,
     )
-    .in_room(workspace_id.to_string())
+    .in_workspace(workspace_id.to_string())
     .in_new_execution();
     let presentation = runtime_collab::CertifiedJoinIdentity {
         workspace_id: workspace_id.to_string(),

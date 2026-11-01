@@ -443,7 +443,8 @@ impl Automation {
             if let Some(claim) = &firing.claim {
                 self.claim(&firing.room, claim);
             }
-            let caller = Caller::local_person(self.person_in(&firing.room)).in_room(&firing.room);
+            let caller =
+                Caller::local_person(self.person_in(&firing.room)).in_workspace(&firing.room);
             if let Err(error) = broker.start_triggered_shortcut_run(
                 &caller,
                 &firing.room,

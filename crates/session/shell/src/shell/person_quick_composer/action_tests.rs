@@ -145,7 +145,7 @@ fn exact_chat_pair_owner_result_is_required_and_other_workspace_is_refused() {
                 identity_revision: 1,
             };
             let caller = Caller::authenticated([0xcd; 32], [0xef; 32])
-                .in_room(&owner.workspace)
+                .in_workspace(&owner.workspace)
                 .in_new_execution();
             let host = Arc::new(ChatHost {
                 caller: caller.clone(),
@@ -189,7 +189,7 @@ fn expansion_uses_real_private_pair_open_not_profile() {
         identity_revision: 1,
     };
     let caller = Caller::authenticated([0xcd; 32], [0xef; 32])
-        .in_room(&owner.workspace)
+        .in_workspace(&owner.workspace)
         .in_new_execution();
     let host = Arc::new(ChatHost {
         caller: caller.clone(),
@@ -249,7 +249,7 @@ fn transfer_fixture() -> (
         caller: "cd".repeat(32),
         identity_revision: 1,
     };
-    let caller = Caller::authenticated([0xcd; 32], [0xef; 32]).in_room(&owner.workspace);
+    let caller = Caller::authenticated([0xcd; 32], [0xef; 32]).in_workspace(&owner.workspace);
     let host = Arc::new(ChatHost {
         caller: caller.clone(),
         owner: owner.clone(),

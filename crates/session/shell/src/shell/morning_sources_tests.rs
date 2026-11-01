@@ -464,7 +464,7 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
         tilo_automation::RunRequest {
             shortcut: &saved,
             run: fired[0].run,
-            caller: Caller::local_person("synthetic").in_room(&host.room),
+            caller: Caller::local_person("synthetic").in_workspace(&host.room),
             mode: tilo_automation::RunMode::Unattended,
             trigger: tilo_automation::RunTrigger::Fired(fired[0].trigger.clone()),
             inputs: fired[0].inputs.clone(),

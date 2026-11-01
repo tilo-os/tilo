@@ -189,7 +189,7 @@ fn count(update: &InvocationUpdate) -> Option<u64> {
 fn a_live_view_sends_each_new_result_until_cancelled() {
     let counter = Arc::new(Counter::new());
     let (state, _tree, owner, workspace) = broker(Arc::clone(&counter), |_| {});
-    let person = Caller::local_person(owner).in_room(workspace);
+    let person = Caller::local_person(owner).in_workspace(workspace);
     let request = follow();
     invoked(&state, &person, &request).expect("the person follows the view");
     let first = observed(&state, &person, &request, |update| count(update) == Some(0));
@@ -228,14 +228,14 @@ fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_vi
         workspace.admit_agent("scribe", KindSet::READ);
     });
 
-    let stranger = Caller::local_agent("intruder").in_room(workspace.clone());
+    let stranger = Caller::local_agent("intruder").in_workspace(workspace.clone());
     assert!(
         invoked(&state, &stranger, &follow()).is_err(),
         "an agent the workspace never admitted reads nothing"
     );
     assert_eq!(counter.reads.load(Ordering::SeqCst), 0, "nothing was read");
 
-    let agent = Caller::local_agent("scribe").in_room(workspace.clone());
+    let agent = Caller::local_agent("scribe").in_workspace(workspace.clone());
     let request = follow();
     invoked(&state, &agent, &request).expect("the admitted agent follows the view");
     observed(&state, &agent, &request, |update| count(update) == Some(0));

@@ -57,7 +57,7 @@ impl CheckpointDriver {
             certificate.user_public_key,
             certificate.device_public_key,
         )
-        .in_room(&room)
+        .in_workspace(&room)
         .in_new_execution();
         let host = actions
             .certified_local_action_host(&caller, &evidence)

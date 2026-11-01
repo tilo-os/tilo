@@ -713,9 +713,9 @@ async fn assert_signed_canonical(
     let enrollment = Enrollment {
         destination: submission.destination.clone(),
         owner: Caller::authenticated(owner.user_public_key, owner.device_public_key)
-            .in_room(&submission.destination.room),
+            .in_workspace(&submission.destination.room),
         reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
-            .in_room(&submission.destination.room),
+            .in_workspace(&submission.destination.room),
         permissions: {
             let standing: ui::permissions::Standing =
                 serde_json::from_value(admission.admission.standing).unwrap();

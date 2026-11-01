@@ -525,7 +525,8 @@ struct Desktop {
 impl Desktop {
     /// Who the windows ask the session as: this page's person, in its room.
     fn caller(&self) -> tilo_actions::remote::Caller {
-        tilo_actions::remote::Caller::local_person(self.author.clone()).in_room(self.room.clone())
+        tilo_actions::remote::Caller::local_person(self.author.clone())
+            .in_workspace(self.room.clone())
     }
 
     /// Serve every action client a window makes on this thread from the

@@ -346,7 +346,7 @@ fn fixture(
     *state.journal.lock().unwrap() = Ok(Some(
         super::super::invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
-    let caller = Caller::local_person("owner").in_room(workspace.room().to_string());
+    let caller = Caller::local_person("owner").in_workspace(workspace.room().to_string());
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
@@ -456,7 +456,7 @@ fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
 fn registered_governance_does_not_upgrade_a_transport_label_into_custody() {
     let root = tempfile::tempdir().unwrap();
     let (state, service, workspace, _, request) = fixture(root.path());
-    let caller = Caller::authenticated([7; 32], [8; 32]).in_room(workspace.room().to_string());
+    let caller = Caller::authenticated([7; 32], [8; 32]).in_workspace(workspace.room().to_string());
     let actor = BrokerActor::for_caller(&caller);
     // Even a permission-bearing actor is not the caller's original certificate.
     let mut workspace = workspace;

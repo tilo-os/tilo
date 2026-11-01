@@ -260,7 +260,8 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native action requires a person".into());
         };
-        let mut projection = Caller::local_person(person).in_room(&checked.admission.workspace);
+        let mut projection =
+            Caller::local_person(person).in_workspace(&checked.admission.workspace);
         if let Some(lease) = caller.execution_lease() {
             projection = projection.in_execution(lease);
         }

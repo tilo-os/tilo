@@ -593,7 +593,7 @@ impl BotRunner {
             self.host.user_public_key,
             self.bot_key.verifying_key().to_bytes(),
         )
-        .in_room(self.room.clone());
+        .in_workspace(self.room.clone());
         let (door, shortcut, handle) = (
             Arc::clone(&self.door),
             Arc::clone(&self.shortcut),

@@ -790,7 +790,7 @@ impl AdmittedJoinIdentity {
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
-        .in_room(workspace)
+        .in_workspace(workspace)
         .from_foreign_device(foreign)
     }
 
@@ -810,7 +810,7 @@ impl AdmittedJoinIdentity {
                 verified.device_public_key,
             ),
         }
-        .in_room(workspace)
+        .in_workspace(workspace)
         .from_foreign_device(verified.capped || restricted)
     }
 
@@ -1862,7 +1862,7 @@ impl ContinuingCaller {
                 direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
                     certificate.user_public_key,
                 ))
-                .in_room(workspace.clone()),
+                .in_workspace(workspace.clone()),
             },
             InvocationCaller::Certified {
                 caller,
@@ -12914,7 +12914,7 @@ pub mod tests {
             .run_until(async {
                 let fixture = local_directory_fixture();
                 let caller = Caller::local_person("fixture-owner")
-                    .in_room(fixture.cluster_id.clone())
+                    .in_workspace(fixture.cluster_id.clone())
                     .in_new_execution();
                 let query = CatalogueQuery {
                     provider: Some(fixture.peer_id.to_string()),
@@ -13038,7 +13038,7 @@ pub mod tests {
             .run_until(async {
                 let mut fixture = local_directory_fixture();
                 let caller = Caller::local_person("fixture-owner")
-                    .in_room(fixture.cluster_id.clone())
+                    .in_workspace(fixture.cluster_id.clone())
                     .in_new_execution();
                 let request = InvokeRequest {
                     invocation: tilo_actions::InvocationId::new(),
@@ -13152,7 +13152,7 @@ pub mod tests {
                 live: true,
             };
             fixture.state.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
-            let caller = Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+            let caller = Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
             assert!(caller.execution_id().is_none(), "no fabricated execution lease");
             let request = InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),

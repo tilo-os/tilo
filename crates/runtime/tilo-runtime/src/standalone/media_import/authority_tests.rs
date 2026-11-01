@@ -22,7 +22,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         runtime.clone(),
     );
     let caller = Caller::local_person(session.actor())
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution();
     let actor = BrokerActor::person(session.actor());
     let argument = format!(
@@ -49,7 +49,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
     caller.retire_execution();
     assert!(runtime.block_on(host.import(permit)).is_err());
     let live = Caller::local_person(session.actor())
-        .in_room(workspace)
+        .in_workspace(workspace)
         .in_new_execution();
     let invocation = WorkspaceGovernanceRequest {
         execution_lease: live.execution_lease(),

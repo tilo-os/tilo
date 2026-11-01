@@ -718,7 +718,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_room("workspace"),
+        tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
     ));
     let runtime = tilo_rt::try_app().unwrap();
     runtime.handle().block_on(search.refresh()).unwrap();
@@ -779,7 +779,7 @@ fn native_socket_serves_parallel_requests() {
     let host = GatedHost::default();
     let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
         std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_room("workspace"),
+        tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
     ));
     let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
     let serving = {

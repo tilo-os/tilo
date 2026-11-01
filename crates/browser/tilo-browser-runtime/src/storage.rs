@@ -32,6 +32,8 @@ enum DiskKey {
     Package {
         package: String,
     },
+    /// One workspace's index. A profile outlives any one build, and its rows
+    /// were written under this name, so the name it is stored under stays.
     RoomIndex {
         package: String,
         workspace: String,

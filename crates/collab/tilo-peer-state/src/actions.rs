@@ -483,7 +483,7 @@ impl ActionPlane {
         };
         Ok((
             caller
-                .in_room(action.workspace.clone())
+                .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.foreign),
             action.workspace.clone(),
         ))

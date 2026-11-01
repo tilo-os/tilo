@@ -356,7 +356,7 @@ impl RuntimeServices for Standalone {
                 host,
                 admission,
                 agent: None,
-                projection: Some(Caller::local_person(&self.actor).in_room(&self.workspace)),
+                projection: Some(Caller::local_person(&self.actor).in_workspace(&self.workspace)),
             })),
         })
     }
