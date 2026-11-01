@@ -110,6 +110,17 @@ impl Core {
                 if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app) {
                     continue;
                 }
+                // A description of what the platform publishes (the device's sound, the
+                // person's arrangement) holds no records: there is nothing of it to find.
+                let only_published = !p.code
+                    && !p.meta.named_roots.is_empty()
+                    && p.meta
+                        .named_roots
+                        .iter()
+                        .all(|root| root.published.is_some());
+                if only_published {
+                    continue;
+                }
                 held.push(app.clone());
             }
             held

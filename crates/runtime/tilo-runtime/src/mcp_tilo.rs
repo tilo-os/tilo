@@ -113,6 +113,9 @@ struct Step {
 struct History {
     app: String,
     resource: String,
+    /// The resource is one the session itself publishes (the arrangement), taken back at the
+    /// session's own provider.
+    published: bool,
 }
 
 /// What a program's answer says each app it changed takes a step back on.
@@ -126,6 +129,7 @@ fn history_of(answer: &Value) -> Vec<History> {
             Some(History {
                 app: entry.get("app")?.as_str()?.to_owned(),
                 resource: entry.get("resource")?.as_str()?.to_owned(),
+                published: entry.get("published").and_then(Value::as_bool) == Some(true),
             })
         })
         .collect()
@@ -1026,9 +1030,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 continue;
             }
-            let provider = self.provider_of(&at.app, &mut providers).await?;
+            let provider = if at.published {
+                Addressed {
+                    provider: crate::session_door::SESSION_PROVIDER.to_owned(),
+                    app_id: Some(crate::session_door::SESSION_PROVIDER.to_owned()),
+                }
+            } else {
+                self.provider_of(&at.app, &mut providers).await?
+            };
+            // An app's history takes a count of steps; the session's own `undo` takes one.
             let mut arguments = Map::new();
-            arguments.insert("steps".to_owned(), json!(1));
+            if !at.published {
+                arguments.insert("steps".to_owned(), json!(1));
+            }
             let value = Box::pin(self.invoke_one(OneCall {
                 provider,
                 workspace: false,
@@ -1177,10 +1191,12 @@ mod tests {
                 History {
                     app: "so.tilo.lang.notes".into(),
                     resource: "tl:so.tilo.lang.notes".into(),
+                    published: false,
                 },
                 History {
                     app: "so.tilo.lang.todo".into(),
                     resource: "tl:so.tilo.lang.todo".into(),
+                    published: false,
                 },
             ])
         );

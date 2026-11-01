@@ -172,6 +172,10 @@ sha2.workspace = true
 # The MCP projection of the action host, which the agent door serves a
 # program of this login through once the person admits it.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# The host of an agent task's programs, which the door runs for each
+# connection that sends one, and the sealed memfd its modules come in.
+tilolang-host = { path = "../../platform/tilolang-host" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 uuid.workspace = true
 # The kernel-attested custody of an executing app process a launch is
 # admitted by.
