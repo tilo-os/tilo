@@ -269,3 +269,25 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
         view.tree()
     );
 }
+
+#[test]
+fn the_shell_keeps_no_copy_of_the_apps_it_composes() {
+    let (part, _link) = part_with(reading_with_windows());
+    let host = part.instance.host().expect("the shell runs");
+    // The apps the shell's views compose are other apps' here: what the shell's runtime runs of
+    // them reads their records from the session, and the shell's record holds none of theirs.
+    for app in ["so.tilo.lang.chat", NOTES_APP, "so.tilo.lang.tasks"] {
+        assert!(
+            host.package(app).is_none(),
+            "`{app}` runs as the shell's own package, keeping a copy of its records"
+        );
+    }
+    assert_eq!(
+        host.packages()
+            .iter()
+            .map(|package| package.meta.app.clone())
+            .collect::<Vec<_>>(),
+        vec![host.packages().last().unwrap().meta.app.clone()],
+        "the shell runs its own package alone"
+    );
+}
