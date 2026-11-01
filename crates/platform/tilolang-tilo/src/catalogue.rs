@@ -448,8 +448,13 @@ impl Reader<'_> {
                 other if !param.required => FieldType::Option(Box::new(other)),
                 other => other,
             };
+            // A parameter tilolang code cannot give leaves the verb out when it must be given,
+            // and is left to its default when it may be left out.
             let Some(ty) = self.ty(&ty, rename) else {
-                return;
+                if param.required {
+                    return;
+                }
+                continue;
             };
             params.push(ParamMeta {
                 name: action_name(&param.name),

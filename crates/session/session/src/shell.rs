@@ -358,9 +358,8 @@ impl Shell {
 
     /// Run what the shell asked through `invoke` (the session's door).
     ///
-    /// The shell's effects carry every argument as text
-    /// (`outside("session.run", (resource, action, [(name, value)]))`),
-    /// so each is typed here by the type the action itself declares for it: a workspace's key
+    /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the
+    /// door with every argument as text, so each is typed here by the type the action itself declares for it: a workspace's key
     /// is text even when it reads as digits, and a count is a number. `types` answers with the
     /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.
     pub(crate) fn serve(
@@ -545,6 +544,12 @@ impl crate::Session {
             return Ok(());
         }
         let doors = &self.shared.doors;
+        let search = &self.shared.search;
+        let room = self.shared.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        });
         let resources = doors.resources();
         shell.serve(
             |resource, action, name| {
@@ -553,6 +558,22 @@ impl crate::Session {
                     .map(|param| param.ty)
             },
             |resource, action, arguments| {
+                // An app's own `open` (`session.open(app)`) starts it in the workspace in
+                // front, as the launcher's row of it does.
+                if let Some(app) = resource
+                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+                    .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
+                {
+                    return search
+                        .perform_checked(
+                            &room,
+                            tilo_desktop_search::Target::Launch {
+                                app: app.to_owned(),
+                            },
+                            &mut |own| doors.invoke(&own.address, &own.arguments).map(drop),
+                        )
+                        .map_err(|error| error.to_string());
+                }
                 doors
                     .invoke(&ActionAddress::new(resource, action), arguments)
                     .map(drop)

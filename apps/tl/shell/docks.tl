@@ -34,7 +34,11 @@ view dock_run(s: Shell, d: Desk) {
             for item in s.dock_items {
                 if item.pinned or s.dock_running {
                     ui.DragItem(item, title: item.title) {
-                        on activate: dock_open(s, item)
+                        on activate: if item.key == "launcher" {
+                            session.show_surface(surface: "launcher")
+                        } else {
+                            session.open(resource("app.{item.key}", of: session.App))
+                        }
                         dock_tile(s, d, item)
                     }
                 }
@@ -51,7 +55,11 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: dock_open(s, item)
+                            on activate: if item.key == "launcher" {
+                                session.show_surface(surface: "launcher")
+                            } else {
+                                session.open(resource("app.{item.key}", of: session.App))
+                            }
                             dock_tile(s, d, item)
                         }
                     }
@@ -65,7 +73,11 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: dock_open(s, item)
+                            on activate: if item.key == "launcher" {
+                                session.show_surface(surface: "launcher")
+                            } else {
+                                session.open(resource("app.{item.key}", of: session.App))
+                            }
                             dock_tile(s, d, item)
                         }
                     }
@@ -82,11 +94,10 @@ view dock_run(s: Shell, d: Desk) {
 view dock_tile(s: Shell, d: Desk, item: DockItem) {
     let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
     ui.Button(name, icon: item.icon, icon_only: true, role: .plain, count: item.badge, dot: item.attention, alert: item.attention) {
-        on press: dock_open(s, item)
+        on press: if item.key == "launcher" {
+            session.show_surface(surface: "launcher")
+        } else {
+            session.open(resource("app.{item.key}", of: session.App))
+        }
     }
-}
-
-/// Opens what a dock item stands for: launches the app, or goes to the resource.
-action dock_open(s: Shell, item: DockItem) (icon: .external_link, label: "Open {item.title}") {
-    outside("session.launch", item.key)
 }

@@ -19,13 +19,13 @@ view workspaces(d: Desk) {
             // A field has no width of its own: in a row that wraps it takes the line's room,
             // never less than a name's.
             ui.TextInput(value: name, placeholder: "Name a new workspace", fill, min: 16rem) {
-                on submit: create_room(d, name)
+                on submit: session.new_workspace(room: .none, name: .some(name))
             }
             ui.Button("Create", icon: .plus, role: .primary) {
-                on press: create_room(d, name)
+                on press: session.new_workspace(room: .none, name: .some(name))
             }
             ui.Button("Join a workspace", icon: .users) {
-                on press: join_workspace(d)
+                on press: session.join_workspace()
             }
         }
     }
@@ -45,6 +45,6 @@ view room_card(r: Room) {
                 }
             }
         }
-        on activate: switch_to_key(r)
+        on activate: session.switch_workspace(workspace: r.key)
     }
 }

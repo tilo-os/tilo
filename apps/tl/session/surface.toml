@@ -700,6 +700,55 @@ kind = "outside"
 params = []
 
 [[resources]]
+id = "bluetooth"
+kind = "so.tilo.connectivity.bluetooth"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "set-bluetooth"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "toggle-bluetooth"
+kind = "outside"
+params = []
+
+[[resources.verbs]]
+id = "scan"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "pair"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "address"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "forget"
+kind = "outside"
+destructive = true
+
+[[resources.verbs.params]]
+name = "address"
+required = true
+type = "text"
+
+[[resources]]
 id = "sound"
 kind = "so.tilo.audio.sound"
 label = ""

@@ -91,7 +91,7 @@ fn place_title(p: ArrangementPlace) -> Text {
 }
 
 /// A frame's controls: the way to carry the place to another row, and close. Each is one
-/// arranging action of the session's (`arranging.tl`), so a press, a shortcut and an agent
+/// arranging action of the session's (`shell:arrangement`), so a press, a shortcut and an agent
 /// change the place the same way.
 view frame_buttons(a: Arrangement, p: ArrangementPlace) {
     row(gap: .tight, align: .center) {
@@ -100,14 +100,14 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != p.strip {
                         ui.MenuItem(r.name) {
-                            on choose: move_place(arrangement, p.key, r.key)
+                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
                         }
                     }
                 }
             }
         }
         ui.Button("Close", icon: .x, icon_only: true, role: .bar) {
-            on press: close_place(arrangement, p.key)
+            on press: session.close_place(place: arranged(p.key))
         }
     }
 }
@@ -254,12 +254,12 @@ view window_commands(a: Arrangement, p: ArrangementPlace) {
         for r in a.rows {
             if r.key != p.strip {
                 ui.MenuItem(r.name, icon: .navigation) {
-                    on choose: move_place(arrangement, p.key, r.key)
+                    on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
                 }
             }
         }
         ui.MenuItem("Close", icon: .x) {
-            on choose: close_place(arrangement, p.key)
+            on choose: session.close_place(place: arranged(p.key))
         }
     }
 }
@@ -274,7 +274,7 @@ view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: system_menu(d)
+            on press: session.toggle_tilo_menu()
         }
         action_bar(arrangement, room)
         spacer
@@ -282,7 +282,7 @@ view traditional_bar(d: Desk) {
             for t in d.tasks {
                 if t.state == "running" {
                     ui.Button(t.title, icon: .bot, role: .bar) {
-                        on press: ask(d)
+                        on press: session.show_surface(surface: "composer")
                     }
                 }
             }

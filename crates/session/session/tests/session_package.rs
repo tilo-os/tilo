@@ -55,6 +55,10 @@ fn the_description_reads_as_the_session_package() {
     assert_eq!(addresses["show-surface"], "session:desk");
     assert_eq!(addresses["close-place"], "shell:arrangement");
     assert_eq!(addresses["toggle-tilo-menu"], "desktop:chrome");
+    // Each quick setting is changed by the setting's own action, where the setting is.
+    assert_eq!(addresses["toggle-wifi"], "network");
+    assert_eq!(addresses["toggle-bluetooth"], "bluetooth");
+    assert_eq!(addresses["toggle-muted"], "sound");
     assert!(
         !addresses.contains_key("focus"),
         "a window's focus goes to the window"

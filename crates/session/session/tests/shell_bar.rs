@@ -769,29 +769,113 @@ fn a_persons_presence_opens_their_menu() {
         .borrow_mut()
         .set_members(None, Some(vec![member]));
     until(&mut session, |session| says(session, "Mia Clayton"));
-    // Their presence opens their menu: follow, message, and what they are working on.
+    let shown = |session: &Session| {
+        session
+            .accessible_labels()
+            .iter()
+            .filter(|label| label.as_str() == "Mia Clayton")
+            .count()
+    };
+    let before = shown(&session);
+    // Their presence calls the session's own `show-person`: the roster opens at them, and
+    // names them there too.
     press(&mut session, "Mia Clayton");
-    until(&mut session, |session| {
-        session.shell_control("Follow").is_some()
-    });
-    assert!(
-        session.shell_control("Message").is_some(),
-        "the menu offers a message: {:?}",
-        session.accessible_labels()
-    );
-    assert!(
-        session.shell_control("What they are working on").is_some(),
-        "the menu offers what they are on: {:?}",
-        session.accessible_labels()
-    );
+    until(&mut session, |session| shown(session) > before);
     keep(&mut session, "shell-person-menu");
+}
+
+/// An action host that keeps what it was asked to run: where the session starts an app.
+#[derive(Default)]
+struct Apps {
+    invoked: std::cell::RefCell<Vec<tilo_actions::remote::RemoteActionTarget>>,
+}
+
+impl tilo_session::AppActions for Apps {
+    fn published(&self) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        Vec::new()
+    }
+
+    fn jobs(&self) -> Vec<tilo_desktop_search::providers::jobs::JobEntry> {
+        Vec::new()
+    }
+
+    fn invoke(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        _: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.invoked.borrow_mut().push(target);
+        Ok(())
+    }
+
+    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn open_uri(&self, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn start_host_app(&self, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+}
+
+/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app
+/// in the workspace in front, as the launcher's row of it does. (The press making that call is
+/// `tilo-surface-host`'s `a_press_on_a_dock_app_asks_the_session_to_open_it`.)
+#[test]
+fn an_apps_open_the_shell_calls_starts_it() {
+    let _settled = ui::motion::testing::settled();
+    let apps = Rc::new(Apps::default());
+    let mut session = Session::headless(
+        Options {
+            apps: Some(Rc::clone(&apps) as Rc<dyn tilo_session::AppActions>),
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, |session| says(session, &desk(session).clock));
+    session
+        .shell_link()
+        .expect("the shell runs")
+        .ask(tilo_surface_host::shell_part::Ask {
+            resource: "app.so.tilo.sheets".to_owned(),
+            action: "open".to_owned(),
+            arguments: std::collections::BTreeMap::new(),
+        });
+    until(&mut session, |_| !apps.invoked.borrow().is_empty());
+    assert_eq!(
+        apps.invoked.borrow()[0].address,
+        tilo_actions::ActionAddress::new("app.so.tilo.sheets", "open"),
+        "the app opens by the workspace's address for it"
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
+#[test]
+fn a_press_on_the_docks_launcher_shows_the_launcher() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    until(&mut session, |session| {
+        session.shell_control("Launcher").is_some()
+    });
+    press(&mut session, "Launcher");
+    until(&mut session, |session| desk(session).here == "launcher");
 }
 
 // ---- each press of the shell's reaches the session ------------------------------------------
 //
-// Every `session.run` and `session.notify` the shell hands the session is an invocation on the
-// session's door, `(resource, action, [(argument, value)…])`: each test below presses the shell's
-// own view and reads the session's state, so a payload the door cannot run fails here.
+// Every call of the session's actions the shell makes (`session.focus(window(w))`) is an
+// invocation on the session's door: each test below presses the shell's own view and reads the
+// session's state, so a call the door cannot run fails here.
 
 /// Bring the desk's surface `surface` up, as the bar's own buttons do.
 fn show(session: &mut Session, surface: &str) {

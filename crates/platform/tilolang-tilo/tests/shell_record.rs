@@ -37,8 +37,9 @@ fn source() -> String {
 fn room() -> Replica {
     let source = source();
     // The shell `use`s the three apps its places read (`notes`, `tasks`, `chat`), so they
-    // compile first, as the session compiles them.
-    let (mut replica, _) = Replica::new(
+    // compile first, as the session compiles them, and calls the session's actions through its
+    // described package (`use so.tilo.session as session`).
+    let (mut replica, uses) = Replica::new(
         "ada",
         AutoCommit::new(),
         &[
@@ -54,9 +55,31 @@ fn room() -> Replica {
                 include_str!("../../../../apps/tl/tasks/app.tl"),
                 include_str!("../../../../apps/tl/tasks/app.ids"),
             ),
-            (source.as_str(), IDS),
         ],
     );
+    let session = tilolang_tilo::catalogue::described(
+        "so.tilo.session",
+        "Session",
+        include_str!("../../../../apps/tl/session/surface.toml"),
+    )
+    .expect("the session's description reads");
+    replica
+        .host
+        .runtime()
+        .load_foreign(session.clone())
+        .expect("the session's package loads");
+    let imports: Vec<_> = uses
+        .iter()
+        .map(|package| package.meta.clone())
+        .chain([session])
+        .collect();
+    let shell = tilolang::compile_package(
+        &source,
+        &tilolang::IdsLock::parse(IDS).expect("the ids lock"),
+        &imports,
+    )
+    .unwrap_or_else(|diagnostics| panic!("the shell compiles: {diagnostics:?}"));
+    replica.host.load_compiled(&shell).expect("the shell loads");
     // The person's shell record, made as the session makes it, and the package's migration
     // seeding it: the bar's parts and the dock's items, on a shell never arranged.
     let meta = replica.host.package(APP).unwrap().meta;

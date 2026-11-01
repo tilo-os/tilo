@@ -17,11 +17,21 @@ use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
 use ui::tilo_actions::Action as _;
 
-/// The compiled packages an instance loads: the app and what it uses, the app last.
-pub struct Packages(pub Rc<Vec<Compiled>>);
+/// The compiled packages an instance loads: the app and what it uses, the app last, and the
+/// native apps' packages it calls (`use so.tilo.session as session`), whose actions run at
+/// their own doors.
+pub struct Packages(
+    pub Rc<Vec<Compiled>>,
+    pub Vec<tilolang_tilo::tilolang::PackageMeta>,
+);
 
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
+        for native in &self.1 {
+            if let Err(error) = host.runtime().load_foreign(native.clone()) {
+                eprintln!("tilolang layout-check: a native package did not load: {error}");
+            }
+        }
         for compiled in self.0.iter() {
             if let Err(error) = host.load_compiled(compiled) {
                 eprintln!("tilolang layout-check: a package did not load: {error}");

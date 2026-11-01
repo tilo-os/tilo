@@ -3,6 +3,7 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 use so.tilo.lang.chat as chat
 use so.tilo.lang.notes as notes
 use so.tilo.lang.tasks as tasks
+use so.tilo.session as session
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,
 /// their notifications, the workspaces on this device, the tasks running for them and the
@@ -194,92 +195,6 @@ default view desk_view for arrangement
 
 default view shell_settings for Shell
 
-/// Brings the workspace to the front.
-action switch_to(w: Workspace) (icon: .layers, label: "Switch to") {
-    require not w.current "It is in front already"
-    outside("session.switch_workspace", w.key)
-}
-
-/// Opens or closes the system's menu: about Tilo, settings, sleep and power.
-action system_menu(d: Desk) (icon: .tilo, label: "Tilo") {
-    outside("session.act", "toggle-tilo-menu")
-}
-
-/// Shows the strips of the workspace in front, to choose one.
-action strips(d: Desk) (icon: .chevron_right, label: "Strips") {
-    outside("session.act", "show-strips")
-}
-
-/// Opens or closes a running application's tray item: its window, or its menu.
-///
-/// The item's key names it; the session reads the same tray, so the action takes the key and
-/// the bar's item is the one it means. Each item's action is its own, so a press names which.
-action open_tray_item(d: Desk, item: TrayItem) (icon: .app_window, label: "Open") {
-    outside("session.tray", item.key)
-}
-
-/// Opens or closes the device's status: quick settings, or the notifications.
-action status(d: Desk) (icon: .bell, label: "Notifications") {
-    outside("session.act", "toggle-quick-settings")
-}
-
-/// Makes a new workspace on this device and brings it to the front.
-action new_workspace(d: Desk) (icon: .plus, label: "New workspace") {
-    outside("session.act", "new-workspace")
-}
-
-/// Shows the workspaces this device may join.
-action join_workspace(d: Desk) (icon: .users, label: "Join a workspace") {
-    outside("session.act", "join-workspace")
-}
-
-/// Opens the settings of the workspace in front.
-action workspace_settings(d: Desk) (icon: .settings, label: "Workspace settings") {
-    outside("session.act", "workspace-settings")
-}
-
-/// Shows the windows and strips of every workspace at once, to search and move things.
-action show_overview(d: Desk) (icon: .layout_grid, label: "Overview") {
-    outside("session.act", "toggle-overview")
-}
-
-/// Shows the windows of the workspace, most recent first, as Alt+Tab walks them.
-action switch_windows(d: Desk) (icon: .layers, label: "Switch windows") {
-    outside("session.act", "toggle-switcher")
-}
-
-/// Answers the question waiting on the person's avatar.
-action answer_ask(d: Desk) (icon: .check, label: "Answer") {
-    outside("session.act", "answer_ask")
-}
-
-/// Puts the question on the person's avatar off for now.
-action put_off_ask(d: Desk) (icon: .x, label: "Ask me later") {
-    outside("session.act", "put_off_ask")
-}
-
-/// Opens search and launching over the whole workspace: apps, resources, actions and recents.
-action open_launcher(d: Desk) (icon: .search, label: "Search") {
-    outside("session.act", "toggle-launcher")
-}
-
-/// Shows the notifications in the centre.
-action open_centre(d: Desk) (icon: .bell, label: "Notifications") {
-    outside("session.act", "show-notifications")
-}
-
-/// Opens the person's other workspaces: who is in each, what it holds, switching, joining and
-/// making one.
-action open_rooms(d: Desk) (icon: .layers, label: "Workspaces") {
-    outside("session.act", "toggle-workspace-menu")
-}
-
-/// Asks the agent last asked, or the first live one, about something: the composer, over what
-/// the person pointed at or what they selected.
-action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
-    outside("session.act", "toggle-composer")
-}
-
 /// The person's desk as a window shows it: the top bar over the preset they picked, and the
 /// preset switch beside the bar's actions — or, for the traditional desktop, the whole screen:
 /// its frames on the desk under the desk's own bar and dock, as the session shows them on an
@@ -373,7 +288,7 @@ view bar_part(d: Desk, part: BarPart) {
         clock(d)
     } else if part.slot == .menu {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: system_menu(d)
+            on press: session.toggle_tilo_menu()
         }
     } else if part.slot == .workspace {
         workspace_menu(d)
@@ -381,9 +296,7 @@ view bar_part(d: Desk, part: BarPart) {
         action_bar(arrangement, BarRoom.menus)
     } else if part.slot == .strip {
         if d.strip != "" {
-            ui.Button(d.strip, icon: .chevron_right, role: .bar) {
-                on press: strips(d)
-            }
+            ui.Button(d.strip, icon: .chevron_right, role: .bar)
         }
     } else if part.slot == .tasks {
         row(gap: .tight, align: .center) {
@@ -399,16 +312,9 @@ view bar_part(d: Desk, part: BarPart) {
                 }
             }
             if d.ask != "" {
-                ui.Button(d.ask, role: .bar) {
-                    on press: answer_ask(d)
-                }
+                ui.Button(d.ask, role: .bar)
                 if d.ask_answer != "" {
-                    ui.Button(d.ask_answer, role: .bar) {
-                        on press: answer_ask(d)
-                    }
-                }
-                ui.Button("Ask me later", role: .bar) {
-                    on press: put_off_ask(d)
+                    ui.Button(d.ask_answer, role: .bar)
                 }
             } else if d.person != "" {
                 ui.Avatar(name: .some(d.person))
@@ -423,9 +329,7 @@ view bar_part(d: Desk, part: BarPart) {
     } else if part.slot == .status {
         row(gap: .tight, align: .center) {
             for item in d.tray {
-                ui.Button(item.title, role: .bar) {
-                    on press: open_tray_item(d, item)
-                }
+                ui.Button(item.title, role: .bar)
             }
             bell(d)
         }
@@ -438,20 +342,20 @@ view workspace_menu(d: Desk) {
     ui.MenuButton(d.workspace, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
-                on choose: switch_to(w)
+                on choose: session.switch_workspace(workspace: w.key)
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {
-            on choose: new_workspace(d)
+            on choose: session.new_workspace(room: .none, name: .none)
         }
         ui.MenuItem("Join a workspace", icon: .users) {
-            on choose: join_workspace(d)
+            on choose: session.join_workspace()
         }
         ui.MenuItem("Workspace settings", icon: .settings) {
-            on choose: workspace_settings(d)
+            on choose: session.workspace_settings()
         }
         ui.MenuItem("Overview", icon: .layout_grid) {
-            on choose: show_overview(d)
+            on choose: session.toggle_overview()
         }
     }
 }
@@ -468,6 +372,6 @@ view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
     ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
-        on press: status(d)
+        on press: session.toggle_quick_settings()
     }
 }

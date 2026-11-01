@@ -62,6 +62,9 @@ fn singletons() -> Vec<ResourceSpec> {
         tilo_connectivity_service::network_resource(
             &tilo_connectivity_service::model::Network::default(),
         ),
+        tilo_connectivity_service::bluetooth_resource(
+            &tilo_connectivity_service::model::Bluetooth::default(),
+        ),
         tilo_audio_service::sound::resource(&tilo_audio_service::sound::Sound::default()),
     ]
 }

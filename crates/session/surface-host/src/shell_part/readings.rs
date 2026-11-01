@@ -165,8 +165,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 }
             }
         };
-        self.link.asked.borrow_mut().push_back(ask);
-        self.link.handed.set(self.link.handed.get().wrapping_add(1));
+        self.link.ask(ask);
         Invoked::Done(Value::Unit)
     }
 }

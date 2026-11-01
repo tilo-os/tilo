@@ -761,27 +761,3 @@ impl Service for Desk {
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
-
-/// The desk's action and its argument, by the names the shell's origin invokes them by: one
-/// spelling of each, checked against the derived vocabulary.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_surface_host::shell_part::{SWITCH_WORKSPACE, WORKSPACE_ARG};
-
-    #[test]
-    fn the_shell_invokes_the_desk_by_the_names_it_offers() {
-        let specs = DeskEffect::specs();
-        let switch = specs
-            .iter()
-            .find(|spec| spec.id == SWITCH_WORKSPACE)
-            .expect("the desk offers switch-workspace");
-        assert!(
-            switch
-                .params()
-                .iter()
-                .any(|param| param.name == WORKSPACE_ARG),
-            "switch-workspace takes {WORKSPACE_ARG}"
-        );
-    }
-}
