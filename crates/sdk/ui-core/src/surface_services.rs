@@ -33,8 +33,17 @@ pub const WORKSPACE_ENV: &str = "TILO_SURFACE_WORKSPACE";
 /// Whether this process is a surface app's, as the session that started it
 /// says: a surface is handed the actions socket the session answers on.
 #[must_use]
+#[cfg(unix)]
 pub fn is_surface() -> bool {
     std::env::var_os(crate::surface_peer::ACTIONS_FD_ENV).is_some()
+}
+
+/// No session places a surface's window outside a Unix process: a browser
+/// page is no surface app, and nothing hands it an actions socket.
+#[must_use]
+#[cfg(not(unix))]
+pub fn is_surface() -> bool {
+    false
 }
 
 /// The connection this process holds to its session's services, once it has

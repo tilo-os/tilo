@@ -505,7 +505,7 @@ impl Together {
                 }
                 if !Self::current(shared, now, duration_ms) {
                     // A playback that already ran past the end (such as an
-                    // older one the room put back when it undid this
+                    // older one the workspace put back when it undid this
                     // player's move) is over: following it would seek here
                     // to the end again and swallow every seek and replay.
                     self.over = true;

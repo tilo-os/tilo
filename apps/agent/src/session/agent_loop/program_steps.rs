@@ -20,7 +20,7 @@ pub(crate) const VIEWS_APP: &str = "so.tilo.lang.views";
 /// The Views action that keeps a view answer.
 const ANSWER_ACTION: &str = "answer";
 
-/// What the loop knows of the room's tilolang apps for this task: the apps its programs can use,
+/// What the loop knows of the workspace's tilolang apps for this task: the apps its programs can use,
 /// and which app declares each type.
 #[derive(Debug, Default)]
 pub(in crate::session) struct ProgramWorld {
@@ -46,7 +46,7 @@ impl ProgramWorld {
 }
 
 impl Session {
-    /// Read the room's tilolang hosts once per task: what each declares, for the first message's
+    /// Read the workspace's tilolang hosts once per task: what each declares, for the first message's
     /// app lines.
     pub(in crate::session) fn program_world(
         &mut self,

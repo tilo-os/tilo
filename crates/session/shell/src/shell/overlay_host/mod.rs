@@ -375,7 +375,7 @@ struct OverlayInputs {
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
-    room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
+    room_activity: Box<crate::shell::room_activity::WorkspaceActivityPane>,
     display_sheet: Box<crate::shell::display_layouts::DisplaySheetModel>,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
@@ -898,7 +898,7 @@ pub struct ShellOverlayHost {
     audio_service: Option<crate::shell::audio_service::AudioService>,
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
-    room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
+    room_activity: Box<crate::shell::room_activity::WorkspaceActivityPane>,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -916,7 +916,7 @@ pub struct ShellOverlayHost {
     /// [`room_activity::ACTIVITY_AWARENESS_FALLBACK`] passes.
     activity_refresh: ActivityRefreshGate,
     /// What the activity model served apps when they last read it
-    /// ([`tilo_desktop::activity::RoomActivityPane::served_revision`]).
+    /// ([`tilo_desktop::activity::WorkspaceActivityPane::served_revision`]).
     activity_served: Option<u64>,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as

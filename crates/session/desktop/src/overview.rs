@@ -30,7 +30,7 @@ pub trait OverviewHost: WindowSource {
     /// use, so a share here is recognisable where it is revoked.
     fn scope_label(&self, scope: &Scope) -> String;
 
-    /// Where in the room a grant applies, in the same words.
+    /// Where in the workspace a grant applies, in the same words.
     fn node_label(&self, node: &tilo_action_policy::TreePath) -> String;
 }
 
@@ -101,14 +101,14 @@ impl Default for OverviewView {
 }
 
 // ---------------------------------------------------------------------------
-// Rooms: people, sharing, and where you are
+// Workspaces: people, sharing, and where you are
 // ---------------------------------------------------------------------------
 
 /// `role` and `present` are kept apart on purpose: role is what the
-/// room's capabilities say this person *may* do, present is whether
+/// workspace's capabilities say this person *may* do, present is whether
 /// they're here *now*. A member who has gone home is still a member.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoomPerson {
+pub struct WorkspacePerson {
     pub id: UserId,
     /// Display name if this session has met them, else the principal
     /// itself — at least the string you would revoke.
@@ -120,10 +120,10 @@ pub struct RoomPerson {
 }
 
 /// A capability naming a *resource* — a path, document, device — held
-/// by a person. Room membership is [`RoomCard::people`] instead, so
+/// by a person. Workspace membership is [`WorkspaceCard::people`] instead, so
 /// "shared one file with Bob" can't collapse into "Bob is a member".
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoomShare {
+pub struct WorkspaceShare {
     /// In `workspace_settings::scope_label`'s own words, so a revoke
     /// there is recognisable here.
     pub what: String,
@@ -143,7 +143,7 @@ pub struct OverviewTab {
     /// Present collaborators whose published focus points at this tab.
     /// The local person is deliberately absent: an untouched solo workspace
     /// should look like a desktop, not a collaboration dashboard.
-    pub people: Vec<RoomPerson>,
+    pub people: Vec<WorkspacePerson>,
 }
 
 /// One non-overlapping window group in a strip.
@@ -178,24 +178,24 @@ pub struct OverviewStrip {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoomCard {
+pub struct WorkspaceCard {
     pub id: WorkspaceId,
     pub name: String,
     pub is_current: bool,
     /// Owner first.
-    pub people: Vec<RoomPerson>,
+    pub people: Vec<WorkspacePerson>,
     /// Most-shared first.
-    pub shares: Vec<RoomShare>,
+    pub shares: Vec<WorkspaceShare>,
     /// Spatial contents, preserving tree order at every level.
     pub strips: Vec<OverviewStrip>,
 }
 
-impl RoomCard {
+impl WorkspaceCard {
     pub fn present_count(&self) -> usize {
         self.people.iter().filter(|p| p.present).count()
     }
 
-    pub fn others(&self) -> impl Iterator<Item = &RoomPerson> {
+    pub fn others(&self) -> impl Iterator<Item = &WorkspacePerson> {
         self.people.iter().filter(|p| !p.is_you)
     }
 
@@ -207,7 +207,7 @@ impl RoomCard {
         self.strips.iter().map(|strip| strip.groups.len()).sum()
     }
 
-    /// The applications open in the room, each once, in tree order: what a
+    /// The applications open in the workspace, each once, in tree order: what a
     /// glance at its row should recognise it by.
     pub fn apps(&self) -> Vec<&WindowApp> {
         let mut apps: Vec<&WindowApp> = Vec::new();
@@ -245,21 +245,21 @@ fn known_collaborator<'a>(
 
 /// Everyone who may be in `ws` at unix time `now`, and whether they are
 /// here now.
-pub fn room_people(
+pub fn workspace_people(
     ws: &Workspace,
     tree: &DesktopTree,
     host: &dyn OverviewHost,
     now: u64,
-) -> Vec<RoomPerson> {
+) -> Vec<WorkspacePerson> {
     let me = host.local_user();
     let _ = now;
     ws.roster()
         .into_iter()
         .map(|(id, role)| {
             // Being the local user isn't evidence of being in *this*
-            // room — you're only in the one you're looking at. These are
+            // workspace — you're only in the one you're looking at. These are
             // two independent conditions (are-you-a-listed-collaborator,
-            // are-you-the-local-user-in-the-active-room), not a mixed-up
+            // are-you-the-local-user-in-the-active-workspace), not a mixed-up
             // field pairing, despite the superficial `a == b && c == d`
             // shape.
             #[allow(
@@ -268,7 +268,7 @@ pub fn room_people(
             )]
             let present = ws.collaborators.iter().any(|c| c.id == id)
                 || (id == me && ws.id == tree.active);
-            RoomPerson {
+            WorkspacePerson {
                 name: display_name(&id, ws, tree),
                 present,
                 is_you: id == me,
@@ -281,13 +281,13 @@ pub fn room_people(
 
 /// Grouped by what is shared (scope, not capability): two grants on
 /// the same folder to two people are one share with two holders.
-pub fn room_shares(
+pub fn workspace_shares(
     ws: &Workspace,
     tree: &DesktopTree,
     host: &dyn OverviewHost,
     now: u64,
-) -> Vec<RoomShare> {
-    let mut out: Vec<RoomShare> = Vec::new();
+) -> Vec<WorkspaceShare> {
+    let mut out: Vec<WorkspaceShare> = Vec::new();
     let mut share = |what: String, holder: String, writable: bool| match out
         .iter_mut()
         .find(|s| s.what == what)
@@ -298,13 +298,13 @@ pub fn room_shares(
             }
             existing.writable |= writable;
         }
-        None => out.push(RoomShare {
+        None => out.push(WorkspaceShare {
             what,
             with: vec![holder],
             writable,
         }),
     };
-    // What one person was given beyond their role in the room: a grant on a
+    // What one person was given beyond their role in the workspace: a grant on a
     // part of it, or a file reached outside the sandbox's own.
     let room = ws.node();
     let cx = tilo_desktop_model::context_at(now);
@@ -352,15 +352,19 @@ pub fn room_shares(
 }
 
 /// Every workspace as the overview shows it at unix time `now`.
-pub fn room_cards(tree: &DesktopTree, host: &dyn OverviewHost, now: u64) -> Vec<RoomCard> {
+pub fn workspace_cards(
+    tree: &DesktopTree,
+    host: &dyn OverviewHost,
+    now: u64,
+) -> Vec<WorkspaceCard> {
     tree.workspaces
         .iter()
-        .map(|ws| RoomCard {
+        .map(|ws| WorkspaceCard {
             id: ws.id,
             name: ws.name.clone(),
             is_current: ws.id == tree.active,
-            people: room_people(ws, tree, host, now),
-            shares: room_shares(ws, tree, host, now),
+            people: workspace_people(ws, tree, host, now),
+            shares: workspace_shares(ws, tree, host, now),
             strips: overview_strips(ws, tree, host, now),
         })
         .collect()
@@ -372,7 +376,7 @@ fn overview_strips(
     host: &dyn OverviewHost,
     now: u64,
 ) -> Vec<OverviewStrip> {
-    let people = room_people(ws, tree, host, now);
+    let people = workspace_people(ws, tree, host, now);
     let active_strip = tree.active_strip.get(&ws.id).copied();
     ws.strips
         .iter()
@@ -428,8 +432,8 @@ fn overview_strips(
 /// Names people while it helps, counts once it stops: "Shared with
 /// Ada, Bob, Cleo, Dara, Eve" is a wall of text where "Shared with Ada
 /// and 4 others" is a fact.
-pub fn room_access_label(card: &RoomCard) -> String {
-    let others: Vec<&RoomPerson> = card.others().collect();
+pub fn workspace_access_label(card: &WorkspaceCard) -> String {
+    let others: Vec<&WorkspacePerson> = card.others().collect();
     let name = |index: usize| others.get(index).map_or("", |p| p.name.as_str());
     match others.len() {
         // No owner, no membership capability recorded at all.
@@ -451,17 +455,17 @@ pub fn room_access_label(card: &RoomCard) -> String {
 }
 
 /// `None` when it shares nothing — the caller draws nothing rather than a zero.
-pub fn room_shares_label(card: &RoomCard) -> Option<String> {
+pub fn workspace_shares_label(card: &WorkspaceCard) -> Option<String> {
     match card.shares.len() {
         0 => None,
         n => Some(t_args("overview-shares", &[("count", n.into())])),
     }
 }
 
-/// `None` when nobody is here, including you — every room you aren't in.
-pub fn room_presence_label(card: &RoomCard) -> Option<String> {
-    let live: Vec<&RoomPerson> = card.people.iter().filter(|p| p.present).collect();
-    let others: Vec<&&RoomPerson> = live.iter().filter(|p| !p.is_you).collect();
+/// `None` when nobody is here, including you — every workspace you aren't in.
+pub fn workspace_presence_label(card: &WorkspaceCard) -> Option<String> {
+    let live: Vec<&WorkspacePerson> = card.people.iter().filter(|p| p.present).collect();
+    let others: Vec<&&WorkspacePerson> = live.iter().filter(|p| !p.is_you).collect();
     let name = || others.first().map_or("", |p| p.name.as_str());
     match (live.iter().any(|p| p.is_you), others.len()) {
         (false, 0) => None,
@@ -642,8 +646,8 @@ mod room_tests {
         }
     }
 
-    fn room_cards(tree: &DesktopTree) -> Vec<RoomCard> {
-        super::room_cards(tree, &Host, NOW)
+    fn workspace_cards(tree: &DesktopTree) -> Vec<WorkspaceCard> {
+        super::workspace_cards(tree, &Host, NOW)
     }
 
     fn fresh_id() -> u64 {
@@ -674,11 +678,11 @@ mod room_tests {
     fn room_access_distinguishes_members_shares_and_expired_grants() {
         fn a_room_only_you_own_reads_as_private() {
             let tree = tree_with(vec![ws("Home")]);
-            let cards = room_cards(&tree);
+            let cards = workspace_cards(&tree);
             assert_eq!(cards.len(), 1);
             assert!(cards[0].is_private());
-            assert_eq!(room_access_label(&cards[0]), "Private to you");
-            assert_eq!(room_shares_label(&cards[0]), None);
+            assert_eq!(workspace_access_label(&cards[0]), "Private to you");
+            assert_eq!(workspace_shares_label(&cards[0]), None);
         }
 
         fn a_member_makes_the_room_read_as_shared_with_them() {
@@ -686,11 +690,11 @@ mod room_tests {
             w.admit("ada", collab_types::Role::Editor);
             w.collaborators.push(Collaborator::new("ada", "Ada"));
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert!(!card.is_private());
-            assert_eq!(room_access_label(card), "Shared with Ada");
+            assert_eq!(workspace_access_label(card), "Shared with Ada");
             // Membership is not a resource share — the two lists stay disjoint.
-            assert_eq!(room_shares_label(card), None);
+            assert_eq!(workspace_shares_label(card), None);
         }
 
         fn a_file_grant_is_a_share_and_not_a_membership() {
@@ -701,15 +705,18 @@ mod room_tests {
                 Access::Read,
             ));
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
-            // Ada holds a file, not the room: she is not a member…
+            let card = &workspace_cards(&tree)[0];
+            // Ada holds a file, not the workspace: she is not a member…
             assert!(card.is_private(), "a file grant must not admit a member");
-            assert_eq!(room_access_label(card), "Private to you");
+            assert_eq!(workspace_access_label(card), "Private to you");
             // …and the file shows up as exactly one share, named the way the
             // permissions pane names it.
             assert_eq!(card.shares.len(), 1);
             assert_eq!(card.shares[0].with, vec!["ada".to_string()]);
-            assert_eq!(room_shares_label(card).as_deref(), Some("1 item shared"));
+            assert_eq!(
+                workspace_shares_label(card).as_deref(),
+                Some("1 item shared")
+            );
         }
 
         fn two_grants_on_one_path_are_one_share_with_two_holders() {
@@ -722,10 +729,13 @@ mod room_tests {
                 ));
             }
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert_eq!(card.shares.len(), 1, "one path is one share");
             assert_eq!(card.shares[0].with.len(), 2);
-            assert_eq!(room_shares_label(card).as_deref(), Some("1 item shared"));
+            assert_eq!(
+                workspace_shares_label(card).as_deref(),
+                Some("1 item shared")
+            );
         }
 
         fn write_grants_are_marked_writable() {
@@ -736,7 +746,7 @@ mod room_tests {
                 Access::Write,
             ));
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert!(card.shares[0].writable);
         }
 
@@ -763,7 +773,7 @@ mod room_tests {
                 .expiring(Expiry::AtUnix(1)),
             );
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert!(card.is_private(), "an expired membership admits nobody");
             assert!(card.shares.is_empty(), "an expired share is not shared");
         }
@@ -774,8 +784,8 @@ mod room_tests {
                 w.admit(who, collab_types::Role::Editor);
             }
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
-            assert_eq!(room_access_label(card), "Shared with ada and 3 others");
+            let card = &workspace_cards(&tree)[0];
+            assert_eq!(workspace_access_label(card), "Shared with ada and 3 others");
         }
 
         a_room_only_you_own_reads_as_private();
@@ -801,11 +811,11 @@ mod room_tests {
             // Only Ada actually showed up.
             w.collaborators.push(Collaborator::new("ada", "Ada"));
             let tree = tree_with(vec![w]);
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert_eq!(card.people.len(), 3, "you + two members");
             assert_eq!(card.present_count(), 2, "you and Ada, not Bob");
             assert_eq!(
-                room_presence_label(card).as_deref(),
+                workspace_presence_label(card).as_deref(),
                 Some("You and Ada are here")
             );
         }
@@ -814,13 +824,13 @@ mod room_tests {
             let here = ws("Home");
             let elsewhere = ws("Design");
             let tree = tree_with(vec![here, elsewhere]);
-            let cards = room_cards(&tree);
+            let cards = workspace_cards(&tree);
             assert_eq!(
-                room_presence_label(&cards[0]).as_deref(),
+                workspace_presence_label(&cards[0]).as_deref(),
                 Some("You are here")
             );
             assert_eq!(
-                room_presence_label(&cards[1]),
+                workspace_presence_label(&cards[1]),
                 None,
                 "you cannot be in two rooms at once"
             );
@@ -868,7 +878,7 @@ mod room_tests {
             tree.active_strip.insert(ws_id, strip_id);
             tree.set_active_group(strip_id, group_id);
 
-            let card = &room_cards(&tree)[0];
+            let card = &workspace_cards(&tree)[0];
             assert_eq!(card.strips.len(), 1);
             assert!(card.strips[0].is_current);
             assert_eq!(card.strips[0].groups.len(), 1);
@@ -914,7 +924,7 @@ mod room_tests {
             }];
             let tree = tree_with(vec![w]);
 
-            let tab = &room_cards(&tree)[0].strips[0].groups[0].tabs[0];
+            let tab = &workspace_cards(&tree)[0].strips[0].groups[0].tabs[0];
             assert_eq!(
                 tab.people
                     .iter()

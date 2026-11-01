@@ -125,7 +125,7 @@ fn button(id: &str, label: &str, enabled: bool) -> Button {
 }
 
 /// A line of buttons that wraps onto further lines where it runs out of
-/// room, never overlapping.
+/// workspace, never overlapping.
 fn buttons(buttons: Vec<Button>) -> Element {
     let row = buttons.into_iter().fold(
         Row::new().with_rhythm(Rhythm::Related).align_start(),

@@ -205,6 +205,7 @@ members = [
     "crates/collab/feedback",
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
+    "crates/collab/tilo-call-lane",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-lan-discovery",
     "crates/collab/tilo-store-link",
@@ -425,6 +426,7 @@ members = [
     "crates/platform/imager-backend",
     "crates/session/install-profile-model",
     "crates/session/liveness",
+    "crates/session/native-media",
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
@@ -455,6 +457,7 @@ members = [
     "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
+    "crates/session/window-menu",
     "crates/session/window-share",
 
     # System

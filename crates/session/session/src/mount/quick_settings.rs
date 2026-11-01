@@ -86,6 +86,7 @@ pub(crate) fn answer(shared: &Shared) {
     super::audio::land(shared);
     device.pump();
     super::devices::land(shared);
+    super::displays::land(shared);
     for request in device.take_requests() {
         match request {
             SessionRequest::Effect(QsEffect::PowerMenu) => {
@@ -141,9 +142,7 @@ pub(crate) fn answer(shared: &Shared) {
                 // The switch is persisted, so the settings app and the
                 // desktop's own menu read the same one; the session's
                 // settings watch brings it back into every arrival.
-                if let Err(error) =
-                    crate::notifications::SessionNotifications::set_do_not_disturb(on)
-                {
+                if let Err(error) = shared.notifications.borrow().set_do_not_disturb(on) {
                     tracing::warn!(%error, on, "do not disturb not saved");
                 }
             }
@@ -167,6 +166,7 @@ pub(crate) fn answer(shared: &Shared) {
                 shared.clipboard.clear();
             }
             other if super::audio::follow(shared, &other) => {}
+            other if super::displays::follow(shared, &other) => {}
             other if super::devices::follow(shared, &other) => {}
             other => {
                 tracing::debug!(?other, "quick settings asks what the session cannot do yet");

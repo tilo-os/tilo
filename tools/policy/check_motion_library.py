@@ -77,6 +77,8 @@ EXEMPT = {
     "apps/canvas/src/brushes.rs": "brush dynamics are part of the stroke the person paints",
     "crates/sdk/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/session/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
+    "crates/session/desktop/src/desk_widgets/sizing.rs": "the stage blend eases a card's width, not a clock: it cross-fades two stages across a band so a resize through a breakpoint never jumps",
+    "crates/session/shell/src/shell/desk_widgets/sizing.rs": "the stage blend eases a card's width, not a clock: it cross-fades two stages across a band so a resize through a breakpoint never jumps",
     "vendor/": "vendored upstream code",
 }
 

@@ -107,7 +107,7 @@ impl Controls {
 
 /// A button whose press acts on this device alone: what it changes in the
 /// clocks it submits as the record's own verbs, decided there, so a guest
-/// presses it as the room's owner does.
+/// presses it as the workspace's owner does.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)

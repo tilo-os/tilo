@@ -2,18 +2,21 @@
 //! by an ordinary Tilo app whose window asks the compositor for the session
 //! lock instead of being placed by the desktop.
 //!
-//! What it shows and what it does is [`tilo_sheets::lock`]'s, exactly as the
-//! session mounts it in its own process: the same resource, the same
-//! effects, the same prompt. Here the app is the process, so the lock is
-//! the window's and the compositor gives it every output and every input.
+//! What it shows and what it does is [`tilo_sheets::lock`]'s: the same
+//! screen, the same effects, the same prompt. What it shows arrives from the
+//! session ([`lock_session`]), which publishes the lock as its own resource,
+//! and what the person asks goes back to it as actions on that resource, as
+//! any app asks anything of its session.
+
+mod lock_session;
 
 use std::cell::RefCell;
 
-use tilo_sheets::lock::{self, LockSeat, Shown, Status};
-use ui::application::{
+use tilo_app::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use tilo_app::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use tilo_sheets::lock::{self, LockSeat, Shown, Status};
 
 thread_local! {
     /// What the app is lent: the seat the lock screen shows in and takes
@@ -24,6 +27,7 @@ thread_local! {
 fn main() {
     let seat = LockSeat::default();
     seat.show(shown());
+    lock_session::serve(&seat);
     SEAT.with(|slot| *slot.borrow_mut() = Some(seat));
     let spec = LaunchSpec::from_definition(lock::definition())
         .component_host(prepared)
@@ -34,7 +38,7 @@ fn main() {
         .runs_without_identity()
         .runtime_attachment(|_| false)
         .allowed_options(&["--data-dir"]);
-    ui::launch::run_or_exit(&spec);
+    tilo_app::launch::run_or_exit(&spec);
 }
 
 /// The lock screen's app on this process's own host, lent its seat.
@@ -54,15 +58,15 @@ fn prepared(
 /// this is, as the session that started it said.
 fn shown() -> Shown {
     Shown {
-        clock: ui::clock::time_of_day(&ui::clock::local_now()),
-        date: ui::format::day_heading(ui::clock::today(), false),
+        clock: tilo_app::clock::time_of_day(&tilo_app::clock::local_now()),
+        date: tilo_app::format::day_heading(tilo_app::clock::today(), false),
         person: std::env::var("TILO_SURFACE_PERSON").unwrap_or_default(),
         error: None,
         checking: false,
         caps_lock: false,
-        // The session feeds the device's readings in as it learns them; a
-        // screen that opens before then says nothing rather than the wrong
-        // thing.
+        // The session publishes what it shows of the lock, and the screen
+        // draws it as it arrives; what it says before the first reading is
+        // only the time and whose session this is.
         status: Status::default(),
         media: None,
         keyboard: false,

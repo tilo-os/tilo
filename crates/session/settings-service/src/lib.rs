@@ -113,32 +113,52 @@ fn shown(value: &Value) -> String {
 /// The settings service.
 pub struct SettingsService {
     records: SettingsRecords,
-    /// The person at this seat, whose changes they are.
-    invoker: ActionInvoker,
+    /// The person at this seat, whose changes they are: the session hands
+    /// the service who sits here as it starts it ([`Service::seated`]).
+    invoker: Option<ActionInvoker>,
     /// The settings document's version when it was last read.
     seen: Option<SettingsRevision>,
     /// What it publishes, built again only when the settings changed.
     published: Vec<ResourceSpec>,
 }
 
+impl Default for SettingsService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SettingsService {
     /// The person's settings, as the session's settings document stores
-    /// them, changed by `person`.
+    /// them. Who the person is is the session's to say, as it starts the
+    /// service ([`SettingsService::seated`]), so what is changed here is
+    /// authored by the same person as everything else they do.
     #[must_use]
-    pub fn new(person: &str) -> Self {
+    pub fn new() -> Self {
         let mut service = Self {
-            records: SettingsRecords::of_person_named(
-                settings_sections::APP_ID,
-                settings_sections::APP_TITLE,
-                person,
-                &[settings_sections::declare],
-            ),
-            invoker: ActionInvoker::actor(person),
+            records: SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+            invoker: None,
             seen: None,
             published: Vec::new(),
         };
         service.published = service.build();
         service
+    }
+
+    /// Sit this service at `person`, the id their workspaces' governance
+    /// names them by, with `earlier` the ids they went by before this
+    /// device had an identity: what they change is theirs, and what was
+    /// changed under one of those ids is theirs to take back.
+    pub fn seated(&mut self, person: &str, earlier: &[String]) {
+        self.records = SettingsRecords::of_person_named(
+            settings_sections::APP_ID,
+            settings_sections::APP_TITLE,
+            person,
+            earlier,
+            &[settings_sections::declare],
+        );
+        self.invoker = Some(ActionInvoker::actor(person));
+        self.published = self.build();
     }
 
     /// The sections and the index over them, as stored now.
@@ -418,6 +438,10 @@ fn field_param(section: &ResourceSpec, field: &str) -> Option<ActionParam> {
 }
 
 impl Service for SettingsService {
+    fn seated(&mut self, person: &str, earlier: &[String]) {
+        Self::seated(self, person, earlier);
+    }
+
     fn resources(&self) -> Vec<ResourceSpec> {
         self.published.clone()
     }
@@ -433,6 +457,14 @@ impl Service for SettingsService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
+        // What is changed here is the person's, under their own id: a host
+        // that started the service without saying who sits here has none to
+        // put on the change.
+        let Some(invoker) = self.invoker.as_ref() else {
+            return Err(DoorError::Failed(
+                "the session has not said who sits here".to_owned(),
+            ));
+        };
         // The service host asked the person first where the published
         // action asks it: what reaches here is confirmed.
         if let Some(id) = setting_of(resource) {
@@ -450,7 +482,7 @@ impl Service for SettingsService {
             let invoked_by = InvokingAction::action(format!("{resource}/{action}"));
             let done = self
                 .records
-                .invoke(&address, &arguments, true, &self.invoker, Some(&invoked_by))
+                .invoke(&address, &arguments, true, invoker, Some(&invoked_by))
                 .map(Started::Done);
             self.published = self.build();
             return done;
@@ -461,7 +493,7 @@ impl Service for SettingsService {
                 &ActionAddress::new(resource, action),
                 arguments,
                 true,
-                &self.invoker,
+                invoker,
                 None,
             )
             .map(Started::Done);

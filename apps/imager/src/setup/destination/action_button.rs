@@ -118,20 +118,21 @@ impl ActionButton {
     /// Build the toolkit control for the current settings.
     fn compose(&mut self) {
         let control = self.control.clone();
+        let id = self.id().to_owned();
         self.inner = if let Some(checked) = self.checked {
             Box::new(
                 Checkbox::from_state(&ui::LocalState::new(checked))
-                    .with_id(self.id())
+                    .with_id(&id)
                     .with_label(self.label.clone())
                     .with_enabled(self.enabled)
-                    .on_change(move |_| control.fire()),
+                    .on_view(&id, move |_| control.fire()),
             )
         } else {
-            let mut button = Button::new(self.id(), &self.label)
+            let mut button = Button::new(&id, &self.label)
                 .role(self.role)
                 .control_size(self.size)
                 .with_enabled(self.enabled)
-                .on_click(move || control.fire());
+                .on_effect(move || control.fire());
             if let Some(icon) = self.icon {
                 button = button.with_icon(icon);
             }

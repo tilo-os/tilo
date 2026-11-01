@@ -41,10 +41,12 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, WorkspaceId, native_ingress,
-    room_topic_id,
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceControlRoute,
+    WorkspaceId, native_ingress, room_topic_id,
 };
 
+use crate::channels::ChannelLink;
+use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
 
 /// The app id the desktop of a room says its own presence under, as the
@@ -439,6 +441,17 @@ fn room_key(room: &str) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// One window stream's message as it reached this device: another member's
+/// shared window, or a member's ask to view one of this device's.
+#[derive(Clone, Debug)]
+pub(crate) struct ReceivedSurface {
+    /// The room's topic it came in on.
+    pub(crate) ws: WorkspaceId,
+    /// The device that published it.
+    pub(crate) from: EndpointId,
+    pub(crate) msg: NeighbourMsg,
+}
+
 /// What the sync thread is asked to do.
 #[derive(Debug)]
 pub(crate) enum Outgoing {
@@ -450,6 +463,20 @@ pub(crate) enum Outgoing {
     Publish {
         ws: WorkspaceId,
         msg: Box<NeighbourMsg>,
+    },
+    /// Send one window's stream on the topic of the room it is shared in,
+    /// to the members that asked to view it and no one else.
+    PublishSurfaceTo {
+        ws: WorkspaceId,
+        msg: Box<NeighbourMsg>,
+        viewers: Vec<neighbour_wire::PeerId>,
+    },
+    /// Say one workspace-control message to `target` alone, over the
+    /// authenticated direct route: which of its windows this device shows.
+    SendControl {
+        ws: WorkspaceId,
+        msg: Box<NeighbourMsg>,
+        target: EndpointId,
     },
     /// Dial a workspace host: an always-on peer that keeps what this
     /// person's devices publish while the others are away.
@@ -469,6 +496,22 @@ pub(crate) enum Outgoing {
         user_public_key: [u8; 32],
         target: Option<EndpointId>,
         payload: PersonalFabricPayload,
+    },
+    /// Ask for the lane this device's private texts travel on.
+    PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
+    /// Ask `ws`'s hosts for the record on `channel`, which they replay a
+    /// joining device only once it asks (an on-demand record, or a part of a
+    /// chain behind its head).
+    OpenRecord { ws: WorkspaceId, channel: [u8; 32] },
+    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// something a message let go earlier waited for has arrived, and the
+    /// message is decided again when it comes back.
+    Replay(WorkspaceId),
+    /// Say which devices room `ws` admits, and until when each of their
+    /// certificates holds: they alone send and receive its window streams.
+    Roster {
+        ws: WorkspaceId,
+        devices: Vec<RosterDevice>,
     },
     /// The session is going: stop the peer actor.
     Stop,
@@ -512,11 +555,18 @@ pub struct Client {
     notice: RefCell<Option<WaveNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
+    /// The window streams that reached this device: their frames, starts,
+    /// ends and control, which the shares take ([`Self::take_surfaces`]).
+    surfaces: RefCell<Vec<ReceivedSurface>>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// This device's rooms, which a join enrolls into: `None` when the
     /// session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
+    /// What the session's channels hear and say on this plane: the governance
+    /// of the rooms' sealed records, and the devices each room admits. What
+    /// the engine holds, so a session that runs no channel service has none.
+    link: Option<Arc<ChannelLink>>,
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
@@ -536,6 +586,9 @@ pub struct Client {
     /// This device's fabric, when it is a certified device of the person's:
     /// `None` on a session that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
+    /// Where this device's actions are served, and how an app here reaches
+    /// the person's other devices: `None` until the endpoint has bound.
+    device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// This device's relays, held back until a room this session takes part
     /// in has someone else in it.
     reachability: Reachability,
@@ -583,6 +636,10 @@ impl Client {
     /// continuing on their other devices, kept current by the session's
     /// settings watch.
     ///
+    /// The session's channels, when `engine` keeps them, hear the rooms'
+    /// governance on this plane and tell it which devices each room admits:
+    /// what they say travels as the plane's own messages.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
@@ -621,7 +678,14 @@ impl Client {
                 )
             })
         });
+        // The channels this session runs, if it runs any: their side of the
+        // plane is the engine's, opened before the plane starts. The thread
+        // takes its own handle, and this one tells them where the plane is.
+        let link = engine.as_ref().and_then(|engine| engine.link());
+        let plane_link = link.clone();
         let enrolling = engine.clone();
+        let device_actions = Arc::new(std::sync::OnceLock::new());
+        let serving = Arc::clone(&device_actions);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -633,12 +697,19 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
+                    Serving {
+                        link: plane_link,
+                        actions: serving,
+                    },
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
+        if let Some(link) = &link {
+            link.attach(outgoing.clone());
+        }
         let sync = Self {
             plane: RefCell::new(Plane {
                 publisher,
@@ -653,13 +724,16 @@ impl Client {
             notice: RefCell::new(None),
             outgoing,
             arrived,
+            surfaces: RefCell::new(Vec::new()),
             enrolled,
             engine,
+            link,
             user,
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
             endpoint,
             fabric,
+            device_actions,
             reachability,
             thread: Some(thread),
         };
@@ -828,6 +902,11 @@ impl Client {
     /// actor hands it.
     pub fn hear(&self, event: NetEvent) {
         self.keep_personal(&event);
+        // What a room says of its channels' governance is the session's
+        // channels' to take in, wherever the message came from.
+        if let (Some(link), NetEvent::Msg { msg, .. }) = (&self.link, &event) {
+            link.heard(msg);
+        }
         if let Some(fabric) = &self.fabric {
             match &event {
                 NetEvent::Sibling {
@@ -843,10 +922,102 @@ impl Client {
                 _ => {}
             }
         }
+        // A window's stream is not presence: it goes to the shares, which
+        // read it on the pass ([`Self::take_surfaces`]).
+        if self.keep_surface(&event) {
+            return;
+        }
         self.plane.borrow_mut().apply(event);
         self.note_reachability();
         self.show_here();
         self.show_waves();
+    }
+
+    /// Keep `event`'s message for the shares if it is one of a window's
+    /// stream; whether it was.
+    fn keep_surface(&self, event: &NetEvent) -> bool {
+        let NetEvent::Msg { ws, peer, msg, .. } = event else {
+            return false;
+        };
+        if !matches!(
+            msg,
+            NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceFrame { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::SurfaceKeyframeRequest { .. }
+                | NeighbourMsg::SurfaceViewRequest { .. }
+        ) {
+            return false;
+        }
+        self.surfaces.borrow_mut().push(ReceivedSurface {
+            ws: *ws,
+            from: *peer,
+            msg: msg.clone(),
+        });
+        true
+    }
+
+    /// Take the window-stream messages that reached this device since the
+    /// last call.
+    #[must_use]
+    pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
+        std::mem::take(&mut *self.surfaces.borrow_mut())
+    }
+
+    /// Send one message of `surface`'s stream on the topic of the room it is
+    /// shared in, to `viewers` alone: over the authenticated route to each
+    /// of them, never fanned out to the room.
+    pub(crate) fn publish_surface(
+        &self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        viewers: &[neighbour_wire::PeerId],
+    ) {
+        let _ = self.outgoing.send(Outgoing::PublishSurfaceTo {
+            ws,
+            msg: Box::new(msg),
+            viewers: viewers.to_vec(),
+        });
+    }
+
+    /// Say `msg` to `target` alone, as a workspace-control message on the
+    /// topic of the room `ws`.
+    pub(crate) fn publish_control(&self, ws: WorkspaceId, msg: NeighbourMsg, target: EndpointId) {
+        let _ = self.outgoing.send(Outgoing::SendControl {
+            ws,
+            msg: Box::new(msg),
+            target,
+        });
+    }
+
+    /// The topic of the room `room`, while this session takes part in it.
+    #[must_use]
+    pub(crate) fn room_topic(&self, room: &str) -> Option<WorkspaceId> {
+        self.plane
+            .borrow()
+            .rooms
+            .iter()
+            .find(|held| held.id == room)
+            .map(|held| held.ws)
+    }
+
+    /// The devices heard in `room` beside this one, by publisher and the name
+    /// each goes by: what shows which device a window of the room runs on.
+    #[must_use]
+    pub(crate) fn room_devices(&self, room: &str) -> Vec<(EndpointId, String)> {
+        self.plane
+            .borrow()
+            .rooms
+            .iter()
+            .find(|held| held.id == room)
+            .map(|held| {
+                held.peers
+                    .iter()
+                    .map(|peer| (peer.publisher, peer.label.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Keep what the person's other devices said of their workspaces: a
@@ -932,6 +1103,27 @@ impl Client {
             .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
     }
 
+    /// Where this device's actions are served, and how an app here runs its
+    /// actions on the person's other devices: `None` on a session that takes
+    /// part as nobody, which has no key of its own to ask with.
+    #[must_use]
+    pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
+        self.device_actions.get().cloned()
+    }
+
+    /// Ask the peer actor for this device's lane of private texts: the
+    /// messages between people, carried by this endpoint. `None` when the
+    /// actor is gone.
+    #[must_use]
+    pub fn private_messages(
+        &self,
+    ) -> Option<tokio::sync::oneshot::Receiver<tilo_network_actor::private_messages::Transport>>
+    {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.outgoing.send(Outgoing::PrivateMessages(reply)).ok()?;
+        Some(answer)
+    }
+
     /// The actions one of the person's devices sent this one since the last
     /// call, for the session's pass to carry out.
     #[must_use]
@@ -952,6 +1144,11 @@ impl Client {
     /// Dial one of the person's own devices, whose address this session was
     /// told: the session between the two carries their device fabric.
     pub fn connect(&self, addr: EndpointAddr) {
+        // An action for this device is sent to where it was told to be,
+        // without waiting for the two sessions to meet first.
+        if let Some(actions) = self.device_actions.get() {
+            actions.learn(addr.clone());
+        }
         let _ = self.outgoing.send(Outgoing::ConnectDevice(addr));
     }
 
@@ -1080,6 +1277,12 @@ impl Client {
     /// This device's presence handle, as a publish stamps it.
     fn peer_hash(&self) -> u64 {
         tilo_network_actor::behaviour::peer_liveness_handle(&self.plane.borrow().publisher)
+    }
+
+    /// This device's handle in a room, as a window's stream names it.
+    #[must_use]
+    pub(crate) fn peer(&self) -> neighbour_wire::PeerId {
+        self.peer_hash()
     }
 
     /// Tell the room in front that this person's pointer is over `(x, y)` of
@@ -1283,8 +1486,9 @@ impl Client {
     }
 
     /// A client of a plane with no transport: what both the real client and
-    /// [`Self::untethered`] are, at their middle.
-    fn planeless(
+    /// [`Self::untethered`] are, at their middle. A test that reads what
+    /// one plane would have sent to another takes the receiver.
+    pub(crate) fn planeless(
         publisher: EndpointId,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
@@ -1310,16 +1514,19 @@ impl Client {
                 notice: RefCell::new(None),
                 outgoing,
                 arrived,
+                surfaces: RefCell::new(Vec::new()),
                 enrolled: {
                     let (_landed, enrolled) = std::sync::mpsc::channel();
                     enrolled
                 },
                 engine: None,
+                link: None,
                 user: None,
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
                 fabric: None,
+                device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
                 thread: None,
             },
@@ -1415,6 +1622,46 @@ fn endpoint_for(
     Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
 }
 
+/// The runtime the collaboration plane's thread runs on: two workers of its
+/// own, so what the plane settles never waits behind what a session shows.
+fn plane_runtime(
+    ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
+) -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            let _ = ready.send(Err(format!(
+                "no runtime for the collaboration plane: {error}"
+            )));
+            None
+        }
+    }
+}
+
+/// What the session's endpoint carries beside its rooms: the channels it
+/// runs, and this device's action plane, which answers the person's other
+/// devices on it.
+pub(crate) struct Serving {
+    pub(crate) link: Option<Arc<ChannelLink>>,
+    pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
+}
+
+/// What this device answers on from the moment its endpoint is bound: the
+/// peer actor the session's commands go to, the events it hears, and what
+/// runs beside it until the session stops.
+struct Listening {
+    endpoint: iroh::Endpoint,
+    actor: tokio::sync::mpsc::Sender<NetCmd>,
+    events: tokio::sync::mpsc::Sender<NetEvent>,
+    actor_task: tokio::task::JoinHandle<()>,
+    carrying: tokio::task::JoinHandle<()>,
+    attending: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// The thread: bind the endpoint, run the peer actor, and carry what it
 /// hears to the session's loop until it is told to stop.
 fn run(
@@ -1425,63 +1672,32 @@ fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    Serving { link, actions }: Serving,
 ) {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = ready.send(Err(format!(
-                "no runtime for the collaboration plane: {error}"
-            )));
-            return;
-        }
+    let Some(runtime) = plane_runtime(&ready) else {
+        return;
     };
     runtime.block_on(async move {
-        let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-        let (builder, deferred_relays) = match endpoint_for(identity.as_ref()) {
-            Ok(building) => building,
-            Err(error) => {
-                let _ = ready.send(Err(error));
-                return;
-            }
-        };
-        let endpoint = match builder
-            .address_lookup(lookup.clone())
-            .transport_config(tilo_network_actor::transport_config())
-            .bind()
-            .await
-        {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                let _ = ready.send(Err(format!("the collaboration endpoint: {error}")));
-                return;
-            }
-        };
-        let publisher = endpoint.id();
-        let addr = endpoint.addr();
-        // Nothing wakes the held-back relays from here: the peer actor does
-        // when it dials a host or a peer, and the session while a room it
-        // shows has someone else in it (`Client::note_reachability`).
-        let reachability = tilo_endpoint_reachability::Reachability::defer(
-            &endpoint,
-            &deferred_relays,
-            tokio::runtime::Handle::current(),
-            Some(tilo_endpoint_reachability::REST_AFTER),
-        );
-        let (actor, actor_task) = tilo_network_actor::Actor::spawn_deferring_relays(
-            endpoint.clone(),
-            lookup,
-            identity.clone(),
-            Arc::new(std::sync::Mutex::new(Vec::new())),
-            reachability.clone(),
-        );
-        let (events, carrying, attending) = heard(identity.clone(), arrivals, wake);
-        if ready.send(Ok((publisher, addr, reachability))).is_err() {
+        let Some(Listening {
+            endpoint,
+            actor,
+            events,
+            actor_task,
+            carrying,
+            attending,
+        }) = listening(
+            identity.as_ref(),
+            engine.as_ref(),
+            arrivals,
+            wake,
+            link.clone(),
+            &ready,
+            &actions,
+        )
+        .await
+        else {
             return;
-        }
+        };
         while let Some(command) = commands.recv().await {
             let command = match command {
                 // A redemption asks a host, waits for it and takes the room
@@ -1501,8 +1717,19 @@ fn run(
                     };
                     let endpoint = endpoint.clone();
                     let plane = actor.clone();
+                    let events = events.clone();
+                    let channels = link.clone();
                     tokio::spawn(async move {
-                        let result = redeem(endpoint, identity, engine, &plane, request).await;
+                        let result = redeem(
+                            endpoint,
+                            identity,
+                            engine,
+                            &plane,
+                            &events,
+                            request,
+                            channels.as_deref(),
+                        )
+                        .await;
                         let _ = landed.send(Enrolled {
                             workspace,
                             room,
@@ -1530,6 +1757,85 @@ fn run(
     });
 }
 
+/// Bind this device's endpoint, serve the peer actor and its action plane on
+/// it, and say where the session's apps reach this device — or say why it
+/// could not, and answer nothing.
+async fn listening(
+    identity: Option<&HostIdentity>,
+    engine: Option<&Arc<Engine>>,
+    arrivals: std::sync::mpsc::Sender<NetEvent>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    link: Option<Arc<ChannelLink>>,
+    ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
+    actions: &Arc<std::sync::OnceLock<DeviceActions>>,
+) -> Option<Listening> {
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let (builder, deferred_relays) = match endpoint_for(identity) {
+        Ok(building) => building,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return None;
+        }
+    };
+    let endpoint = match builder
+        .address_lookup(lookup.clone())
+        .transport_config(tilo_network_actor::transport_config())
+        .bind()
+        .await
+    {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            let _ = ready.send(Err(format!("the collaboration endpoint: {error}")));
+            return None;
+        }
+    };
+    let publisher = endpoint.id();
+    let addr = endpoint.addr();
+    // Nothing wakes the held-back relays from here: the peer actor does when
+    // it dials a host or a peer, and the session while a room it shows has
+    // someone else in it (`Client::note_reachability`).
+    let reachability = tilo_endpoint_reachability::Reachability::defer(
+        &endpoint,
+        &deferred_relays,
+        tokio::runtime::Handle::current(),
+        Some(tilo_endpoint_reachability::REST_AFTER),
+    );
+    // This device's action plane is served on the same endpoint: another of
+    // the person's devices reaches what this one publishes here, beside the
+    // rooms' own traffic.
+    let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
+    if let Some(identity) = identity {
+        let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
+        served.push((
+            tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
+        ));
+        // The session takes it from here: what it installs answers, and an
+        // app's own-device actions leave through it.
+        let _ = actions.set(device);
+    }
+    let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
+        endpoint.clone(),
+        lookup,
+        identity.cloned(),
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        reachability.clone(),
+        served,
+    );
+    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link);
+    if ready.send(Ok((publisher, addr, reachability))).is_err() {
+        return None;
+    }
+    Some(Listening {
+        endpoint,
+        actor,
+        events,
+        actor_task,
+        carrying,
+        attending,
+    })
+}
+
 /// Hear the peer actor: what it says reaches the session, and what a room's
 /// host says after this device joined it — the room's state as it stands, its
 /// people and everything its apps recorded — is taken in where this device's
@@ -1542,6 +1848,7 @@ fn heard(
     identity: Option<HostIdentity>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    link: Option<Arc<ChannelLink>>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
@@ -1550,7 +1857,7 @@ fn heard(
     let (admissions, attending) = match identity {
         Some(identity) => {
             let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-            let attending = tokio::spawn(async move { take_in(hear, &identity).await });
+            let attending = tokio::spawn(async move { take_in(hear, &identity, link).await });
             (Some(say), Some(attending))
         }
         None => (None, None),
@@ -1576,6 +1883,7 @@ fn heard(
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
     identity: &HostIdentity,
+    link: Option<Arc<ChannelLink>>,
 ) {
     while let Some(input) = replayed.recv().await {
         let mut waiting = vec![input];
@@ -1584,21 +1892,34 @@ async fn take_in(
         }
         let mut run: Vec<native_ingress::Input> = Vec::new();
         for input in waiting {
+            // The channels' governance is between the room's devices: its
+            // governor never admits it, and the channel service settles the
+            // groups with it instead.
+            if link
+                .as_ref()
+                .is_some_and(|link| link.dispatch(input.message()))
+            {
+                continue;
+            }
             if run
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
             {
-                admit(run, identity).await;
+                admit(run, identity, link.as_deref()).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, identity).await;
+        admit(run, identity, link.as_deref()).await;
     }
 }
 
 /// Admit one session's inputs, as one commit of the room they belong to.
-async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) {
+async fn admit(
+    inputs: Vec<native_ingress::Input>,
+    identity: &HostIdentity,
+    link: Option<&ChannelLink>,
+) {
     let Some(room) = inputs.first().map(native_ingress::Input::room) else {
         return;
     };
@@ -1614,9 +1935,30 @@ async fn admit(inputs: Vec<native_ingress::Input>, identity: &HostIdentity) {
             return;
         }
     };
+    let mut replay_wanted = false;
     for (_, report) in admitted.inputs {
-        if let Err(error) = report {
-            tracing::debug!(%error, %room, "a room's state was not taken in");
+        match report {
+            Ok(report) => {
+                replay_wanted |= report.replay_wanted;
+            }
+            Err(error) => {
+                tracing::debug!(%error, %room, "a room's state was not taken in");
+            }
+        }
+    }
+    if let Some(link) = link {
+        if replay_wanted {
+            // A message waited on something the room's host sends of its own
+            // accord as well, such as the checkpoint a sealed record is
+            // founded on: the host replays what it retains, and the message
+            // is decided again.
+            link.ask_replay(room);
+        }
+        if admitted.changed {
+            // The room's governance moved with it: its channels and the
+            // devices it admits are read again, and the plane told what it
+            // admits now.
+            link.room_changed(room);
         }
     }
 }
@@ -1640,6 +1982,22 @@ async fn carry_out(
         Outgoing::Publish { ws, msg } => {
             plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
         }
+        Outgoing::PublishSurfaceTo { ws, msg, viewers } => plane
+            .send(NetCmd::PublishSurfaceTo {
+                ws,
+                msg: *msg,
+                viewers,
+            })
+            .await
+            .is_ok(),
+        Outgoing::SendControl { ws, msg, target } => plane
+            .send(NetCmd::PublishWorkspaceControl {
+                ws,
+                msg: *msg,
+                route: WorkspaceControlRoute::Direct { target },
+            })
+            .await
+            .is_ok(),
         Outgoing::Connect(addr) => plane
             .send(NetCmd::ConnectHost {
                 addr,
@@ -1678,8 +2036,20 @@ async fn carry_out(
             };
             plane.send(command).await.is_ok()
         }
+        Outgoing::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Outgoing::OpenRecord { ws, channel } => {
+            plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
+        }
+        Outgoing::Roster { ws, devices } => plane
+            .send(NetCmd::SetRoomRoster { ws, devices })
+            .await
+            .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
         Outgoing::Enroll(_) => true,
+        Outgoing::PrivateMessages(reply) => plane
+            .send(tilo_network_actor::NetCmd::PrivateMessages(reply))
+            .await
+            .is_ok(),
         Outgoing::Stop => return None,
     })
 }
@@ -1696,7 +2066,9 @@ async fn redeem(
     identity: HostIdentity,
     engine: Arc<Engine>,
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
+    link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = room_topic_id(request.room);
     // The room is joined as this person, under the identity they keep for
@@ -1732,7 +2104,21 @@ async fn redeem(
     .map_err(|_| "the workspace's host did not answer".to_owned())??;
     owner.install(&enrollment, std::time::SystemTime::now())?;
     // The room is held here now: this device takes part in it, so what its
-    // people say and record reaches it as it happens.
+    // people say and record reaches it as it happens, and the devices it
+    // admits are told to the plane.
+    if let Some(link) = link {
+        link.room_changed(request.room);
+    }
+    // The room's subscription comes before the session it carries: what the
+    // host says the moment this device joins is the room as it stands, and a
+    // room nobody listens to yet drops it.
+    plane
+        .send(NetCmd::JoinWorkspace {
+            ws: topic,
+            on_event: events.clone(),
+        })
+        .await
+        .map_err(|_| "the collaboration plane is gone".to_owned())?;
     let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.room)
         .map_err(|error| format!("the room was not taken in: {error}"))?;
     plane

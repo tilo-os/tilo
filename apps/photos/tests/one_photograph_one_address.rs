@@ -133,7 +133,7 @@ impl Session {
         }
     }
 
-    /// Staged the way content handed to a room is staged: named by its own
+    /// Staged the way content handed to a workspace is staged: named by its own
     /// content hash.
     fn handed_the_content(prefix: &str, bytes: &[u8]) -> Self {
         let name = format!("{}.png", tilo_content::hash_bytes(bytes));

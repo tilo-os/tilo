@@ -39,12 +39,12 @@ impl Planner {
             Self::Words {
                 reason: Words::Asked,
             } => "This run is planned without a model, so its steps are matched to the actions \
-                  this room's apps publish."
+                  this workspace's apps publish."
                 .to_owned(),
             Self::Words {
                 reason: Words::NoModel,
             } => "No model is set up to plan this run, so its steps are matched to the actions \
-                  this room's apps publish. Choose a model in Settings, under Agent models, to \
+                  this workspace's apps publish. Choose a model in Settings, under Agent models, to \
                   have one plan instead."
                 .to_owned(),
         }

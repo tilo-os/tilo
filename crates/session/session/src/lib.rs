@@ -34,20 +34,23 @@ mod app_sheets;
 pub mod arrangement;
 mod automation;
 mod bars;
+mod calls;
 pub mod capture;
 mod capture_send;
 mod capture_studio;
+mod channels;
 mod chrome;
 mod config;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
 mod desk;
-mod desk_history;
-mod desk_layout;
+mod desk_doc;
+mod desk_migration;
 mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
+mod device_actions;
 mod dictation;
 mod directory;
 mod display_confirm;
@@ -63,14 +66,17 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
-mod kept;
+pub mod keyboard;
 mod keys;
 mod launches;
 mod lists;
 mod lock_screen;
+mod lock_service;
+pub mod messages;
 pub mod mount;
 pub mod notices;
 mod notifications;
+mod options;
 pub mod overlays;
 mod owner_session;
 mod panels;
@@ -94,6 +100,8 @@ mod system_sounds;
 pub mod unlock;
 mod wallpapers;
 mod window_motion;
+mod window_share;
+mod window_warmth;
 mod workspace_settings;
 mod workspaces;
 
@@ -114,16 +122,16 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
 use tilo_surface_host::{DesktopHost, Doors, WidgetHost};
-use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
 pub use automation::FinishedShortcutRun;
 pub use bars::BarShown;
+pub use channels::ChannelLink;
 pub use config::SessionConfig;
 pub use controls::{
-    CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
-    NIGHT_LIGHT_RESOURCE, SESSION_RESOURCE, SessionCommand,
+    CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
+    SESSION_RESOURCE, SessionCommand,
 };
 pub use engine::Person;
 pub use env::SessionEnvironment;
@@ -132,6 +140,8 @@ pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
+pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
+use options::{open_engine, start_collaboration};
 pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
@@ -140,10 +150,12 @@ pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
-use keys::{GuideKeys, Invocations};
+use desk::running_apps;
+use keys::{GuideKeys, Invocations, PressedChords};
 use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
 use mount::services::{mount_services, start_action_plane};
-use panels::{Banners, Held};
+use notifications::mount_banners;
+use panels::Held;
 use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
@@ -152,7 +164,6 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
-use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::shortcut_guide::GuideSeat;
@@ -170,304 +181,14 @@ const GENERATION: &str = "session";
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
 
-/// How long a locked session may show no lock screen before the session puts
-/// it up again: the frame that follows putting it up is drawn in the same
-/// turn, so nothing of it for a moment is nothing of it at all.
-const LOCK_SCREEN_GRACE: Duration = Duration::from_millis(500);
-
-/// How many times the session puts the lock screen up within one lock before
-/// it lifts the lock. Putting it up is the same path every time — the sheet
-/// the session has, shown again, or a sheet mounted as it was at the start —
-/// so three tries cover a screen that went away once or twice, and a screen
-/// that needs more than that is not staying up at all: the machine is better
-/// unlocked than locked behind it.
+/// How many times the session starts its lock screen for one lock before it
+/// lifts the lock: a screen whose app goes is started again, and one that
+/// keeps going is not staying up at all — the machine is better unlocked
+/// than locked behind it.
 const LOCK_SCREEN_TRIES: u32 = 3;
-
-/// How often the desk is written while it changes.
-const KEEP_DESK_EVERY: Duration = Duration::from_secs(2);
 
 /// How warm the night light makes the displays, in kelvin.
 const NIGHT_LIGHT_WARMTH: u32 = 3_400;
-
-/// What a session starts with.
-pub struct Options {
-    /// Seeds the desktop's ids, so two devices never mint the same.
-    pub salt: u16,
-    /// Physical pixels per logical pixel the desktop draws at.
-    pub scale: f64,
-    /// This device, by id.
-    pub device: String,
-    /// The person at it, by the id the desktop's authors name them by.
-    pub person: String,
-    /// The theme and fonts surface apps draw with.
-    pub presentation: fn() -> ComponentRunnerInputs,
-    /// The tilolang shell package's bar (`apps/tl/shell`) is shown as a layer over the
-    /// desktop: one bar per display, standing on its own display's rectangle and stepping
-    /// aside where a fullscreen window owns one, as the desktop's own bar does. Off by default
-    /// until the desktop's own bar and its tests move onto it.
-    pub shell_bar: bool,
-    /// What quick settings reads of the device and carries out on it;
-    /// without it, the bar's status cluster opens nothing.
-    pub quick_settings: Option<QuickSettings>,
-    /// The controllers in the room, which drive the desktop; without one, a
-    /// controller does nothing here.
-    pub controllers: Option<controllers::Source>,
-    /// The person's settings: shortcuts, input, gestures.
-    pub config: SessionConfig,
-    /// The built-in panel turns with the way up this reads the device.
-    pub accelerometer: Accelerometer,
-    /// The system services the session hosts: what they publish is the
-    /// session's, beside the desktop's.
-    pub services: Vec<Box<dyn Service>>,
-    /// What the desktop's search reaches beyond the desktop.
-    pub search: SearchOptions,
-    /// The action host: what open apps publish and run, and where what is
-    /// chosen in search runs by address. Without one, search finds the
-    /// desktop's own and starts nothing.
-    pub apps: Option<Rc<dyn AppActions>>,
-    /// The apps this session starts: what the desktop asks for, by name, and
-    /// what a search row or a file opens.
-    pub launch: Option<Rc<mount::apps::Apps>>,
-    /// The apps this session started, which its broker admits a connection
-    /// for: the app, room and process it launched itself. The apps it starts
-    /// record their launch here; a session whose apps run in its own process
-    /// (a test) records one itself.
-    pub launches: std::sync::Arc<Launches>,
-    /// The drives the person plugs in, which this session announces and acts
-    /// on when they open or eject one.
-    pub drives: Option<Rc<mount::drives::Drives>>,
-    /// Setup to run over everything before the desktop is used: the first
-    /// use of this device, or the recovery of its identity.
-    pub setup: Option<OnboardingView>,
-    /// Carries out what the person chose in the power menu (log out,
-    /// suspend, restart, shut down, switch user); the session locks the
-    /// screen itself. Without one, the choice is only logged.
-    pub session_actions: fn(SessionAction) -> Result<(), String>,
-    /// Whether the lock screen may offer suspend, restart and shut down:
-    /// a session that owns the machine, not one running inside a window.
-    pub lock_power: bool,
-    /// Whose session this is, as the system knows them: the user a
-    /// password unlocks the lock screen for.
-    pub user: String,
-    /// Whether a password unlocks the session; without one nothing does.
-    pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
-    /// What the services were handed to wake the session's loop when
-    /// something lands: the session binds it to its loop once started.
-    pub wake: tilo_service::LoopWake,
-    /// The screenshots the portal asks for, which the session takes.
-    pub captures: Option<capture::Captures>,
-    /// Where the wireless display service answers: its control socket.
-    /// `None`: the service's own, which the session's first request
-    /// activates.
-    pub projector: Option<std::path::PathBuf>,
-    /// The folder the capture studio keeps its Screenshots folder in;
-    /// `None`: the person's Pictures folder, else their home.
-    pub pictures: Option<std::path::PathBuf>,
-    /// The desktop services the session runs beside: what apps sent their
-    /// notifications daemon, the questions they ask, and the portal they
-    /// serve. The session feeds it what it knows of itself: which apps run
-    /// and how, when the screen locks, which apps exited and what its
-    /// workspaces grant.
-    pub desktop: Option<Rc<desktop_services::DesktopServices>>,
-    /// The questions the session's sheets answer, when nothing runs beside
-    /// it to ask them: a session with desk services asks theirs.
-    pub questions: Option<tilo_service::Questions>,
-    /// The portal's link to the loop: what shares the session's screens,
-    /// drives its seat and passes its selection.
-    pub portal: Option<portal_link::SessionLink>,
-    /// The surface apps the session runs as its own processes, each a client
-    /// of its compositor.
-    pub surfaces: Vec<surfaces::Surface>,
-    /// It runs in a window of a desktop it did not start: that desktop owns
-    /// idle, blanking, locking and suspend, so this one runs none of them.
-    pub hosted: bool,
-    /// The machine's power: the policy the person's settings resolved, the
-    /// service over logind that acts on it and what holds it awake. Without
-    /// one, this session runs no idle, lid, key or battery policy — it is a
-    /// session in a window of another desktop, or a test's.
-    pub power: Option<tilo_session_power::PowerLink>,
-    /// Where this device keeps what outlives a session: the desk as it was
-    /// left, and the pictures on it. Without one, the session starts on a
-    /// fresh desk and keeps nothing (tests and screenshots).
-    pub state: Option<std::path::PathBuf>,
-    /// Whether the session takes part in the collaboration plane: who is
-    /// here in each workspace's room, over Iroh. Off, this desktop has no
-    /// collaborators but its own person.
-    pub collab: bool,
-    /// A collaboration plane to take part in instead of starting one: a
-    /// session a test hands the presence a room would have carried
-    /// ([`sync::Client::untethered`]), which says nothing on a network.
-    pub sync: Option<Rc<sync::Client>>,
-    /// The person's device fabric, when this session runs on one: what was
-    /// copied here is shared with their other devices through it, and what
-    /// they copied there joins the clipboard here.
-    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
-    pub wake_seams: mount::wake::Seams,
-    /// The person's VPN profile kill switches, when this session runs on a
-    /// machine with the helper: a profile set to connect and not connected
-    /// blocks traffic while its switch is on. Without one, nothing does.
-    pub kill_switch: Option<KillSwitch>,
-    /// Whether the apps this session runs read and invoke what its services
-    /// publish, and on which socket. Off, the apps it starts reach no
-    /// service at all.
-    pub action_plane: ActionPlane,
-    /// Where the session's agent door listens
-    /// ([`agent_door::path`]): the socket a program of this login asks on to
-    /// work in a workspace as an agent, and the person admits it. `None`:
-    /// this session serves no agents (a test, or a session in a window of
-    /// another desktop).
-    pub agent_door: Option<std::path::PathBuf>,
-    /// The runs of what people ask this session's agents to do. Without one
-    /// the session keeps its own, which its broker delivers to the agents
-    /// admitted here; one given is a run channel a test plays the agent's
-    /// side of.
-    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
-}
-
-/// Where a session serves its apps the resources its services publish.
-#[derive(Clone, Debug, Default)]
-pub enum ActionPlane {
-    /// Nowhere: the apps reach no service.
-    #[default]
-    Off,
-    /// On the socket the launcher hands an app for its session
-    /// (`launcher::services::collab_socket`), which is also what tells the
-    /// launcher to bind one.
-    Launcher,
-    /// On `path`: a session started for a test, which leaves the machine's
-    /// own socket alone.
-    At(std::path::PathBuf),
-}
-
-/// Where quick settings reads the device from.
-pub enum QuickSettings {
-    /// The device host of this machine (or of a stand-in one), made with
-    /// the session loop's wake: its readings land on the loop, what the
-    /// panel asks of the desktop comes back to the session.
-    Device(Box<dyn FnOnce(Wake) -> DeviceHost>),
-    /// A host lent as it is: a screenshot's stand-in readings.
-    Lent(Rc<dyn PanelHost>),
-}
-
-/// The default for [`Options::session_actions`]: a session that owns no
-/// machine (a test, a screenshot, a session in a window) carries out
-/// nothing.
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the shape every session action runner has"
-)]
-pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
-    tracing::info!(?action, "this session carries out no session actions");
-    Ok(())
-}
-
-/// Who is here: this session's membership of each workspace's room, over the
-/// collaboration plane. `None` when the session takes no part in it, or the
-/// device's endpoint did not bind: a desktop with no one else on it.
-fn start_collaboration(
-    options: &Options,
-    media: fabric::MediaContinuity,
-    engine: Option<std::sync::Arc<engine::Engine>>,
-) -> Option<Rc<sync::Client>> {
-    if let Some(sync) = &options.sync {
-        return Some(Rc::clone(sync));
-    }
-    if !options.collab {
-        return None;
-    }
-    let identity = sync::device_identity();
-    let own = sync::OwnPresence {
-        label: options.person.clone(),
-        user: identity
-            .as_ref()
-            .map(|identity| hex::encode(identity.device_cert.user_public_key)),
-        ..sync::OwnPresence::default()
-    };
-    match sync::Client::start(
-        identity,
-        engine,
-        own,
-        sync::configured_hosts(),
-        media,
-        options.wake.handle(),
-    ) {
-        Ok(sync) => Some(Rc::new(sync)),
-        Err(error) => {
-            tracing::warn!(%error, "the collaboration plane");
-            None
-        }
-    }
-}
-
-/// This device's rooms, holding what every workspace of the desk shows and
-/// what a join takes in, kept beside the desk. `None` when this computer has
-/// no identity to hold them with, or keeps no state to keep them in.
-fn open_engine(
-    options: &Options,
-    handle: &DesktopHandle,
-) -> Option<std::sync::Arc<engine::Engine>> {
-    let workspaces: Vec<_> = handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .filter(|workspace| !workspace.room().is_nil())
-            .map(|workspace| (workspace.id, workspace.room()))
-            .collect()
-    });
-    match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
-        Ok(engine) => Some(std::sync::Arc::new(engine)),
-        Err(error) => {
-            tracing::debug!(%error, "this session holds no rooms");
-            None
-        }
-    }
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            salt: 1,
-            scale: 1.0,
-            device: "this-device".into(),
-            person: "person".into(),
-            presentation: ComponentRunnerInputs::from_native_process,
-            shell_bar: false,
-            sync: None,
-            quick_settings: None,
-            controllers: None,
-            config: SessionConfig::default(),
-            accelerometer: Accelerometer::default(),
-            services: Vec::new(),
-            search: SearchOptions::default(),
-            apps: None,
-            launch: None,
-            setup: None,
-            session_actions: no_session_actions,
-            lock_power: false,
-            user: String::new(),
-            verifier: std::sync::Arc::new(unlock::Unavailable),
-            wake: tilo_service::LoopWake::default(),
-            captures: None,
-            projector: None,
-            pictures: None,
-            desktop: None,
-            questions: None,
-            portal: None,
-            surfaces: Vec::new(),
-            hosted: false,
-            power: None,
-            state: None,
-            collab: true,
-            fabric: None,
-            wake_seams: mount::wake::Seams::default(),
-            kill_switch: None,
-            action_plane: ActionPlane::default(),
-            agent_door: None,
-            agent_runs: None,
-            launches: std::sync::Arc::default(),
-            drives: None,
-        }
-    }
-}
 
 /// Quick settings as the session shows it.
 struct QuickSettingsPanel {
@@ -486,6 +207,9 @@ struct Shared {
     /// Who sits here, as the desk's rules and the workspaces' governance
     /// name them.
     person: String,
+    /// The ids they went by before this device had an identity, which their
+    /// own workspaces may still name them by.
+    earlier: Vec<String>,
     search: Rc<SessionSearch>,
     /// The apps the person opens, when this session starts them.
     launch: Option<Rc<mount::apps::Apps>>,
@@ -504,18 +228,28 @@ struct Shared {
     doors: Doors,
     /// Published actions keys and gestures asked for, waiting for the door.
     invocations: Invocations,
+    /// Chords pressed that run a saved shortcut, waiting for the automation
+    /// host.
+    triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// Quick settings' readings of the device, which a readout shows.
+    /// The readouts of keys whose action a device took and has not answered
+    /// yet.
+    waiting: RefCell<Vec<keys::PendingReadout>>,
+    /// Quick settings' readings of the device, which the lock screen's media
+    /// shows.
     readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The windows this session shares with its rooms, and the streams it
+    /// receives from them.
+    window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
     /// pass who sits here and what the room in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// It runs in a window of a desktop it did not start (see
-    /// [`Options::hosted`]).
+    /// [`Options::machine`]).
     hosted: bool,
     /// The device behind quick settings, when the session reads one.
     device: Option<DeviceHost>,
@@ -523,6 +257,8 @@ struct Shared {
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
+    /// The session's displays as the panel was last fed them.
+    displays: mount::displays::Displays,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -548,14 +284,14 @@ struct Shared {
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
-    /// The lock screen, while the session is locked.
-    lock: Option<LockSeat>,
+    /// The lock, as the session publishes it for the lock screen to show.
+    lock: lock_service::Lock,
+    /// The on-screen keyboard, as the session publishes it for its app to
+    /// show where the person types.
+    keyboard: keyboard::Keyboard,
     /// This device's side of the person's session on their devices: what it
     /// says of its own lock and what it has followed from theirs.
     owner_session: owner_session::SessionFollow,
-    /// What mounted the lock screen, to mount it again when a lock finds it
-    /// gone.
-    lock_mount: mount::sheets::LockMount,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     notices: tilo_desktop_surface::DesktopNotifications,
@@ -565,15 +301,6 @@ struct Shared {
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
-    /// The desk as this device last wrote it, and when, so a desk that keeps
-    /// changing (a drag, a rename) is written once in a while rather than
-    /// every frame.
-    kept: RefCell<Option<(String, Instant)>>,
-    /// The desk as the history last recorded it: what changed since is one
-    /// change of the workspace.
-    recorded: RefCell<Option<serde_json::Value>>,
-    /// Where the desk and its pictures are kept between sessions.
-    state: Option<std::path::PathBuf>,
     /// The pictures the desk shows, by workspace.
     wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
     /// Whether the lock screen offers suspend, restart and shut down.
@@ -600,6 +327,9 @@ struct Shared {
     /// This device's rooms: what every workspace of the desk shows, and what
     /// a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
+    /// This device's channels of those rooms' sealed records, and the devices
+    /// each room admits: kept for as long as the session runs.
+    _channels: Option<channels::Channels>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     personal: Option<RefCell<workspaces::Personal>>,
@@ -616,6 +346,9 @@ struct Shared {
     /// The heads of the arrangement the file holds, so a record that did not
     /// move is not written again.
     kept_arrangement: RefCell<Option<Vec<ui::automerge::ChangeHash>>>,
+    /// Where the arrangement is kept between sessions: this device's state
+    /// folder, or nowhere for a session that keeps nothing.
+    arrangement_state: Option<std::path::PathBuf>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -909,40 +642,11 @@ impl Shared {
         }
     }
 
-    /// Keep this device's desk as it stands: its workspaces, the windows in
-    /// them and the strips and displays they are laid out on, so the next
-    /// session starts here.
-    fn keep_desk_now(&self) {
-        let tree = self.handle.read(Clone::clone);
-        let Some(value) = desk_layout::value(&tree) else {
-            return;
-        };
-        self.record_desk(&value);
-        let Some(state) = &self.state else {
-            return;
-        };
-        let Some(text) = serde_json::to_string(&value).ok() else {
-            return;
-        };
-        let unchanged = self
-            .kept
-            .borrow()
-            .as_ref()
-            .is_some_and(|(kept, _)| *kept == text);
-        if !unchanged && let Err(error) = desk_layout::save_at(state, &text) {
-            // The next pass tries again: the desk is written when it can
-            // be, not dropped because a write failed.
-            tracing::debug!(%error, "the desk is not kept");
-            return;
-        }
-        *self.kept.borrow_mut() = Some((text, Instant::now()));
-    }
-
     /// Keep the person's arrangement as it stands: its own file, so the next
     /// session places the same desk from it. Written when the record moved,
     /// not every frame.
     fn keep_arrangement(&self) {
-        let Some(state) = &self.state else {
+        let Some(state) = &self.arrangement_state else {
             return;
         };
         let mut arrangement = self.arrangement.borrow_mut();
@@ -960,41 +664,6 @@ impl Shared {
             return;
         }
         *self.kept_arrangement.borrow_mut() = Some(heads);
-    }
-
-    /// [`Self::keep_desk_now`], once in a while: what the workspace's
-    /// history records still counts every change, since a drag or a rename
-    /// is one change of the workspace however many frames it takes.
-    fn keep_desk(&self) {
-        let tree = self.handle.read(Clone::clone);
-        let Some(value) = desk_layout::value(&tree) else {
-            return;
-        };
-        if !self.record_desk(&value) {
-            return;
-        }
-        let now = Instant::now();
-        if self
-            .kept
-            .borrow()
-            .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at) < KEEP_DESK_EVERY)
-        {
-            return;
-        }
-        self.keep_desk_now();
-    }
-
-    /// Record the desk as the workspace's history has it, when it changed
-    /// since the last record: whether it did. The same desk is one change,
-    /// however often it is looked at.
-    fn record_desk(&self, value: &serde_json::Value) -> bool {
-        if self.recorded.borrow().as_ref() == Some(value) {
-            return false;
-        }
-        self.activity.record_desk(value, activity::now_seconds());
-        *self.recorded.borrow_mut() = Some(value.clone());
-        true
     }
 
     /// Take up what the workspace's history wrote back and what the person
@@ -1147,6 +816,9 @@ impl Shared {
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(DESK_RESOURCE, "open-search"));
             }
+            ShortcutAction::TabMenu => {
+                invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
+            }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             ShortcutAction::ToggleMagnifier => self
                 .commands
@@ -1173,33 +845,6 @@ impl Shared {
     }
 }
 
-/// The notification banners, mounted on a layer of their own over the
-/// first output; the desk then shows only the centre of `notices`.
-fn mount_banners(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    notices: &tilo_desktop_surface::DesktopNotifications,
-    options: &Options,
-) -> tilo_notification_banners::Link {
-    let banners = tilo_notification_banners::Link::new();
-    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(Banners::new(
-                app,
-                banners.clone(),
-                options.scale,
-            )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-            doors.add(surface);
-            notices.show_banners_elsewhere();
-        }
-        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-    }
-    banners
-}
-
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
@@ -1217,10 +862,10 @@ pub struct Session {
     comforts: Option<mount::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     unlocking: Unlocking,
-    /// How long the lock has had no lock screen, and how many times the
-    /// session put it up again: a lock is lifted rather than left with
-    /// nothing that can unlock it.
-    lock_watch: LockWatch,
+    /// How many times the session started its lock screen for the lock in
+    /// force: a screen that keeps going is not staying up at all, and the
+    /// lock is lifted rather than left with nothing able to unlock it.
+    lock_starts: u32,
     /// When the person's other devices were last read for their sessions:
     /// their fabric says what it says for a while, and following it more
     /// often would change nothing.
@@ -1231,9 +876,22 @@ pub struct Session {
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The temperature and colour every app window is told, as the settings
+    /// and wallpapers last said them.
+    warmth: window_warmth::Windows,
     /// Whether the night light is on, and whether a change is kept in the
     /// person's settings.
     night_light: (bool, bool),
+    /// When the on-screen keyboard runs, as the person chose: never, over a
+    /// field they touch, or always.
+    keyboard_preference: tilo_accessibility_settings::OnScreenKeyboard,
+    /// Where the keyboard's app stands, while the person may want it: a
+    /// keyboard on another display, or on one that changed size, is started
+    /// again where they type.
+    keyboard_run: keyboard::Run,
+    /// How often the keyboard's app was started on the display it stands on,
+    /// so one that keeps exiting is given up on rather than started for ever.
+    keyboard_starts: u32,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -1271,9 +929,16 @@ pub struct Session {
     /// there: the bar and what else the desktop runs as a process of its
     /// own.
     surface_apps: Vec<surfaces::Surface>,
+    /// No program draws the shell's window menu on this machine, so it is
+    /// not looked for again.
+    window_menu_view_absent: bool,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
+    /// The displays as a published service: the arrangements they are used in
+    /// and how bright each one is, kept told of the outputs the compositor
+    /// shows.
+    displays_service: displays::Displays,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
     /// The display sheet: where the desktop appears, and the wireless
@@ -1313,18 +978,6 @@ struct Unlocking {
     wake: std::task::Waker,
 }
 
-/// The lock screen's absence while the session is locked, and what the
-/// session did about it: a screen that does not come back must not leave the
-/// machine locked with nothing able to unlock it.
-#[derive(Default)]
-struct LockWatch {
-    /// When the lock screen was found gone, if it is.
-    gone_since: Option<Instant>,
-    /// How many times the session has put the lock screen up again for the
-    /// lock in force.
-    raised: u32,
-}
-
 impl Session {
     /// A session on the compositor `start` makes with the desktop's window
     /// policy.
@@ -1342,6 +995,18 @@ impl Session {
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
         i18n::ensure();
+        // Who sits here, as the one id the session acts as: the person their
+        // workspaces' governance names, which this device's certificate
+        // carries. Everything the person does here — the workspaces they
+        // own, what the desk records, what the sheets change — is theirs.
+        let seat = identity::seat(&options);
+        options.person = seat.person;
+        // The ids this device mints are its own, as every room derives them
+        // from its key: a computer with an identity mints under that rather
+        // than the seed the caller passed.
+        if let Some(salt) = seat.salt {
+            options.salt = salt;
+        }
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The VPN profiles' kill switch runs for the session's lifetime: a
@@ -1405,9 +1070,9 @@ impl Session {
         // it current from the player Quick Settings already reads, so the
         // widget is a view of that one reading.
         let music = tilo_desktop::desk_widgets::DeskMusic::default();
-        // The workspace's activity: the desk's own log, and the records its
-        // apps keep in the store. The desk records into it, the model reads
-        // it, and the apps this session runs reach the same model.
+        // The workspace's activity: the desk's own document, and the records
+        // its apps keep in the store. The desk records into it, the model
+        // reads it, and the apps this session runs reach the same model.
         let activity = activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
@@ -1425,27 +1090,26 @@ impl Session {
             music.clone(),
         );
         desktop.set_gestures(options.config.gestures);
+        // What each open window is told of the desk it stands on, from the
+        // settings as they are now; the desk wears the same theme.
+        let warmth = window_warmth::Windows::new(presentation.theme.clone(), &options.person);
         desktop.set_theme(presentation.theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces, the windows they
         // held, and the apps those windows open again.
         let mut restore = desk_restore::Restore::default();
-        let mut keeps_desk = true;
-        if let Some(state) = options.state.as_deref() {
-            match desk_layout::load_at(state) {
-                desk_layout::Kept::Desk(kept) => {
-                    restore = desk_restore::Restore::of(&kept);
-                    handle.replace_tree(*kept);
-                }
-                // The person's desk is on disk and this session did not open
-                // it: they are looking at a desk that is not theirs, and have
-                // to be told where their own still is.
-                desk_layout::Kept::Refused(refusal) => {
-                    keeps_desk = false;
-                    notices::tell_desk_not_opened(&notices, &refusal);
-                }
-                desk_layout::Kept::None => {}
+        match activity.opened_desk() {
+            desk_doc::Kept::Desk(kept) => {
+                restore = desk_restore::Restore::of(&kept);
+                handle.replace_tree(*kept);
             }
+            // The person's desk is on disk and this session did not open it:
+            // they are looking at a desk that is not theirs, and have to be
+            // told where their own still is.
+            desk_doc::Kept::Refused(refusal) => {
+                notices::tell_desk_not_opened(&notices, &refusal);
+            }
+            desk_doc::Kept::None => {}
         }
         // The person's arrangement: today's desk, migrated into their own
         // record, and from then on the record the desk places its windows
@@ -1527,7 +1191,7 @@ impl Session {
         let mut compositor = start(Box::new(policy))?;
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
-        compositor.set_hosted(options.hosted);
+        compositor.set_hosted(!options.machine.is_owned());
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
         options.wake.bind(compositor.waker());
@@ -1543,7 +1207,26 @@ impl Session {
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = open_engine(&options, &handle);
+        // This device's channels of its rooms' sealed records: its keys, and
+        // the devices each room admits, which its window streams carry
+        // between. The broker the apps reach is the one the channel service
+        // gates, so a sealed record opens before any of it reaches an app.
+        let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
+            tilo_action_broker::collab_core::BrokerChannels::default(),
+        ));
+        let channel_link = channels::ChannelLink::new();
+        let channels = engine.as_ref().and_then(|engine| {
+            channels::Channels::open(
+                engine,
+                std::sync::Arc::clone(&channel_link),
+                std::sync::Arc::clone(&channels_broker),
+            )
+            .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
+            .ok()
+        });
         let sync = start_collaboration(&options, media, engine.clone());
+        // The person's private messages, carried by that same endpoint.
+        let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with
         // them: kept beside the desk, and opened when this computer knows
         // whose they are.
@@ -1585,6 +1268,13 @@ impl Session {
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
+        // The windows this session shares with its rooms: a share's encoder
+        // wakes the loop when it has a frame, and the bar reads them.
+        let window_shares = window_share::WindowShares::new(
+            options.wake.handle(),
+            options.person.clone(),
+            options.salt,
+        );
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
@@ -1600,6 +1290,7 @@ impl Session {
                 notices: notices.clone(),
                 tray: tray.clone(),
                 fullscreen: Rc::clone(&fullscreen),
+                shares: Rc::clone(&window_shares),
             },
             sync.clone(),
             &overview,
@@ -1647,8 +1338,6 @@ impl Session {
             portal,
             file_picker,
             directory,
-            lock,
-            lock_mount,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1680,6 +1369,9 @@ impl Session {
         // buttons, and a key of their own leads with the keyboard again.
         let controller: Rc<Cell<Option<ui::ControllerFamily>>> = Rc::new(Cell::new(None));
         let controller_keys: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        // Whether the shell's window menu is up: the keys that close it read
+        // it, and the verbs that open and close it are the ones writing here.
+        let menu_open = mount::shell::MenuOpen::default();
         let shortcut_guide = shortcut_guide::ShortcutGuide::new(
             guide_seat,
             Rc::clone(&shortcuts),
@@ -1687,7 +1379,7 @@ impl Session {
             portal_shortcuts.clone(),
             Rc::clone(&controller),
         );
-        let (commands, invocations) = mount_controls(
+        let (commands, invocations, triggered) = mount_controls(
             &mut compositor,
             &mut doors,
             shortcuts,
@@ -1700,6 +1392,7 @@ impl Session {
                     .as_ref()
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
+                menu: menu_open.clone(),
             },
             options.scale,
         );
@@ -1737,6 +1430,10 @@ impl Session {
         let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
             std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
         });
+        // What each of this device's rooms revokes, read from the rooms the
+        // engine holds: the broker's decisions and the automation's arming
+        // both refuse a device its room revoked.
+        let revocations = engine::revocations_of(engine.as_ref());
         let action_plane = start_action_plane(
             &options,
             &live_activities,
@@ -1744,6 +1441,14 @@ impl Session {
             std::sync::Arc::new(shortcut_library),
             &activity,
             std::sync::Arc::clone(&agent_runs),
+            mount::services::Collaboration {
+                revocations: std::sync::Arc::clone(&revocations),
+                sync: sync.as_deref(),
+                sealed: plane::Sealed {
+                    broker: std::sync::Arc::clone(&channels_broker),
+                    keys: engine.as_ref().map(|engine| engine.keys()),
+                },
+            },
         )?;
         // The agent door: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
@@ -1788,9 +1493,17 @@ impl Session {
             handle.clone(),
             options.person.clone(),
             saved_shortcuts,
-            // Which of the person's devices this one is, and which of them
-            // are online: each schedule runs on one of them.
-            sync.as_ref().and_then(|sync| sync.fabric()),
+            automation::Feeds {
+                // Which of the person's devices this one is, and which of
+                // them are online: each schedule runs on one of them.
+                fabric: sync.as_ref().and_then(|sync| sync.fabric()),
+                // The apps this session starts, the person's focus modes,
+                // and what its rooms revoke: each is a trigger a shortcut
+                // can answer.
+                launches: std::sync::Arc::clone(&options.launches),
+                policy: std::sync::Arc::clone(&notification_policy),
+                revocations,
+            },
         );
 
         // The shell-ui socket this session serves: what an app asks about
@@ -1809,14 +1522,47 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
             action_plane.as_ref().map(|plane| plane.path.clone()),
         );
+        // The lock, and the screen that shows it: the session keeps what the
+        // screen shows and publishes it, so the screen is an app of the
+        // session's like any other.
+        let lock = lock_service::Lock::default();
+        // The on-screen keyboard's state, published the same way: the app of
+        // the session draws what the session says it does.
+        let keyboard = keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(desk_service));
+        // A service that records who changed what records the person's, not
+        // the id its caller made it with: the session knows who sits here
+        // before it starts them.
+        for service in &mut started {
+            service.seated(&options.person, &seat.earlier);
+        }
         let services = mount_services(&mut doors, started);
         services
             .borrow_mut()
             .add(Box::new(tilo_agent_runs::Served::new(
                 std::sync::Arc::clone(&agent_runs),
             )));
+        // The shell's own readings and verbs, on the same door every other
+        // service answers on.
+        mount::shell::Shell::mount(&services, &handle, menu_open);
+        services
+            .borrow_mut()
+            .add(Box::new(lock_service::LockService::new(lock.clone())));
+        // A window shared with a room, and the windows its members share.
+        services
+            .borrow_mut()
+            .add(Box::new(window_share::WindowShareService::new(Rc::clone(
+                &window_shares,
+            ))));
+        // The displays, on the same door: their arrangements land as the
+        // commands the loop carries out, their brightness is set at once, and
+        // the reading says where each display stands.
+        let displays_service =
+            displays::Displays::mount(&services, options.backlights.take(), Rc::clone(&commands));
+        services
+            .borrow_mut()
+            .add(Box::new(keyboard::KeyboardService::new(keyboard.clone())));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1841,6 +1587,7 @@ impl Session {
             desktop,
             activity,
             person: options.person.clone(),
+            earlier: seat.earlier,
             search,
             launch: options.launch,
             restore: RefCell::new(restore),
@@ -1850,14 +1597,18 @@ impl Session {
             quick_settings,
             doors,
             invocations,
+            triggered,
             commands,
+            waiting: RefCell::default(),
             readings,
             services,
+            window_shares,
             agent_runs,
-            hosted: options.hosted,
+            hosted: !options.machine.is_owned(),
             device,
             fabric,
             devices: mount::devices::Devices::default(),
+            displays: mount::displays::Displays::default(),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,
@@ -1869,17 +1620,12 @@ impl Session {
             portal,
             file_picker,
             lock,
+            keyboard,
             owner_session: owner_session::SessionFollow::default(),
-            lock_mount,
             display_confirm,
             notices: notices.clone(),
             clock,
             tray,
-            kept: RefCell::new(None),
-            recorded: RefCell::new(None),
-            // A desk this session did not open is never written over: it
-            // keeps nothing, so it cannot be.
-            state: keeps_desk.then(|| options.state.clone()).flatten(),
             wallpapers,
             lock_power: options.lock_power,
             lock_layouts: options.config.keyboard_layouts.clone(),
@@ -1903,11 +1649,13 @@ impl Session {
             notice_view: RefCell::new(None),
             sync,
             engine,
+            _channels: channels,
             personal,
             clipboard: mount::clipboard::Clipboard::new(),
             arrangement,
             underway: busy,
             kept_arrangement: RefCell::new(None),
+            arrangement_state: options.state.clone(),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
@@ -1929,7 +1677,7 @@ impl Session {
         let loop_wake = compositor.waker();
         // Signing in does not change the login screens; what the person
         // changes here afterwards does, where they let it follow.
-        let comforts = (!options.hosted).then(|| {
+        let comforts = options.machine.is_owned().then(|| {
             let wake = loop_wake.clone();
             mount::comforts::Mirror::mount(std::path::PathBuf::from(tilo_auth::SOCKET), move || {
                 wake.wake_by_ref();
@@ -1949,12 +1697,16 @@ impl Session {
                 verdicts: std::sync::mpsc::channel(),
                 wake: loop_wake,
             },
-            lock_watch: LockWatch::default(),
+            lock_starts: 0,
             owner_session_poll: None,
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            warmth,
             night_light: (options.config.night_light, options.config.kept),
+            keyboard_preference: options.config.on_screen_keyboard,
+            keyboard_run: keyboard::Run::default(),
+            keyboard_starts: 0,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
@@ -1968,7 +1720,9 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
+            window_menu_view_absent: false,
             displays: display_settings::Displays::default(),
+            displays_service,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,
@@ -2038,6 +1792,12 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
+            // The lock screen is started when the session locks and the
+            // on-screen keyboard when the person may need it: what their
+            // windows show is never the desk's to open.
+            if surface.lock || surface.name == keyboard::SURFACE {
+                continue;
+            }
             let room = self.shared.active_room();
             self.surfaces
                 .start_or_log(&mut self.compositor, surface, &room);
@@ -2050,6 +1810,10 @@ impl Session {
     fn follow_displays(&mut self) -> Result<(), Error> {
         let night_light = self.night_light.0.then_some(NIGHT_LIGHT_WARMTH);
         let turned = self.rotation.follow(&self.compositor.outputs());
+        // What the displays service publishes follows what the compositor
+        // shows: which ones there are, and which one the person works on.
+        self.displays_service
+            .land(&self.shared.handle, &self.compositor.outputs());
         self.displays
             .follow(&mut self.compositor, night_light, turned)
     }
@@ -2107,6 +1871,12 @@ impl Session {
         self.surfaces.stop(name);
     }
 
+    /// The surface the session starts as its lock screen, when it has one.
+    #[must_use]
+    pub fn lock_screen(&self) -> Option<&surfaces::Surface> {
+        self.surface_apps.iter().find(|surface| surface.lock)
+    }
+
     /// Ask the surface app `name` to run `action` of `resource`, as one of
     /// the actions it publishes, and name the invocation `id`; `None` when
     /// no such app runs. Its answering carries on in the session's turns
@@ -2152,6 +1922,13 @@ impl Session {
     #[must_use]
     pub fn live_activities(&self) -> &std::sync::Arc<runtime_collab::LiveActivities> {
         self.shared.clock.board()
+    }
+
+    /// The media service the apps reach through the session's plane, while
+    /// it serves one: what a call joins through.
+    #[cfg(test)]
+    pub(crate) fn media_service(&self) -> Option<&tilo_native_media::NativeMediaService> {
+        self.action_plane.as_ref()?.calls_service.as_ref()
     }
 
     /// Reach `surface` (a service the session runs in its process) through
@@ -2304,13 +2081,6 @@ impl Session {
         self.shared.power.as_ref()
     }
 
-    /// The lock screen's seat, while the session has one: whether it is up,
-    /// and what it shows.
-    #[must_use]
-    pub fn lock_screen(&self) -> Option<&LockSeat> {
-        self.shared.lock.as_ref()
-    }
-
     /// The add sheet's seat: the program the person is asked about, when
     /// one is; `None` when the sheet did not mount.
     #[must_use]
@@ -2408,6 +2178,68 @@ impl Session {
         &self.input
     }
 
+    /// Start the view of the shell's window menu while the reading says one
+    /// is up, and stop it when the reading says none is. Many a machine has
+    /// no such view installed, or another one bound in its place: the menu
+    /// is a reading either way, and this only puts it on the screen.
+    fn follow_window_menu(&mut self) {
+        /// The view's surface name; its program is found by the crate's own
+        /// name.
+        const VIEW: &str = "window-menu";
+        let up = self
+            .read(mount::shell::WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
+        if up == self.surfaces.running(VIEW) || self.window_menu_view_absent {
+            return;
+        }
+        if !up {
+            self.surfaces.stop(VIEW);
+            return;
+        }
+        let program = match surfaces::program_path("tilo-window-menu") {
+            Ok(program) => program,
+            Err(error) => {
+                // Nothing draws the menu here: the reading still offers it,
+                // and whoever is bound to the slot on this machine draws it.
+                tracing::debug!(%error, "no window menu view to start");
+                self.window_menu_view_absent = true;
+                return;
+            }
+        };
+        let surface = surfaces::Surface::new(VIEW, program)
+            .layer(surfaces::Layer::Overlay)
+            .anchor(
+                surfaces::Anchor::TOP
+                    | surfaces::Anchor::BOTTOM
+                    | surfaces::Anchor::LEFT
+                    | surfaces::Anchor::RIGHT,
+            )
+            .keyboard(surfaces::Keyboard::OnDemand);
+        if let Err(error) = self.start_surface(&surface) {
+            tracing::warn!(%error, "the window menu view did not start");
+        }
+    }
+
+    /// Tell every open app window the temperature of the workspace it is in
+    /// and the colour of the person at this machine, whenever that differs
+    /// from what that window was told: when it opens, when it moves to
+    /// another workspace, when that workspace's picture or temperature
+    /// changes, and when the person chooses another colour.
+    fn follow_window_warmth(&mut self) {
+        let Some(tabs) = &mut self.tabs else {
+            return;
+        };
+        let network = window_warmth::network_status(&self.shared.readings);
+        self.warmth.follow(
+            tabs,
+            &self.shared.handle,
+            &self.shared.wallpapers,
+            &self.shared.person,
+            network,
+            ui::time::now(),
+        );
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2418,12 +2250,17 @@ impl Session {
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_personal();
+        // Who each workspace on the desk is whose, after the workspaces this
+        // pass brought: the person's own are theirs, and one joined keeps its
+        // host's owner.
+        self.shared.own_workspaces();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();
         }
         self.follow_owner_session()?;
         self.follow_lock()?;
+        self.follow_keyboard();
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor, self.capture_studio.as_mut());
         }
@@ -2504,6 +2341,12 @@ impl Session {
             // them out on its next pass.
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
+        // The menu the reading says is up has its view over the desk, and
+        // the view goes when the menu does.
+        self.follow_window_menu();
+        // Each open window takes the temperature of the room it is in, as
+        // this pass left it.
+        self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
         // One file of a paste in flight per turn, so a folder of files does
         // not hold up a frame.
@@ -2553,6 +2396,12 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
+        // This device's call, as everyone in the room reads it, and theirs as
+        // this session's apps show them: a join or leave reaches a channel's
+        // roster on the pass it happened on.
+        if let Some(plane) = &self.action_plane {
+            plane.follow_calls(sync);
+        }
         // What became of the invitations redeemed is the directory's to say,
         // and the desk's to show.
         self.shared.follow_enrollments();
@@ -2573,6 +2422,19 @@ impl Session {
             self.automation.settle(Some(&plane.desk));
         } else {
             self.automation.settle(None);
+        }
+        // The chords the armed shortcuts answer are the table's own chords
+        // from here on: the keys claim them for the automation host instead
+        // of the desktop, and the guide shows what each runs.
+        self.shared
+            .shortcut_guide
+            .follow_trigger_chords(self.automation.trigger_chords());
+        // A chord nothing else answered reaches the automation host, which
+        // starts every shortcut whose keyboard trigger names it.
+        let pressed: Vec<settings_store::hardware::KeyChord> =
+            std::mem::take(&mut *self.shared.triggered.borrow_mut());
+        for chord in pressed {
+            self.automation.press(&chord);
         }
     }
 
@@ -2641,7 +2503,6 @@ impl Session {
                 .as_ref()
                 .map(tilo_sheets::Seat::presentation),
             self.display_sheet.presentation(),
-            shared.lock.as_ref().map(tilo_sheets::Seat::presentation),
             self.capture_studio
                 .as_ref()
                 .map(capture_studio::CaptureStudio::presentation),
@@ -2716,13 +2577,18 @@ impl Session {
     /// Lock the session as the person asked: with a key, a command, or
     /// because one of their other devices locked. A session that cannot
     /// check a password never locks: the lock screen could not be left again.
+    /// The desk goes the moment the lock is asked for and not when the screen
+    /// has started, so nothing of what was on it stays up for the start of a
+    /// process; the screen that shows the lock is started here, and asks the
+    /// compositor for the lock itself.
     pub(crate) fn lock_by_person(&mut self) -> Result<(), Error> {
-        if self.unlocking.verifier.available() {
-            self.compositor.lock_now()
-        } else {
+        if !self.unlocking.verifier.available() {
             tracing::warn!("no password can be checked here: not locking");
-            Ok(())
+            return Ok(());
         }
+        self.compositor.lock_now()?;
+        self.start_lock_screen();
+        Ok(())
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
@@ -2861,10 +2727,22 @@ impl Session {
                 plane.link.serve(&mut services);
             }
         }
+        self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what
         // their devices did, so a panel is sent the reading of this pass.
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.doors);
+        // The windows shared with the rooms: what the person asked, what the
+        // plane brought, and the frames of the ones on screen.
+        {
+            let sync = self.shared.sync.clone();
+            self.shared.window_shares.borrow_mut().step(
+                &mut self.compositor,
+                &self.shared.handle,
+                sync.as_deref(),
+                std::time::Instant::now(),
+            );
+        }
         // Dictation writes into the field the person is typing in, so it runs
         // before the frame rather than with the sheets.
         let locked = self.compositor.locked();
@@ -2940,29 +2818,4 @@ impl Drop for Session {
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
     }
-}
-
-/// The apps that run now, in the states the portal asks of them: the app
-/// in front is in use, the ones behind it only run.
-fn running_apps(compositor: &Compositor) -> Vec<(String, u32)> {
-    use tilo_portal::background::{ACTIVE, RUNNING};
-    let focused = compositor.focused_window().and_then(|window| window.app_id);
-    let mut apps: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-    for (window, _) in compositor.windows() {
-        let Some(app_id) = window.app_id else {
-            continue;
-        };
-        let state = if focused.as_deref() == Some(app_id.as_str()) {
-            ACTIVE
-        } else {
-            RUNNING
-        };
-        // An app showing more than one window is as in use as its best.
-        let state = apps
-            .get(&app_id)
-            .copied()
-            .map_or(state, |seen| seen.max(state));
-        apps.insert(app_id, state);
-    }
-    apps.into_iter().collect()
 }

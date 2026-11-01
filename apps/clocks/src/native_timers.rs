@@ -103,8 +103,8 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
     })
 }
 
-/// The record an activation names: one of the room's, or the workspace's
-/// own, where Clocks keeps its alarms unless a window opened another.
+/// The record an activation names: the workspace's own, where Clocks keeps
+/// its alarms unless a window opened another.
 fn activation_record_id(record: &str) -> Option<ui::record::RecordId> {
     let primary = ui::record::RecordId::package_primary();
     if record == primary.as_str() {

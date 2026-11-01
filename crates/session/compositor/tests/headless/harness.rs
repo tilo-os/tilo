@@ -230,23 +230,28 @@ impl TestClient {
     /// Attach a buffer of one colour (RGBA) and commit it with a frame
     /// callback.
     pub fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
+        // ARGB8888 is B, G, R, A in memory.
+        let word = u32::from_le_bytes([rgba[2], rgba[1], rgba[0], rgba[3]]);
+        self.show_words(width, height, wl_shm::Format::Argb8888, word);
+    }
+
+    /// Attach a buffer of `format` holding `word` in every pixel, and commit
+    /// it with a frame callback.
+    pub fn show_words(&self, width: i32, height: i32, format: wl_shm::Format, word: u32) {
         let qh = self.queue.handle();
         let stride = width * 4;
         let len = usize::try_from(stride * height).unwrap();
         let fd = rustix::fs::memfd_create("tilo-compositor-test", rustix::fs::MemfdFlags::CLOEXEC)
             .unwrap();
         let mut file = std::fs::File::from(fd);
-        // ARGB8888 is B, G, R, A in memory.
-        let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
-        file.write_all(&pixel.repeat(len / 4)).unwrap();
+        file.write_all(&word.to_le_bytes().repeat(len / 4)).unwrap();
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
             stride * height,
             &qh,
             (),
         );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        let buffer = pool.create_buffer(0, width, height, stride, format, &qh, ());
         let surface = self.surface.as_ref().expect("surface");
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, width, height);

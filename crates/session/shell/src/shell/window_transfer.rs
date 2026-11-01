@@ -778,7 +778,7 @@ fn plan(
 /// The people other than this desktop's person who can open things in `workspace`.
 fn others_with_access(workspace: &Workspace, tree: &WorkspaceTree) -> Vec<String> {
     let me = crate::shell::state::local_user_id_for_room(&workspace.room());
-    let mut people: Vec<String> = tilo_desktop::overview::room_people(
+    let mut people: Vec<String> = tilo_desktop::overview::workspace_people(
         workspace,
         &tree.desktop,
         &crate::shell::overview::ShellOverview::for_user(&me),
@@ -1189,7 +1189,7 @@ fn moved_away(
         let person = source
             .and_then(|ws| {
                 let me = crate::shell::state::local_user_id_for_room(&ws.room());
-                tilo_desktop::overview::room_people(
+                tilo_desktop::overview::workspace_people(
                     ws,
                     &tree.desktop,
                     &crate::shell::overview::ShellOverview::for_user(&me),

@@ -1,4 +1,4 @@
-//! Decks read from and kept as content: a `.pptx` the room holds (an
+//! Decks read from and kept as content: a `.pptx` the workspace holds (an
 //! attachment, a shared file, another app's export) opened into a new deck,
 //! and the deck kept as `.pptx` content another app or an agent reads,
 //! attaches or sends, with no file or dialog in between.

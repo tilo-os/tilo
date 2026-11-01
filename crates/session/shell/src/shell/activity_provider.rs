@@ -1,7 +1,7 @@
 //! A workspace's activity, served to apps.
 //!
 //! The session keeps the history of the active workspace in its activity
-//! model ([`tilo_desktop::activity::RoomActivityPane`]), on the thread that
+//! model ([`tilo_desktop::activity::WorkspaceActivityPane`]), on the thread that
 //! draws the desktop, for the top bar's glance, the inferred status and the
 //! recap on return. This module serves the same model to apps through the
 //! action broker, under [`wire::PROVIDER`]: its reads are live views the

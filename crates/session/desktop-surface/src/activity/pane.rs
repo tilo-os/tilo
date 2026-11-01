@@ -6,14 +6,14 @@ mod morning_sources;
 mod serve;
 pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_agent};
 
-// Room activity — everything that has happened to this workspace, by
+// Workspace activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
 //
-// The room's state lives in [`DesktopTree::doc`], a tree-wide
+// The workspace's state lives in [`DesktopTree::doc`], a tree-wide
 // automerge document holding every workspace on this machine, so
-// [`RoomScope`] decides which workspaces' changes are shown — a pane
-// titled with one room's name must never render another's governance.
-// Not shown: the contents of documents open inside the room, which the
+// [`WorkspaceScope`] decides which workspaces' changes are shown — a pane
+// titled with one workspace's name must never render another's governance.
+// Not shown: the contents of documents open inside the workspace, which the
 // broker routes as opaque bytes it never materialises.
 //
 // A row's `[Revert]` writes the delta back as a **new forward change**;
@@ -326,25 +326,26 @@ impl Period {
 }
 
 /// Which workspaces' changes the pane is showing. A genuine scope
-/// decision, not a filter — a row outside it is not this room's history.
+/// decision, not a filter — a row outside it is not this workspace's history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum RoomScope {
+pub enum WorkspaceScope {
     /// Changes touching the active workspace, plus ones belonging to no
-    /// single workspace — those can't carry another room into this view.
+    /// single workspace — those can't carry another workspace into this view.
     #[default]
-    ThisRoom,
+    ThisWorkspace,
     /// Every change in the tree document, each row labelled by the
     /// workspace it belongs to.
     AllWorkspaces,
 }
 
-impl RoomScope {
-    pub const ALL: [RoomScope; 2] = [RoomScope::ThisRoom, RoomScope::AllWorkspaces];
+impl WorkspaceScope {
+    pub const ALL: [WorkspaceScope; 2] =
+        [WorkspaceScope::ThisWorkspace, WorkspaceScope::AllWorkspaces];
 
     pub fn label(self) -> String {
         t(match self {
-            RoomScope::ThisRoom => "activity-scope-this-workspace",
-            RoomScope::AllWorkspaces => "activity-scope-all-workspaces",
+            WorkspaceScope::ThisWorkspace => "activity-scope-this-workspace",
+            WorkspaceScope::AllWorkspaces => "activity-scope-all-workspaces",
         })
     }
 }
@@ -355,7 +356,7 @@ impl RoomScope {
     reason = "these independent flags report distinct effects to the overlay host"
 )]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RoomActivityOutcome {
+pub struct WorkspaceActivityOutcome {
     pub handled: bool,
     pub reverted: bool,
     /// A band was named/renamed/un-named — a document write too.
@@ -371,12 +372,12 @@ struct UndoApply {
     partial: bool,
 }
 
-/// The room-activity sheet.
+/// The workspace-activity sheet.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag represents an independently focusable activity-pane mode or asynchronous visual state"
 )]
-pub struct RoomActivityPane {
+pub struct WorkspaceActivityPane {
     explicit_local_user: Option<String>,
     timeline: ActivityTimeline,
     source: HistorySource,
@@ -409,18 +410,18 @@ pub struct RoomActivityPane {
     /// catch up, but is excluded from unseen counts and Catch up prose.
     external_entry: Option<HistoryEntry>,
     feed_coverage: FeedCoverage,
-    pub(super) scope: RoomScope,
+    pub(super) scope: WorkspaceScope,
     author: Option<String>,
     /// First-seen order, derived from the rows rather than a roster — a
-    /// name appears only if that person did something in this room.
+    /// name appears only if that person did something in this workspace.
     contributors: Vec<String>,
-    room_name: String,
+    workspace_name: String,
     total_entries: usize,
     /// Outcome-first reduction of the currently scoped rows. The full
     /// timeline remains the source of detail underneath it.
     digest: ActivityDigest,
-    /// Switching rooms moves no changes, so the heads check alone
-    /// wouldn't notice — but it changes which rows are this room's.
+    /// Switching workspaces moves no changes, so the heads check alone
+    /// wouldn't notice — but it changes which rows are this workspace's.
     last_active: Option<u64>,
     now_override: Option<SystemTime>,
     /// Per-workspace private causal frontier. Opening history must not create
@@ -449,7 +450,7 @@ pub struct RoomActivityPane {
     morning_source_offset: usize,
     expanded_brief: Option<usize>,
     host: Rc<dyn ActivityHost>,
-    /// The active workspace's room.
+    /// The active workspace's durable identity, hex.
     room: String,
     /// The undo of an agent's run the host is carrying out, and the run.
     undo_pending: Option<(uuid::Uuid, String)>,
@@ -461,13 +462,13 @@ pub struct RoomActivityPane {
     pub(super) replay_unavailable: usize,
     replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
-    /// What [`Self::source`] has read of the room's change log, kept across
+    /// What [`Self::source`] has read of the workspace's change log, kept across
     /// refreshes: a refresh reads only the changes appended since the last
     /// one ([`HistorySource::entries_since`]).
     pub(super) history_log: ui::history_source::HistoryLog,
-    /// Each room change's reading, kept across refreshes; see
+    /// Each workspace change's reading, kept across refreshes; see
     /// [`describe_room_changes`].
-    room_changes: HashMap<ChangeHash, RoomChange>,
+    workspace_changes: HashMap<ChangeHash, WorkspaceChange>,
     /// Each replayed entry's desktop, kept across rebuilds; see
     /// [`Self::rebuild_replay_frames`].
     pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
@@ -489,13 +490,13 @@ pub struct RoomActivityPane {
     focus_serial: u64,
 }
 
-impl Default for RoomActivityPane {
+impl Default for WorkspaceActivityPane {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RoomActivityPane {
+impl WorkspaceActivityPane {
     /// Install host services. Uninstalled services remain unavailable.
     pub fn set_host(&mut self, host: Rc<dyn ActivityHost>) {
         self.timeline
@@ -575,12 +576,13 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
-            // Which workspace shows is the device's view, written on every
-            // switch: no history, and no place in the window, which switching
-            // back and forth used to fill until nothing anyone did was left.
+            // Which workspace, strip or window shows, and how wide it is, is
+            // the device's view, written on every switch and drag: no
+            // history, and no place in the window, which switching back and
+            // forth used to fill until nothing anyone did was left.
             source: HistorySource::new()
                 .with_artifact_kind(ArtifactKind::Cluster)
-                .passing_over(tilo_desktop_model::desktop_doc::only_sets_active),
+                .passing_over(tilo_desktop_model::desktop_doc::only_moves_the_view),
             revert_intent,
             name_intent,
             undo_intent,
@@ -595,10 +597,10 @@ impl RoomActivityPane {
             projected_origins: HashMap::new(),
             external_entry: None,
             feed_coverage: FeedCoverage::default(),
-            scope: RoomScope::default(),
+            scope: WorkspaceScope::default(),
             author: None,
             contributors: Vec::new(),
-            room_name: String::new(),
+            workspace_name: String::new(),
             total_entries: 0,
             digest: ActivityDigest::default(),
             last_active: None,
@@ -632,7 +634,7 @@ impl RoomActivityPane {
             replay_presentation_note: None,
             replay_frames: Vec::new(),
             history_log: ui::history_source::HistoryLog::default(),
-            room_changes: HashMap::new(),
+            workspace_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
             replay_index: 0,
             replay_playing: false,
@@ -723,8 +725,8 @@ impl RoomActivityPane {
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
         self.viewed_changes.remove(&workspace);
-        if self.scope != RoomScope::ThisRoom {
-            self.scope = RoomScope::ThisRoom;
+        if self.scope != WorkspaceScope::ThisWorkspace {
+            self.scope = WorkspaceScope::ThisWorkspace;
             self.invalidate();
         }
         if self.prepared_away_workspace.take() == Some(workspace)
@@ -1038,7 +1040,7 @@ impl RoomActivityPane {
         id: &str,
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
-    ) -> RoomActivityOutcome {
+    ) -> WorkspaceActivityOutcome {
         if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
             if room == self.room {
                 self.toggle_morning_selection();
@@ -1053,7 +1055,7 @@ impl RoomActivityPane {
             if room != self.room {
                 return handled_outcome();
             }
-            return RoomActivityOutcome {
+            return WorkspaceActivityOutcome {
                 handled: true,
                 open_target: self.activate_morning_source(key, false),
                 ..Default::default()
@@ -1086,7 +1088,7 @@ impl RoomActivityPane {
             HISTORY_COMPARE => DetailAction::Compare,
             HISTORY_RESTORE => DetailAction::Restore,
             HISTORY_UNDO => DetailAction::Undo,
-            _ => return RoomActivityOutcome::default(),
+            _ => return WorkspaceActivityOutcome::default(),
         };
         self.apply_detail_action(action, tree, records)
     }
@@ -1799,7 +1801,7 @@ impl RoomActivityPane {
     }
 
     fn defer_pending_tree(&mut self, tree: &impl ActivityTree) {
-        self.room_name = tree
+        self.workspace_name = tree
             .active_workspace()
             .map(|workspace| workspace.name.clone())
             .unwrap_or_default();
@@ -1823,7 +1825,7 @@ impl RoomActivityPane {
         self.install_rows(Vec::new());
     }
 
-    /// Re-derive the timeline from the room document if the graph has
+    /// Re-derive the timeline from the workspace document if the graph has
     /// moved; called every frame, the heads check keeps that cheap.
     /// A producer's pending transaction is deferred until its own stamped
     /// commit. History never closes that transaction as a side effect.
@@ -1851,8 +1853,8 @@ impl RoomActivityPane {
             .active_workspace()
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        if name != self.room_name {
-            self.room_name = name;
+        if name != self.workspace_name {
+            self.workspace_name = name;
         }
         let room = tree
             .active_workspace()
@@ -1933,9 +1935,9 @@ impl RoomActivityPane {
             tree.document_mut(),
             &self.history_log,
             &mut entries,
-            &mut self.room_changes,
+            &mut self.workspace_changes,
         );
-        // A receipt is committed by the room host, but its authenticated
+        // A receipt is committed by the workspace host, but its authenticated
         // `actor` is the person (or agent) who performed the semantic action.
         // Attribute the projected CRDT row to that actor rather than to the
         // host's Automerge key; otherwise every collaborative work session
@@ -2002,7 +2004,7 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        // Housekeeping and what came from outside stay in the room
+        // Housekeeping and what came from outside stay in the workspace
         // document's history, out of the feed.
         self.derived = entries
             .into_iter()
@@ -2024,7 +2026,7 @@ impl RoomActivityPane {
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
-    /// Every entry of the room's derived history, in any workspace.
+    /// Every entry of the workspace's derived history, in any workspace.
     pub(super) fn derived_entry_ids(&self) -> impl Iterator<Item = HistoryEntryId> + '_ {
         self.derived.iter().map(|(entry, _)| entry.id)
     }
@@ -2041,11 +2043,11 @@ impl RoomActivityPane {
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
         for (entry, tag) in &self.derived {
             match (self.scope, tag) {
-                (RoomScope::ThisRoom, Some(id)) if *id != active => {}
-                (RoomScope::ThisRoom, _) => rows.push(entry.clone()),
-                (RoomScope::AllWorkspaces, tag) => {
+                (WorkspaceScope::ThisWorkspace, Some(id)) if *id != active => {}
+                (WorkspaceScope::ThisWorkspace, _) => rows.push(entry.clone()),
+                (WorkspaceScope::AllWorkspaces, tag) => {
                     let mut e = entry.clone();
-                    // Otherwise three identical "Set the room owner" lines are noise.
+                    // Otherwise three identical "Set the workspace owner" lines are noise.
                     if let Some(id) = tag {
                         let label = names
                             .get(id)
@@ -2067,8 +2069,8 @@ impl RoomActivityPane {
         self.install_rows(rows);
     }
 
-    /// Join the room's shell history with every locally available record in
-    /// that room. The projected id map keeps callbacks compact while every
+    /// Join the workspace's shell history with every locally available record in
+    /// that workspace. The projected id map keeps callbacks compact while every
     /// authoritative operation can still resolve the originating document.
     pub fn refresh_records(&mut self, tree: &mut impl ActivityTree, records: &RecordStore) {
         self.refresh_records_inner(tree, records, None);
@@ -2169,11 +2171,11 @@ impl RoomActivityPane {
         self.history_index
             .set_authors(self.source.authors().clone());
         let query = match self.scope {
-            RoomScope::ThisRoom => tree
+            WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
                 .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room()))
                 .unwrap_or_default(),
-            RoomScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
+            WorkspaceScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
                 tree.workspaces
                     .iter()
                     .map(tilo_desktop_model::Workspace::room),
@@ -2219,7 +2221,7 @@ impl RoomActivityPane {
                 .iter()
                 .map(|row| {
                     let mut projected = row.timeline_entry();
-                    if self.scope == RoomScope::AllWorkspaces
+                    if self.scope == WorkspaceScope::AllWorkspaces
                         && let super::index::HistoryOrigin::Record { id, .. } = &row.id.origin
                         && let Some(labels) = record_workspaces.get(id.as_str())
                     {
@@ -2305,11 +2307,11 @@ impl RoomActivityPane {
             .collect::<Vec<_>>();
 
         let rooms: HashSet<_> = match self.scope {
-            RoomScope::ThisRoom => tree
+            WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
                 .map(|workspace| [workspace.room()].into_iter().collect())
                 .unwrap_or_default(),
-            RoomScope::AllWorkspaces => tree
+            WorkspaceScope::AllWorkspaces => tree
                 .workspaces
                 .iter()
                 .map(tilo_desktop_model::Workspace::room)
@@ -2490,12 +2492,12 @@ impl RoomActivityPane {
         true
     }
 
-    pub fn set_scope(&mut self, scope: RoomScope, tree: &impl ActivityTree) {
+    pub fn set_scope(&mut self, scope: WorkspaceScope, tree: &impl ActivityTree) {
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
             return;
         }
-        if scope == RoomScope::AllWorkspaces && !self.host.all_workspaces_available() {
+        if scope == WorkspaceScope::AllWorkspaces && !self.host.all_workspaces_available() {
             return;
         }
         if self.scope != scope {
@@ -2504,7 +2506,7 @@ impl RoomActivityPane {
         }
     }
 
-    pub fn scope(&self) -> RoomScope {
+    pub fn scope(&self) -> WorkspaceScope {
         self.scope
     }
 
@@ -2608,7 +2610,7 @@ impl RoomActivityPane {
         action: DetailAction,
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
-    ) -> RoomActivityOutcome {
+    ) -> WorkspaceActivityOutcome {
         let mut outcome = handled_outcome();
         match action {
             DetailAction::MorningSource => self.toggle_morning_selection(),
@@ -2731,7 +2733,7 @@ impl RoomActivityPane {
     }
 
     /// Write (or remove, for an empty label) a name over a run of the
-    /// room's changes, committed so it reaches peers through the same
+    /// workspace's changes, committed so it reaches peers through the same
     /// sync as the changes it names.
     pub fn apply_name(&mut self, tree: &mut impl ActivityTree, req: &GroupNameRequest) -> bool {
         if !self.host.mutations_available() {
@@ -2932,10 +2934,10 @@ impl RoomActivityPane {
 /// The app the workspace's tasks live in.
 pub const TASKS_APP: &str = "so.tilo.tasks";
 
-fn handled_outcome() -> RoomActivityOutcome {
-    RoomActivityOutcome {
+fn handled_outcome() -> WorkspaceActivityOutcome {
+    WorkspaceActivityOutcome {
         handled: true,
-        ..RoomActivityOutcome::default()
+        ..WorkspaceActivityOutcome::default()
     }
 }
 
@@ -3094,24 +3096,24 @@ fn humanize_field(field: &str) -> String {
 }
 
 // =====================================================================
-// Room vocabulary
+// Workspace vocabulary
 // =====================================================================
 
-/// What one room change did, read from its patches once: a change's
-/// patches are fixed by its hash, and diffing every change of the room on
+/// What one workspace change did, read from its patches once: a change's
+/// patches are fixed by its hash, and diffing every change of the workspace on
 /// every refresh made a workspace switch's first frame O(history).
 #[derive(Default)]
-pub(super) struct RoomChange {
+pub(super) struct WorkspaceChange {
     /// The workspace the change belongs to; `None` for several or none.
     workspace: Option<u64>,
     counts: PatchCounts,
     bookkeeping: bool,
 }
 
-impl RoomChange {
+impl WorkspaceChange {
     fn read(doc: &mut automerge::AutoCommit, deps: &[ChangeHash], hash: ChangeHash) -> Self {
         #[cfg(test)]
-        ROOM_CHANGE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+        WORKSPACE_CHANGE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         let patches = doc.diff(deps, &[hash]);
         let mut counts = PatchCounts::default();
         for patch in &patches {
@@ -3120,30 +3122,30 @@ impl RoomChange {
         Self {
             workspace: workspace_touched(doc, &patches, hash),
             counts,
-            bookkeeping: is_room_bookkeeping(&patches),
+            bookkeeping: is_workspace_bookkeeping(&patches),
         }
     }
 }
 
 #[cfg(test)]
 thread_local! {
-    /// How many room changes this thread diffed, for the tests that pin
+    /// How many workspace changes this thread diffed, for the tests that pin
     /// that a refresh reads only new changes.
-    pub(super) static ROOM_CHANGE_READS: Cell<usize> = const { Cell::new(0) };
+    pub(super) static WORKSPACE_CHANGE_READS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Rewrite each row's summary in the room's own words where nameable,
+/// Rewrite each row's summary in the workspace's own words where nameable,
 /// else keeps [`HistorySource`]'s generic one. Returns, per entry, the
 /// workspace the change belongs to — `None` for several or none. `known`
 /// keeps each change's reading across refreshes; only new changes are
 /// diffed. Each entry's hash and dependencies come from `log`, the history
-/// log `entries` were read through, so the room's changes are not listed
+/// log `entries` were read through, so the workspace's changes are not listed
 /// again.
 fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
     log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
-    known: &mut HashMap<ChangeHash, RoomChange>,
+    known: &mut HashMap<ChangeHash, WorkspaceChange>,
 ) -> Vec<Option<u64>> {
     let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
     for (entry, tag) in entries.iter_mut().zip(&mut tags) {
@@ -3153,7 +3155,7 @@ fn describe_room_changes(
         // `deps -> [hash]` isolates exactly that change.
         let change = known
             .entry(hash)
-            .or_insert_with(|| RoomChange::read(doc, deps, hash));
+            .or_insert_with(|| WorkspaceChange::read(doc, deps, hash));
         *tag = change.workspace;
         if let Some((summary, entry_kind)) = change.counts.describe() {
             if entry.context.is_none() {
@@ -3182,16 +3184,16 @@ fn describe_room_changes(
                     .with_change(ui::tilo_actions::ChangeKind::Housekeeping),
             );
         } else if entry.context.is_none() {
-            // The room's own storage keys are not words anyone should read.
+            // The workspace's own storage keys are not words anyone should read.
             entry.summary = t("activity-event-updated");
         }
     }
     tags
 }
 
-/// The room keys a desktop writes to keep its projection consistent (the id
-/// counter, the record index, schedule claims, and in older rooms who owned
-/// each id namespace and a kept strip's marker): state about the room, not
+/// The workspace keys a desktop writes to keep its projection consistent (the id
+/// counter, the record index, schedule claims, and in older workspaces who owned
+/// each id namespace and a kept strip's marker): state about the workspace, not
 /// something anyone did in it.
 const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
     tilo_desktop_model::projection::ROOM_DESKTOP_COUNTER_KEY,
@@ -3201,8 +3203,8 @@ const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
     "retained_empty_v1",
 ];
 
-/// Whether a change only wrote the room's bookkeeping.
-fn is_room_bookkeeping(patches: &[automerge::Patch]) -> bool {
+/// Whether a change only wrote the workspace's bookkeeping.
+fn is_workspace_bookkeeping(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|patch| {
             let leaf = match &patch.action {
@@ -3270,7 +3272,7 @@ fn workspace_touched(
         match found {
             None => found = Some(id),
             // Two workspaces in one change — a whole-tree flush. It is nobody's
-            // room in particular.
+            // workspace in particular.
             Some(prev) if prev != id => return None,
             Some(_) => {}
         }
@@ -3278,7 +3280,7 @@ fn workspace_touched(
     found
 }
 
-/// Running counts of one change's patches, turned into a single room event
+/// Running counts of one change's patches, turned into a single workspace event
 /// ([`PatchCounts::describe`]) and its place in the feed
 /// ([`PatchCounts::feed_kind`]). Content, membership and permission changes
 /// are news; a window opened is listed in History but is nobody's news;
@@ -3290,11 +3292,16 @@ struct PatchCounts {
     revokes: usize,
     names: Vec<String>,
     owner_set: bool,
-    room_set: bool,
+    workspace_set: bool,
     tabs_added: usize,
     tabs_removed: usize,
     tab_titles: Vec<String>,
     groups_moved: usize,
+    /// Groups the change put in a strip's `window_groups` list, and took out
+    /// of one: a group added or removed is a layout change, but a group
+    /// taken out and not put back is a window closed.
+    groups_added: usize,
+    groups_removed: usize,
     workspaces_added: usize,
     workspaces_removed: usize,
     geometry: usize,
@@ -3304,9 +3311,9 @@ struct PatchCounts {
 impl PatchCounts {
     fn record(&mut self, p: &automerge::Patch) {
         // The record keeps a copy of each workspace's own fields — its name,
-        // its room, its policy and the grants in it — under
+        // its workspace, its policy and the grants in it — under
         // `workspaces/<id>/workspace`, written once by whichever device first
-        // lays the record out. What people change is the room document's own
+        // lays the record out. What people change is the workspace document's own
         // root, so the copy is not a change.
         if in_workspace_copy(p) {
             return;
@@ -3325,8 +3332,8 @@ impl PatchCounts {
             (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
-            // A room's layout: a window is an entry of its `windows`, and a
-            // group closes with its last window. (Older rooms kept each
+            // A workspace's layout: a window is an entry of its `windows`, and a
+            // group closes with its last window. (Older workspaces kept each
             // window under its group's `tabs`.)
             (automerge::PatchAction::PutMap { value, .. }, "windows" | "tabs")
                 if matches!(value.0, Value::Object(_)) =>
@@ -3364,7 +3371,7 @@ impl PatchCounts {
                 self.owner_set = true;
             }
             (automerge::PatchAction::PutMap { key, .. }, _) if key == "room" => {
-                self.room_set = true;
+                self.workspace_set = true;
             }
             (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "title" => {
                 if let Some(t) = scalar_string(&value.0)
@@ -3389,9 +3396,11 @@ impl PatchCounts {
             }
             (automerge::PatchAction::Insert { values, .. }, "window_groups") => {
                 self.groups_moved = self.groups_moved.saturating_add(values.len());
+                self.groups_added = self.groups_added.saturating_add(values.len());
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "window_groups") => {
                 self.groups_moved = self.groups_moved.saturating_add(*length);
+                self.groups_removed = self.groups_removed.saturating_add(*length);
             }
             (automerge::PatchAction::Insert { values, .. }, "workspaces") => {
                 self.workspaces_added = self.workspaces_added.saturating_add(values.len());
@@ -3401,6 +3410,19 @@ impl PatchCounts {
             }
             _ => {}
         }
+    }
+
+    /// Groups the change took out of strips and did not put back: a group
+    /// closes with its last window, so each is a window closed. A group
+    /// moved is taken out and put back, and is no close.
+    fn closed_groups(&self) -> usize {
+        self.groups_removed.saturating_sub(self.groups_added)
+    }
+
+    /// The windows the change closed: the tabs it removed, and the groups it
+    /// closed with their last window.
+    fn closed_windows(&self) -> usize {
+        self.tabs_removed.saturating_add(self.closed_groups())
     }
 
     /// The highest-priority signal wins — governance beats structural
@@ -3431,9 +3453,9 @@ impl PatchCounts {
             };
             return Some((s, EntryKind::Text));
         }
-        // A room document's first change names the room, its owner and its
+        // A workspace document's first change names the workspace, its owner and its
         // name at once: that is the workspace being made.
-        if self.room_set && self.owner_set {
+        if self.workspace_set && self.owner_set {
             let s = match self.names.first().filter(|name| !name.is_empty()) {
                 Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
                 None => t("activity-event-created"),
@@ -3464,7 +3486,7 @@ impl PatchCounts {
         if self.owner_set {
             return Some((t("activity-event-owner"), EntryKind::Access));
         }
-        if self.room_set {
+        if self.workspace_set {
             return Some((t("activity-event-identity"), EntryKind::Access));
         }
         if let Some(name) = self.names.first() {
@@ -3486,9 +3508,9 @@ impl PatchCounts {
             };
             return Some((s, EntryKind::Text));
         }
-        if self.tabs_removed > 0 {
+        if self.closed_windows() > 0 {
             return Some((
-                counted("activity-event-closed-windows", self.tabs_removed),
+                counted("activity-event-closed-windows", self.closed_windows()),
                 EntryKind::Delete,
             ));
         }
@@ -3513,14 +3535,14 @@ impl PatchCounts {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RoomEventKind {
+enum WorkspaceEventKind {
     Change,
     Setup,
     View,
     Layout,
 }
 
-impl RoomEventKind {
+impl WorkspaceEventKind {
     /// How the feed treats a row of this kind: `None` lists it as news.
     fn feed_tag(self) -> Option<&'static str> {
         match self {
@@ -3532,40 +3554,40 @@ impl RoomEventKind {
 }
 
 impl PatchCounts {
-    fn feed_kind(&self) -> RoomEventKind {
+    fn feed_kind(&self) -> WorkspaceEventKind {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
-            return RoomEventKind::Change;
+            return WorkspaceEventKind::Change;
         }
         if self.workspaces_added > 0 {
-            return RoomEventKind::Setup;
+            return WorkspaceEventKind::Setup;
         }
-        if self.room_set && self.owner_set {
-            return RoomEventKind::Setup;
+        if self.workspace_set && self.owner_set {
+            return WorkspaceEventKind::Setup;
         }
         if !self.grants.is_empty() || self.revokes > 0 {
-            return RoomEventKind::Change;
+            return WorkspaceEventKind::Change;
         }
-        if self.owner_set || self.room_set {
-            return RoomEventKind::Setup;
+        if self.owner_set || self.workspace_set {
+            return WorkspaceEventKind::Setup;
         }
         if !self.names.is_empty() {
-            return RoomEventKind::Change;
+            return WorkspaceEventKind::Change;
         }
         if self.tabs_added > 0 {
-            return RoomEventKind::View;
+            return WorkspaceEventKind::View;
         }
-        if self.tabs_removed > 0 {
-            return RoomEventKind::Change;
+        if self.closed_windows() > 0 {
+            return WorkspaceEventKind::Change;
         }
         if self.groups_moved > 0 || self.geometry > 0 || self.active_switched {
-            return RoomEventKind::Layout;
+            return WorkspaceEventKind::Layout;
         }
-        RoomEventKind::Change
+        WorkspaceEventKind::Change
     }
 }
 
 /// Whether `p` lands in the layout record's copy of a workspace's own fields
-/// (`workspaces/<id>/workspace/…`), not in the room document's own root or in
+/// (`workspaces/<id>/workspace/…`), not in the workspace document's own root or in
 /// the record's strips, groups and windows.
 fn in_workspace_copy(p: &automerge::Patch) -> bool {
     let map = |index: usize| match p.path.get(index) {
@@ -3687,7 +3709,7 @@ fn role_key(role: tilo_action_policy::Role) -> &'static str {
     }
 }
 
-/// A member admitted to the room, or their role changed.
+/// A member admitted to the workspace, or their role changed.
 fn describe_member(person: &str, role: tilo_action_policy::Role) -> String {
     t_args(
         "activity-member",

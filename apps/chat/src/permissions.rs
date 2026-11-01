@@ -190,18 +190,18 @@ mod tests {
 
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
-        use ui::room_sync::{RoomSync, RoomSyncState};
+        use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
         // The launch opened Chat read-only: its workspace did not let Chat author.
         let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
             "3f2b1c00-0000-4000-8000-000000000001",
             "u_guest",
             Role::Viewer,
         ));
-        ui::room_sync::follow_participation(&launch);
+        ui::workspace_sync::follow_participation(&launch);
         let chat = || ChatPermissions::from_context(launch.borrow().clone());
         assert!(!chat().can_participate(), "read-only, no composer");
-        ui::room_sync::set(Some(RoomSync {
-            state: RoomSyncState::Synced,
+        ui::workspace_sync::set(Some(WorkspaceSync {
+            state: WorkspaceSyncState::Synced,
             workspace: "Lounge".into(),
             writable: Some(true),
             unsynced_writes: 0,
@@ -211,6 +211,6 @@ mod tests {
             chat().can_participate(),
             "the workspace's grants made Chat an author: the composer shows"
         );
-        ui::room_sync::set(None);
+        ui::workspace_sync::set(None);
     }
 }

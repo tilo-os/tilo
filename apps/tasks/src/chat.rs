@@ -165,7 +165,7 @@ impl Conversation {
     }
 }
 
-/// How an author reads: a person by the name the room gives them, an agent
+/// How an author reads: a person by the name the workspace gives them, an agent
 /// by its name, never as a person.
 pub(crate) fn author_name(people: &ui::framework::People, author: &str) -> String {
     let named = people.name(author);

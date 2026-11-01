@@ -48,6 +48,7 @@ use provider_settings_ui::widgets::{
     setting_row_described, thing_row, untitled, value_row,
 };
 
+mod add_email;
 mod browser_sessions;
 mod calendar_selection;
 mod cloud_control;
@@ -152,6 +153,28 @@ pub enum AccountsEffect {
         #[param("The kind of account, by its slug")]
         kind: String,
     },
+    /// Add an email account with its password. The password is sealed by
+    /// the session's account custody and never shown or read back; Mail,
+    /// which keeps email accounts, is released it to sign in.
+    #[effect(job, returns, label = "Add email account")]
+    AddEmailAccount {
+        #[param("The name shown for it")]
+        display_name: String,
+        #[param("The email address")]
+        email: String,
+        #[param("The name it signs in with; the address when omitted")]
+        username: Option<String>,
+        #[param("The IMAP server's host")]
+        imap_host: String,
+        #[param("The IMAP server's port")]
+        imap_port: u16,
+        #[param("The SMTP server's host")]
+        smtp_host: String,
+        #[param("The SMTP server's port")]
+        smtp_port: u16,
+        #[param(secret, "The account's password or app password")]
+        password: String,
+    },
     /// Edit an account's details.
     #[effect(view, row)]
     EditAccount {
@@ -230,7 +253,7 @@ pub enum AccountsEffect {
     /// Recover an interrupted Files mode change after closing the connection form.
     #[effect(row, job, idempotent, label = "Recover mode change")]
     RecoverCloudMode { account: String },
-    /// Link your account with a service this room is connected to (a
+    /// Link your account with a service this workspace is connected to (a
     /// Discord server it bridges): the page goes to the service's consent
     /// page, which comes back here linked.
     #[effect(label = "Link account")]
@@ -238,7 +261,7 @@ pub enum AccountsEffect {
         #[param("The connector's app id")]
         app: String,
     },
-    /// Unlink your account with a service this room is connected to.
+    /// Unlink your account with a service this workspace is connected to.
     #[effect(destructive, label = "Unlink account")]
     UnlinkService {
         #[param("The connector's app id")]
@@ -294,6 +317,7 @@ pub(crate) fn answer(
             ));
             return Ok(Effected::Pending);
         }
+        add @ AccountsEffect::AddEmailAccount { .. } => return add_email::answer(app, add, cx),
         AccountsEffect::DiscoverThunderbirdAccounts { prefs } => {
             return thunderbird_import::discover(app, prefs, cx);
         }
@@ -349,7 +373,7 @@ fn answer_import(
     model: &mut AccountsPane,
     effect: AccountsEffect,
     cx: &mut EffectCx<Settings>,
-) -> Result<EffectAnswer, AccountsEffect> {
+) -> Result<EffectAnswer, Box<AccountsEffect>> {
     Ok(match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
         | AccountsEffect::ChooseThunderbirdMetadata => Err(t("accounts-import-read-failed")),
@@ -375,7 +399,7 @@ fn answer_import(
             model.changed = true;
             Effected::done()
         }),
-        other => return Err(other),
+        other => return Err(Box::new(other)),
     })
 }
 
@@ -390,7 +414,7 @@ fn answer_model(
     let mut model = shared.borrow_mut();
     let effect = match answer_import(&mut model, effect, cx) {
         Ok(answer) => return answer,
-        Err(effect) => effect,
+        Err(effect) => *effect,
     };
     match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
@@ -402,6 +426,7 @@ fn answer_model(
             return Err(t("accounts-import-read-failed"));
         }
         AccountsEffect::RemoveBrowserServiceSession { .. }
+        | AccountsEffect::AddEmailAccount { .. }
         | AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. }
@@ -586,6 +611,10 @@ pub struct AccountsArea {
     linked: ui::linked_accounts::LinkedAccounts,
     pub(crate) remote: ui::RemoteActions,
     removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
+    /// The session's account custody on this window's route; `None` outside a session.
+    custody: Option<ui::collaboration::browser_service_sessions::Client>,
+    /// An email account being added ([`add_email`]).
+    adding: std::cell::RefCell<Option<add_email::AddingEmail>>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AccountsPane>>>,
     account_root: Option<AccountRoot>,
     /// The credential vault, its custody and the sync statuses, opened off
@@ -633,6 +662,8 @@ impl AccountsArea {
             linked: cx.linked.clone(),
             remote: ui::RemoteActions::current(),
             removal: std::cell::RefCell::default(),
+            custody: ui::collaboration::browser_service_sessions::Client::capture(),
+            adding: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
             read: crate::device_read::DeviceRead::default(),
@@ -702,7 +733,7 @@ impl AccountsArea {
                 model = model.with_open_form_for_shot(kind);
             }
             // Where the person stands with each connected service is asked
-            // of the room's host; the pane shows it once answered.
+            // of the workspace's host; the pane shows it once answered.
             self.linked.refresh();
             Rc::new(std::cell::RefCell::new(
                 model.with_linked(self.linked.clone()),
@@ -715,6 +746,7 @@ impl AccountsArea {
     pub(crate) fn poll(&self) {
         self.remote.poll();
         self.follow_linked();
+        self.poll_adding();
         let finished = self
             .removal
             .borrow_mut()
@@ -738,17 +770,18 @@ impl AccountsArea {
     /// Whether a check, a sign-in or vault work is under way, so the window
     /// keeps polling for it.
     fn busy(&self) -> bool {
-        self.model
-            .get()
-            .is_some_and(|model| model.try_borrow().is_ok_and(|pane| pane.busy()))
+        let pane = |model: &Rc<std::cell::RefCell<AccountsPane>>| {
+            model.try_borrow().is_ok_and(|pane| pane.busy())
+        };
+        self.adding.borrow().is_some() || self.model.get().is_some_and(pane)
     }
 
-    /// The person's accounts with the services the room is connected to.
+    /// The person's accounts with the services the workspace is connected to.
     pub(crate) fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
         &self.linked
     }
 
-    /// Show the linked accounts again when the room's host answered
+    /// Show the linked accounts again when the workspace's host answered
     /// something new about them.
     fn follow_linked(&self) {
         let revision = self.linked.revision();
@@ -945,7 +978,7 @@ impl Default for AccountsPane {
     reason = "each flag is an independent state of the pane's forms and vault work, never a parameter"
 )]
 pub struct AccountsPane {
-    /// The person's accounts with the services the room is connected to,
+    /// The person's accounts with the services the workspace is connected to,
     /// as the window this model serves was lent them; none for a model a
     /// test drives directly.
     linked: Option<ui::linked_accounts::LinkedAccounts>,
@@ -1219,7 +1252,7 @@ impl AccountsPane {
         !self.form_open()
     }
 
-    /// The model shown with `linked`, the room's connected services.
+    /// The model shown with `linked`, the workspace's connected services.
     #[must_use]
     pub(crate) fn with_linked(mut self, linked: ui::linked_accounts::LinkedAccounts) -> Self {
         self.linked = Some(linked);
@@ -1892,8 +1925,8 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(cx, id));
         }
-        // The services this room is connected to come first: they belong to
-        // this room, and show only when it has one.
+        // The services this workspace is connected to come first: they belong
+        // to this workspace, and show only when it has one.
         if let Some(linked) = self.linked_accounts_card(cx) {
             panel.push(linked);
         }
@@ -1984,10 +2017,10 @@ impl AccountsPane {
         section(&t("accounts-browser-sessions-title"), rows(body))
     }
 
-    /// The person's accounts with the services this room is connected to
-    /// (a Discord server it bridges), as the profile card shows them:
+    /// The person's accounts with the services this workspace is connected
+    /// to (a Discord server it bridges), as the profile card shows them:
     /// connect one, confirm one a link offers, or unlink it. `None`
-    /// where the room is connected to none.
+    /// where the workspace is connected to none.
     fn linked_accounts_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
         let accounts = self.linked.as_ref()?.accounts();
         if accounts.is_empty() {

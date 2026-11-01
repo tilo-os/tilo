@@ -1,5 +1,7 @@
 //! How a part moves between states. The painter declares it; the toolkit
-//! runs it on its own clock.
+//! runs it on its own clock, with the curve math in its motion library
+//! (`ui::motion::transition`), so a theme names a motion rather than writing
+//! one.
 
 /// A curve for [`Transition::Eased`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

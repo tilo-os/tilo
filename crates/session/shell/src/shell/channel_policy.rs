@@ -23,6 +23,10 @@
 //!   ([`super::service_members`]): its own device key, admitted with a
 //!   purpose, a scope and optionally a deadline, and removed from every
 //!   channel when the grant ends.
+//! - a person room ([`collab_types::person_room`]) has no roster and no
+//!   record grants: its channels are read by the identity it derives from,
+//!   through that identity's certified devices that are not revoked. No
+//!   governor or workspace takes part, and the identity decides.
 
 use std::collections::BTreeSet;
 
@@ -118,6 +122,40 @@ impl WorkspaceChannelDirectory {
     }
 }
 
+/// The root whose person room `room` is, when it is one of `own_devices`:
+/// the room derives from that identity, and the fleet certifies its devices.
+fn person_room_root(
+    room: RoomId,
+    own_devices: &[(tilo_user_identity::DeviceCert, bool)],
+) -> Option<[u8; 32]> {
+    own_devices
+        .iter()
+        .map(|(cert, _)| cert.user_public_key)
+        .find(|user| collab_types::is_person_room(user, &room.as_uuid()))
+}
+
+/// Every device of `root`'s identity that `own_devices` holds, not revoked
+/// and not expired: the readers of every channel of that identity's person
+/// room. Another person's devices never appear in it, and the identity's
+/// own revocations take a device out.
+fn person_devices(
+    own_devices: &[(tilo_user_identity::DeviceCert, bool)],
+    root: [u8; 32],
+    now: u64,
+) -> BTreeSet<Ed25519PublicKey> {
+    let now_ns = now.saturating_mul(1_000_000_000);
+    own_devices
+        .iter()
+        .filter(|(cert, revoked)| {
+            !revoked
+                && cert.user_public_key == root
+                && !cert.is_expired_at(now_ns)
+                && tilo_user_identity::verify_device_cert(cert).is_ok()
+        })
+        .map(|(cert, _)| Ed25519PublicKey::from_bytes(cert.device_public_key))
+        .collect()
+}
+
 /// A fleet's devices plus the same user's devices the session authenticated,
 /// each with whether the fleet revoked it.
 pub fn fleet_devices(
@@ -162,6 +200,11 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let own = (self.own_devices)(room);
+        if let Some(person) = person_room_root(room, &own) {
+            // The person room's readers are the identity's devices, whatever
+            // channel is asked: the room has no record grants to name one.
+            return Some(person_devices(&own, person, now));
+        }
         let tree = self.tree.read();
         names_record(&tree, room, channel, route)
             .then(|| allowed_devices(&tree, (room, channel, route), now, &own))
@@ -177,6 +220,17 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
 
     fn next_policy_change(&self, room: RoomId, now: u64) -> Option<u64> {
         let own = (self.own_devices)(room);
+        if person_room_root(room, &own).is_some() {
+            let authenticated = (self.authenticated_changes)(now.saturating_mul(1_000_000_000))
+                .map(tilo_action_broker::policy_schedule::second_at_or_after);
+            let certificates = own
+                .iter()
+                .map(|(cert, _)| cert)
+                .filter_map(|cert| cert.expires_at_ns)
+                .map(tilo_action_broker::policy_schedule::second_at_or_after)
+                .filter(|at| *at > now);
+            return authenticated.into_iter().chain(certificates).min();
+        }
         let authenticated = (self.authenticated_changes)(now.saturating_mul(1_000_000_000))
             .map(tilo_action_broker::policy_schedule::second_at_or_after);
         next_policy_change(&self.tree.read(), room, now, &own)
@@ -778,5 +832,54 @@ mod tests {
         assert!(!allowed_devices(&tree, notes, 800, &own).contains(&device_key(11)));
         assert_eq!(next_policy_change(&tree, room, 800, &own), None);
         assert_eq!(next_policy_change(&tree, RoomId::new(), 100, &own), None);
+    }
+
+    /// The person room has no roster, no grants and no governor: every
+    /// channel in it is read by the identity's certified devices that are
+    /// not revoked. A revoked device is excluded, and another person's
+    /// device never appears.
+    #[test]
+    fn a_person_rooms_readers_are_the_identitys_unrevoked_devices() {
+        let ada = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let room = RoomId::from(collab_types::person_room(&ada.verifying_key().to_bytes()));
+        let lost = cert(&ada, 12, false);
+        let mut revocation = tilo_user_identity::RevocationEntry {
+            user_public_key: lost.user_public_key,
+            revoked_device_public_key: lost.device_public_key,
+            revoked_at_ns: 2,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &ada).unwrap();
+        let own = vec![
+            (cert(&ada, 10, false), false),
+            (cert(&ada, 11, false), false),
+            (lost, true),
+            // Another person's device in this device's fleet file.
+            (cert(&bob, 20, false), false),
+        ];
+        let directory = WorkspaceChannelDirectory::new(
+            WorkspaceTree::default().shared(),
+            Box::new(move |_| own.clone()),
+        );
+        // A channel of the person room no grant names: the room holds no
+        // workspace to name one from.
+        let channel = collab_types::document_channel_id(
+            "so.tilo.mail",
+            &room.to_string(),
+            &collab_types::person_record_id("tilo.accounts"),
+        );
+        assert_eq!(
+            directory.allowed_devices(room, channel, None, 1_000),
+            Some(BTreeSet::from([device_key(10), device_key(11)])),
+            "the identity's devices read every channel of its person room"
+        );
+        // A room of nobody's in the fleet is no person room: nothing reads
+        // it, as before.
+        assert_eq!(
+            directory.allowed_devices(RoomId::new(), channel, None, 1_000),
+            None
+        );
     }
 }

@@ -178,6 +178,7 @@ impl Apps {
             if matches!(launch, Launch::Window { .. } | Launch::Crashed { .. }) {
                 continue;
             }
+            let launch = as_this_machine_knows_it(launch);
             if let Err(error) = self.open(&launch) {
                 tracing::warn!(%asked, %error, "an app did not start");
             }
@@ -531,6 +532,64 @@ impl AppActions for Apps {
             &Room::under(&runtime_dir(), String::new()),
         )
     }
+}
+
+/// `launch` as this machine can start it: a bare name is the app as a window
+/// announced it — an X11 client's class, a desktop entry's `StartupWMClass`,
+/// a package's own identity — so it starts the way a saved window starts, as
+/// an installed package or as the machine's app that opens windows under it.
+fn as_this_machine_knows_it(launch: Launch) -> Launch {
+    if let Launch::Package { app, open: None } = &launch
+        && let Some(started) = launch_of(app)
+    {
+        return started;
+    }
+    launch
+}
+
+/// How `app` starts again here: an installed Tilo package through the
+/// launcher, or one of the machine's own applications through the entry whose
+/// identities hold the name its window announced. `None` when this machine
+/// has neither.
+pub(crate) fn launch_of(app: &str) -> Option<Launch> {
+    if let Some(package) = installed_package(app) {
+        return Some(Launch::Package {
+            app: package,
+            open: None,
+        });
+    }
+    let scan = desktop_entry::cache::cached_scan();
+    let entry = scan.entries.iter().find(|entry| {
+        entry.id.eq_ignore_ascii_case(app)
+            || entry
+                .window_identities()
+                .iter()
+                .any(|identity| identity.eq_ignore_ascii_case(app))
+    })?;
+    Some(Launch::Host {
+        desktop_id: entry.id.clone(),
+        open: None,
+    })
+}
+
+/// The package id `app` is installed under: the id itself, or the package
+/// whose short name it is.
+fn installed_package(app: &str) -> Option<String> {
+    if let Ok(Some(installed)) = tilo_installed_apps::read_one_from_env(app) {
+        return Some(installed.package_id);
+    }
+    if app.contains('.') {
+        return None;
+    }
+    let installed = tilo_installed_apps::read_from_env().ok()?;
+    installed
+        .into_iter()
+        .find(|package| {
+            tilo_app_launch::package_identities(&package.package_id)
+                .iter()
+                .any(|identity| identity.eq_ignore_ascii_case(app))
+        })
+        .map(|package| package.package_id)
 }
 
 /// Why an action an app publishes cannot be run here: the action host an

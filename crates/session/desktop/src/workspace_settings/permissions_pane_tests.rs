@@ -899,10 +899,10 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
     }
 }
 
-/// A grant set the Permissions pane shows is the set of records the room
+/// A grant set the Permissions pane shows is the set of records the workspace
 /// holds, each read as its own sentence: the exception on the deep node
 /// first, then the broad grant it narrows, named in the words people know the
-/// room's parts by.
+/// workspace's parts by.
 #[test]
 fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};

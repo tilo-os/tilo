@@ -469,14 +469,12 @@ pub(super) fn paint_team_card(
             line_y += f64::from(line_h);
         }
         if let Some(place) = member.place.as_ref() {
-            let line = text.elide_to_width_style(place, width, &caption);
-            text.draw_style(
-                scene,
-                &line,
-                colors.text_dim,
-                transform.pre_translate((text_x, line_y).into()),
-                None,
-                &caption,
+            let facts = place.facts();
+            let face = ui::widget::FactsFace::new(&facts);
+            let height = face.height(text, theme);
+            face.paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                Rect::from_origin_size((text_x, line_y), (f64::from(width), height)),
             );
         }
     }
@@ -1030,7 +1028,7 @@ pub(super) fn music_transport(card: Rect, stage: Stage) -> Vec<(MusicAction, Rec
 }
 
 /// The playhead's track under the song's lines, and where the lines have
-/// room.
+/// workspace.
 fn music_track(card: Rect) -> Rect {
     let y = card.y1 - PAD - CONTROL_SIDE - 12.0 - TRACK;
     Rect::new(card.x0 + PAD, y, card.x1 - PAD, y + TRACK)

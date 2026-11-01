@@ -23,8 +23,8 @@ use neighbour_wire::colorimetry::Colorimetry;
 use neighbour_wire::hdr_metadata::Hdr10Metadata;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use tilo_color_pipeline::hdr_display::HdrDisplayInfo;
 use tilo_wayland_ext::color_management::{ColorManagerState, OutputDescription};
-use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 use crate::config::Hdr;
 use crate::state::State;

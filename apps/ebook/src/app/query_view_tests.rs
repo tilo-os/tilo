@@ -406,7 +406,7 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
     assert!(
         books(&mut app).query.index_mut().take_built().is_empty()
             && !books(&mut app).query.index_mut().building(),
-        "no index is built for a write the room would refuse"
+        "no index is built for a write the workspace would refuse"
     );
     assert!(
         books(&mut app).dispatch.refused().get().is_none(),

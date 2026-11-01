@@ -844,7 +844,7 @@ pub fn share_control_socket(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
 /// The mount path is an implementation detail of where the driver put it,
 /// and a misleading one: the demo mounts under `/var/tmp`, and a trail
 /// that spells it out tells a reader they are looking at scratch space on
-/// somebody's laptop - the opposite of a folder that belongs to the room.
+/// somebody's laptop - the opposite of a folder that belongs to the workspace.
 /// The mount's own final component is the name the workspace was given.
 ///
 /// One function because the places sidebar and the breadcrumb name the

@@ -245,7 +245,7 @@ pub struct CaptureScene {
     /// A stand-in for this device's disk, for the storage capture.
     pub storage_capacity: Option<os_actions::DiskCapacity>,
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
-    /// A room bridged to Discord, and where the person's account there
+    /// A workspace bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
     pub linked_account: Option<ui::linked_accounts::LinkState>,
     /// The person's trusted devices, as a stand-in for the host's device
@@ -336,7 +336,7 @@ pub enum MobileSample {
     Puk,
 }
 
-/// A capture's room bridged to Discord, its person's account standing as
+/// A capture's workspace bridged to Discord, its person standing as
 /// the scenario says.
 pub struct CaptureBridge(pub ui::linked_accounts::LinkState);
 

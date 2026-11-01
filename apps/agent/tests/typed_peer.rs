@@ -23,11 +23,11 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_agent::wire::Link;
 use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
 
-const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
+const TEST_WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
 
-pub const fn room() -> uuid::Uuid {
-    TEST_ROOM
+pub const fn workspace() -> uuid::Uuid {
+    TEST_WORKSPACE
 }
 
 fn device_key(handle: &str) -> SigningKey {
@@ -56,11 +56,11 @@ pub fn endpoint_identity(handle: &str) -> CertifiedEndpointIdentity {
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).expect("root signs test device");
     let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: TEST_ROOM.to_string(),
+        workspace_id: TEST_WORKSPACE.to_string(),
         device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
         proof: device
             .sign(&runtime_identity::collaboration_join_signing_bytes(
-                &TEST_ROOM.to_string(),
+                &TEST_WORKSPACE.to_string(),
             ))
             .to_bytes()
             .to_vec(),
@@ -142,7 +142,7 @@ impl TypedPeer {
 ///
 /// # Panics
 ///
-/// Panics if the deterministic test room cannot be configured or its native
+/// Panics if the deterministic test workspace cannot be configured or its native
 /// collaboration broker cannot bind `path`.
 pub fn spawn_with_agent_actions(
     path: &Path,
@@ -159,7 +159,7 @@ pub fn spawn_with_agent_actions(
 /// As [`spawn_with_agent_actions`].
 #[allow(
     clippy::too_many_lines,
-    reason = "builds the whole agent test room in one place"
+    reason = "builds the whole agent test workspace in one place"
 )]
 pub fn spawn_with_agent_grants(
     path: &Path,
@@ -177,12 +177,12 @@ pub fn spawn_with_agent_grants(
     };
     let mut workspace = shell::shell::state::Workspace::in_room(
         shell::shell::state::WorkspaceId(1),
-        shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap(),
-        "Agent integration room",
+        shell::shell::state::RoomId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
+        "Agent integration workspace",
     );
     workspace.set_owner(principal.clone());
     let owner = tilo_action_policy::Subject::person(principal);
-    // Operators answer in the room's documents.
+    // Operators answer in the workspace's documents.
     workspace.admit_agent_preset(
         "scribe",
         tilo_action_policy::roles::AgentPreset::Operator,
@@ -244,7 +244,7 @@ pub fn spawn_with_agent_grants(
         ));
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device
-    // enrollment, room membership, and exact app authority remain separate.
+    // enrollment, workspace membership, and exact app authority remain separate.
     for host in ["ada", "photos", "files"] {
         workspace.admit_agent_preset(
             host,

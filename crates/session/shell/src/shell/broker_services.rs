@@ -2112,19 +2112,18 @@ impl NativeOwnDevice {
 impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
     fn invoke(
         &self,
-        caller: &tilo_actions::remote::Caller,
-        checked: &tilo_actions::remote::own_device::Checked,
-        request: &tilo_actions::remote::InvokeRequest,
+        _caller: &tilo_actions::remote::Caller,
+        _checked: &tilo_actions::remote::own_device::Checked,
+        _request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<
         tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>,
         tilo_actions::remote::ActionHostError,
     > {
-        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
-            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
-        };
-        self.0
-            .invoke_own_device(person, checked, request)
-            .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
+        // Running an action on another of the person's devices is the device
+        // engine's, which this session does not hand actions to yet.
+        Err(tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "actions run on this device only".into(),
+        })
     }
 
     fn ask_person(

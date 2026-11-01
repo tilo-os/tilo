@@ -458,7 +458,7 @@ struct DeliveredAppearance {
     window: ui::WindowAppearance,
     theme: ui::theme::ThemeDocument,
     network: Option<HostNetworkStatus>,
-    room: Option<ui::room_sync::RoomSync>,
+    room: Option<ui::workspace_sync::WorkspaceSync>,
 }
 
 impl AppearanceDelivery {
@@ -498,11 +498,11 @@ impl AppearanceDelivery {
     }
 
     /// [`Self::publish`], with where the room of each window stands with
-    /// its host (`room_of` its app id, [`ui::room_sync`]).
+    /// its host (`room_of` its app id, [`ui::workspace_sync`]).
     pub fn publish_with_rooms(
         &mut self,
         appearance_of: impl Fn(&str) -> ui::WindowAppearance,
-        room_of: impl Fn(&str) -> Option<ui::room_sync::RoomSync>,
+        room_of: impl Fn(&str) -> Option<ui::workspace_sync::WorkspaceSync>,
         theme: &ui::Theme,
         network: HostNetworkStatus,
         mut send: impl FnMut(u64, &FloatingSurfaceHostMessage),
@@ -521,12 +521,12 @@ impl AppearanceDelivery {
                     FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme);
                 if let FloatingSurfaceHostMessage::Appearance {
                     network_status,
-                    room_sync,
+                    workspace_sync,
                     ..
                 } = &mut message
                 {
                     *network_status = network;
-                    room_sync.clone_from(&room);
+                    workspace_sync.clone_from(&room);
                 }
                 send(*connection, &message);
                 *told = Some(DeliveredAppearance {

@@ -8,12 +8,12 @@
 //! host offers ([`ProfileModel::actions`]) and hands a choice back by id;
 //! it never carries them out itself.
 //!
-//! Where the room is connected to a service elsewhere (a Discord server it
+//! Where the workspace is connected to a service elsewhere (a Discord server it
 //! bridges), the card lists the person's account there under "Linked
 //! accounts" ([`ProfileModel::linked`]): connect it (signing in on the
 //! service's consent page), confirm the account a link from there offers
 //! (Discord's /link), or unlink it. The host runs
-//! those on the connector's room record and tells the card what came of it
+//! those on the connector's workspace record and tells the card what came of it
 //! ([`ProfileCard::set_linked`]); the card stays open meanwhile.
 
 use std::cell::RefCell;
@@ -110,7 +110,7 @@ pub struct ProfileModel {
     /// see, until they give one.
     pub ask_name: bool,
     pub actions: Vec<ProfileAction>,
-    /// The services the room is connected to, with the person's account
+    /// The services the workspace is connected to, with the person's account
     /// at each; none hides the section.
     pub linked: Vec<LinkedAccount>,
     /// How available the person says they are.
@@ -215,7 +215,7 @@ pub enum Seen {
     /// They are here: everyone sees them as the card shows.
     #[default]
     Here,
-    /// They only watch, as the room's spectator: nobody here sees them.
+    /// They only watch, as the workspace's spectator: nobody here sees them.
     Watching,
 }
 

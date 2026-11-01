@@ -440,7 +440,7 @@ pub enum DeviceMeshEffect {
     /// well, or no longer.
     #[effect(row, idempotent)]
     SetHomeRelayHosting {
-        #[param("The workspace's room id")]
+        #[param("The workspace's id")]
         room: String,
         on: bool,
     },
@@ -1485,8 +1485,8 @@ impl DeviceMeshModel {
         self.config.device_role = role;
         self.config.services.workspace_replication = role.can_serve();
         self.config.services.inbound_relay = role.can_serve();
-        // Which rooms a server holds is the rooms' own: each workspace adds
-        // it as a hosting member. The role only says how much it keeps.
+        // Which workspaces a server holds is each workspace's own call: it adds
+        // the server as a hosting member. The role only says how much it keeps.
         self.config.services.full_content_replication = role == DeviceRole::AlwaysOnServer;
         self.next_status_refresh = ui::time::now();
         true
@@ -1774,7 +1774,7 @@ impl DeviceMeshModel {
                 DeviceRole::Hybrid => "hybrid",
                 DeviceRole::AlwaysOnServer => "always-on",
             },
-            // Rooms add this device as a host themselves; it binds none.
+            // Workspaces add this device as a host themselves; it binds none.
             "workspace_ids": Vec::<u64>::new(),
             "replication": match self.common_replication() {
                 ReplicationIntent::WorkspaceOnly => "workspace-only",
@@ -1847,7 +1847,7 @@ impl DeviceMeshModel {
         arguments.insert("device".into(), candidate.device.clone().into());
         arguments.insert("service".into(), candidate.service.clone().into());
         if target == PairingTarget::HomePeer {
-            // A new home server hosts no room yet: each workspace adds it.
+            // A new home server hosts no workspace yet: each workspace adds it.
             arguments.insert("workspace_ids".into(), Vec::<u64>::new().into());
         }
         // Choosing the button that shows the device's code is the person's

@@ -526,7 +526,7 @@ struct World {
     /// of the page answers with this content address; `None` publishes
     /// neither.
     browser: Option<String>,
-    /// The room also runs tilolang Board and Views, whose hosts take programs,
+    /// The workspace also runs tilolang Board and Views, whose hosts take programs,
     /// and the Tasks tracker records the run's steps.
     tilolang: bool,
     /// What each `run-block` answers, by a word its source holds.

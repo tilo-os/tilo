@@ -49,7 +49,7 @@ impl PlaylistItem {
     }
 }
 
-/// A playlist everyone in the room sees. Its videos are the library's
+/// A playlist everyone in the workspace sees. Its videos are the library's
 /// playlist items that name it, in their order.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 #[model(check = Playlist::valid)]
@@ -135,7 +135,7 @@ impl SharedTransport {
     }
 }
 
-/// The library everyone in the room shares.
+/// The library everyone in the workspace shares.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Library {
     /// Playlists
@@ -163,7 +163,7 @@ fn valid_ref(media_ref: &str) -> bool {
 impl Library {
     /// Create shared playlist.
     ///
-    /// A playlist everyone in the room sees.
+    /// A playlist everyone in the workspace sees.
     #[action]
     pub fn create_playlist(&mut self, cx: &mut ActionCx, #[param("Playlist name")] name: NonBlank) {
         self.playlists.push(

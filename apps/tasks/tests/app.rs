@@ -221,8 +221,8 @@ fn a_note_picked_by_its_title_is_linked_as_it_reads() {
 #[test]
 fn a_link_opens_in_the_record_it_names() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
-    env.set("TILO_WORKSPACE_ID", room);
+    let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    env.set("TILO_WORKSPACE_ID", workspace);
     let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
     let _served = ui::RemoteActions::enter(
         door.clone(),
@@ -282,7 +282,7 @@ fn a_link_opens_in_the_record_it_names() {
         );
         assert_eq!(
             asked.target,
-            reference.open_target(room, "so.tilo.tasks", record)
+            reference.open_target(workspace, "so.tilo.tasks", record)
         );
     }
 }
@@ -643,7 +643,7 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
         "{shown:?}"
     );
 
-    // An agent's: the one handed to the room's agent.
+    // An agent's: the one handed to the workspace's agent.
     choose(&mut app, "An agent's");
     let shown = rows(&mut app);
     assert_eq!(shown.len(), 1, "one issue is an agent's: {shown:?}");
@@ -781,8 +781,8 @@ fn notes_door() -> ui::tilo_actions::remote::TestHost {
 fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
     let mut env = tilo_test_env::ScopedEnv::new();
-    let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
-    env.set("TILO_WORKSPACE_ID", room);
+    let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    env.set("TILO_WORKSPACE_ID", workspace);
     let door = std::sync::Arc::new(notes_door());
     let _served = ui::RemoteActions::enter(
         door.clone(),
@@ -820,7 +820,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
     assert_eq!(
         asked[0].target,
-        notebook.action_target(room, tasks::NOTES, None, "create-page")
+        notebook.action_target(workspace, tasks::NOTES, None, "create-page")
     );
     assert_eq!(
         asked[0].argument,

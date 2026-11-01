@@ -85,7 +85,7 @@ session-displays-next = Nächste Bildschirmanordnung
 session-displays-set = Bildschirme anordnen
 session-displays-open-sheet = Wählen, wo der Schreibtisch erscheint
 session-displays-close-sheet = Das Bildschirmfenster schließen
-session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erweitern, spiegeln, eingebaut oder extern
+session-display-builtin = Eingebauter Bildschirm
 session-clipboard = Zwischenablage
 session-clipboard-paste-files = Dateien hier einfügen
 session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
@@ -125,3 +125,7 @@ device-wake-not-rejoined = { $device } ist nicht aufgewacht
 device-wake-not-rejoined-body = Es hat ein Aufwecksignal bekommen, ist aber nicht zurück. Vielleicht ist es aus oder hat keinen Strom.
 device-wake-failed = { $device } konnte nicht aufgeweckt werden
 device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet werden.
+
+## Was ein Screenreader über einen Zeiger sagt: wem er gehört und über
+## welchem Fenster er steht.
+people-pointer-where = { $who } ist in { $where }

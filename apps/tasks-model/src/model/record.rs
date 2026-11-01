@@ -39,7 +39,7 @@ pub struct Tracker {
     /// after a merge is past every issue either side made.
     #[model(readonly)]
     pub numbers: Counter,
-    /// Tasks of the workspace's room already imported, by their id: an
+    /// Tasks of the workspace already imported, by their id: an
     /// imported task is never imported again, even after its issue is
     /// deleted.
     #[model(readonly)]
@@ -1603,7 +1603,7 @@ impl Tracker {
         Ok(())
     }
 
-    /// Import tasks the workspace's room kept before the tracker. A task
+    /// Import tasks the workspace kept before the tracker. A task
     /// already imported is left alone.
     #[action(housekeeping, writes = issues)]
     pub fn import(&mut self, tasks: Vec<Imported>) {

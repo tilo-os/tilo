@@ -3536,9 +3536,9 @@ pub(crate) struct RecordActionState {
     /// Changes the room refused and the record withdrew, not yet told to
     /// the app that holds it ([`crate::record::RecordStore::take_refusals`]).
     pub(crate) refusals: Vec<crate::record::RecordRefusal>,
-    /// What windows said they did, held until the room keeps it
+    /// What windows said they did, held until the workspace keeps it
     /// ([`crate::record::RecordStore::hold_notice`]).
-    pub(crate) notices: crate::record::RoomNotices,
+    pub(crate) notices: crate::record::WorkspaceNotices,
 }
 impl Default for RecordActionState {
     fn default() -> Self {
@@ -3549,7 +3549,7 @@ impl Default for RecordActionState {
             statuses: HashMap::new(),
             answered: HashMap::new(),
             refusals: Vec::new(),
-            notices: crate::record::RoomNotices::default(),
+            notices: crate::record::WorkspaceNotices::default(),
         }
     }
 }

@@ -177,9 +177,10 @@ impl App {
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }
-        // Writes this device holds for the room's hosts, which none of them
-        // carries now or kept: not yet synced, as the room's sync says.
-        if let Some(unsynced) = crate::room_sync::unsynced_status() {
+        // Writes this device holds for the workspace's hosts, which none of
+        // them carries now or kept: not yet synced, as the workspace's sync
+        // says.
+        if let Some(unsynced) = crate::workspace_sync::unsynced_status() {
             return Some(Cow::Owned(unsynced));
         }
         // A change still on its way to the history says nothing.
@@ -672,6 +673,14 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
         let mut status_changed = false;
         let mut sends = vec![];
         for entry in &mut self.owners {
+            if !entry.publishes {
+                // A record this app only reads: what changes in it here —
+                // the in-memory replica's genesis among it — is never sent.
+                // The identity service signs no change of another app's
+                // record, and a refused signature would stop the whole
+                // bridge instead of this record alone.
+                continue;
+            }
             if entry.opening {
                 if !manager.document_route_publishable(&entry.route) {
                     // Its whole document goes out once the route opens.

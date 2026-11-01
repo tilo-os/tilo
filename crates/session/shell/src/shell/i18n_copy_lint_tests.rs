@@ -26,16 +26,8 @@ const ALLOWED: &[(&str, &str)] = &[
         "the application broker is not running",
     ),
     (
-        "shell/remote_action_link.rs",
-        "the peer answered with an unexpected message",
-    ),
-    (
-        "shell/remote_action_link.rs",
-        "the peer did not answer in time",
-    ),
-    (
-        "shell/remote_action_link.rs",
-        "the peer did not finish the action in time",
+        "shell/broker_services.rs",
+        "actions run on this device only",
     ),
     ("shell/foreign_ask.rs", "the device did not answer in time"),
     (

@@ -4,8 +4,8 @@ use super::{
 };
 use tilo_sort::CompactSort as _;
 
-/// Select the room index. Malformed or conflicted metadata fails closed;
-/// only an entirely absent index is created.
+/// Select the workspace's record index. Malformed or conflicted metadata
+/// fails closed; only an entirely absent index is created.
 fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     match object_at(doc, &ROOT, INDEX, ObjType::Map) {
         ObjectAt::Missing => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
@@ -21,10 +21,11 @@ fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
     }
 }
 
-/// Bring a record name into this room. Keyed by record id (not appended
-/// to a list) so two machines referencing the same name concurrently
-/// converge on one index entry. The document it resolves to remains
-/// room-scoped; this is not a cross-room data grant.
+/// Bring a record name into this workspace. Keyed by record id (not
+/// appended to a list) so two machines referencing the same name
+/// concurrently converge on one index entry. The document it resolves to
+/// remains within this workspace's scope; this is not a grant to another
+/// workspace.
 pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
@@ -57,8 +58,8 @@ pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool
     }
 }
 
-/// Drop a record's reference from this room. The record itself is
-/// untouched — another room may hold an independently scoped replica.
+/// Drop a record's reference from this workspace. The record itself is
+/// untouched — another workspace may hold an independently scoped replica.
 pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
     let Some(idx) = index_ro(doc) else {
         return false;
@@ -69,7 +70,7 @@ pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
     }
 }
 
-/// Whether this room references `id`.
+/// Whether this workspace references `id`.
 pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
     index_ro(doc).is_some_and(|idx| {
         let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
@@ -81,9 +82,10 @@ pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
     })
 }
 
-/// Every well-formed record this room references.  This is retained for
-/// callers that already have their own work bound; hosts that learn a
-/// room supplied index should use [`discoverable_references`] instead.
+/// Every well-formed record this workspace references.  This is retained
+/// for callers that already have their own work bound; hosts that learn a
+/// collaborator-supplied index should use [`discoverable_references`]
+/// instead.
 pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
     let Some(idx) = index_ro(doc) else {
         return Vec::new();
@@ -104,9 +106,9 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
     out
 }
 
-/// A deterministic, resource-bounded view of collaborator-supplied room
+/// A deterministic, resource-bounded view of collaborator-supplied record
 /// names.  It reads at most a small fixed prefix of the CRDT map and
-/// returns at most [`super::MAX_DISCOVERED_ROOM_RECORDS`] valid entries.
+/// returns at most [`super::MAX_DISCOVERED_RECORDS`] valid entries.
 /// It does **not** open records, create persistence, or join record
 /// routes; the caller must make that explicit after choosing a record.
 pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
@@ -115,7 +117,7 @@ pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
     };
     let mut out: Vec<RecordCheckout> = doc
         .keys(&idx)
-        .take(super::MAX_ROOM_INDEX_KEYS_SCANNED)
+        .take(super::MAX_INDEX_KEYS_SCANNED)
         .filter_map(|key| {
             let id = RecordId::parse(&key)?;
             let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map) else {
@@ -127,20 +129,20 @@ pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
         })
         .collect();
     out.compact_sort();
-    out.truncate(super::MAX_DISCOVERED_ROOM_RECORDS);
+    out.truncate(super::MAX_DISCOVERED_RECORDS);
     out
 }
 
-/// Records this room holds that reference `target` under `relation` —
+/// Records this workspace holds that reference `target` under `relation` —
 /// how an app finds "the annotations for this document" without a
 /// second index.
 pub fn referencing(
-    room: &AutoCommit,
+    workspace: &AutoCommit,
     docs: &RecordSet,
     target: &RecordId,
     relation: &str,
 ) -> Vec<RecordCheckout> {
-    references(room)
+    references(workspace)
         .into_iter()
         .filter(|c| {
             docs.peek(&c.id).is_some_and(|d| {

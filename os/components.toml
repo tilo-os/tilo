@@ -137,11 +137,14 @@ files = [
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session"]
-bins = ["tilo-session"]
+packages = ["tilo-session", "tilo-window-menu"]
+bins = ["tilo-session", "tilo-window-menu"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+  # The window menu's view: the session starts it beside itself while the
+  # menu is up, so the menu is on screen exactly where its program is.
+  { from = "tilo-window-menu", to = "/usr/bin/tilo-window-menu", mode = "0755" },
 ]
 
 # The network-answers helper: search's one door to the network (exchange

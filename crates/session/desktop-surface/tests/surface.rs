@@ -2175,7 +2175,7 @@ fn a_window_restored_from_maximized_is_in_view() {
     );
 }
 
-/// One member's desk in a room whose layout is personal: a tree of its own
+/// One member's desk in a workspace whose layout is personal: a tree of its own
 /// (its own ids, its own strip) showing a Notes and a Chat window, on a
 /// screen `width` wide.
 fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
@@ -2217,7 +2217,7 @@ fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
 
 /// What a desk shows that a member's pointer can be relative to, as the
 /// browser runtime lays it out: each shown window by the record it shows
-/// (here, its app's room record) and the shown strip.
+/// (here, its app's workspace record) and the shown strip.
 fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
     let shown = handle.shown_tabs();
     let windows = handle.read(|tree| {
@@ -2260,7 +2260,7 @@ fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
     (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01
 }
 
-/// Two visitors of a room whose layout is personal, on screens of other
+/// Two visitors of a workspace whose layout is personal, on screens of other
 /// widths: their strips are their own, with ids of their own, so a pointer
 /// over one's empty desktop says where it is beside the nearest window, and
 /// lands as far beside that window on the other's desk. Said in the strip's

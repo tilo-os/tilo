@@ -63,6 +63,48 @@ fn identity_directories() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Who sits at this device, as the one id the session acts as, and the ids
+/// they went by before.
+pub(crate) struct Seat {
+    /// The person, by the id the workspaces' governance names them by: their
+    /// root key in hex, which this device's certificate carries — never the
+    /// device's own key. A computer that has no identity yet goes by the
+    /// login account at it, whom its desk is theirs as until the person sets
+    /// one up.
+    pub(crate) person: String,
+    /// The ids they went by before this device had an identity — the login
+    /// account at it, and what the caller named — under which a desk kept
+    /// from then is still theirs.
+    pub(crate) earlier: Vec<String>,
+    /// The salt this device's ids are minted under, from its own key: what
+    /// the room's governance derives to tell which device a window of the
+    /// room runs on. `None` on a computer that has no identity yet.
+    pub(crate) salt: Option<u16>,
+}
+
+/// Who sits here, read from this device's own identity as the session starts,
+/// which setup settles before the desk opens.
+pub(crate) fn seat(options: &crate::Options) -> Seat {
+    let identity = crate::sync::device_identity();
+    let person = match &identity {
+        Some(identity) => hex::encode(identity.device_cert.user_public_key),
+        None if !options.user.is_empty() => options.user.clone(),
+        None => options.person.clone(),
+    };
+    let earlier = [options.user.clone(), options.person.clone()]
+        .into_iter()
+        .filter(|id| !id.is_empty() && *id != person)
+        .collect();
+    let salt = identity.map(|identity| {
+        tilo_desktop_model::ids::device_salt_of_key(&identity.device_cert.device_public_key)
+    });
+    Seat {
+        person,
+        earlier,
+        salt,
+    }
+}
+
 /// Read who sits here at startup, and keep it current from then on. A value
 /// that cannot be watched is read where it is asked for, as before.
 ///
@@ -87,6 +129,15 @@ pub fn install() {
         }
         Err(error) => tracing::warn!(%error, "cannot watch the person's identity"),
     }
+}
+
+/// Who this device acts for in `room`: the identity its registry presents
+/// there, else the person sitting at it.
+pub(crate) fn person_in(room: &str, person: &str) -> String {
+    tilo_identity_host::registry::selected_principal_id_prompt(room)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| person.to_owned())
 }
 
 /// Put a host offer to the person: one about who they are

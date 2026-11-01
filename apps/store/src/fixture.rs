@@ -270,13 +270,13 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
     ]
 }
 
-/// A directory bot: it runs in a room on a schedule, reads Notes and posts
+/// A directory bot: it runs in a workspace on a schedule, reads Notes and posts
 /// a digest; it is never downloaded to the device.
 fn fixture_bot() -> StoreItem {
     StoreItem {
         id: "so.tilo.bot.notes-digest".into(),
         name: "Notes digest".into(),
-        description: "Posts a summary of the notes your room changed each morning.".into(),
+        description: "Posts a summary of the notes your workspace changed each morning.".into(),
         tagline: "Posts a morning summary of changed notes".into(),
         supported_languages: Vec::new(),
         categories: vec!["Bots".into()],

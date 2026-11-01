@@ -7213,7 +7213,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
 
     // Phase: a_named_peers_caret_is_labelled_with_their_name.
     // The pill over a peer's caret shows who is editing, not which machine —
-    // the room's assigned name for the peer's transport id, never the raw id
+    // the workspace's assigned name for the peer's transport id, never the raw id
     // itself (which reads as noise like `peer@5537458103208628978`).
     {
         let mut wp = drawn_focused();
@@ -7237,7 +7237,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // Phase: an_unnamed_peers_caret_is_labelled_with_its_id.
     // And a peer nobody named keeps its id on the pill: not blank, and
     // not a person who does not exist. An unlabelled caret is honest;
-    // an invented name is a claim about who is in the room.
+    // an invented name is a claim about who is in the workspace.
     {
         let mut wp = drawn_focused();
         let wp = editor(&mut wp);

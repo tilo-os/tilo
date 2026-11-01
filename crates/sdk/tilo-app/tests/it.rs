@@ -88,8 +88,6 @@ pub mod render_anchor;
 pub mod render_view;
 #[path = "replay.rs"]
 pub mod replay;
-#[path = "room_arrival.rs"]
-pub mod room_arrival;
 #[path = "scenarios.rs"]
 pub mod scenarios;
 #[path = "scroll_copy.rs"]
@@ -112,5 +110,7 @@ pub mod unreadable;
 pub mod window_content;
 #[path = "window_view.rs"]
 pub mod window_view;
+#[path = "workspace_arrival.rs"]
+pub mod workspace_arrival;
 #[path = "workspace_records.rs"]
 pub mod workspace_records;

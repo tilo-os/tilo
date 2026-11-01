@@ -39,7 +39,6 @@ blake3.workspace = true
 # Content addresses: how they are derived and what shape they have.
 tilo-content = { path = "../../system/content", default-features = false }
 libc.workspace = true
-tokio-util.workspace = true
 
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
@@ -88,8 +87,6 @@ tilo-test-env = { path = "../../dev/test-env" }
 # A test holds its own thread's wall time; other tests keep the real one.
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 word-processor = { path = "../../../apps/word-processor" }
-# Mount the production Chat factory against the certified private owner channel.
-chat = { path = "../../../apps/chat" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 settings = { path = "../../../apps/settings" }
 store = { path = "../../../apps/store" }

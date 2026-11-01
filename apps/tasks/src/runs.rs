@@ -1,7 +1,7 @@
 //! The task list: every task the tracker holds a run for, one row each.
 //!
 //! The tracker is the workspace's record, synced to every device that has
-//! the room, so a task a person's other device runs is a row here as much as
+//! the workspace, so a task a person's other device runs is a row here as much as
 //! one this device runs. A row says the step its run is in — the same chip
 //! the issue and the board show — where the run works once its agent has
 //! said so, and what the task spent of what it may cost. What the task was

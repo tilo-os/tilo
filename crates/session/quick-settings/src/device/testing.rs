@@ -9,7 +9,6 @@ use media::audio::default_node::VolumeState;
 use settings_store::hardware::QuickSettingsConfig;
 
 use super::{DeviceReads, Preferences};
-use crate::DisplayBrightness;
 use crate::actions::QsActionAvailability;
 
 /// The stand-in machine: what it reads, and every change made to it.
@@ -148,12 +147,6 @@ impl Machine {
 }
 
 impl DeviceReads for Machine {
-    fn brightness(&self) -> Option<f32> {
-        Some(self.0.lock().unwrap().brightness)
-    }
-    fn displays(&self) -> Vec<DisplayBrightness> {
-        Vec::new()
-    }
     fn bluetooth(&self) -> Option<bool> {
         Some(self.0.lock().unwrap().bluetooth)
     }

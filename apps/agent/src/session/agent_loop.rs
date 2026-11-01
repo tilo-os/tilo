@@ -413,7 +413,7 @@ pub(super) struct LoopState {
     /// Content addresses of pictures this turn's invokes answered with, to
     /// show a model that sees once the turn's results are in.
     pictures: Vec<String>,
-    /// The room's tilolang apps as this task's programs reach them.
+    /// The workspace's tilolang apps as this task's programs reach them.
     programs: program_steps::ProgramWorld,
     /// The resources this run listed on its issue as read, so each is
     /// listed once however many steps read it.

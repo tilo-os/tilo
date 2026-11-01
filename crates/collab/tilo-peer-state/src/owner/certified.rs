@@ -1,7 +1,9 @@
 //! Closed evidence from canonical, identity-pinned native enrollment.
+#[cfg(not(target_arch = "wasm32"))]
+use crate::join::JoinTransportRequest;
 use crate::join::{
-    self, JoinBootstrap, JoinTransportRequest, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
-    TransportHint, VerifiedJoin,
+    self, JoinBootstrap, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
+    VerifiedJoin,
 };
 use crate::owner::{PendingEnrollmentId, RoomId};
 use serde::{Deserialize, Serialize};

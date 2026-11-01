@@ -505,7 +505,7 @@ mod tests {
         assert!(
             !ui::framework::launch_spec::<OskShell>()
                 .attaches_runtime(&ui::launch::LaunchArgs::component()),
-            "the compositor starts the keyboard without a room; attaching would refuse it"
+            "the compositor starts the keyboard without a workspace; attaching would refuse it"
         );
     }
 

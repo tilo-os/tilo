@@ -74,7 +74,7 @@ pub fn workspace_view_descriptors(
         .workspaces
         .iter()
         .map(|workspace| WorkspaceViewDescriptor {
-            // Named by the room the workspace is, the same on every device:
+            // Named by the workspace the workspace is, the same on every device:
             // the local number is only a handle.
             id: format!("workspace.select.{}", workspace.room()),
             label: crate::i18n::t_args(

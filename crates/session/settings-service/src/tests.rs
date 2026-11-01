@@ -22,9 +22,16 @@ fn setting(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
         .cloned()
 }
 
+/// The settings service, seated at `person` as the session seats it.
+fn seated(person: &str) -> SettingsService {
+    let mut service = SettingsService::new();
+    service.seated(person, &[]);
+    service
+}
+
 fn services() -> Services {
     let mut services = Services::default();
-    services.add(Box::new(SettingsService::new("ada")));
+    services.add(Box::new(seated("ada")));
     services
 }
 
@@ -212,8 +219,8 @@ fn a_change_is_a_step_the_person_takes_back_through_the_section() {
 #[test]
 fn someone_else_cannot_take_back_a_step_that_is_not_theirs() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let mut ada = SettingsService::new("ada");
-    let mut bob = SettingsService::new("bob");
+    let mut ada = seated("ada");
+    let mut bob = seated("bob");
     bob.invoke(
         &setting_resource("appearance.high_contrast"),
         "switch",
@@ -240,10 +247,10 @@ fn someone_else_cannot_take_back_a_step_that_is_not_theirs() {
 #[test]
 fn a_change_made_elsewhere_is_published_on_the_next_poll() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let mut service = SettingsService::new("ada");
+    let mut service = seated("ada");
     service.poll();
     assert!(!service.poll(), "nothing changed");
-    let mut other = SettingsService::new("bob");
+    let mut other = seated("bob");
     other
         .invoke(
             &setting_resource("appearance.high_contrast"),

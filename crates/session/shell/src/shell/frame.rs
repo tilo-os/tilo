@@ -37,6 +37,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::workspace_sync::WorkspaceSync;
 
 fn consume_record_requests(
     chrome: &Chrome,
@@ -4386,16 +4387,14 @@ impl FrameBuilder {
         }
     }
 
-    /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host (`tilo_network_actor::room_sync`); `None` for a workspace
-    /// that syncs with no host.
+    /// Where `app_id`'s window's workspace stands with its host; `None` if none syncs.
     #[must_use]
-    pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
+    pub fn workspace_sync_for_app(&self, app_id: &str) -> Option<WorkspaceSync> {
         let person = self
             .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
-            tilo_network_actor::room_sync::told(
+            tilo_network_actor::workspace_sync::told(
                 tilo_network_actor::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),

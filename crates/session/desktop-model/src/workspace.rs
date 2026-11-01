@@ -28,11 +28,11 @@ use crate::shared_surfaces::SharedSurfaces;
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room: the
-    /// workspace *is* this room, on every device. Given once, when the
-    /// workspace is made ([`Self::new`] mints one, [`Self::in_room`] takes
-    /// the room created or joined), and never changed: read it with
-    /// [`Self::room`]. A workspace for another room is another workspace.
+    /// Durable identity of this workspace as a collaboration room: the same
+    /// value on every device. Given once, when the workspace is made
+    /// ([`Self::new`] mints one, [`Self::in_room`] takes the room created or
+    /// joined), and never changed: read it with [`Self::room`]. Joining the
+    /// same room again lands in the same workspace.
     room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
@@ -63,11 +63,11 @@ pub struct Workspace {
     /// replayed after restart.
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
-    /// Who may do what in this room: its owner (structural, `None` until the
+    /// Who may do what in this workspace: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
-    /// grant on the room's tree. Changed only through governance actions.
+    /// grant on the workspace's tree. Changed only through governance actions.
     pub policy: RoomPolicy,
-    /// What apps' code may reach outside their documents in this room:
+    /// What apps' code may reach outside their documents in this workspace:
     /// filesystem paths, file records, devices and network hosts granted
     /// through portals. Never what a person grants an agent.
     #[serde(default)]
@@ -95,12 +95,12 @@ pub struct Workspace {
     /// beside the shortcuts, one map key per schedule.
     #[serde(default)]
     pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
-    /// The room's bots, projected from its governance on every change: the
-    /// installed ones and those a member asked the room's host to run. Never
-    /// read back from a stored workspace; the room's governance is their
+    /// The workspace's bots, projected from its governance on every change: the
+    /// installed ones and those a member asked the workspace's host to run. Never
+    /// read back from a stored workspace; the workspace's governance is their
     /// one source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bots: Vec<crate::bots::RoomBot>,
+    pub bots: Vec<crate::bots::WorkspaceBot>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -108,7 +108,7 @@ pub struct Workspace {
     pub shared_surfaces: SharedSurfaces,
     /// The windows closed here and not reopened, newest last
     /// ([`crate::closed_tabs`]). This device's own history, so it is written
-    /// to no document and projected into no room: a close is undone where
+    /// to no document and projected into no workspace: a close is undone where
     /// the person closed it, with the app this device opens.
     #[serde(skip)]
     pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
@@ -119,7 +119,7 @@ pub struct Workspace {
     pub retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
-/// A workspace as stored: its policy names the room it was stored for, or is
+/// A workspace as stored: its policy names the workspace it was stored for, or is
 /// absent for a workspace that names no authority yet.
 #[derive(Deserialize)]
 struct StoredWorkspace {
@@ -214,7 +214,7 @@ pub enum PresetMutationError {
 
 /// The app id the workspace's own resources are published under.
 pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER;
-/// Granting, published on the room: a grant of the room's tree to someone.
+/// Granting, published on the workspace: a grant of the workspace's tree to someone.
 pub const GRANT_ACTION_ID: &str = "grant";
 /// Revoking one grant.
 pub const REVOKE_ACTION_ID: &str = "revoke";
@@ -227,9 +227,9 @@ pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Taking such a grant back.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 
-/// The room governance action a published governance action is, which
+/// The workspace governance action a published governance action is, which
 /// decides who may take it: granting (or assigning a grant set) is
-/// granting, revoking is revoking, saving a grant set changes the room's
+/// granting, revoking is revoking, saving a grant set changes the workspace's
 /// settings.
 #[must_use]
 pub fn governance_of(action: &str) -> Option<&'static str> {
@@ -244,7 +244,7 @@ pub fn governance_of(action: &str) -> Option<&'static str> {
 }
 
 /// The resource the workspace publishes its governance actions on, for the
-/// room `room`: the room itself (resource kind [`roles::ROOM_KIND`]).
+/// room `room`: the workspace itself (resource kind [`roles::ROOM_KIND`]).
 #[must_use]
 pub fn governance_resource_id(room: &RoomId) -> String {
     tilo_actions::remote::room_governance_resource(&room.to_string())
@@ -304,7 +304,7 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns [`WorkspaceDefaultError::NotAdministrator`] if `actor` may not
-    /// change the room's settings, or
+    /// change the workspace's settings, or
     /// [`WorkspaceDefaultError::InvalidSelection`] if `policy` names an app
     /// package the resolver rejects for `resource`.
     pub fn set_default_app_policy_as_at(
@@ -439,7 +439,7 @@ impl Workspace {
         out
     }
 
-    /// Does any app hold a grant in this room? Drives the Permissions
+    /// Does any app hold a grant in this workspace? Drives the Permissions
     /// tab's visibility.
     pub fn has_app_grants_at(&self, now: u64) -> bool {
         let live_at = Some(now);
@@ -469,7 +469,7 @@ impl Workspace {
             .collect()
     }
 
-    /// May `actor` reach `resource` with `access` under the room's sandbox?
+    /// May `actor` reach `resource` with `access` under the workspace's sandbox?
     pub fn sandbox_decide_at(
         &self,
         actor: &Actor,
@@ -529,9 +529,9 @@ impl Workspace {
         removed
     }
 
-    // Authority over the room's tree.
+    // Authority over the workspace's tree.
 
-    /// The room's node in the published tree.
+    /// The workspace's node in the published tree.
     #[must_use]
     pub fn node(&self) -> TreePath {
         self.policy.node()
@@ -563,14 +563,14 @@ impl Workspace {
         self.room
     }
 
-    /// A person's own authority in this room.
+    /// A person's own authority in this workspace.
     #[must_use]
     pub fn person_authority(&self, user: &str) -> Authority<'_> {
         Authority::person(self.policy.party(user))
     }
 
     /// A person's authority, held to the foreign-device bound when they work
-    /// from a device that is not theirs, in a room this machine does not
+    /// from a device that is not theirs, in a workspace this machine does not
     /// govern (the caller decides `foreign` accordingly).
     #[must_use]
     pub fn person_authority_on<'a>(
@@ -583,14 +583,14 @@ impl Workspace {
     }
 
     /// The authority of `subject` acting on its own (an app, or an agent no
-    /// person delegated): only what the room grants it.
+    /// person delegated): only what the workspace grants it.
     #[must_use]
     pub fn subject_authority(&self, subject: Subject) -> Authority<'_> {
         Authority::person(self.policy.party_of(subject))
     }
 
     /// The authority of a delegation (an agent, a task, a Shortcut, an app)
-    /// acting for `person`: the person's own, bounded by the grants the room
+    /// acting for `person`: the person's own, bounded by the grants the workspace
     /// holds for the delegation and by `extra` (grants it carries itself, such
     /// as an agent delegation's).
     #[must_use]
@@ -611,7 +611,7 @@ impl Workspace {
             .answer
     }
 
-    /// Whether `user` may perform the room's governance action `action` at
+    /// Whether `user` may perform the workspace's governance action `action` at
     /// `now`.
     #[must_use]
     pub fn may_govern_at(&self, user: &str, action: &str, now: u64) -> bool {
@@ -634,9 +634,9 @@ impl Workspace {
             .apply(actor, &authority, change, &context_at(now), false)
     }
 
-    /// Admit `agent` to the room with `preset`'s grants, given by
+    /// Admit `agent` to the workspace with `preset`'s grants, given by
     /// `granted_by`, without a governance check, for a host installing the
-    /// room's own state. The ids recorded.
+    /// workspace's own state. The ids recorded.
     pub fn admit_agent_preset(
         &mut self,
         agent: &str,
@@ -675,7 +675,7 @@ impl Workspace {
     }
 
     /// Record a grant without a governance check, for a host installing the
-    /// room's own state (an accepted invite, a role preset, a consent the
+    /// workspace's own state (an accepted invite, a role preset, a consent the
     /// person gave on their device). Returns its id; a grant with the same id
     /// replaces the earlier one.
     pub fn grant(&mut self, grant: Grant) -> GrantId {
@@ -707,7 +707,7 @@ impl Workspace {
     }
 
     /// Admit `user` with `role`, without a governance check (the host
-    /// installing an accepted invite or the room's genesis).
+    /// installing an accepted invite or the workspace's genesis).
     pub fn admit(&mut self, user: impl Into<UserId>, role: Role) {
         let user = user.into();
         if self.is_owner(&user) {
@@ -777,7 +777,7 @@ impl Workspace {
     }
 
     /// Whether `user` is blocked: a member whose own grants deny everything
-    /// on the room.
+    /// on the workspace.
     #[must_use]
     pub fn is_blocked(&self, user: &str) -> bool {
         let person = Subject::Person(user.to_owned());
@@ -790,7 +790,7 @@ impl Workspace {
         })
     }
 
-    /// The room roster: the owner first, then the members by id.
+    /// The workspace roster: the owner first, then the members by id.
     #[must_use]
     pub fn roster(&self) -> Vec<(UserId, Role)> {
         let mut roster: Vec<(UserId, Role)> = self
@@ -808,7 +808,7 @@ impl Workspace {
         roster
     }
 
-    /// The people who may read the whole room at `now`, each with when that
+    /// The people who may read the whole workspace at `now`, each with when that
     /// lapses (Unix seconds, exclusive): `None` for its members and anyone
     /// granted until revoked, the end of a time-limited grant otherwise. A
     /// grant that ends with the session is no standing reach and is left out.
@@ -853,7 +853,7 @@ impl Workspace {
             .collect()
     }
 
-    /// The agents the room admits: those holding a live grant on the room
+    /// The agents the workspace admits: those holding a live grant on the workspace
     /// itself, with the kinds it allows them.
     #[must_use]
     pub fn agent_members_at(&self, now: u64) -> Vec<(String, KindSet)> {
@@ -875,8 +875,8 @@ impl Workspace {
         agents
     }
 
-    /// What a launch into this room hands its apps at `now`: the apps the
-    /// room's grants make authors, and the room's sandbox.
+    /// What a launch into this workspace hands its apps at `now`: the apps the
+    /// workspace's grants make authors, and the workspace's sandbox.
     #[must_use]
     pub fn launch_grants(&self, now: u64) -> collab_types::caps::LaunchGrants {
         let mut authors: Vec<String> = self
@@ -897,15 +897,27 @@ impl Workspace {
         }
     }
 
-    /// Whether application `app` is an author of the room at `now`: it may
-    /// change the room's content ([`roles::app_authorship`]).
+    /// Whether application `app` is an author of the workspace at `now`: it may
+    /// change the workspace's content ([`roles::app_authorship`]).
     #[must_use]
     pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
         self.policy.app_authors(app, &context_at(now))
     }
 
-    /// The role a person with `agent`'s reach in the room would hold: what
-    /// its grants let it change — the room, only its comments, or nothing.
+    /// Whether what `app`'s window changes in this workspace is told to that
+    /// window as the person's own change: `person` may change the workspace
+    /// through `app` at `now` and `app` is an author of it. `None` when
+    /// `person` has no place in the workspace, so nothing is told to the window.
+    #[must_use]
+    pub fn app_writes_at(&self, person: &str, app: &str, now: u64) -> Option<bool> {
+        self.role_of(person)?;
+        let changes = self.answer_at(person, &self.node().app(app), ActionKind::Undoable, now)
+            == Answer::Allow;
+        Some(changes && self.app_is_author_at(app, now))
+    }
+
+    /// The role a person with `agent`'s reach in the workspace would hold: what
+    /// its grants let it change — the workspace, only its comments, or nothing.
     /// `None` when no live grant admits it.
     #[must_use]
     pub fn agent_role_at(&self, agent: &str, now: u64) -> Option<Role> {
@@ -933,8 +945,8 @@ impl Workspace {
         })
     }
 
-    /// The grants naming a person on one node below the room — the share list
-    /// of a resource, apart from the room's roster.
+    /// The grants naming a person on one node below the workspace — the share list
+    /// of a resource, apart from the workspace's roster.
     #[must_use]
     pub fn shares_of_at(&self, node: &TreePath, now: u64) -> Vec<&Grant> {
         let cx = context_at(now);
@@ -957,7 +969,7 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// [`PresetMutationError::Refused`] when `actor` may not change the room's
+    /// [`PresetMutationError::Refused`] when `actor` may not change the workspace's
     /// settings, or [`PresetMutationError::Invalid`] when `preset` does not
     /// validate.
     pub fn save_preset_with_at(
@@ -973,7 +985,7 @@ impl Workspace {
             false,
         )?;
         preset.validate()?;
-        // A grant set is kept below no room in particular: assigning it
+        // A grant set is kept below no workspace in particular: assigning it
         // places it in this one.
         for rule in &mut preset.rules {
             rule.node = rule.node.within_room();
@@ -1024,7 +1036,7 @@ impl Workspace {
     }
 
     /// Assign a saved grant set to `subject`, as `actor` acting through
-    /// `authority`. Assigning is granting, so the room's grant action covers
+    /// `authority`. Assigning is granting, so the workspace's grant action covers
     /// every set; a grant on one set's assign node covers that set only.
     /// Each grant written is never above the actor's own. Returns the ids
     /// written.
@@ -1106,8 +1118,8 @@ pub fn preset_assign_node(room: &str, name: &str) -> TreePath {
 }
 
 impl Workspace {
-    /// A workspace in a room minted for it here: a workspace that exists is
-    /// a room that exists, minted when it is made rather than lazily.
+    /// A workspace in a room minted for it here: the room exists from the
+    /// moment the workspace does, minted when it is made rather than lazily.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self::in_room(id, RoomId::new(), name)
     }
@@ -1147,7 +1159,7 @@ impl Workspace {
         }
     }
 
-    /// A copy holding what authority decisions read — identity, the room's
+    /// A copy holding what authority decisions read — identity, the workspace's
     /// policy, sandbox, presets, defaults — and none of the layout or
     /// history: no strips, effect receipts, shortcuts, schedule
     /// claims or ownership-transfer records. For a caller that must not hold
@@ -1238,8 +1250,8 @@ impl Workspace {
 }
 
 impl Default for Workspace {
-    /// Room is minted, not left at [`RoomId::nil`] — two workspaces
-    /// built this way must not silently become the same room.
+    /// Workspace is minted, not left at [`RoomId::nil`] — two workspaces
+    /// built this way must not silently become the same workspace.
     fn default() -> Self {
         let room = RoomId::new();
         Self {

@@ -12,7 +12,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
+use settings_store::hardware::{
+    ActionChord, KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError,
+};
 use tilo_sheets::Seat as _;
 use tilo_sheets::shortcut_guide::{Faces, Guide, GuideEffect, GuideSeat, Modality};
 use ui::ControllerFamily;
@@ -142,6 +144,22 @@ impl ShortcutGuide {
             }
         }
         self.refresh();
+    }
+
+    /// Let the table follow `chords`, the keys the armed shortcuts answer:
+    /// the keys claim them, the guide lists what each runs, and the apps'
+    /// shortcuts step aside for them. Nothing is written to the person's
+    /// settings: the chords are the shortcuts' own, taken from the rooms
+    /// they are saved in, and the table is what shows them.
+    pub(crate) fn follow_trigger_chords(&self, chords: Vec<ActionChord>) {
+        let mut table = self.table.borrow().clone();
+        if !tilo_action_broker::automation::replace_trigger_chords(&mut table, chords) {
+            return;
+        }
+        *self.table.borrow_mut() = table.clone();
+        if let Some(portal) = &self.portal {
+            portal.set_shortcut_table(table);
+        }
     }
 
     /// Give the shortcut `action` its keys: `chord`, once the table accepts

@@ -1,6 +1,6 @@
 //! A workspace's layout record, written by each device, and what a change
-//! to it did to windows its writer did not make, which is what a room
-//! decides; a room document's other maps merge by key.
+//! to it did to windows its writer did not make, which is what a workspace
+//! decides; a workspace document's other maps merge by key.
 
 #![allow(
     clippy::unwrap_used,
@@ -173,7 +173,7 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
     );
 }
 
-/// The room's owner holds what they made on its desktop as every member
+/// The workspace's owner holds what they made on its desktop as every member
 /// does: their windows are not released to whoever writes there.
 #[test]
 fn the_rooms_owner_is_among_its_members() {

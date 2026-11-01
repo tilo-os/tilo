@@ -68,7 +68,7 @@ mod workspace_activity {
         ActivitySnapshot::new(desktop, doc).unwrap()
     }
 
-    // Copied native causal regression, using actual admitted room topology
+    // Copied native causal regression, using actual admitted workspace topology
     // commits and the same private playback/keyboard controller.
     #[test]
     fn replay_materializes_real_causal_layouts() {
@@ -93,7 +93,7 @@ mod workspace_activity {
         let record_heads_before = records
             .read(&record.id, |doc| doc.clone().get_heads())
             .unwrap();
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.begin_view(tree.active.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
@@ -164,14 +164,14 @@ mod workspace_activity {
             }
         }
         let mut tree = causal_room();
-        // Layout/setup commits are omitted from the feed; rename the room so
+        // Layout/setup commits are omitted from the feed; rename the workspace so
         // there is a Change row to select and attempt restore against.
-        // `causal_room` is a room projection doc (not a desktop_doc workspaces
-        // list), so write the name on the room document directly.
+        // `causal_room` is a workspace projection doc (not a desktop_doc workspaces
+        // list), so write the name on the workspace document directly.
         tree.workspaces[0].name = "Design studio".into();
         tree.doc.put(ROOT, "name", "Design studio").unwrap();
         tilo_resource::history::commit_stamped(&mut tree.doc);
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
         assert!(
             !pane.entries().is_empty(),
@@ -207,7 +207,7 @@ mod workspace_activity {
         let broken_id = HistoryEntryId::from_bytes(bytes);
         tree.doc.put(ROOT, "room", room.to_string()).unwrap();
         tree.doc.commit_with(CommitOptions::default().with_time(7));
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
         assert!(pane.entries().iter().any(|entry| entry.id == broken_id));
         assert!(

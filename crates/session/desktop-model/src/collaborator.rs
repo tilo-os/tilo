@@ -12,7 +12,7 @@ pub struct Collaborator {
     pub active_tab: Option<u64>,
     /// The id of the app they are in, as their live presence says: what
     /// tells where they are when [`Self::active_tab`] is not a window here,
-    /// as in a room whose layout is personal.
+    /// as in a workspace whose layout is personal.
     #[serde(default)]
     pub in_app: Option<String>,
     /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
@@ -27,7 +27,7 @@ pub struct Collaborator {
     /// `Workspace::role_of`, never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
-    /// Named by the room but has not taken part yet.
+    /// Named by the workspace but has not taken part yet.
     #[serde(default)]
     pub invited: bool,
     /// The publishing peer's Iroh handle, so a departure (which names

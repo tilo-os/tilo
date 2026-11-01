@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// A workspace outranks home, and both outrank the filesystem: the trail
 /// should name the most specific place the reader is actually in. For a
 /// workspace that is the whole point of it - the folder belongs to the
-/// room rather than to an account - and a reader shown the mount path
+/// workspace rather than to an account - and a reader shown the mount path
 /// instead has been told the opposite, that this is scratch space on
 /// somebody's machine. Where the driver put the mount is not the subject.
 ///

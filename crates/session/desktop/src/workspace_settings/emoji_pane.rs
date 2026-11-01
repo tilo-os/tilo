@@ -1,10 +1,10 @@
 //! The Emoji pane of Workspace Settings: the workspace's own emoji, which
 //! every app of the workspace draws for `:name:`, each with its picture, its
-//! name and who added it. Add emoji is live for whoever the room's grants let
+//! name and who added it. Add emoji is live for whoever the workspace's grants let
 //! add one; Remove stands on each emoji the acting person may remove: their
 //! own, or anyone's as a moderator.
 //!
-//! The pane decides nothing itself. It reads what the room's grants answer
+//! The pane decides nothing itself. It reads what the workspace's grants answer
 //! for the record's actions at the node of the app that keeps the record
 //! ([`EmojiGrants::of`]), the node every door decides those actions at, and
 //! reports typed hits; the host applies them as the record's actions, which
@@ -51,7 +51,7 @@ pub struct EmojiEntry {
     pub added_by: String,
 }
 
-/// What the acting person may do with the workspace's emoji, as the room's
+/// What the acting person may do with the workspace's emoji, as the workspace's
 /// grants answer now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
@@ -83,7 +83,7 @@ impl Removal {
     }
 }
 
-/// The node the room's grants decide the record's action `verb` at, below
+/// The node the workspace's grants decide the record's action `verb` at, below
 /// `ws`'s room, and the kind of action it is, as the record declares it.
 /// `None` for a verb the record does not declare.
 #[must_use]
@@ -108,7 +108,7 @@ pub fn emoji_action(
 }
 
 impl EmojiGrants {
-    /// What the room's grants let `user` do with `ws`'s emoji at `now`
+    /// What the workspace's grants let `user` do with `ws`'s emoji at `now`
     /// (Unix seconds).
     #[must_use]
     pub fn of(ws: &Workspace, user: &str, now: u64) -> Self {

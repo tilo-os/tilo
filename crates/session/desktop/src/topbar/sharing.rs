@@ -148,7 +148,7 @@ impl TopBarChrome {
             || self.sharing_summary().0 > 0
     }
 
-    /// People following the room without taking part, from the host.
+    /// People following the workspace without taking part, from the host.
     pub(super) fn watching(&self) -> u32 {
         self.chrome
             .as_ref()
@@ -187,7 +187,7 @@ impl TopBarChrome {
     }
 
     /// Named viewers for disclosure prose. Transport ids are joined to the
-    /// active room's live roster through `Collaborator::session`; an unknown
+    /// active workspace's live roster through `Collaborator::session`; an unknown
     /// session remains visible under its deterministic peer handle.
     pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -532,7 +532,7 @@ pub(super) struct FaceLook {
     pub(super) scale: f64,
 }
 
-/// Cursor and avatar colours for a room, settled over the whole roster so
+/// Cursor and avatar colours for a workspace, settled over the whole roster so
 /// a peer's avatar matches the colour their cursor is drawn in elsewhere. An
 /// explicit `cursor_color` outranks anything computed; the local user takes
 /// part in the settlement (never the avatar stack) so every host agrees.

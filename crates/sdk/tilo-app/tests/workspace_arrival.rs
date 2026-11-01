@@ -1,9 +1,10 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
-//! The room's record an app keeps one of, not on this device when its
-//! window opens: the room may hold it, so the window shows what is on its
-//! way until the room's first sync, then the app's view. A window no shell
-//! hosts has only what this device has, and shows the view at once.
+//! The workspace's record an app keeps one of, not on this device when its
+//! window opens: the workspace may hold it, so the window shows what is on
+//! its way until the workspace's first sync, then the app's view. A window
+//! no shell hosts has only what this device has, and shows the view at
+//! once.
 
 use std::cell::Cell;
 
@@ -11,9 +12,9 @@ use tilo_app::advanced::Scene;
 use tilo_app::app::AppSurface;
 use tilo_app::framework::testing::{TestApp, drive_live_window};
 use tilo_app::prelude::*;
-use tilo_app::room_sync::{self, RoomSync, RoomSyncState};
 use tilo_app::winit::dpi::PhysicalSize;
 use tilo_app::winit::window::CursorIcon;
+use tilo_app::workspace_sync::{self, WorkspaceSync, WorkspaceSyncState};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -21,9 +22,9 @@ pub struct Board {
 }
 
 #[resource(
-    kind = "test.room-arrival-board",
+    kind = "test.workspace-arrival-board",
     label = "Board",
-    app = "so.tilo.test-room-arrival"
+    app = "so.tilo.test-workspace-arrival"
 )]
 impl Board {
     /// Add a card.
@@ -42,7 +43,7 @@ struct Boards;
 
 impl ResourceApp for Boards {
     type Resource = Board;
-    const ID: &'static str = "so.tilo.test-room-arrival";
+    const ID: &'static str = "so.tilo.test-workspace-arrival";
     const TITLE: &'static str = "Boards";
     const ROOM_RECORD: bool = true;
 
@@ -52,8 +53,8 @@ impl ResourceApp for Boards {
     }
 }
 
-fn sync(state: RoomSyncState) -> RoomSync {
-    RoomSync {
+fn sync(state: WorkspaceSyncState) -> WorkspaceSync {
+    WorkspaceSync {
         state,
         workspace: "Lounge".into(),
         writable: None,
@@ -63,24 +64,24 @@ fn sync(state: RoomSyncState) -> RoomSync {
 }
 
 #[test]
-fn the_rooms_record_waits_for_the_rooms_first_sync() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+fn the_workspaces_record_waits_for_its_first_sync() {
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     let mut app = TestApp::<Boards>::new().unwrap();
     app.harness().relayout();
     assert_eq!(
         VIEWS.with(Cell::get),
         0,
-        "the room may hold the record: the view waits for it"
+        "the workspace may hold the record: the view waits for it"
     );
     assert!(
-        room_sync::set(Some(sync(RoomSyncState::Synced))),
+        workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))),
         "the first sync changes what the window shows"
     );
     app.harness().relayout();
     assert!(
         VIEWS.with(Cell::get) > 0,
-        "after the first sync the room's record is here"
+        "after the first sync the workspace's record is here"
     );
 }
 
@@ -105,19 +106,19 @@ impl AppSurface for Window {
 }
 
 #[test]
-fn a_window_shows_the_rooms_record_in_the_frame_after_its_first_sync() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+fn a_window_shows_the_workspaces_record_in_the_frame_after_its_first_sync() {
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     drive_live_window::<Boards, _>(|app| {
         let mut scene = Scene::new();
         app.surface_frame(&Window, &mut scene);
-        assert_eq!(VIEWS.with(Cell::get), 0, "the view waits for the room");
-        room_sync::set(Some(sync(RoomSyncState::Synced)));
+        assert_eq!(VIEWS.with(Cell::get), 0, "the view waits for the workspace");
+        workspace_sync::set(Some(sync(WorkspaceSyncState::Synced)));
         scene.reset();
         app.surface_frame(&Window, &mut scene);
         assert!(
             VIEWS.with(Cell::get) > 0,
-            "the frame after the first sync shows the room's record"
+            "the frame after the first sync shows the workspace's record"
         );
     })
     .unwrap();
@@ -128,7 +129,7 @@ struct ButtonBoards;
 
 impl ResourceApp for ButtonBoards {
     type Resource = Board;
-    const ID: &'static str = "so.tilo.test-room-arrival";
+    const ID: &'static str = "so.tilo.test-workspace-arrival";
     const TITLE: &'static str = "Boards";
     const ROOM_RECORD: bool = true;
 
@@ -137,26 +138,26 @@ impl ResourceApp for ButtonBoards {
     }
 }
 
-/// A room whose first sync outlasts the grace shows a skeleton, then the
-/// app's view, cross-faded in and settled in the arrival's place: its
-/// buttons work from then on, as they do when the room synced at once.
+/// A workspace whose first sync outlasts the grace shows a skeleton, then
+/// the app's view, cross-faded in and settled in the arrival's place: its
+/// buttons work from then on, as they do when it synced at once.
 #[test]
 fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
-    room_sync::hosted_by_shell();
-    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
     let mut app = TestApp::<ButtonBoards>::new().unwrap();
     app.harness().relayout();
     // Past the grace, the arrival shows its skeleton.
     std::thread::sleep(tilo_app::arriving::GRACE + tilo_app::time::Duration::from_millis(50));
     app.harness().relayout();
-    assert!(room_sync::set(Some(sync(RoomSyncState::Synced))));
+    assert!(workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))));
     assert!(
         app.harness()
             .wait_until(tilo_app::time::Duration::from_secs(30), |harness| {
                 harness.a11y_node_named("board-add-card").is_some()
                     && !harness.frame_output().needs_animation_frame
             }),
-        "the view arrives and settles once the room synced"
+        "the view arrives and settles once the workspace synced"
     );
     let harness = app.harness();
     let button = harness.a11y_node_named("board-add-card").unwrap();

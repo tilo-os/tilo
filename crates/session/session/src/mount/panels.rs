@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_compositor::Compositor;
 
 use crate::controls::SessionControls;
-use crate::keys::{GuideKeys, Invocations, SessionKeys};
+use crate::keys::{DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
 use crate::{
@@ -84,6 +84,8 @@ pub(crate) struct KeyContext {
     pub(crate) displays: Option<tilo_sheets::Presentation>,
     /// Whether a desk widget has its card open, which Escape folds.
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
+    /// Whether the shell's window menu is up, which Escape closes.
+    pub(crate) menu: crate::mount::shell::MenuOpen,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -100,9 +102,10 @@ pub(crate) fn mount_controls(
         controller_keys,
         displays,
         fold,
+        menu,
     }: KeyContext,
     scale: f64,
-) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
+) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
     compositor.add_host(Box::new(Held(Rc::clone(&readout))));
     doors.add(readout);
@@ -111,17 +114,21 @@ pub(crate) fn mount_controls(
         &commands,
     )))));
     let invocations = Invocations::default();
+    let triggered = PressedChords::default();
     compositor.add_host(Box::new(SessionKeys::new(
         shortcuts,
-        Rc::clone(&invocations),
+        Presses {
+            invocations: Rc::clone(&invocations),
+            triggered: Rc::clone(&triggered),
+        },
         portal,
         guide,
-        fold,
+        DeskKeys::new(fold, menu),
         displays,
         controller,
         controller_keys,
     )));
-    (commands, invocations)
+    (commands, invocations, triggered)
 }
 
 /// The device's own backend, when the session runs one, and the quick

@@ -186,7 +186,7 @@ impl ShellOverlayHost {
         };
         let local_user = state.active_local_user();
         let tree = state.tree();
-        let mut cards = crate::shell::overview::room_cards(&tree, &local_user);
+        let mut cards = crate::shell::overview::workspace_cards(&tree, &local_user);
         let mut renamable = HashSet::new();
         let mut colors: Map<String, (u8, u8, u8)> = Map::new();
         for workspace in &tree.desktop.workspaces {

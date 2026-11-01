@@ -52,11 +52,12 @@ pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.23
 /// record is the chat of one Tilo workspace and holds no workspaces of its
 /// own: an agent conversation, a private draft and a call continuation name
 /// the workspace they belong to by this one scope.
-///
-/// The value is part of the key each private draft is stored under in the
-/// person's draft record, so it keeps the value those drafts were stored
-/// under: changing it would leave what the person already typed unfindable.
-pub(crate) const WORKSPACE_SCOPE: &str = "room";
+pub(crate) const WORKSPACE_SCOPE: &str = "workspace";
+
+/// The scope a call continuation stored before the workspace was called by
+/// its name carries. It is only ever read: a call stored then resumes all the
+/// same.
+pub(crate) const LEGACY_WORKSPACE_SCOPE: &str = "room";
 
 /// Which composer currently owns keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

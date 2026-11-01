@@ -476,7 +476,7 @@ fn person_name(st: &ChromeState, room: RoomId, person: Option<&str>) -> String {
         return t("document-import-someone");
     };
     let me = crate::shell::state::local_user_id_for_room(&room);
-    tilo_desktop::overview::room_people(
+    tilo_desktop::overview::workspace_people(
         workspace,
         &tree.desktop,
         &crate::shell::overview::ShellOverview::for_user(&me),

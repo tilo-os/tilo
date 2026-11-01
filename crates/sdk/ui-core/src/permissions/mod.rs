@@ -459,8 +459,9 @@ impl PermissionContext {
     }
 
     /// This launch's permissions with its participation changed: an
-    /// author's (`writable`, the room's Editor) or a viewer's, as the room's
-    /// grants now say ([`crate::room_sync::RoomSync::writable`]). Only for
+    /// author's (`writable`, the workspace's Editor) or a viewer's, as the
+    /// workspace's grants now say
+    /// ([`crate::workspace_sync::WorkspaceSync::writable`]). Only for
     /// the permissions a workspace launch made from its participation, the
     /// person a Viewer or an Editor and nothing bounding them; anything else
     /// (an owner's own app, a delegation) is `None` and stays as it is. The

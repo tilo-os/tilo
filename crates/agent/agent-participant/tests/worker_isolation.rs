@@ -130,7 +130,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         // A package primary uses its store namespace, not a minted identity.
         assert_eq!(ui::record::identity(&doc), None);
     } else {
-        assert_eq!(ui::record::room_scope(&doc).as_deref(), Some(ROOM));
+        assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(ROOM));
         assert_eq!(
             ui::record::identity(&doc),
             Some(ui::record::RecordCheckout::new(default, kind))
