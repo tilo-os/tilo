@@ -25,6 +25,37 @@ const OPENING: Duration = Duration::from_secs(90);
 /// One display's refresh, while waiting for the lock screen to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
+/// The key that wakes the lock screen and types nothing into it: shift on its
+/// own changes no letter and moves no control.
+const WAKING_KEY: u32 = 42;
+
+/// How long a wait may leave the lock screen alone: it goes quiet twenty
+/// seconds after the last input, and what it draws then is faded from the
+/// screen.
+const WAKING_EVERY: Duration = Duration::from_secs(5);
+
+/// Keeps the lock screen awake while a test waits on it: a wait of its own
+/// must see what the screen draws, not the quiet it keeps for a person who
+/// went away.
+struct Waking {
+    at: Instant,
+}
+
+impl Waking {
+    /// A wait, starting now.
+    fn new() -> Self {
+        Self { at: Instant::now() }
+    }
+
+    /// Press the waking key if this wait has left the screen alone a while.
+    fn keep(&mut self, session: &mut Session) {
+        if self.at.elapsed() >= WAKING_EVERY {
+            tap(session, WAKING_KEY);
+            self.at = Instant::now();
+        }
+    }
+}
+
 /// Enter, as a US keyboard sends it.
 const ENTER: u32 = 28;
 
@@ -162,8 +193,10 @@ pub(super) fn until_drawn(
     was: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
     let deadline = Instant::now() + OPENING;
+    let mut waking = Waking::new();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
+        waking.keep(session);
         let now = session
             .compositor()
             .lock_drawn()
@@ -517,6 +550,364 @@ fn the_lock_screens_transport_steers_whatever_plays() {
         ["play-pause", "next"],
         "nothing plays, so nothing is asked of a player"
     );
+}
+
+/// A song the player in the quick settings plays, as the session publishes it:
+/// what the lock screen app names on its card, and what it offers to do with
+/// it.
+fn song(
+    title: &str,
+    subtitle: &str,
+    playing: bool,
+    controls: bool,
+) -> tilo_quick_settings::NowPlaying {
+    tilo_quick_settings::NowPlaying {
+        title: title.to_owned(),
+        subtitle: subtitle.to_owned(),
+        playing,
+        can_toggle: controls,
+        can_previous: controls,
+        can_next: controls,
+        ..tilo_quick_settings::NowPlaying::fixture()
+    }
+}
+
+/// How far a pixel's colour has to move for the screen to have drawn
+/// something there, rather than the same shape edge antialiased again.
+const DIFFERS: u8 = 24;
+
+/// How long a screen draws the same frame before what it drew is what it
+/// settled at: an appearance, a layout and a fade take frames to finish, and a
+/// busy machine may draw none of them for a while.
+const STILL_FOR: Duration = Duration::from_secs(1);
+
+/// The width the lock screen draws its card at, in logical pixels: the box it
+/// lays out what it shows of the session in.
+const CARD: u32 = 400;
+
+/// The pixels of `now` that differ from `was` by more than [`DIFFERS`]: their
+/// bounding box and how many there are, `None` when the two frames show the
+/// same screen.
+fn redrawn(
+    now: &tilo_compositor::Screenshot,
+    was: &tilo_compositor::Screenshot,
+) -> Option<((u32, u32, u32, u32), u32)> {
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    let mut count = 0;
+    for y in 0..now.height.min(was.height) {
+        for x in 0..now.width.min(was.width) {
+            let (Some(here), Some(there)) = (now.pixel(x, y), was.pixel(x, y)) else {
+                continue;
+            };
+            let moved = here
+                .iter()
+                .zip(there.iter())
+                .map(|(here, there)| here.abs_diff(*there))
+                .max()
+                .unwrap_or(0);
+            if moved <= DIFFERS {
+                continue;
+            }
+            count += 1;
+            bounds = Some(match bounds {
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                None => (x, y, x, y),
+            });
+        }
+    }
+    bounds.map(|bounds| (bounds, count))
+}
+
+/// Step the session until `display` has drawn the same frame for a while, and
+/// return it: what the screen settled at.
+///
+/// A screen paints in stages, and a locked output shows the frame it has until
+/// the next arrives: what a screen drew of a reading is the frame it stops
+/// changing at, not the first one that differs.
+#[track_caller]
+fn until_still(session: &mut Session, display: &str) -> tilo_compositor::Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut waking = Waking::new();
+    let mut last = session
+        .compositor()
+        .screenshot(display)
+        .expect("screenshot");
+    let mut since = Instant::now();
+    loop {
+        waking.keep(session);
+        session.step(REFRESH).expect("a turn of the session");
+        let now = session
+            .compositor()
+            .screenshot(display)
+            .expect("screenshot");
+        if redrawn(&now, &last).is_some() {
+            since = Instant::now();
+        } else if since.elapsed() >= STILL_FOR {
+            return now;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the lock screen never stopped changing what it draws"
+        );
+        last = now;
+    }
+}
+
+/// Step the session until `display` draws something other than `was` and
+/// returns the frame it settles at: the lock screen's answer to a reading.
+///
+/// The screen lays out and paints a reading over the frames that follow it, so
+/// a frame that differs from `was` is not yet what it drew of it.
+#[track_caller]
+fn until_redrawn(
+    session: &mut Session,
+    display: &str,
+    was: &tilo_compositor::Screenshot,
+) -> tilo_compositor::Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut waking = Waking::new();
+    let mut last = was.clone();
+    let mut since = Instant::now();
+    loop {
+        waking.keep(session);
+        let now = session
+            .compositor()
+            .screenshot(display)
+            .expect("screenshot");
+        if redrawn(&now, was).is_some() {
+            if redrawn(&now, &last).is_some() {
+                since = Instant::now();
+            } else if since.elapsed() >= STILL_FOR {
+                return now;
+            }
+        } else {
+            since = Instant::now();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the lock screen drew nothing new for the reading the session published"
+        );
+        last = now;
+        session.step(REFRESH).expect("a turn of the session");
+    }
+}
+
+/// Step the session until the lock's reading says `media`, which is what the
+/// session publishes for the screen: the reading any app of it reads.
+#[track_caller]
+fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool) {
+    let deadline = Instant::now() + OPENING;
+    let mut waking = Waking::new();
+    loop {
+        if session
+            .read(LOCK)
+            .is_some_and(|reading| media(&reading["media"]))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session published no such reading of what plays"
+        );
+        waking.keep(session);
+        session.step(REFRESH).expect("a turn of the session");
+    }
+}
+
+/// The display the lock screen shows on.
+const DISPLAY: &str = "HEADLESS-1";
+
+/// A locked session whose lock screen is the app, with a player the session
+/// hosts: the quick settings it follows what plays through, and what the
+/// player was asked.
+struct Locked {
+    /// The window on the desk the lock came over, which keeps the session's
+    /// compositor showing a desk under it.
+    _client: TestClient,
+    session: Session,
+    host: Rc<FixtureHost>,
+    asked: Rc<RefCell<Vec<String>>>,
+    /// What the app drew of the session with nothing playing.
+    quiet: tilo_compositor::Screenshot,
+    _home: tempfile::TempDir,
+}
+
+impl Locked {
+    /// Lock a session whose lock screen is the app this repository builds,
+    /// and read the screen it drew with nothing playing.
+    fn new() -> Self {
+        let home = private_home();
+        let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let mut session = Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                quick_settings: Some(QuickSettings::Lent(
+                    Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
+                )),
+                services: vec![Box::new(PlayerService {
+                    asked: Rc::clone(&asked),
+                })],
+                user: "ada".to_owned(),
+                verifier: std::sync::Arc::new(Sesame),
+                collab: false,
+                action_plane: ActionPlane::At(home.path().join("collab.sock")),
+                surfaces: vec![lock_screen()],
+                ..Options::default()
+            },
+            &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        )
+        .expect("session");
+        let client = mapped(&mut session, "org.example.Terminal");
+        let desk = pictures(&mut session, &[DISPLAY]);
+        invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+        pump(&mut session, &mut [], |session, _| {
+            session.compositor().locked()
+        });
+        until_drawn(&mut session, &[DISPLAY], &desk);
+        let quiet = until_still(&mut session, DISPLAY);
+        Self {
+            _client: client,
+            session,
+            host,
+            asked,
+            quiet,
+            _home: home,
+        }
+    }
+
+    /// Play `now` in the player the session follows and read the screen the
+    /// app drew in answer to what it drew in `was`: the session says what
+    /// plays in its reading, and the app draws that reading.
+    fn plays(
+        &mut self,
+        now: Option<tilo_quick_settings::NowPlaying>,
+        media: impl Fn(&serde_json::Value) -> bool,
+        was: &tilo_compositor::Screenshot,
+    ) -> tilo_compositor::Screenshot {
+        self.host.update(|state| state.now_playing = now);
+        until_media(&mut self.session, media);
+        until_redrawn(&mut self.session, DISPLAY, was)
+    }
+}
+
+/// What plays reaches the lock screen the session runs as an app of its own,
+/// and the transport it draws steers the player the session hosts.
+///
+/// The screen is a process of its own, so what it draws is read from its
+/// frame: each change of the reading the session publishes changes the card
+/// it drew, and the card goes when nothing plays.
+#[test]
+fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
+    let _settled = ui::motion::testing::settled();
+    // The session publishes the time it is to the minute and the screen draws
+    // it: held at the minute the test runs in, the screen changes for what
+    // plays and for nothing else.
+    let at = ui::time::wall()
+        .checked_sub(Duration::from_secs(
+            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
+                .expect("a second of the minute"),
+        ))
+        .expect("the minute the test runs in");
+    ui::time::testing::with_wall(at, || {
+        let mut locked = Locked::new();
+        let quiet = locked.quiet.clone();
+
+        // A track starts playing: the session publishes it with the lock, and the
+        // app draws the card it was given, under the clock and the field, no
+        // wider than the card the screen has.
+        let playing = locked.plays(
+            Some(song("Clair de lune", "Claude Debussy", true, true)),
+            |media| {
+                media["title"] == "Clair de lune"
+                    && media["playing"] == true
+                    && media["can_toggle"] == true
+                    && media["can_next"] == true
+                    && media["can_previous"] == true
+            },
+            &quiet,
+        );
+        let ((x0, _, x1, _), drawn) = redrawn(&playing, &quiet).expect("the app drew what plays");
+        assert!(
+            drawn > 500,
+            "the lock screen app drew the song, and not {drawn} pixels of it"
+        );
+        assert!(
+            x1 - x0 <= CARD + 40,
+            "the app drew the card of what plays, {} wide, and the ground around it",
+            x1 - x0
+        );
+        assert!(
+            u32::abs_diff(x0 + x1, u32::try_from(WIDTH).unwrap()) <= 80,
+            "the card is centred on the screen the session shows it on: {x0}..{x1}"
+        );
+        assert!(
+            quiet.pixel(2, 2) == playing.pixel(2, 2),
+            "the app drew the card on the ground it stands on, rather than repainting that ground"
+        );
+
+        // The transport the app draws asks the player the session hosts for the
+        // song it shows: the actions the screen publishes are the ones it runs.
+        let published = locked.session.surfaces().published("lock");
+        let transport = published
+            .iter()
+            .find(|published| published.action == "play-pause")
+            .unwrap_or_else(|| panic!("the lock screen app publishes no transport: {published:?}"))
+            .resource
+            .clone();
+        assert!(
+            published.iter().any(
+                |published| published.action == "next-track" && published.resource == transport
+            ),
+            "the transport is one resource of the screen's: {published:?}"
+        );
+        for action in ["play-pause", "next-track"] {
+            assert!(
+                locked
+                    .session
+                    .ask_surface("lock", &transport, action, None)
+                    .is_some(),
+                "the lock screen app runs its own {action}"
+            );
+        }
+        pump(&mut locked.session, &mut [], |_, _| {
+            locked.asked.borrow().len() == 2
+        });
+        assert_eq!(
+            *locked.asked.borrow(),
+            ["play-pause", "next"],
+            "the transport the lock screen app draws reaches the player the session hosts"
+        );
+
+        // Only the title changes: the screen draws the song its reading names.
+        let retitled = locked.plays(
+            Some(song("Nocturne", "Claude Debussy", true, true)),
+            |media| media["title"] == "Nocturne",
+            &playing,
+        );
+
+        // Only who it is by changes: the line under it is drawn too.
+        let credited = locked.plays(
+            Some(song("Nocturne", "Frédéric Chopin", true, true)),
+            |media| media["subtitle"] == "Frédéric Chopin",
+            &retitled,
+        );
+
+        // What the player can be asked changes: the screen draws the transport it
+        // is told of, and none where the player offers none.
+        let stilled = locked.plays(
+            Some(song("Nocturne", "Frédéric Chopin", false, false)),
+            |media| {
+                media["playing"] == false
+                    && media["can_toggle"] == false
+                    && media["can_next"] == false
+            },
+            &credited,
+        );
+
+        // Nothing plays: the card goes.
+        locked.plays(None, serde_json::Value::is_null, &stilled);
+    });
 }
 
 /// How far apart two pictures of a screen are, of 255: the most one cell of
