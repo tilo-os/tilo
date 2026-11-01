@@ -397,7 +397,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
     copy: async () => {},
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
-      link: invite => `https://tilo.example/#/@rooms.example/w/ROOM?pair=${identity.userPublicKey}${invite}`,
+      link: invite => `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${identity.userPublicKey}${invite}`,
       pending: async () => host.pending,
       answer: async (digest, approved) => {
         if (host.fail) throw host.fail;
@@ -425,8 +425,8 @@ test('each pairing link names a fresh invite, shown on a sheet that can copy it,
   await pairing.actions.perform(PAIR.id);
   await pairing.actions.perform(PAIR.id);
   assert.deepEqual(pairing.sheets.map(sheet => sheet.link), [
-    `https://tilo.example/#/@rooms.example/w/ROOM?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
-    `https://tilo.example/#/@rooms.example/w/ROOM?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
+    `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
   ]);
   assert.deepEqual(pairing.sheets.map(sheet => sheet.expiresAt), [10 * 60 * 1000, 10 * 60 * 1000]);
   assert.equal(await pairing.sheets[0].copy(), true);

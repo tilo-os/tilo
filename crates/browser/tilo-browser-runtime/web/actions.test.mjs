@@ -11,7 +11,7 @@ async function until(check, what) {
   }
 }
 
-const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
+const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const HOST = 'ab'.repeat(32);
 const PAGE = 'cd'.repeat(32);
 const USER = 'ee'.repeat(32);
@@ -52,7 +52,7 @@ function fakeHost({hold = () => false} = {}) {
     get runs() { return runs; },
     release() { for (const request of held.splice(0)) finish(request); },
     sendRemoteAction(room, to, frame) {
-      assert.equal(room, ROOM);
+      assert.equal(room, WORKSPACE);
       assert.equal(to, HOST);
       const message = JSON.parse(frame).message;
       sent.push(message);
@@ -60,7 +60,7 @@ function fakeHost({hold = () => false} = {}) {
         const {correlation, query} = message.CatalogueRequest;
         const rows = ROWS.filter(row => !query.needle || row.action.action_label.toLowerCase().includes(query.needle.toLowerCase()));
         reply({CatalogueResponse: {correlation, result: {Ok: {revision: '3', rows,
-          providers: query.provider ? [] : [{provider: SHEET, app_id: 'so.tilo.sheets', room: ROOM, record_id: 'uuid:1', browsable: true}]}}}});
+          providers: query.provider ? [] : [{provider: SHEET, app_id: 'so.tilo.sheets', room: WORKSPACE, record_id: 'uuid:1', browsable: true}]}}}});
       } else if (message.Invoke) {
         const request = message.Invoke;
         const existing = ledger.get(request.invocation);
@@ -104,7 +104,7 @@ function memoryStore() {
 
 function actionsWith(peer, extra = {}) {
   let id = 0;
-  const actions = createActions({peer, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer, workspace: WORKSPACE, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     newId: () => `inv-${++id}`, ...extra});
   const pumping = setInterval(() => actions.pump(), 1);
   return {actions, stop: () => { clearInterval(pumping); actions.dispose(); }};
@@ -120,11 +120,11 @@ test('the catalogue lists the workspace and feeds the v1 capability', async () =
     const ready = await actions.v1.catalogue();
     assert.equal(ready.state, 'ready');
     assert.equal(ready.host, HOST);
-    assert.deepEqual(ready.binding, {workspace: ROOM, sender: PAGE, senderRoot: USER, target: HOST, targetRoot: USER, certificate: HOST});
+    assert.deepEqual(ready.binding, {workspace: WORKSPACE, sender: PAGE, senderRoot: USER, target: HOST, targetRoot: USER, certificate: HOST});
     const [surface] = ready.catalogue.surfaces;
     assert.equal(surface.peer_id, SHEET);
     assert.equal(surface.record_id, 'uuid:1');
-    assert.equal(surface.cluster_id, ROOM);
+    assert.equal(surface.cluster_id, WORKSPACE);
     assert.deepEqual(surface.actions.map(action => [action.resource, action.action, action.label]),
       [['sheets.workbook', 'new-sheet', 'New sheet'], ['sheets.sheet:0', 'clear', 'Clear sheet']]);
     assert.deepEqual(surface.actions[1].contract.confirmation, {mode: 'confirm'});
@@ -161,7 +161,7 @@ test('an invocation keeps its id: a retry observes the original and runs once', 
     assert.equal(done.state, 'succeeded');
     assert.deepEqual(done.update.output.value, {sheets: 1});
     // The intent was saved before it was sent.
-    const saved = JSON.parse(store.values.get(`tilo.actions.v2:${ROOM}`));
+    const saved = JSON.parse(store.values.get(`tilo.actions.v2:${WORKSPACE}`));
     assert.equal(saved.at(-1).invocation, ticket.id);
     assert.deepEqual(saved.at(-1).argument, {Text: 'Budget'});
     // An unknown outcome is retried under the same id: the host answers
@@ -176,7 +176,7 @@ test('an invocation keeps its id: a retry observes the original and runs once', 
     assert.equal(entry.intent.record_id, 'uuid:1');
     assert.equal(entry.intent.argument, 'Budget');
     // A reload reads the history back.
-    const reloaded = createActions({peer, workspace: ROOM, hostDevice: HOST, store});
+    const reloaded = createActions({peer, workspace: WORKSPACE, hostDevice: HOST, store});
     await reloaded.loaded;
     assert.equal(reloaded.history()[0].invocation, ticket.id);
     reloaded.dispose();
@@ -263,7 +263,7 @@ function heldHost() {
 test('an answer that reached a page stalled past the timeout is read, not reported as missing', async () => {
   const time = manualTime();
   const host = heldHost();
-  const actions = createActions({peer: host.peer, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: host.peer, workspace: WORKSPACE, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     let outcome;
@@ -283,7 +283,7 @@ test('an answer that reached a page stalled past the timeout is read, not report
 test('a host still silent after a stalled page caught up is reported as not answering', async () => {
   const time = manualTime();
   const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
-  const actions = createActions({peer: silent, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: silent, workspace: WORKSPACE, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     let outcome;
@@ -307,7 +307,7 @@ test('a host still silent after a stalled page caught up is reported as not answ
 test('a timer that fires on time reports a silent host at once', async () => {
   const time = manualTime();
   const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
-  const actions = createActions({peer: silent, workspace: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+  const actions = createActions({peer: silent, workspace: WORKSPACE, hostDevice: HOST, device: PAGE, userPublicKey: USER,
     timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
   try {
     const page = actions.catalogue({provider: SHEET});

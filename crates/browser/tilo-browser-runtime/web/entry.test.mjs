@@ -177,11 +177,11 @@ test('the home workspace opens through its host door under its listed name, and 
   const replaced = [];
   const runtime = {
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
-    formatLink: route => { formatted.push(JSON.parse(route)); return 'https://rooms.example/open/#/@rooms.example/w/ROOM'; },
+    formatLink: route => { formatted.push(JSON.parse(route)); return 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE'; },
   };
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   const mounts = [];
-  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async (element, options) => {
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (element, options) => {
     mounts.push(options);
     options.onNavigation?.(navigation);
     return {navigation};
@@ -214,8 +214,8 @@ test('the home workspace opens through its host door under its listed name, and 
   // The page hears it is joining through the door, then opening once admitted.
   assert.deepEqual([...new Set(steps)], ['join', 'open']);
   assert.equal(steps.at(-1), 'open');
-  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'ROOM'}}});
-  assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/ROOM');
+  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'WORKSPACE'}}});
+  assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE');
   assert.equal(mounts[0].workspaceName, 'Commons');
   assert.equal(mounts[0].host, 'rooms.example');
   page.router.stop?.();
@@ -225,10 +225,10 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const runtime = {
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
-    formatLink: () => 'https://rooms.example/#/@rooms.example/w/ROOM',
+    formatLink: () => 'https://rooms.example/#/@rooms.example/w/WORKSPACE',
   };
   const heard = [];
-  const peer = {workspace: 'ROOM', workspaceName: 'Kaffeeküche', whenReady: async () => {},
+  const peer = {workspace: 'WORKSPACE', workspaceName: 'Kaffeeküche', whenReady: async () => {},
     mountDesktop: async () => { heard.push('mount'); throw new Error('the desktop did not start'); }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
@@ -307,7 +307,7 @@ test('a workspace mount keeps Invite alongside host, About, presence and title f
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let mounted;
   let invited = 0;
-  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -315,7 +315,7 @@ test('a workspace mount keeps Invite alongside host, About, presence and title f
   };
   const statuses = [];
   const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
-    loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/ROOM'}),
+    loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/WORKSPACE'}),
     fetch: async () => ({ok: true, json: async () => ({home, about})}),
     enterViaHost: async () => peer, onInvite: () => { invited += 1; },
   }});
@@ -336,10 +336,10 @@ test('a bare entry under a home workspace asks the host’s door while the runti
   let loaded;
   const runtime = {
     parseLink: () => { throw new Error('a home entry needs no grammar to be admitted'); },
-    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/ROOM',
+    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE',
   };
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
-  const peer = {workspace: 'ROOM', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
+  const peer = {workspace: 'WORKSPACE', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
     location: {href: 'https://rooms.example/open/', hash: ''},
@@ -489,12 +489,12 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const runtime = {
     parseLink: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); },
-    formatLink: () => 'https://app.example/#/@rooms.example/w/ROOM',
+    formatLink: () => 'https://app.example/#/@rooms.example/w/WORKSPACE',
   };
   const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
   let session = 'feed';
   const peer = {
-    room: 'ROOM', whenReady: async () => {},
+    room: 'WORKSPACE', whenReady: async () => {},
     fetchProxy: () => (session ? {endpoint: 'https://rooms.example/peer/v1/fetch', session} : null),
     mountDesktop: async (element, options) => { options.onNavigation?.(navigation); return {navigation}; },
   };

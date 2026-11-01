@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {AgentsError, createAgents} from './agents.mjs';
 
-const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
+const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const HOST = 'ab'.repeat(32);
 const AGENT = 'cd'.repeat(32);
 const USER = 'ee'.repeat(32);
@@ -42,7 +42,7 @@ function manualTimers() {
 
 function agentsWith(peer, extra = {}) {
   let id = 0;
-  const agents = createAgents({peer, workspace: ROOM, hostDevice: HOST, userPublicKey: USER, newId: () => `inv-${++id}`, ...extra});
+  const agents = createAgents({peer, workspace: WORKSPACE, hostDevice: HOST, userPublicKey: USER, newId: () => `inv-${++id}`, ...extra});
   const pumping = setInterval(() => agents.pump(), 1);
   return {agents, stop: () => clearInterval(pumping)};
 }
@@ -66,7 +66,7 @@ test('agent control speaks tilo_actions remote frames to the host device', async
     await agents.stop('writer');
     const [status, spawn, message, pause] = peer.sent;
     assert.equal(status.to, HOST);
-    assert.equal(status.room, ROOM);
+    assert.equal(status.room, WORKSPACE);
     assert.deepEqual(status.frame.message.Invoke.target, {provider: 'agents', address: {resource: 'agents', action: 'status'}});
     assert.equal(status.frame.message.Invoke.argument, 'None');
     assert.deepEqual(spawn.frame.message.Invoke.argument, {Json: {grant: 'writer', task: 'tidy the notes'}});
@@ -89,15 +89,15 @@ test('grants are requested from the host and revoked by id', async () => {
   });
   const {agents, stop} = agentsWith(peer);
   try {
-    assert.deepEqual(await agents.requestGrant({label: 'Writer', rooms: [ROOM], apps: ['so.tilo.notes'], expiresInSecs: 3600}),
+    assert.deepEqual(await agents.requestGrant({label: 'Writer', rooms: [WORKSPACE], apps: ['so.tilo.notes'], expiresInSecs: 3600}),
       {grant: 'writer-0a1b2c', pairingCode: '123456'});
-    await agents.spawn({grant: 'writer-0a1b2c', task: 'Create a new note titled "Groceries"', room: ROOM});
+    await agents.spawn({grant: 'writer-0a1b2c', task: 'Create a new note titled "Groceries"', room: WORKSPACE});
     await agents.revoke('writer-0a1b2c');
     const [grant, spawn, revoke] = peer.sent;
     assert.deepEqual(grant.frame.message.Invoke.target.address, {resource: 'agents', action: 'request-grant'});
     assert.deepEqual(grant.frame.message.Invoke.argument,
-      {Json: {label: 'Writer', rooms: [ROOM], apps: ['so.tilo.notes'], expiresInSecs: 3600, mayConfirm: false}});
-    assert.equal(spawn.frame.message.Invoke.argument.Json.room, ROOM);
+      {Json: {label: 'Writer', rooms: [WORKSPACE], apps: ['so.tilo.notes'], expiresInSecs: 3600, mayConfirm: false}});
+    assert.equal(spawn.frame.message.Invoke.argument.Json.room, WORKSPACE);
     assert.deepEqual(revoke.frame.message.Invoke.target.address, {resource: 'agent:writer-0a1b2c', action: 'revoke'});
   } finally {
     stop();
@@ -137,10 +137,10 @@ test('agent cursors come from presence that says agent; delegations verify in wa
     verifyAgentDelegation(delegation, user, nowMs) {
       calls.push({delegation, user, nowMs});
       if (delegation !== 'good') throw new Error('signature');
-      return JSON.stringify({agentId: 'writer', device: AGENT, label: 'Writer helper', rooms: [ROOM], apps: []});
+      return JSON.stringify({agentId: 'writer', device: AGENT, label: 'Writer helper', rooms: [WORKSPACE], apps: []});
     },
   };
-  const agents = createAgents({peer: fakePeer(() => undefined), runtime, workspace: ROOM, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
+  const agents = createAgents({peer: fakePeer(() => undefined), runtime, workspace: WORKSPACE, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
   assert.deepEqual(agents.cursors(), [{
     device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
     focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
