@@ -3,10 +3,6 @@
 
 use super::*;
 
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
 pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let workspace = peer.admitted_workspace().unwrap();

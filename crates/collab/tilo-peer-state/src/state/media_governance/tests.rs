@@ -7,10 +7,6 @@ use tilo_user_identity::{
     sign_revocation_entry,
 };
 use web_time::Duration;
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
 fn fixture(revision: u64) -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);

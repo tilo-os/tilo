@@ -2177,10 +2177,6 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
 }
 
 #[test]
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
 fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
     let later = now + Duration::from_secs(2);

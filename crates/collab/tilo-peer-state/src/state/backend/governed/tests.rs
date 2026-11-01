@@ -240,10 +240,6 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
 }
 
 #[test]
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
 fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_signature() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let mut identity = row(member.clone());

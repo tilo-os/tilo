@@ -6,10 +6,6 @@ use tilo_automerge::ApplyIncoming;
 // Literal pre-extraction private checks and governance tuple, independent of
 // the shared engine and its new borrowed certificate/streaming-hash adapters.
 #[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
-#[expect(
     clippy::too_many_lines,
     reason = "the reference implementation, kept whole for parity"
 )]

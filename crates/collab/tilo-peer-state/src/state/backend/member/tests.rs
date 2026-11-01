@@ -247,10 +247,6 @@ fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     workspace.commit();
 }
 #[test]
-#[expect(
-    clippy::similar_names,
-    reason = "`root` and `workspace` are the domain's own names"
-)]
 fn shared_current_member_retains_original_certificate_json_and_revocation_error_order() {
     let (base, source, now) = fixture();
     let mut cases = Vec::new();
