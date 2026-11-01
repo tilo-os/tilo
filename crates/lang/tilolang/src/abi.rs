@@ -108,6 +108,7 @@ imports! {
     RefEq = "ref_eq" ([H, H] -> [I32]);
     RefIs = "ref_is" ([H, H] -> [I32]);
     RefId = "ref_id" ([H] -> [H]);
+    ResourceRef = "resource_ref" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);

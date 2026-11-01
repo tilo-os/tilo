@@ -517,11 +517,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     /// Laid out once, an arrangement lays out again only for what a child reports.
     fn is_layout_dirty(&self) -> bool {
-        self.node.is_none()
-            || self
-                .slots
-                .iter()
-                .any(|slot| slot.element.is_layout_dirty())
+        self.node.is_none() || self.slots.iter().any(|slot| slot.element.is_layout_dirty())
     }
 
     fn needs_animation_frame(&self) -> bool {

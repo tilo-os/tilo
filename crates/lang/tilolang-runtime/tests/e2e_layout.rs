@@ -179,4 +179,33 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
             wide.saturating_sub(1)
         );
     }
+
+    /// `resource(id)` names the record a place shows by its id alone, as its own type, so a
+    /// shell reads the actions that record publishes — and `actions(r)` on it carries the run
+    /// each action's declaration names (`group:`) and whether the person reaches for it on most
+    /// things of its type (`frequent: true`). This is the seam the traditional desktop's action
+    /// bar stands on.
+    #[test]
+    fn a_resource_read_by_id_offers_the_actions_its_declaration_grouped() {
+        const ACTIONS: &str = "app so.tilo.library \"Library\"\n\
+type Album {\n    title: Text\n    pinned: Bool = false\n}\n\
+action pin(a: Album, pinned: Bool = not a.pinned) (icon: .pin, group: \"Pin\", frequent: true) {\n    a.pinned = pinned\n}\n\
+action rename(a: Album, title: Text) (icon: .pen_tool, group: \"Edit\") {\n    a.title = title\n}\n\
+view bar(a: Album) {\n    let shown = resource(a.id())\n\
+    if let r = shown {\n        for act in actions(r) {\n            text(act.group ?? \"none\")\n        }\n    }\n\
+}\n\
+view album(a: Album) {\n    text(a.title)\n}";
+        let app = App::compile(ACTIONS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let album = rt.create("Album").unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("bar"), vec![Value::resource(&album)])
+            .unwrap();
+        let groups: Vec<String> = of_kind(view.tree(), "ui.Text")
+            .into_iter()
+            .map(|t| text_prop(t, "value"))
+            .collect();
+        assert_eq!(groups, ["Pin", "Edit"], "{}", dump(view.tree()));
+    }
 }

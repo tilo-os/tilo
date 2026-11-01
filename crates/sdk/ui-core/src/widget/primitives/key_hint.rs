@@ -185,13 +185,20 @@ impl crate::widget::Widget for KeyHints {
             KeyHintsFace::new(&self.hints).width(text, theme)
         });
         let style = taffy::Style {
+            // A strip wider than its line gives way and its tail elides rather than running
+            // past the edge: a window too narrow for every hint shows the ones that fit. Its
+            // own size is its content's; `min_size` zero lets a flex parent take it below that.
+            flex_shrink: 1.0,
             size: taffy::Size {
                 width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),
                 height: taffy::Dimension::length(crate::num::f32_of_f64(KeyHintsFace::height(
                     theme,
                 ))),
             },
-            flex_shrink: 0.0,
+            min_size: taffy::Size {
+                width: taffy::Dimension::length(0.0_f32),
+                height: taffy::Dimension::auto(),
+            },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

@@ -151,13 +151,13 @@ scenario "the notification centre" {
     d.workspace = "Studio"
     d.here = "centre"
     d.unread = 9
-    d.notices.insert(Notice(key: "n7", title: "Screenshot ready", body: "The capture is in Pictures.", origin_app: "Capture Studio", group: "Capture Studio", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n7", title: "Screenshot ready", body: "The capture is in Pictures.", origin_app: "Capture Studio", group: "Capture Studio", kind: "info", read: true))
     d.notices.insert(Notice(key: "n8", title: "Ada replied in Chat", body: "Let's ship Friday.", origin_app: "Chat", group: "Chat", kind: "info", read: false))
     d.notices.insert(Notice(key: "n9", title: "Your laptop is at 12%", body: "Plug it in to finish the backup.", origin_app: "Power", group: "Power", kind: "warning", read: true))
-    d.notices.insert(Notice(key: "n10", title: "Fieldwork filed 40 threads", body: "The mailbox is tidy.", origin_app: "Fieldwork", group: "Fieldwork", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n10", title: "Fieldwork filed 40 threads", body: "The mailbox is tidy.", origin_app: "Fieldwork", group: "Fieldwork", kind: "info", read: true))
     d.notices.insert(Notice(key: "n11", title: "New member in Studio", body: "Sam Okafor joined.", origin_app: "Studio", group: "Studio", kind: "info", read: true))
     d.notices.insert(Notice(key: "n12", title: "The release board moved to Review", body: "Jo moved 6 tasks.", origin_app: "Release 4.2", group: "Release 4.2", kind: "info", read: false))
-    d.notices.insert(Notice(key: "n13", title: "Backup finished", body: "12 GB of changes are safe.", origin_app: "Settings", group: "Settings", kind: "success", read: true))
+    d.notices.insert(Notice(key: "n13", title: "Backup finished", body: "12 GB of changes are safe.", origin_app: "Settings", group: "Settings", kind: "info", read: true))
     d.notices.insert(Notice(key: "n14", title: "Calendar: Standup in 10 minutes", body: "Studio room.", origin_app: "Calendar", group: "Calendar", kind: "info", read: false))
     d.notices.insert(Notice(key: "n15", title: "Fieldwork is waiting for you", body: "It asks which folder to archive.", origin_app: "Fieldwork", group: "Fieldwork", kind: "warning", read: false, wants_reply: true))
     seed_notices(d)
@@ -166,6 +166,30 @@ scenario "the notification centre" {
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "open", label: "Open the run"))
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
     d.notice_actions.insert(NoticeAction(notice: "n15", key: "open", label: "Answer"))
+}
+
+/// The centre with nothing new: every notice read, so its header says so and no row carries a
+/// mark, and one group's choices with it.
+scenario "the notification centre, all read" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.workspace = "Studio"
+    d.here = "centre"
+    d.unread = 0
+    d.notices.insert(Notice(key: "n1", title: "Mia mentioned you in Release planning", body: "Can you check the launch date?", origin_app: "Notes", group: "Notes", kind: "info", read: true))
+    d.notices.insert(Notice(key: "n2", title: "Three threads filed", body: "Fieldwork filed 3 threads into Receipts.", origin_app: "Fieldwork", group: "Fieldwork", kind: "info", read: true))
+    d.notices.insert(Notice(key: "n3", title: "Release 4.2 moved to Review", body: "Jo moved the board on.", origin_app: "Tasks", group: "Tasks", kind: "info", read: true))
+    d.notice_actions.insert(NoticeAction(notice: "n1", key: "open", label: "Reply"))
+    d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
+}
+
+/// The centre with nothing in it: what a person sees after Clear all.
+scenario "an empty notification centre" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.workspace = "Studio"
+    d.here = "centre"
+    d.unread = 0
 }
 
 /// The composer with two tasks running and one done, and what they did.
@@ -357,4 +381,56 @@ scenario "resources standing as content" -> Arrangement {
         i += 1
     }
     a
+}
+
+/// The traditional desktop: the preset furthest from the strips and the canvas. Three windows
+/// stand on a floating desk where the person dropped them, the one in front a window of the
+/// shell's own settings — a real resource, so its bar of commands is the actions that resource
+/// publishes, in the runs their declarations name — and the dock rides the foot. The desk
+/// preset is the desktop and the chrome preset is the traditional one, so this is exactly what
+/// a person sees when they pick it.
+scenario "the traditional desktop" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "none"
+    d.title = "Studio — Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    d.windows.insert(Win(key: "w1", title: "Shell settings", origin_app: "Settings", icon: "settings", strip: "Desk", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Release notes", origin_app: "Notes", icon: "notebook", strip: "Desk", workspace: "Studio", recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Design review", origin_app: "Figma", icon: "pen_tool", strip: "Desk", workspace: "Studio", recency: 3, focused: false, preview: "withheld"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .windows_desktop)
+    let v = viewing
+    v.showing = .desktop
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let desk = a_strip(a, row, "Desk", 667)
+    if let held = a.strips.find(st -> st.key == desk) {
+        held.canvas_x = 40
+        held.canvas_y = 48
+        held.canvas_width = 760
+        held.canvas_height = 560
+        held.placed = true
+    }
+    a.places.insert(ArrangementPlace(key: "p1", strip: desk, shows: "so.tilo.shell", record: s.id(), title: "Shell settings", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "p2", strip: desk, shows: "so.tilo.lang.notes", record: "", title: "Release notes", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "p3", strip: desk, shows: "so.tilo.lang.figma", record: "", title: "Design review", shell: "so.tilo.shell.strips"))
+    if let strip = a.strips.find(st -> st.key == desk) {
+        strip.active = "p1"
+    }
+    v.focused = desk
 }

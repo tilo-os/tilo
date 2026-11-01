@@ -7,34 +7,64 @@
 /// A banner is the centre's newest notice, lifted out of it; a group is an app's or a task's
 /// notices together. Nothing here decides what a notice means: its kind, its sender and its
 /// actions are the sender's. It is a surface of the desk, so it holds no sidebar of its own.
-/// The notification centre: every notice, grouped by its sender, newest first, with the way to
-/// clear them all.
+///
+/// The notification centre is a floating panel at the desk's trailing edge, over what it
+/// covers, on the theme's material as every notification centre is: its header says how many
+/// are waiting and holds the way to clear them all, and each sender's group opens as one on the
+/// toolkit's disclosure motion when it arrives.
 view notices(d: Desk) {
     lens query: Text = ""
     let all = d.notices.sort_by(n -> n.key)
     let shown = all.matching(query)
-    stack(gap: .section) {
-        row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Notifications", role: .heading)
-            ui.Text("{shown.len()} to read", role: .caption, secondary: true)
-            spacer
-            ui.Button("Clear all", icon: .trash, size: .small) {
-                on press: clear_notices(d)
+    row(at: .top_trailing, padding: .related) {
+        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }) {
+            header: {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text("Notifications", role: .heading)
+                    ui.Text(unread_line(d), role: .caption, secondary: true)
+                    spacer
+                    if not all.is_empty() {
+                        ui.Button("Clear all", icon: .trash, size: .small) {
+                            on press: clear_notices(d)
+                        }
+                    }
+                }
             }
-        }
-        if not shown.is_empty() {
-            ui.TextInput(value: query, placeholder: "Search notifications")
-        }
-        if shown.is_empty() {
-            ui.EmptyState("Nothing to catch up on", message: "What apps and agents tell you shows here", icon: .bell)
-        }
-        for g in groups_of(shown) {
-            notice_group(d, g, shown.filter(n -> n.group == g))
+            body: {
+                if all.is_empty() {
+                    ui.EmptyState("Nothing to catch up on", message: "What apps and agents tell you shows here", icon: .bell)
+                } else {
+                    ui.TextInput(value: query, placeholder: "Search notifications")
+                    if shown.is_empty() {
+                        ui.EmptyState("Nothing matches that", message: "Clear the search to see every notice", icon: .search, inline: true)
+                    }
+                    scroll {
+                        for g in groups_of(shown) {
+                            ui.DisclosureBand {
+                                notice_group(d, g, shown.filter(n -> n.group == g))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-/// One sender's notices, under its name: each with its kind, its sender, and its actions.
+/// What the centre says of the person's unread notices: how many are waiting, or that none is.
+/// The count is the desk's own (`Desk.unread`), so the centre and the bar's bell never
+/// disagree.
+fn unread_line(d: Desk) -> Text {
+    if d.unread == 0 {
+        "All read"
+    } else if d.unread == 1 {
+        "1 unread"
+    } else {
+        "{d.unread} unread"
+    }
+}
+
+/// One sender's notices, under its name: each with its title, what it says and its actions.
 view notice_group(d: Desk, sender: Text, notices: List<Notice>) {
     ui.Section(sender) {
         for n in notices {
@@ -44,11 +74,20 @@ view notice_group(d: Desk, sender: Text, notices: List<Notice>) {
 }
 
 /// One notice: its title, what it says, its sender, its actions and the way to dismiss it. An
-/// unread one is lifted and bears a dot.
+/// unread one is lifted and bears a dot in the person's colour, toned by its kind, so a failure
+/// reads as one at a glance.
 view notice_row(d: Desk, n: Notice) {
     ui.ListRow(n.title, secondary: .some(n.body), meta: .some(n.origin_app), selected: not n.read) {
         trailing: {
-            ui.Badge(dot: not n.read)
+            if n.kind == "error" {
+                ui.Badge(dot: not n.read, tone: .danger)
+            } else if n.kind == "warning" {
+                ui.Badge(dot: not n.read, tone: .warning)
+            } else if n.kind == "success" {
+                ui.Badge(dot: not n.read, tone: .success)
+            } else {
+                ui.Badge(dot: not n.read)
+            }
         }
     }
     row(gap: .related, align: .center, wrap: true) {

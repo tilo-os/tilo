@@ -71,7 +71,8 @@ impl Core {
         let mut offered = Vec::with_capacity(actions.len());
         let mut events = Vec::with_capacity(actions.len());
         for (index, action) in actions.into_iter().enumerate() {
-            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run.
+            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run,
+            // group, frequent.
             let Value::Tuple(fields) = action else {
                 return trap("an offered action is a host.Action");
             };

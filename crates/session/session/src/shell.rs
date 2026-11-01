@@ -250,6 +250,12 @@ impl Shell {
         Rc::clone(&self.link)
     }
 
+    /// The surface the desk shows over its windows, by the name the views read (`d.here`):
+    /// `none` at rest.
+    pub(crate) fn surface(&self) -> String {
+        self.link.surface()
+    }
+
     /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()

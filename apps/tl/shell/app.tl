@@ -201,18 +201,22 @@ action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
 /// body; a change of the desk reading runs the bar.
 view desk_view(a: Arrangement) {
     let v = viewing
-    ui.NavShell(content_kind: .page) {
-        actions: {
-            bar(root Desk)
-            preset_switch(v)
-        }
-        content: {
-            if v.showing == .frames {
-                framed_canvas(a)
-            } else if v.showing == .spaces {
-                spaces_canvas(a)
-            } else {
-                strips_view(a, v)
+    if v.showing == .desktop {
+        traditional_desktop(a)
+    } else {
+        ui.NavShell(content_kind: .page) {
+            actions: {
+                bar(root Desk)
+                preset_switch(v)
+            }
+            content: {
+                if v.showing == .frames {
+                    framed_canvas(a)
+                } else if v.showing == .spaces {
+                    spaces_canvas(a)
+                } else {
+                    strips_view(a, v)
+                }
             }
         }
     }

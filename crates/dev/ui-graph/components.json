@@ -611,6 +611,76 @@
       }
     },
     {
+      "name": "Sparkline",
+      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card. Fewer than two samples draw nothing.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "The samples, oldest first.",
+          "type": {
+            "list": "float"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the trend is of, as assistive technology announces it: \"Requests per second\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "max",
+          "doc": "The vertical maximum, which may be more than the samples reach; without one it is the highest sample.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "filled",
+          "doc": "The area under the line filled in the same colour, which a sparkline draws unless it is told not to: `true` unless said.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "smooth",
+          "doc": "The line's shape between samples: the smooth curve rather than straight segments.",
+          "type": "bool"
+        },
+        {
+          "name": "leading_dot",
+          "doc": "A dot of this radius on the newest sample: the live edge of a streaming series.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "What its line means, when it means something: a status, a person. Without one it is the theme's accent.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
+      }
+    },
+    {
       "name": "EmojiPicker",
       "doc": "A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).",
       "props": [

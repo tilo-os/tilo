@@ -482,7 +482,15 @@ impl Shared {
         });
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        self.search.observe(&self.doors.resources(), open_tabs);
+        let resources = self.doors.resources();
+        // What a place made from a resource reads its app and views from:
+        // the same tree search and the palette read.
+        self.arrangement
+            .borrow()
+            .targets()
+            .borrow_mut()
+            .take(&resources);
+        self.search.observe(&resources, open_tabs);
         self.keep_history();
     }
 
@@ -1191,9 +1199,20 @@ impl Session {
         // reads before it moves anything.
         let busy = Rc::new(Cell::new(arrangement::Busy::default()));
         let underway = Rc::clone(&busy);
+        // The one search text typed on the canvas places through: the
+        // session search's own, the same `find` the palette and an agent's
+        // `tilo` tool run.
+        let find: arrangement::Find = {
+            let search = Rc::new(SessionSearch::new(
+                options.search.clone(),
+                options.apps.clone(),
+            ));
+            Rc::new(move |needle: &str| search.find(needle))
+        };
         doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
             Rc::clone(&arrangement),
             Rc::new(move || underway.get()),
+            find.clone(),
         ))));
         arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
@@ -1905,6 +1924,17 @@ impl Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
     fn follow_shell(&mut self) -> Result<(), Error> {
+        // The shell's views draw the centre over the desk, so while it is up the person is
+        // looking at what the notices say: they are read, as they are while the panel's own
+        // centre shows them. The bell's count, the centre's header and its rows read the one
+        // set, so they never disagree. It is the same surface the views read (`d.here`).
+        if self
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.surface() == surfaces::Surface::Centre.name())
+        {
+            self.shared.notices.mark_read();
+        }
         let Some(mut shell) = self.shell.take() else {
             return Ok(());
         };
