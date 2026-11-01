@@ -323,8 +323,8 @@ pub fn check(options: &Options) -> Result<Report, String> {
 type Identity = (Kind, String, String, Option<String>, String);
 
 /// The app in `dir` and the packages it uses, found in `search`, built in dependency order; and
-/// the platform's packages (the device's, Settings'), which an app such as the shell uses as
-/// metadata rather than as a package directory.
+/// what the platform and native apps publish (the device's, Settings'), which an app such as
+/// the shell uses as metadata rather than as a package directory ([`crate::compile`]).
 fn build(
     dir: &Path,
     search: &[PathBuf],
@@ -335,13 +335,7 @@ fn build(
     ),
     String,
 > {
-    let platform = tilolang_tilo::platform_apps::platform_packages()?;
-    let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
-    let dirs = tilolang::source::dependency_order_with(dir, search, &provided)?;
-    let built =
-        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
-            .map_err(|e| e.to_string())?;
-    Ok((built, platform))
+    crate::compile(dir, search, &mut tilolang::OsEntropy::default()).map_err(|e| e.to_string())
 }
 
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on

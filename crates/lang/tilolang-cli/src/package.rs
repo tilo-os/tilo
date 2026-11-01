@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::{compile_dirs, dependency_order, write_ids};
+use tilolang::source::write_ids;
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -213,8 +213,8 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
 /// A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
-    let dirs = dependency_order(&options.dir, &options.search)?;
-    let built = compile_dirs(&dirs, &[], &mut OsEntropy::default()).map_err(|e| e.to_string())?;
+    let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
+        .map_err(|e| e.to_string())?;
     for package in &built {
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
