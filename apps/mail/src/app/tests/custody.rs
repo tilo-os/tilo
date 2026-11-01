@@ -55,8 +55,10 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
     // The password is no setting of the account's.
     assert!(!account.config.to_string().contains("app-password"));
 
-    // A Mail window opens no vault: custody releases it the secret.
-    let mut mail = TestApp::<MailShell>::new().unwrap();
+    // A Mail window opens no vault: custody releases it the secret. The
+    // window has a root of its own, as one in a session does.
+    let mail_root = tempfile::tempdir().unwrap();
+    let mut mail = TestApp::<MailShell>::open_data_dir(mail_root.path()).unwrap();
     {
         let app = mail.surface_mut::<crate::app::MailApp>();
         app.custody = Some(crate::custody::SecretRelease::kept_under(
@@ -99,6 +101,30 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    // The account chosen again is kept in the person's record; its secret
+    // stays custody's, released into memory and never into a vault of
+    // Mail's own.
+    {
+        let app = mail.surface_mut::<crate::app::MailApp>();
+        app.persisted_active_account = None;
+    }
+    mail.settle();
+    let status = mail
+        .surface_mut::<crate::app::MailApp>()
+        .nav
+        .toast_text()
+        .map(str::to_owned);
+    assert!(
+        !status
+            .as_deref()
+            .is_some_and(|text| text.contains("could not save")),
+        "the choice is kept: {status:?}"
+    );
+    let own = accounts::AccountCredentials::open_in(mail_root.path()).unwrap();
+    assert!(
+        own.get(&accounts::AccountId::from(ME)).is_none(),
+        "Mail keeps no copy of a secret custody released"
+    );
     drop(imap);
 }
 

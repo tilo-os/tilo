@@ -181,3 +181,58 @@ fn a_connected_window_asks_for_the_pages_its_server_still_holds() {
     );
     drop(imap);
 }
+
+/// A store that refuses to keep the account chosen says so once. The refusal
+/// is news, not a standing condition: a window that asked again on every
+/// pass would put the notice back up forever and never go idle.
+#[test]
+fn a_refused_account_save_is_said_once_and_the_window_goes_idle() {
+    let (mut app, imap, kept) = connected_window();
+    std::fs::write(
+        accounts::vault_dir_in(kept.path()).join("vault.enc"),
+        b"damaged fixture vault",
+    )
+    .unwrap();
+    // The choice this window has not kept yet, as after picking an account.
+    app.with_surface(|mail: &mut super::MailApp| {
+        mail.nav.dismiss_toast();
+        mail.persisted_active_account = None;
+    })
+    .unwrap();
+    app.settle();
+    let said = app
+        .with_surface(|mail: &mut super::MailApp| mail.nav.toast_text().map(str::to_owned))
+        .unwrap();
+    assert!(
+        said.as_deref()
+            .is_some_and(|text| text.contains("could not save that preference")),
+        "the refusal is said: {said:?}"
+    );
+    app.with_surface(|mail: &mut super::MailApp| mail.nav.dismiss_toast())
+        .unwrap();
+    let deadline = ui::testing::hang_deadline();
+    let mut quiet = 0;
+    while quiet < 50 {
+        assert!(
+            ui::time::now() < deadline,
+            "the window stops asking for frames once the refusal is said"
+        );
+        if app.frame() {
+            quiet = 0;
+        } else {
+            quiet += 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (pass, notice) = app
+        .with_surface(|mail: &mut super::MailApp| {
+            (
+                mail.needs_idle_sync(),
+                mail.nav.toast_text().map(str::to_owned),
+            )
+        })
+        .unwrap();
+    assert!(!pass, "a said refusal asks for no pass");
+    assert_eq!(notice, None, "and is not put back up");
+    drop(imap);
+}

@@ -3254,13 +3254,14 @@ impl MailApp {
         if active == self.persisted_active_account {
             return;
         }
-        match self.persist_accounts(&accounts) {
-            Ok(()) => self.persisted_active_account = active,
-            Err(error) => {
-                self.shared.borrow_mut().status = Some(format!(
-                    "Selected account, but could not save that preference: {error}"
-                ));
-            }
+        // Tried once per choice: a store that refuses is said once, not on
+        // every pass, and the next choice tries again.
+        let saved = self.persist_accounts(&accounts);
+        self.persisted_active_account = active;
+        if let Err(error) = saved {
+            self.shared.borrow_mut().status = Some(format!(
+                "Selected account, but could not save that preference: {error}"
+            ));
         }
     }
 
@@ -3300,7 +3301,11 @@ impl MailApp {
         }
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
-            updated.keep_secrets_in(&root, &removed)?;
+            // In a session the secrets are custody's: this sandbox keeps no
+            // vault of its own, and a released secret stays in memory.
+            if self.custody.is_none() {
+                updated.keep_secrets_in(&root, &removed)?;
+            }
             record.get().project_in(&root)?;
         }
         Ok(())
@@ -3401,12 +3406,12 @@ impl MailApp {
         if shown == self.followed_preferences {
             return;
         }
-        match preferences.set(shown.clone()) {
-            Ok(()) => self.followed_preferences = shown,
-            Err(error) => {
-                self.shared.borrow_mut().status =
-                    Some(format!("Could not save your Mail preferences: {error}"));
-            }
+        // As with the active account: a refusal is said once per change.
+        let saved = preferences.set(shown.clone());
+        self.followed_preferences = shown;
+        if let Err(error) = saved {
+            self.shared.borrow_mut().status =
+                Some(format!("Could not save your Mail preferences: {error}"));
         }
     }
 
