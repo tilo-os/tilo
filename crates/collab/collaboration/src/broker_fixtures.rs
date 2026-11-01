@@ -2,11 +2,16 @@
 //! a route can be in, for the tests here and in crates that test against the
 //! `test-support` feature.
 
-use super::*;
+use std::sync::Arc;
+
+use super::tests::{self, Captures, FakeBroker};
+use super::{
+    CollabRequest, CollaborationManager, JoiningProbe, NativeHistoryInvocationFixture,
+    NativeRefreshProbe, RouteSpec, SdkConnectSource, SdkIdentitySource, SdkJoinIdentity, Uuid,
+    harness_document_signer, harness_presentation,
+};
 
 impl CollaborationManager {
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -20,8 +25,6 @@ impl CollaborationManager {
     }
 
     /// Wire/SDK ordering fixture only; not a native authority proof.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -38,8 +41,6 @@ impl CollaborationManager {
 
     /// Socket-backed ordering fixture on an actual acknowledged named route.
     /// This fixture does not establish native caller authority.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -67,8 +68,6 @@ impl CollaborationManager {
     /// the probe lists each invocation as it arrived and whether it was
     /// offered then. It refuses every committed read of the `refused`
     /// routes, so they never open.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -104,8 +103,6 @@ impl CollaborationManager {
 
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -116,8 +113,6 @@ impl CollaborationManager {
         tests::connected_manager_for(app, room)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -134,8 +129,6 @@ impl CollaborationManager {
     }
 
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -151,8 +144,6 @@ impl CollaborationManager {
         tests::native_initial_parked_fixture(app, room, history, gate)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
@@ -173,8 +164,6 @@ impl CollaborationManager {
     /// route's committed history is `history`, of the record kind `kind`;
     /// the room stands as `room` until the probe says otherwise. Make it in
     /// the app's wake scope, as a launch does.
-    #[cfg(any(test, feature = "test-support"))]
-    #[cfg(unix)]
     #[allow(
         clippy::unwrap_used,
         clippy::expect_used,
