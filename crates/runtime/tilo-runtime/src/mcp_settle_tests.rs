@@ -236,7 +236,7 @@ impl ActionHost for GatedHost {
 fn gated_endpoint(host: GatedHost) -> Arc<Endpoint<GatedHost>> {
     Endpoint::new(
         host,
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         Some("secret".into()),
         None,

@@ -1,4 +1,4 @@
-//! The Tasks app (`apps/tl/tasks`) on two replicas of one room: a task made, filed and
+//! The Tasks app (`apps/tl/tasks`) on two replicas of one workspace: a task made, filed and
 //! checked off; Inbox, Today and Upcoming as the filters of those names, read when they are
 //! asked; a quick add that adds what was typed and nothing for an empty entry; and two people
 //! changing one task at once.
@@ -32,8 +32,8 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     }
 }
 
-/// Ada's replica of an empty room at 10:00 on Thursday 2026-10-29, and the tasks root.
-fn room() -> (Replica, Value) {
+/// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
+fn workspace() -> (Replica, Value) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
     ada.host
         .runtime()
@@ -95,7 +95,7 @@ fn count(view: &ViewInstance, place: &str) -> i64 {
 
 #[test]
 fn a_task_is_made_filed_under_a_project_and_checked_off() {
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     let task = call(
         &ada,
         "add",
@@ -124,7 +124,7 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
 
 #[test]
 fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     call(&ada, "quick_add", vec![root.clone(), Value::text("")]);
     ada.commit();
     assert!(items(&ada).is_empty(), "an empty entry adds nothing");
@@ -150,7 +150,7 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
 #[test]
 fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
     // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T20:00:00Z".to_owned());
@@ -227,7 +227,7 @@ fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
 
 #[test]
 fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
     let dated = |title: &str| call(&ada, "add", vec![root.clone(), Value::text(title)]);
@@ -273,7 +273,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
 
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     let task = call(
         &ada,
         "add",
@@ -345,7 +345,7 @@ fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> S
 
 #[test]
 fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
-    let (mut ada, root) = room();
+    let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
     let doing = call(&ada, "new_section", vec![project.clone()]);
@@ -359,14 +359,14 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         "Order boxes",
         "Book the van",
         "Pack the books",
-        "Measure the bedroom",
+        "Measure the bedworkspace",
     ] {
         let t = call(&ada, "add", vec![root.clone(), Value::text(title)]);
         call(&ada, "file", vec![t.clone(), project.clone()]);
         made.push(t);
     }
     ada.commit();
-    let [boxes, van, books, bedroom] = [0, 1, 2, 3].map(|i| made[i].clone());
+    let [boxes, van, books, bedworkspace] = [0, 1, 2, 3].map(|i| made[i].clone());
     let Value::Ref(at) = &project else {
         panic!("a resource: {project:?}")
     };
@@ -383,7 +383,7 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         [
             (
                 "No section".to_owned(),
-                ids(&[&boxes, &van, &books, &bedroom])
+                ids(&[&boxes, &van, &books, &bedworkspace])
             ),
             ("Doing".to_owned(), vec![]),
         ]
@@ -400,17 +400,17 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     drop(&mut view, "Doing", &books, 0);
     drop(&mut view, "Doing", &van, 0);
     // Within a lane: the last card to the top.
-    drop(&mut view, "No section", &bedroom, 0);
+    drop(&mut view, "No section", &bedworkspace, 0);
     // Below a lane's last card.
     drop(&mut view, "Doing", &boxes, 2);
     ada.commit();
     assert_eq!(
         lanes(&view),
         [
-            ("No section".to_owned(), ids(&[&bedroom])),
+            ("No section".to_owned(), ids(&[&bedworkspace])),
             ("Doing".to_owned(), ids(&[&van, &books, &boxes])),
         ]
     );
     assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
-    assert_eq!(read(&ada, &bedroom, "section"), Value::none());
+    assert_eq!(read(&ada, &bedworkspace, "section"), Value::none());
 }

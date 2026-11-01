@@ -57,6 +57,7 @@ impl NativePersonalSource {
             host,
         });
         sources.insert(socket, Arc::downgrade(&source));
+        drop(sources);
         Some(source)
     }
     pub(crate) fn admit_for_socket(

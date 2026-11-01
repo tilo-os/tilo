@@ -40,11 +40,11 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let directions = Arc::new(Mutex::new(Vec::new()));
             tracing::subscriber::set_global_default(KeyboardReadBridgeProbe(directions.clone())).unwrap();
             let env = Environment::with_owner_initializer(|path| {
-                crate::test_owner::SessionOwner::initialize_with_documents(path, |room| {
+                crate::test_owner::SessionOwner::initialize_with_documents(path, |workspace| {
                     let definition = settings::definition();
                     let record = RecordId::for_tab(1);
                     let mut document = automerge::AutoCommit::new();
-                    assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, room, Some(room)));
+                    assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, workspace, Some(workspace)));
                     Ok(vec![tilo_peer_state::SeedDocument {
                         app_id: definition.app_id().into(), record_id: record.as_str().into(),
                         kind: definition.record_kind.as_str().into(), bytes: document.save(),
@@ -66,7 +66,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 private.join("keyboard-worker.sock"),
                 env.membership.authority(),
                 env.publisher.clone(),
-                crate::peer_actions::NativePeerBrokerConfig {
+                crate::NativePeerBrokerConfig {
                     journal_root: private.join("keyboard-journal"),
                     certificate_authority: env.authority.clone(),
                 },

@@ -14,7 +14,7 @@ const RICH: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4a
 const DOC: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:776f72642d70726f636573736f722e646f63756d656e74";
 const STYLE: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:776f72642d70726f636573736f722e7374796c653a626f6479";
 const APP: &str = "so.tilo.word-processor";
-const WORKSPACE: &str = "workspace:room";
+const WORKSPACE: &str = "workspace:workspace";
 const PERMISSIONS: &str = "workspace.permissions:90142c0f-1092-4d22-84a2-f9af0e57dab9";
 
 /// A workspace offering one app, which publishes its directory as soon as
@@ -496,7 +496,7 @@ impl ActionHost for Writer {
                     .map(|peer| CatalogueProvider {
                         provider: peer.to_string(),
                         app_id: APP.into(),
-                        room: "room".into(),
+                        room: "workspace".into(),
                         record_id: String::new(),
                         browsable: true,
                     })
@@ -741,7 +741,7 @@ fn resource<'a>(page: &'a Value, kind: &str) -> &'a Value {
 #[test]
 fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let reply = call(
             &server,
@@ -807,7 +807,7 @@ fn an_open_answers_the_instance_the_host_started() {
         bystander: Some(5),
         ..Writer::new(Some("open"))
     };
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -833,7 +833,7 @@ fn an_open_answers_the_instance_the_host_started() {
 fn opening_a_file_answers_its_first_page_through_the_apps_declared_read() {
     let text = "# Quarterly Report {#b0}\nOur comittee met. {#b1}\n";
     let host = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -858,7 +858,7 @@ fn opening_a_file_answers_its_first_page_through_the_apps_declared_read() {
     );
 
     let empty = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(empty.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(empty.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -876,7 +876,7 @@ fn a_long_first_page_is_cut_and_drops_its_cursor() {
         .collect::<Vec<_>>()
         .concat();
     let host = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(host, "room".into(), "owner".into());
+    let server = McpServer::new(host, "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -896,7 +896,7 @@ fn a_long_first_page_is_cut_and_drops_its_cursor() {
 #[test]
 fn a_file_the_app_could_not_open_is_not_read() {
     let host = Writer::new(None).reading("stale");
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -911,7 +911,7 @@ fn a_file_the_app_could_not_open_is_not_read() {
 #[test]
 fn an_app_without_open_imports_the_file_by_its_extension() {
     let host = Writer::new(Some("import-csv"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -930,7 +930,7 @@ fn an_app_without_open_imports_the_file_by_its_extension() {
 fn only_a_declared_opener_opens_a_path() {
     let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
     let host = Writer::new(None).taking_path("import-iso");
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -945,7 +945,7 @@ fn only_a_declared_opener_opens_a_path() {
     );
 
     let host = Writer::new(Some("import-csv"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(&server, "tilo_invoke", open("/data/in/paper.docx"))).unwrap();
     assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
     assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
@@ -958,7 +958,7 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
     let host = Writer::new(Some("import-csv"));
     let open_files = Arc::new(OpenFiles::default());
     let session = || {
-        McpServer::new(host.clone(), "room".into(), "owner".into())
+        McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .with_open_files(Arc::clone(&open_files))
     };
     let (first, second) = (session(), session());
@@ -1011,7 +1011,7 @@ fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
     // The host answers once the app has published, but the app may publish
     // again while it binds its document: the first listings read empty.
     host.blank_listings.lock().unwrap().extend([true, true]);
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -1028,7 +1028,7 @@ fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
 #[test]
 fn an_app_that_cannot_open_a_path_says_so_and_still_opens() {
     let host = Writer::new(None);
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(call(
         &server,
         "tilo_invoke",
@@ -1051,7 +1051,11 @@ fn an_app_that_cannot_open_a_path_says_so_and_still_opens() {
 
 #[test]
 fn the_workspace_page_offers_a_path_on_opening_an_app() {
-    let server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let server = McpServer::new(
+        Writer::new(Some("open")),
+        "workspace".into(),
+        "owner".into(),
+    );
     let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
     assert_eq!(
         resource(&page, "applications.app")["actions"]["open"],
@@ -1076,7 +1080,11 @@ fn the_workspace_page_offers_a_path_on_opening_an_app() {
 /// `app.` prefix of its resource. A handle there left every app ungranted.
 #[test]
 fn workspace_pages_name_their_resources_in_full() {
-    let server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let server = McpServer::new(
+        Writer::new(Some("open")),
+        "workspace".into(),
+        "owner".into(),
+    );
     let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
     let names = page["resources"]
         .as_array()
@@ -1099,7 +1107,7 @@ fn workspace_pages_name_their_resources_in_full() {
 #[test]
 fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         call(
             &server,
@@ -1261,7 +1269,7 @@ fn assert_failed_mutation(reply: &Value, id: tilo_actions::InvocationId) {
 #[test]
 fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
     let host = FailingMutationHost::new(false);
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
@@ -1300,7 +1308,7 @@ fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
 #[test]
 fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
     let host = FailingMutationHost::new(true);
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
@@ -1328,7 +1336,7 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
     let host = FailingMutationHost::new(false);
     let endpoint = crate::mcp_http::Endpoint::new(
         host.clone(),
-        "room".into(),
+        "workspace".into(),
         "owner".into(),
         Some("secret".into()),
         None,
@@ -1404,7 +1412,7 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
 #[test]
 fn handles_stand_for_long_ids_and_full_ids_keep_working() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         call(
             &server,
@@ -1489,7 +1497,11 @@ fn handles_stand_for_long_ids_and_full_ids_keep_working() {
 
 #[test]
 fn a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it() {
-    let server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let server = McpServer::new(
+        Writer::new(Some("open")),
+        "workspace".into(),
+        "owner".into(),
+    );
     run(async {
         call(
             &server,
@@ -1549,7 +1561,7 @@ fn a_found_resource_lists_every_action_across_the_hosts_pages() {
         listing_page: Some(2),
         ..Writer::new(Some("open"))
     };
-    let server = McpServer::new(writer, "room".into(), "owner".into());
+    let server = McpServer::new(writer, "workspace".into(), "owner".into());
     run(async {
         call(
             &server,
@@ -1601,7 +1613,11 @@ fn a_found_resource_lists_every_action_across_the_hosts_pages() {
 
 #[test]
 fn a_session_pinned_to_full_rows_gets_no_directory() {
-    let server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let server = McpServer::new(
+        Writer::new(Some("open")),
+        "workspace".into(),
+        "owner".into(),
+    );
     run(async {
         server
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"detail":"full"}}}}}))
@@ -1622,7 +1638,7 @@ fn a_session_pinned_to_full_rows_gets_no_directory() {
 #[test]
 fn doc_real_headings_takes_three_tilo_turns() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let turns = run(async {
         let mut turns = 0;
         turns += 1;
@@ -1686,7 +1702,7 @@ fn read_sizes(host: &Writer) -> Vec<Value> {
 #[test]
 fn an_out_of_range_number_is_refused_with_its_bound_and_never_rerun() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let reply = run(async {
         call(
             &server,
@@ -1728,7 +1744,7 @@ fn an_out_of_range_number_is_refused_with_its_bound_and_never_rerun() {
 #[test]
 fn a_retried_invocation_id_never_runs_twice() {
     let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let id = tilo_actions::InvocationId::new();
     let read = json!({
         "peer_id": 1, "resource": DOC, "action": "read-text",
@@ -1771,7 +1787,7 @@ fn a_retried_invocation_id_never_runs_twice() {
 #[test]
 fn calls_run_in_order_and_stop_at_the_first_failure() {
     let host = Writer::new(Some("open")).reading("# Memo {#b0}\n");
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let open = run(call(
         &server,
         "tilo_invoke",
@@ -1894,7 +1910,7 @@ fn scripted_replays_of_computer_suite_tasks() {
 
 fn replay(task: &str, path: Option<&str>, calls: &Value) {
     let host = Writer::new(Some("open")).reading("# Notes {#b0}\nThe comittee met. {#b1}\n");
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let mut open_args =
         json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"});
     if let Some(path) = path {
@@ -1971,7 +1987,7 @@ fn a_parent_resource_is_named_as_resources_are_named_elsewhere() {
     let host = Writer::new(Some("open"));
     *host.running.lock().unwrap() = true;
     // A fresh connection: no query has issued a handle yet.
-    let server = McpServer::new(host, "room".into(), "owner".into());
+    let server = McpServer::new(host, "workspace".into(), "owner".into());
     run(async {
         for parent in ["word_processor.document", DOC] {
             let children = call(
@@ -2039,7 +2055,7 @@ fn a_resource_named_by_kind_right_after_a_write_is_found_however_far_its_listing
     let mut host = Writer::new(Some("open"));
     host.walks_after_write = true;
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let page = call(
             &server,
@@ -2083,7 +2099,7 @@ fn a_resource_that_hangs_under_its_app_is_named_by_its_kind_without_browsing() {
     // what an app's directory answers for, however deep the resource sits.
     let host = Writer::new(Some("open")).nested();
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
         let ran = call(&server, "tilo_invoke", by_kind).await;
@@ -2130,7 +2146,7 @@ fn a_page_no_listing_shows_is_still_named_by_its_kind() {
     // kind is here.
     let host = Writer::new(Some("open")).nested().floating();
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
         let ran = call(&server, "tilo_invoke", by_kind).await;
@@ -2170,7 +2186,7 @@ fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
     let host = Writer::new(Some("open"));
     *host.running.lock().unwrap() = true;
     // A fresh connection: no query has issued a handle yet.
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let by_kind = json!({"app_id": "word-processor", "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
         call(&server, "tilo_invoke", by_kind).await.unwrap();
@@ -2248,7 +2264,7 @@ fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
 fn an_edit_and_history_named_by_kind_reach_the_same_discovered_record() {
     let host = Writer::new(Some("history"));
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         let page = call(&server, "tilo_query", json!({"app_id": APP}))
             .await
@@ -2311,7 +2327,7 @@ fn directory_failures_are_not_reported_as_missing_resources() {
                 parent: None,
                 error: failure,
             });
-            let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+            let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let error = run(call(
                 &server,
                 tool,
@@ -2348,7 +2364,7 @@ fn directory_failures_are_not_reported_as_missing_actions() {
                 reason: "the original action directory is disconnected".into(),
             },
         });
-        let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
         let error = run(call(
             &server,
             tool,
@@ -2389,7 +2405,7 @@ fn toggle_bold() -> Value {
 fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
     let host = Writer::new(None);
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         call(
             &server,
@@ -2417,7 +2433,7 @@ fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
 fn a_batch_asks_at_most_once_before_its_first_step() {
     let host = Writer::new(None);
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
     run(async {
         call(&server, "tilo_list_apps", json!({})).await.unwrap();
@@ -2439,7 +2455,7 @@ fn a_batch_asks_at_most_once_before_its_first_step() {
     // A session that never listed them, naming the app by id: one list.
     let fresh = Writer::new(None);
     *fresh.running.lock().unwrap() = true;
-    let server = McpServer::new(fresh.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(fresh.clone(), "workspace".into(), "owner".into());
     let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
     run(async {
         let reply = call(
@@ -2464,7 +2480,7 @@ fn a_batch_asks_at_most_once_before_its_first_step() {
 fn a_seen_peer_that_has_gone_is_refused_as_unavailable() {
     let host = Writer::new(None);
     *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
     run(async {
         call(
             &server,

@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::{
-    Answer, Authority, Context, Grant, KindSet, Role, RoomPolicy, Standing, Subject, TreePath,
+    Answer, Authority, Context, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
 };
 use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
@@ -173,7 +173,7 @@ fn bot_replica(page: &Replica) -> Replica {
         Subject::person(OWNER),
     );
     let standing =
-        Standing::person(RoomPolicy::new(ROOM, OWNER), OWNER).bounded_by(bot, vec![grant]);
+        Standing::person(WorkspacePolicy::new(ROOM, OWNER), OWNER).bounded_by(bot, vec![grant]);
     let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),
@@ -203,7 +203,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     let mut page = flooded_room();
     assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
     let mut bot = bot_replica(&page);
-    let mut policy = RoomPolicy::new(ROOM, OWNER);
+    let mut policy = WorkspacePolicy::new(ROOM, OWNER);
     for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
         policy.members.insert(person.to_owned(), role);
     }

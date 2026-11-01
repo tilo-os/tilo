@@ -64,7 +64,7 @@ impl ApplicationRecord {
 }
 
 impl NativeWorkspaceOwner {
-    /// Complete the original creator's bootstrap in a room another device
+    /// Complete the original creator's bootstrap in a workspace another device
     /// governs (a host that created the empty record for it): the bootstrap
     /// becomes this member's own signed change onto the record's exact
     /// revision, admitted and published like any other write of it. The
@@ -73,11 +73,11 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// Refuses governor or changed custody, a changed revision, malformed or
-    /// oversized data, a change the room does not let this member make, or
+    /// oversized data, a change the workspace does not let this member make, or
     /// failed publication.
     pub fn initialize_application_record_as_member(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         creator: &DeviceCert,
         key: &SigningKey,
         initialization: ApplicationInitialization<'_>,
@@ -88,13 +88,13 @@ impl NativeWorkspaceOwner {
             return Err("application initialization exceeds bootstrap limit".into());
         }
         let route = initialization.route;
-        let adds_state = self.with_current(room, |view| {
+        let adds_state = self.with_current(workspace, |view| {
             member_bootstrap(view, creator, key, initialization, now)
                 .map(|changes| changes.is_some())
         })?;
         if adds_state {
             self.commit_document_with_current(
-                room,
+                workspace,
                 |view| {
                     let changes = member_bootstrap(view, creator, key, initialization, now)?
                         .ok_or("application initialization revision changed")?;
@@ -109,7 +109,7 @@ impl NativeWorkspaceOwner {
                         return Err("application initialization is not a document write".into());
                     };
                     Ok(OwnerCommitRequest {
-                        room: room.to_string(),
+                        workspace: workspace.to_string(),
                         operation: CommitOperation::Document {
                             app: route.app.clone(),
                             record: route.record.clone(),
@@ -120,7 +120,7 @@ impl NativeWorkspaceOwner {
                 now,
             )?;
         }
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             match view.read_document(
                 creator.device_public_key,
                 &route.app,
@@ -135,26 +135,26 @@ impl NativeWorkspaceOwner {
         })
     }
     /// Create an empty, canonical record as this device, signed with its
-    /// own key: the governor's, or a member's the room lets create it (its
+    /// own key: the governor's, or a member's the workspace lets create it (its
     /// app may author records here and the member may change the record),
     /// as every receiver admits it. Existing records remain byte-identical.
     /// Publication is durable before this returns; the caller may only then
     /// admit the creator's channel.
     ///
     /// # Errors
-    /// The creator is not this device, the room does not let them create
+    /// The creator is not this device, the workspace does not let them create
     /// the record, or the same native owner publication barrier cannot
     /// commit the candidate.
     pub fn prepare_application_record(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         creator: &DeviceCert,
         key: &SigningKey,
         route: &ApplicationRecord,
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if creator != candidate.device()
             || key.verifying_key().to_bytes() != creator.device_public_key
         {
@@ -167,15 +167,20 @@ impl NativeWorkspaceOwner {
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
         }
-        if creator != candidate.room_host() {
+        if creator != candidate.workspace_host() {
             if !member
                 .policy
                 .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
             {
-                return Err("the room does not let this application author its records".into());
+                return Err(
+                    "the workspace does not let this application author its records".into(),
+                );
             }
-            let node =
-                collab_types::document_node(candidate.peer.room(), &route.app, &route.record);
+            let node = collab_types::document_node(
+                candidate.peer.workspace_id(),
+                &route.app,
+                &route.record,
+            );
             if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
                 return Err("application record creator may not change the record".into());
             }
@@ -196,7 +201,7 @@ impl NativeWorkspaceOwner {
             .generation
             .checked_add(1)
             .ok_or("native application generation exhausted")?;
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(true)
     }
 }
@@ -213,7 +218,7 @@ fn member_bootstrap(
     now: SystemTime,
 ) -> Result<Option<Vec<u8>>, String> {
     if creator != view.device()
-        || creator == view.room_host()
+        || creator == view.workspace_host()
         || key.verifying_key().to_bytes() != creator.device_public_key
     {
         return Err("application initialization lacks current member custody".into());
@@ -238,12 +243,12 @@ fn member_bootstrap(
     let held = view
         .peer()
         .document(&route.app, &route.record)
-        .ok_or("application record is not in the room")?;
+        .ok_or("application record is not in the workspace")?;
     let mut record = automerge::AutoCommit::load(&held).map_err(|error| error.to_string())?;
     let heads = record.get_heads();
     // The app's bytes are untrusted: taken in by the isolated admission,
     // onto the record's graph, adding only what the bootstrap brings and
-    // never replacing what the room holds.
+    // never replacing what the workspace holds.
     match tilo_automerge_isolate::apply(
         &mut record,
         initialization.document,

@@ -66,7 +66,7 @@ struct TreeHost {
 }
 
 impl FileHost for TreeHost {
-    fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, slot: WorkspaceId) -> Option<RoomId> {
         self.tree.read().room_of(slot)
     }
 
@@ -87,14 +87,14 @@ impl FileHost for TreeHost {
         #[cfg(test)]
         PUBLICATIONS_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
         let change = &change;
-        let rooms_change = matches!(change, Change::Room { .. } | Change::Released { .. });
+        let rooms_change = matches!(change, Change::Workspace { .. } | Change::Released { .. });
         let export = {
             let mut tree = self.tree.write();
             // A completed enrollment installs into the workspace made for
             // the join, which is the room already: a workspace never changes
             // its room, so nothing is bound here.
-            if let Change::Room {
-                room,
+            if let Change::Workspace {
+                workspace: room,
                 into: Some(target),
                 ..
             } = *change
@@ -163,12 +163,15 @@ fn apply(
     let before = tree.desktop.workspaces.len();
     tree.native_authority = next.clone();
     match *change {
-        Change::Room {
-            room, peer, host, ..
-        } => tree.project_native_room(room, peer, host),
-        // The room and its workspace go together.
-        Change::Released { room } => {
-            tree.forget_personal_room(room);
+        Change::Workspace {
+            workspace,
+            peer,
+            host,
+            ..
+        } => tree.project_native_room(workspace, peer, host),
+        // The workspace and its record go together.
+        Change::Released { workspace } => {
+            tree.forget_personal_room(workspace);
         }
         Change::Pending => {}
     }
@@ -222,9 +225,9 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         return Err("native state writer replaced while the owner was opening".into());
     }
     native.native_authority = storage;
-    for room in owner.rooms() {
+    for room in owner.workspaces() {
         owner.with_current(room, |view| {
-            native.project_native_room(room, view.peer(), view.room_host());
+            native.project_native_room(room, view.peer(), view.workspace_host());
             Ok(())
         })?;
     }
@@ -259,7 +262,7 @@ pub(crate) fn release_workspace_room(
         return Err("the last workspace stays".into());
     }
     let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
-    if !owner.release_room(room)? {
+    if !owner.release_workspace(room)? {
         // A join that never reached the host's record: only its workspace
         // is here.
         tree.write().forget_personal_room(room);
@@ -288,7 +291,7 @@ pub(crate) fn delete_archived_workspace(
         return Err("no archived workspace is that room".into());
     }
     let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
-    if !owner.release_room(room)? {
+    if !owner.release_workspace(room)? {
         tree.write().forget_personal_room(room);
     }
     Ok(())
@@ -317,8 +320,8 @@ pub(crate) fn host_hosts_for_others(view: &NativeCommittedView, room: RoomId) ->
         return false;
     };
     hint.room == room.to_string()
-        && &hint.host_device_certificate == view.room_host()
-        && view.room_host().capabilities.can_act_as_host
+        && &hint.host_device_certificate == view.workspace_host()
+        && view.workspace_host().capabilities.can_act_as_host
 }
 
 /// Another open of `tree`'s writer, in progress on a thread of its own

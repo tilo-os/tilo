@@ -29,7 +29,6 @@ struct Inner {
     accessories: Vec<os_actions::BtDeviceInfo>,
     nearby: Vec<os_actions::NearbyBtDevice>,
     scanning: bool,
-    battery: u8,
     /// Changes made, in order.
     calls: Vec<String>,
     /// Changes the machine refuses, by name.
@@ -97,7 +96,6 @@ impl Machine {
                 rssi: Some(-52),
                 paired: false,
             }];
-            inner.battery = 64;
         }
         machine
     }
@@ -163,21 +161,8 @@ impl DeviceReads for Machine {
     fn wired(&self) -> Option<os_actions::WiredInfo> {
         self.0.lock().unwrap().wired.clone()
     }
-    fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
-        tilo_power_mgmt::BatterySnapshot {
-            present: true,
-            percent: self.0.lock().unwrap().battery,
-            state: tilo_power_mgmt::BatteryState::Discharging,
-        }
-    }
-    fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
-        None
-    }
     fn radios(&self) -> Option<os_actions::RadioState> {
         Some(self.0.lock().unwrap().radios.clone())
-    }
-    fn privacy(&self) -> os_actions::PrivacyStatus {
-        os_actions::PrivacyStatus::default()
     }
     fn vpns(&self) -> Option<Vec<os_actions::VpnConnectionInfo>> {
         Some(self.0.lock().unwrap().vpns.clone())
@@ -206,9 +191,6 @@ impl DeviceReads for Machine {
     }
     fn scanning_bluetooth(&self) -> Option<bool> {
         Some(self.0.lock().unwrap().scanning)
-    }
-    fn firmware_updates(&self) -> Option<usize> {
-        Some(2)
     }
     fn availability(&self) -> QsActionAvailability {
         QsActionAvailability::all()

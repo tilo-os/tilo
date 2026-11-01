@@ -20,9 +20,10 @@ one the code and the image's ``system-interfaces.toml`` carry.
 the code declares changed incompatibly since BASE's code without a higher
 version; both are read by this extractor, so a change to how a schema is
 written is never taken for a change to the interface. An added optional field
-of a JSON or TOML message, an added Cap'n Proto struct field and a new type
-are compatible; everything else that changes what one side sends or reads,
-a new Cap'n Proto union member included, is not.
+of a JSON or TOML message, an added Cap'n Proto struct field, a new type, and a
+postcard field under another name that keeps its position and type are
+compatible; everything else that changes what one side sends or reads, a new
+Cap'n Proto union member included, is not.
 
 ``write`` rewrites every ``interface.toml`` from the code, keeping the
 authored header (where the version lives, the sources, the roots, the opaque
@@ -810,18 +811,52 @@ def top_type(key: str) -> str:
     return key.split(".", 1)[0].split("::", 1)[0]
 
 
+def field_spot(key: str, value: str) -> tuple[str, str] | None:
+    """Where a postcard field sits: its parent and the position-plus-type the
+    wire carries for it, or `None` when the line is not a field."""
+    if "." not in key or not value.startswith("#"):
+        return None
+    return key.rsplit(".", 1)[0], value
+
+
+def renamed_fields(before: dict[str, str], now: dict[str, str]) -> tuple[set[str], set[str]]:
+    """The `(gone, new)` field names that are one field under another name.
+
+    A postcard field's name never reaches the wire: only its position and type
+    do. So a field that is gone from `before` is compatible with a new field
+    of the same type at the same position in `now` — a rename. A type that
+    moves to another position, or changes type, is not."""
+    gone = {key for key in before if key not in now}
+    added = {key for key in now if key not in before}
+    moved_away: set[str] = set()
+    moved_in: set[str] = set()
+    for key in sorted(gone):
+        spot = field_spot(key, before[key])
+        if spot is None:
+            continue
+        for other in sorted(added - moved_in):
+            if field_spot(other, now[other]) == spot:
+                moved_away.add(key)
+                moved_in.add(other)
+                break
+    return moved_away, moved_in
+
+
 def incompatible(before: dict[str, str], now: dict[str, str], encoding: str) -> list[str]:
     """Why `now` cannot talk to `before`, one reason per line; empty when it
     can."""
     reasons = []
     old_types = {top_type(key) for key in before}
+    renamed_away, renamed_in = renamed_fields(before, now) if encoding == "postcard" else (set(), set())
     for key, value in before.items():
+        if key in renamed_in or key in renamed_away:
+            continue
         if key not in now:
             reasons.append(f"`{key}` is gone")
         elif now[key] != value:
             reasons.append(f"`{key}` is now `{now[key]}`, was `{value}`")
     for key, value in now.items():
-        if key in before:
+        if key in before or key in renamed_in:
             continue
         if top_type(key) not in old_types:
             continue  # a new type: judged where it is used

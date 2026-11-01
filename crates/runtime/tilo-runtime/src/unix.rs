@@ -57,10 +57,10 @@ pub struct ServiceSockets<'a> {
 /// Connect the document-media socket with this app's scope fixed before the
 /// app holds the descriptor. A host without the service leaves the app on
 /// its process-local store.
-fn connect_blobs(path: &Path, app_id: &str, room: &str) -> Option<UnixStream> {
+fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStream> {
     use runtime_fs::blobs::{BlobPrincipal, BlobScope, write_handoff};
 
-    let scope = BlobScope::new(room, app_id).ok()?;
+    let scope = BlobScope::new(workspace, app_id).ok()?;
     let mut stream = UnixStream::connect(path).ok()?;
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
@@ -92,10 +92,10 @@ fn started_surface() -> Option<String> {
 impl ServiceConnections {
     pub(crate) fn connect(
         app_id: &str,
-        room: &str,
+        workspace: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
-        if app_id.trim().is_empty() || app_id.len() > 4096 || room.len() > 4096 {
+        if app_id.trim().is_empty() || app_id.len() > 4096 || workspace.len() > 4096 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "app identity is empty",
@@ -105,13 +105,13 @@ impl ServiceConnections {
         let mut identity = UnixStream::connect(sockets.identity)?;
         identity.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         let handshake = serde_json::to_vec(&runtime_identity::wire::Handshake {
-            workspace_id: room.into(),
+            workspace_id: workspace.into(),
             app_id: app_id.into(),
             surface: started_surface(),
         })?;
         runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;
-        let blobs = connect_blobs(sockets.blobs, app_id, room);
+        let blobs = connect_blobs(sockets.blobs, app_id, workspace);
         Ok(Self {
             collab,
             identity,
@@ -135,10 +135,10 @@ impl ServiceConnections {
 
     /// Where the app finds each descriptor, and who it is.
     #[must_use]
-    pub(crate) fn env(&self, app_id: &str, room: &str) -> Vec<(&'static str, String)> {
+    pub(crate) fn env(&self, app_id: &str, workspace: &str) -> Vec<(&'static str, String)> {
         let mut env = vec![
             ("TILO_PACKAGE_ID", app_id.to_owned()),
-            ("TILO_WORKSPACE_ID", room.to_owned()),
+            ("TILO_WORKSPACE_ID", workspace.to_owned()),
             ("TILO_SVC_COLLAB_FD", self.collab.as_raw_fd().to_string()),
             (
                 "TILO_SVC_IDENTITY_FD",
@@ -161,10 +161,10 @@ impl Connections {
     pub(crate) fn prepare(
         command: &mut Command,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
-        let services = ServiceConnections::connect(app_id, room, sockets)?;
+        let services = ServiceConnections::connect(app_id, workspace, sockets)?;
         let fds = services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
@@ -176,7 +176,7 @@ impl Connections {
             // automatic-exec ownership or command-resume marker into it.
             .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
             .env_remove("TILO_RUNTIME_RESUME_LIVE")
-            .envs(services.env(app_id, room));
+            .envs(services.env(app_id, workspace));
         // SAFETY: only async-signal-safe fcntl calls run between fork and exec.
         // Both sockets remain owned here until spawn completes. Other descriptors
         // retain CLOEXEC, including endpoints belonging to previously launched apps.
@@ -203,10 +203,10 @@ impl Connections {
 pub fn launch(
     mut command: Command,
     app_id: &str,
-    room: &str,
+    workspace: &str,
     sockets: &ServiceSockets<'_>,
 ) -> io::Result<Child> {
-    let _connections = Connections::prepare(&mut command, app_id, room, sockets)?;
+    let _connections = Connections::prepare(&mut command, app_id, workspace, sockets)?;
     command.spawn()
 }
 

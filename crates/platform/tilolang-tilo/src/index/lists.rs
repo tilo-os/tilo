@@ -603,7 +603,7 @@ impl ListEdits {
         if entries.len() > SPLIT {
             // Appended past the end of the list (a message posted, a list built in order): the
             // full page stays full and the entry starts the next, so a list kept by appending
-            // is held in full pages. Anywhere else the page splits in half, room on both sides.
+            // is held in full pages. Anywhere else the page splits in half, workspace on both sides.
             let appended = at.saturating_add(1) == dir.pages.len()
                 && position.saturating_add(1) == entries.len();
             let keep = if appended { SPLIT } else { entries.len() / 2 };

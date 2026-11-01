@@ -1,5 +1,5 @@
 //! A root that is a named collection (`type Board = Collection<Card>`, `root board: Board`) and
-//! a collection of a union of types, through the room record and a second replica.
+//! a collection of a union of types, through the workspace record and a second replica.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{InvokeOutcome, Principal, Value};

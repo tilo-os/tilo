@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-const ROOM: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
+const WORKSPACE: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
 
 /// An owner whose document is at one revision, named by one head.
 struct Service {
@@ -54,7 +54,7 @@ impl super::DocumentBytes for Bytes {
     }
 }
 impl NativeDocumentReads for Service {
-    fn requires_room(&self, _: &str) -> bool {
+    fn requires_workspace(&self, _: &str) -> bool {
         true
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
@@ -133,7 +133,7 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
-        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", ROOM, ""),
+        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         record_kind: None,
         creation: None,
@@ -510,7 +510,7 @@ fn a_queued_read_refused_or_left_gives_up_its_place() {
         leaving.slot.leave();
         holder.take(&held);
         settle().await;
-        // The refusal is final, and the room granted to it goes on.
+        // The refusal is final, and the workspace granted to it goes on.
         assert!(revoked.open(None).is_err());
         settle().await;
         let first = last.open(None).unwrap();

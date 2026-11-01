@@ -106,10 +106,6 @@ fn every_client_error_has_a_deliberate_link_class() {
         iroh_link_error(ClientError::Iroh("timed out".into())),
         LinkError::Unavailable("timed out".into()),
     );
-    assert_eq!(
-        iroh_link_error(ClientError::PrivateTransportClosed),
-        LinkError::Unavailable("private transport closed".into()),
-    );
     // The device's own signer.
     assert_eq!(
         iroh_link_error(ClientError::Sign("locked".into())),

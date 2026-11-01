@@ -111,6 +111,7 @@ pub mod published;
 pub mod roaming_provenance;
 pub mod search_history;
 mod section_digest;
+pub mod shell_views;
 pub mod sign_in_comforts;
 mod source;
 mod store;

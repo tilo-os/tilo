@@ -1,7 +1,7 @@
 //! Durable state of the native data plane, in `meta.redb`.
 //!
 //! A restart must continue where the last run stopped without re-reading
-//! the room: the last capture epoch (its retained snapshot, the journal
+//! the workspace: the last capture epoch (its retained snapshot, the journal
 //! position it covers and the captured state of every path) and, for every
 //! path the daemon wrote itself, which record version it materialised and
 //! what the local inode looked like afterwards. Each epoch is persisted in

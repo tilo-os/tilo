@@ -125,7 +125,7 @@ impl Profile {
             }
             Self::DataDir(directory) => data_dir_content(directory),
         }
-        .for_one_room()
+        .for_one_workspace()
     }
 }
 

@@ -1,17 +1,17 @@
 //! Direct sync of one workspace replica between two of its devices over an
-//! iroh connection, with no room host in between.
+//! iroh connection, with no workspace host in between.
 //!
 //! The connection's endpoint id is the remote device key, so the QUIC
 //! handshake already proves who sent every frame: a device that is not a
 //! certified, unrevoked device of the replica's roster is refused before a
 //! frame is read, and everything it sends is admitted as its own live
-//! traffic through [`StatePeer::receive_from`], the same admission a room
+//! traffic through [`StatePeer::receive_from`], the same admission a workspace
 //! host's relayed delta takes.
 //!
 //! Each side opens one unidirectional stream of length-prefixed postcard
 //! [`NeighbourMsg`] frames. It first carries what the other may lack: the
 //! device's own certificate, and when the device belongs to the workspace's
-//! owner, the room governance and a checkpoint of every document. Then it
+//! owner, the workspace governance and a checkpoint of every document. Then it
 //! carries every message this device publishes while the link lasts.
 
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
@@ -27,15 +27,15 @@ use web_time::SystemTime;
 /// ALPN of a direct replica link between two devices of one workspace.
 pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/1";
 
-/// The largest frame: a document checkpoint with room to spare.
+/// The largest frame: a document checkpoint with space to spare.
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Messages published while a link is writing; a link further behind than
 /// this ends, and the next connection catches up from the checkpoint.
-const OUTGOING: usize = 1024;
+pub(crate) const OUTGOING: usize = 1024;
 
 /// Application close code of a refused connection.
-const REFUSED: u32 = 1;
+pub(crate) const REFUSED: u32 = 1;
 
 /// One workspace's replica, held by the device whose key signs its changes.
 ///
@@ -63,10 +63,10 @@ impl Replica {
         write(&mut self.0.lock_recover())
     }
 
-    /// The workspace this replica is, as its room id.
+    /// The workspace this replica is, as its id.
     #[must_use]
-    pub fn room(&self) -> String {
-        self.read(|peer| peer.room().to_owned())
+    pub fn workspace(&self) -> String {
+        self.read(|peer| peer.workspace_id().to_owned())
     }
 }
 
@@ -304,7 +304,7 @@ impl ProtocolHandler for DirectSync {
     }
 }
 
-fn bump(count: &mut u64) {
+pub(crate) fn bump(count: &mut u64) {
     *count = count.wrapping_add(1);
 }
 
@@ -317,7 +317,7 @@ fn now_ns() -> u64 {
 }
 
 /// Write `catch_up`, then every message published live, to `send`.
-async fn send_all(
+pub(crate) async fn send_all(
     mut send: SendStream,
     catch_up: Vec<NeighbourMsg>,
     mut live: broadcast::Receiver<NeighbourMsg>,
@@ -336,7 +336,10 @@ async fn send_all(
     }
 }
 
-async fn write_frame(send: &mut SendStream, message: &NeighbourMsg) -> Result<(), String> {
+pub(crate) async fn write_frame(
+    send: &mut SendStream,
+    message: &NeighbourMsg,
+) -> Result<(), String> {
     let bytes = postcard::to_allocvec(message).map_err(|error| error.to_string())?;
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
@@ -351,7 +354,7 @@ async fn write_frame(send: &mut SendStream, message: &NeighbourMsg) -> Result<()
 }
 
 /// The next frame, or `None` once the other side finished its stream.
-async fn read_frame(recv: &mut RecvStream) -> Result<Option<NeighbourMsg>, String> {
+pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Option<NeighbourMsg>, String> {
     let mut len = [0_u8; 4];
     match recv.read_exact(&mut len).await {
         Ok(()) => {}

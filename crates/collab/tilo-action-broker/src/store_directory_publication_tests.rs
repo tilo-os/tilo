@@ -4,7 +4,7 @@ fn store_definition() -> &'static ui::application::ApplicationDefinition {
     app_framework::framework::definition::<store::StoreShell>()
 }
 
-fn store_genesis(room: &str) -> Vec<tilo_peer_state::SeedDocument> {
+fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
     let definition = store_definition();
     let record = ui::record::RecordId::for_tab(1);
     let mut document = automerge::AutoCommit::new();
@@ -12,8 +12,8 @@ fn store_genesis(room: &str) -> Vec<tilo_peer_state::SeedDocument> {
         &mut document,
         &record,
         &definition.record_kind,
-        room,
-        Some(room)
+        workspace,
+        Some(workspace)
     ));
     vec![tilo_peer_state::SeedDocument {
         app_id: definition.app_id().into(),
@@ -214,7 +214,7 @@ fn prove_store_directory(mut env: Environment) {
         private.join("store-worker.sock"),
         env.membership.authority(),
         env.publisher.clone(),
-        crate::peer_actions::NativePeerBrokerConfig {
+        crate::NativePeerBrokerConfig {
             journal_root: private.join("store-journal"),
             certificate_authority: env.authority.clone(),
         },
@@ -295,8 +295,8 @@ async fn store_native_certified_directory_discloses_children_after_actual_histor
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::with_owner_initializer(|path| {
-                crate::test_owner::SessionOwner::initialize_with_documents(path, |room| {
-                    Ok(store_genesis(room))
+                crate::test_owner::SessionOwner::initialize_with_documents(path, |workspace| {
+                    Ok(store_genesis(workspace))
                 })
             });
             let ProvisionedEnvironment {

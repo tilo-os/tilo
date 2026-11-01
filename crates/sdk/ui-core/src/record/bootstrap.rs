@@ -126,29 +126,30 @@ mod tests {
     use super::*;
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-    fn fresh(room: &str, writer: &[u8]) -> Result<AutoCommit> {
+    fn fresh(workspace: &str, writer: &[u8]) -> Result<AutoCommit> {
         let mut doc = AutoCommit::new().with_actor(ActorId::from(writer));
         let checkout = crate::record::RecordCheckout::new(
             crate::record::RecordId::for_tab(73),
             crate::record::RecordKind::new("test.document"),
         );
-        super::super::genesis(&mut doc, &checkout, room, |_| Ok(()))?;
+        super::super::genesis(&mut doc, &checkout, workspace, |_| Ok(()))?;
         Ok(doc)
     }
 
     #[test]
-    fn cold_slots_preserve_genesis_private_writers_and_room_isolation() -> Result<()> {
-        let mut a = fresh("room-a", b"writer-a")?;
+    fn cold_slots_preserve_genesis_private_writers_and_workspace_isolation() -> Result<()> {
+        let mut a = fresh("workspace-a", b"writer-a")?;
         let genesis = a.get_heads();
         let writer = a.get_actor().clone();
-        let mut b = fresh("room-a", b"writer-b")?;
-        let mut other_room = fresh("room-b", b"writer-c")?;
+        let mut b = fresh("workspace-a", b"writer-b")?;
+        let mut other_workspace = fresh("workspace-b", b"writer-c")?;
         let left = object(&mut a, &ObjId::Root, "files", ObjType::Map).ok_or("left map")?;
         let right = object(&mut b, &ObjId::Root, "files", ObjType::Map).ok_or("right map")?;
         assert_eq!(left, right);
         assert_ne!(
             left,
-            object(&mut other_room, &ObjId::Root, "files", ObjType::Map).ok_or("other room")?
+            object(&mut other_workspace, &ObjId::Root, "files", ObjType::Map)
+                .ok_or("other workspace")?
         );
         assert_eq!(a.get_actor(), &writer);
         assert_eq!(a.fork_at(&genesis)?.get_heads(), genesis);
@@ -169,7 +170,7 @@ mod tests {
 
     #[test]
     fn existing_legacy_values_and_deleted_slots_are_never_replaced() -> Result<()> {
-        let mut doc = fresh("room-a", b"writer-a")?;
+        let mut doc = fresh("workspace-a", b"writer-a")?;
         let legacy = doc.put_object(ObjId::Root, "files", ObjType::Map)?;
         doc.put(&legacy, "durable", "keep me")?;
         let heads = doc.get_heads();

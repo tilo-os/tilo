@@ -71,7 +71,7 @@ impl Slots {
 }
 
 impl FileHost for Slots {
-    fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, slot: WorkspaceId) -> Option<RoomId> {
         self.0.lock_recover().get(&slot).copied()
     }
 
@@ -84,11 +84,11 @@ impl FileHost for Slots {
         write: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let bound = match change {
-            Change::Room {
-                room,
+            Change::Workspace {
+                workspace,
                 into: Some(target),
                 ..
-            } => Some((target.workspace, room)),
+            } => Some((target.workspace, workspace)),
             _ => None,
         };
         if let Some((workspace, room)) = bound {
@@ -100,8 +100,8 @@ impl FileHost for Slots {
         {
             self.0.lock_recover().remove(&workspace);
         }
-        if let Change::Released { room } = change {
-            self.0.lock_recover().retain(|_, held| *held != room);
+        if let Change::Released { workspace } = change {
+            self.0.lock_recover().retain(|_, held| *held != workspace);
         }
         written
     }
@@ -177,13 +177,13 @@ impl Engine {
 
     /// The rooms this device holds.
     pub fn rooms(&self) -> Vec<RoomId> {
-        self.owner.rooms()
+        self.owner.workspaces()
     }
 
     /// Whether this device holds the room of a workspace.
     #[must_use]
     pub fn holds(&self, room: RoomId) -> bool {
-        self.owner.contains_room(room)
+        self.owner.contains_workspace(room)
     }
 
     /// What the room of `room` holds of the app `app`'s `record`: the
@@ -294,6 +294,19 @@ impl Engine {
             roster
                 .into_iter()
                 .map(|(device, _)| device.to_string())
+                .collect()
+        })
+    }
+
+    /// The devices `room` admits, as a call's roster names them: whoever the
+    /// room's governance certified and has not removed may reach a call in
+    /// it.
+    pub(crate) fn roster_devices(&self, room: &str) -> Result<Vec<[u8; 32]>, String> {
+        let room = RoomId::parse(room).ok_or("that is not a room")?;
+        channels::roster_of(self, room).map(|roster| {
+            roster
+                .into_iter()
+                .map(|(device, _)| *device.as_bytes())
                 .collect()
         })
     }

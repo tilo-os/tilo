@@ -15,18 +15,18 @@ use tilo_os_search::{Changes, OsSearch};
 const REFRESH: Duration = Duration::from_secs(10);
 
 /// Feed host search from `host`, as the profile's owner `actor` confined
-/// to the profile's `room`: the caller MCP acts as.
+/// to the profile's `workspace`: the caller MCP acts as.
 ///
 /// # Errors
 ///
 /// Returns an error when the app runtime cannot start.
-pub(crate) fn start<H>(host: H, room: &str, actor: &str) -> io::Result<Arc<OsSearch>>
+pub(crate) fn start<H>(host: H, workspace: &str, actor: &str) -> io::Result<Arc<OsSearch>>
 where
     H: ActionHost + Send + Sync + 'static,
 {
     let search = Arc::new(OsSearch::new(
         Arc::new(host),
-        Caller::local_person(actor).in_room(room),
+        Caller::local_person(actor).in_room(workspace),
     ));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let feeding = Arc::clone(&search);

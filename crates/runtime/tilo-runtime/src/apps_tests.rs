@@ -3,7 +3,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout};
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
 
-const ROOM: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
+const WORKSPACE: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
 const VIEWER: &str = "so.tilo.viewer";
 
 fn manifest(id: &str, entrypoint: &str, extra: &str) -> String {
@@ -137,7 +137,7 @@ fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     Apps::new(
         Some(store.catalog()),
         root,
-        ROOM,
+        WORKSPACE,
         root.join("support"),
         candidates,
     )
@@ -176,17 +176,23 @@ fn the_catalogue_offers_installed_windows_and_their_declared_access() {
     assert_eq!(resolver("so.tilo.unknown"), AppActionAccess::default());
     assert_eq!(apps.display_name("so.tilo.unknown-app"), "Unknown App");
 
-    let err = apps.start("so.tilo.tool", ROOM).map(|_| ()).unwrap_err();
+    let err = apps
+        .start("so.tilo.tool", WORKSPACE)
+        .map(|_| ())
+        .unwrap_err();
     assert!(err.contains("no window"), "{err}");
-    let err = apps.start("so.tilo.unknown", ROOM).map(|_| ()).unwrap_err();
+    let err = apps
+        .start("so.tilo.unknown", WORKSPACE)
+        .map(|_| ())
+        .unwrap_err();
     assert!(err.contains("not installed"), "{err}");
 
-    let empty = Apps::new(None, &root, ROOM, PathBuf::new(), Vec::new());
+    let empty = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
     assert!(empty.applications().is_empty());
 }
 
 #[test]
-fn a_launch_into_a_room_this_runtime_does_not_serve_is_refused() {
+fn a_launch_into_a_workspace_this_runtime_does_not_serve_is_refused() {
     let (_temp, root) = canonical_temp();
     let mut store = Store::new(&root);
     store.install(
@@ -213,7 +219,7 @@ fn a_linux_launch_without_tilo_launcher_is_refused() {
         &[("probe", b"binary")],
     );
     let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
-    let err = apps.start(VIEWER, ROOM).map(|_| ()).unwrap_err();
+    let err = apps.start(VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
     assert!(err.contains("tilo-launcher was not found"), "{err}");
     assert!(apps.launched.0.lock().unwrap().is_empty());
 }
@@ -243,10 +249,10 @@ fn original_launch_declarations_stay_with_the_live_process_after_upgrade() {
     let pid = std::process::id();
     assert!(
         apps.launched
-            .record(pid, VIEWER, ROOM, Some(declarations.clone()))
+            .record(pid, VIEWER, WORKSPACE, Some(declarations.clone()))
     );
     assert_eq!(
-        apps.application_creation_evidence(pid, VIEWER, ROOM)
+        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
             .unwrap(),
         Some(declarations.clone())
     );
@@ -272,18 +278,18 @@ fn original_launch_declarations_stay_with_the_live_process_after_upgrade() {
         ["viewer.notebook"]
     );
     assert_eq!(
-        apps.application_creation_evidence(pid, VIEWER, ROOM)
+        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
             .unwrap(),
         Some(declarations),
         "an upgrade cannot rewrite the original running launch"
     );
     assert!(
-        apps.application_creation_evidence(pid, "so.tilo.other", ROOM)
+        apps.application_creation_evidence(pid, "so.tilo.other", WORKSPACE)
             .unwrap()
             .is_none()
     );
     assert!(
-        apps.application_creation_evidence(pid, VIEWER, "another-room")
+        apps.application_creation_evidence(pid, VIEWER, "another-workspace")
             .unwrap()
             .is_none()
     );
@@ -295,14 +301,14 @@ fn original_launch_declarations_stay_with_the_live_process_after_upgrade() {
         .unwrap()
         .start_time += 1;
     assert!(
-        apps.application_creation_evidence(pid, VIEWER, ROOM)
+        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
             .unwrap()
             .is_none(),
         "a reused pid has no original declarations"
     );
     apps.launched.forget(pid);
     assert!(
-        apps.application_creation_evidence(pid, VIEWER, ROOM)
+        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
             .unwrap()
             .is_none()
     );
@@ -442,8 +448,8 @@ fn a_launched_package_declares_the_persons_records_its_signed_surface_names() {
     // This builder has no launcher: the launch stops there, after the
     // runtime took the package's surface.
     let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
-    let _ = apps.start(KEEPER, ROOM);
-    let _ = apps.start(TAMPERED, ROOM);
+    let _ = apps.start(KEEPER, WORKSPACE);
+    let _ = apps.start(TAMPERED, WORKSPACE);
     assert_eq!(declared(KEEPER), ["person-keeper.history"]);
     assert!(
         declared(TAMPERED).is_empty(),
@@ -489,7 +495,7 @@ fn a_payload_that_does_not_verify_is_refused() {
     let err = macos::verify_installed(&store.catalog(), &installed()).unwrap_err();
     assert!(err.contains("refusing to launch"), "{err}");
     let apps = apps(&store, &root, Vec::new());
-    let err = apps.start(VIEWER, ROOM).map(|_| ()).unwrap_err();
+    let err = apps.start(VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
     assert!(err.contains("refusing to launch"), "{err}");
     assert!(apps.launched.0.lock().unwrap().is_empty());
     std::fs::write(&record, signed).unwrap();
@@ -505,30 +511,30 @@ fn attestation_holds_only_for_the_launched_process_itself() {
     let pid = child.id();
     let launched = Launched::default();
     assert!(
-        !launched.attest(pid, VIEWER, ROOM),
+        !launched.attest(pid, VIEWER, WORKSPACE),
         "unknown until recorded"
     );
-    assert!(launched.record(pid, VIEWER, ROOM, None));
-    assert!(launched.attest(pid, VIEWER, ROOM));
-    assert!(!launched.attest(pid, "so.tilo.other", ROOM));
-    assert!(!launched.attest(pid, VIEWER, "another-room"));
-    assert!(!launched.attest(pid.wrapping_add(100_000), VIEWER, ROOM));
+    assert!(launched.record(pid, VIEWER, WORKSPACE, None));
+    assert!(launched.attest(pid, VIEWER, WORKSPACE));
+    assert!(!launched.attest(pid, "so.tilo.other", WORKSPACE));
+    assert!(!launched.attest(pid, VIEWER, "another-workspace"));
+    assert!(!launched.attest(pid.wrapping_add(100_000), VIEWER, WORKSPACE));
 
     // A record of an earlier process that held this pid does not attest the
     // one holding it now.
     launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
-    assert!(!launched.attest(pid, VIEWER, ROOM));
+    assert!(!launched.attest(pid, VIEWER, WORKSPACE));
     launched.forget(pid);
-    assert!(launched.record(pid, VIEWER, ROOM, None));
+    assert!(launched.record(pid, VIEWER, WORKSPACE, None));
 
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(
-        !launched.attest(pid, VIEWER, ROOM),
+        !launched.attest(pid, VIEWER, WORKSPACE),
         "a reaped process is no longer the one launched"
     );
     launched.forget(pid);
-    assert!(!launched.attest(pid, VIEWER, ROOM));
+    assert!(!launched.attest(pid, VIEWER, WORKSPACE));
 }
 
 /// Each launch's process connects with the ticket of its own launch, so a
@@ -536,16 +542,16 @@ fn attestation_holds_only_for_the_launched_process_itself() {
 #[test]
 fn a_connecting_process_names_the_launch_that_started_it() {
     let root = std::env::temp_dir();
-    let apps = Apps::new(None, &root, ROOM, PathBuf::new(), Vec::new());
+    let apps = Apps::new(None, &root, WORKSPACE, PathBuf::new(), Vec::new());
     let mut child = std::process::Command::new("/bin/sleep")
         .arg("30")
         .spawn()
         .unwrap();
     let ours = std::process::id();
-    assert!(apps.launched.record(ours, VIEWER, ROOM, None));
-    assert!(apps.launched.record(child.id(), VIEWER, ROOM, None));
+    assert!(apps.launched.record(ours, VIEWER, WORKSPACE, None));
+    assert!(apps.launched.record(child.id(), VIEWER, WORKSPACE, None));
     let ticket = |pid| {
-        apps.authenticated_launch(pid, VIEWER, ROOM, None)
+        apps.authenticated_launch(pid, VIEWER, WORKSPACE, None)
             .unwrap()
             .and_then(|launch| launch.launch_ticket)
     };
@@ -556,7 +562,7 @@ fn a_connecting_process_names_the_launch_that_started_it() {
         "two launches of one app hold their own tickets"
     );
     assert!(
-        apps.authenticated_launch(ours, "so.tilo.other", ROOM, None)
+        apps.authenticated_launch(ours, "so.tilo.other", WORKSPACE, None)
             .unwrap()
             .is_none(),
         "a ticket is presented only for the launch's own app"
@@ -631,9 +637,9 @@ int main(void) {
     let collab = UnixListener::bind(root.join(COLLAB_SOCKET)).unwrap();
     let _identity = UnixListener::bind(root.join(IDENTITY_SOCKET)).unwrap();
     let apps = apps(&store, &root, Vec::new());
-    let launch = apps.start(VIEWER, ROOM).unwrap();
-    assert!(apps.attest_process(launch.pid, VIEWER, ROOM));
-    assert!(!apps.attest_process(launch.pid, "so.tilo.other", ROOM));
+    let launch = apps.start(VIEWER, WORKSPACE).unwrap();
+    assert!(apps.attest_process(launch.pid, VIEWER, WORKSPACE));
+    assert!(!apps.attest_process(launch.pid, "so.tilo.other", WORKSPACE));
     // The app's connection is queued, never accepted; closing the listener
     // ends it, and the probe's read with it.
     drop(collab);

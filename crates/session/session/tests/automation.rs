@@ -140,7 +140,7 @@ fn tidy_with(
         "triggers": [trigger],
     }))
     .expect("shortcut JSON");
-    tilo_peer_state::room::sign_saved_shortcut(ROOM, &mut shortcut, cert, device)
+    tilo_peer_state::workspace::sign_saved_shortcut(ROOM, &mut shortcut, cert, device)
         .expect("the person's own device saved it");
     SavedShortcut::encode(&shortcut)
 }

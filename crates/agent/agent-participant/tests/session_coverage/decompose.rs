@@ -12,7 +12,7 @@ use std::time::Duration;
 use tilo_relay_protocol::agents::TaskState;
 
 use super::{
-    CHAT, RelayRoom, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
+    CHAT, RelayWorkspace, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
     message_text, offered, plan_call, post_in_chat, posts, wait_for,
 };
 use crate::common::pdf;
@@ -72,15 +72,17 @@ fn messages(body: &str) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready, Bravo ready and Charlie ready")
         .unwrap();
-    let first = room.next_request(&sent, "the coordinator's list").await;
+    let first = workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     let request: serde_json::Value = serde_json::from_str(&first).unwrap();
     assert!(request["tools"].to_string().contains("\"adjust\""));
     let told = last_turn(&first);
@@ -96,7 +98,7 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
         .unwrap();
 
     for (number, word) in [(1, "Alpha"), (2, "Bravo"), (3, "Charlie")] {
-        let body = room.next_request(&sent, "an item's agent").await;
+        let body = workspace.next_request(&sent, "an item's agent").await;
         assert_eq!(messages(&body), 1, "a fresh conversation");
         let told = last_turn(&body);
         assert!(
@@ -132,7 +134,11 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
             .unwrap();
     }
 
-    let check = last_turn(&room.next_request(&sent, "the coordinator's check").await);
+    let check = last_turn(
+        &workspace
+            .next_request(&sent, "the coordinator's check")
+            .await,
+    );
     assert!(check.contains("Every item has ended"), "{check}");
     assert!(
         check.contains(
@@ -146,8 +152,8 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
             &serde_json::json!({"steps": [], "reply": "All posted."}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let said = ana_said(&room);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&workspace);
     assert!(
         said.starts_with("Done: 3 actions.")
             && said.ends_with(
@@ -155,13 +161,13 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
             ),
         "{said}"
     );
-    let held = chat_parts_text(&room.ana.0, &ours);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     for word in ["Alpha", "Bravo", "Charlie"] {
         assert!(held.contains(&format!("{word} ready")), "{held}");
     }
-    room.pump_for(Duration::from_millis(300)).await;
+    workspace.pump_for(Duration::from_millis(300)).await;
     assert!(sent.try_recv().is_err(), "no plan after the check");
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// An item's agent is offered only its item's apps' operations: the
@@ -170,15 +176,17 @@ async fn a_coordinated_task_gives_each_item_a_fresh_agent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::granting(&url, &[CHAT, SHEETS])).await;
-    room.ana.0.decompose(true);
-    room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::granting(&url, &[CHAT, SHEETS])).await;
+    workspace.ana.0.decompose(true);
+    workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("Write Alpha in the sheet, then post Alpha ready in Chat")
         .unwrap();
-    let first = room.next_request(&sent, "the coordinator's list").await;
+    let first = workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     assert!(offers(&first, "set-cells") && offers(&first, "post"));
     answer
         .send(plan_call(
@@ -189,7 +197,9 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
         ))
         .unwrap();
 
-    let sheet = room.next_request(&sent, "the sheet item's agent").await;
+    let sheet = workspace
+        .next_request(&sent, "the sheet item's agent")
+        .await;
     assert!(offers(&sheet, "set-cells"), "{}", request_text(&sheet));
     assert!(!offers(&sheet, "post"), "{}", request_text(&sheet));
     answer
@@ -201,7 +211,7 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
         ))
         .unwrap();
 
-    let chat = room.next_request(&sent, "the chat item's agent").await;
+    let chat = workspace.next_request(&sent, "the chat item's agent").await;
     assert!(offers(&chat, "post"), "{}", request_text(&chat));
     assert!(!offers(&chat, "set-cells"), "{}", request_text(&chat));
     assert!(
@@ -215,15 +225,17 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
             &serde_json::json!({"steps": posts(&offered(&chat, "post"), &[("Alpha ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer
         .send(plan_call(
             "c2",
             &serde_json::json!({"steps": [], "reply": "Done."}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
 /// An item that waits is the coordinator's: no model is asked while it
@@ -232,15 +244,17 @@ async fn an_item_s_agent_is_offered_only_its_item_s_apps() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("Ask Rae in Chat for the LR-2041 code, then post that you signed in with it")
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -251,7 +265,7 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
                 {"text": "post signed in with the code", "apps": ["chat"], "after": [2]}]}),
         ))
         .unwrap();
-    let ask = room.next_request(&sent, "item 1's agent").await;
+    let ask = workspace.next_request(&sent, "item 1's agent").await;
     answer
         .send(plan_call(
             "i1",
@@ -260,12 +274,12 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
         ))
         .unwrap();
 
-    room.ana_waits(&task).await;
-    room.pump_for(Duration::from_millis(500)).await;
+    workspace.ana_waits(&task).await;
+    workspace.pump_for(Duration::from_millis(500)).await;
     assert!(sent.try_recv().is_err(), "no model call while it waits");
-    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code 4321");
+    post_in_chat(&mut workspace.rae.0, &workspace.rae.1, "LR-2041 code 4321");
 
-    let after = room.next_request(&sent, "item 3's agent").await;
+    let after = workspace.next_request(&sent, "item 3's agent").await;
     assert_eq!(messages(&after), 1, "a fresh conversation");
     let told = last_turn(&after);
     assert!(
@@ -281,16 +295,18 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
                 &[("Signed in with 4321", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer
         .send(plan_call(
             "c2",
             &serde_json::json!({"steps": [], "reply": "Done."}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    assert!(chat_parts_text(&room.ana.0, &ours).contains("Signed in with 4321"));
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    assert!(chat_parts_text(&workspace.ana.0, &ours).contains("Signed in with 4321"));
+    Box::pin(workspace.close()).await;
 }
 
 /// News while an item's agent works goes to the coordinator, told the
@@ -300,15 +316,17 @@ async fn a_coordinator_s_wait_asks_no_model_and_hands_on_what_arrived() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready and Bravo ready")
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -317,7 +335,7 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
                 {"text": "post Bravo ready", "apps": ["chat"]}]}),
         ))
         .unwrap();
-    let first = room.next_request(&sent, "item 1's agent").await;
+    let first = workspace.next_request(&sent, "item 1's agent").await;
     let post = offered(&first, "post");
     answer
         .send(plan_call(
@@ -325,18 +343,18 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
             &serde_json::json!({"steps": posts(&post, &[("Alpha ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "item 2's agent").await;
+    workspace.next_request(&sent, "item 2's agent").await;
     // While item 2 is planned, Ben corrects the request.
-    room.ben_joins().await;
+    workspace.ben_joins().await;
     post_in_chat(
-        &mut room.ben.0,
-        &room.ben.1,
+        &mut workspace.ben.0,
+        &workspace.ben.1,
         "Correction from Ben: it is Alfa, and Bravo per Ben",
     );
     wait_for("Ana to hold Ben's post", || {
-        room.ana.0.pump();
-        room.ben.0.pump();
-        let held = chat_parts_text(&room.ana.0, &ours).contains("Correction from Ben");
+        workspace.ana.0.pump();
+        workspace.ben.0.pump();
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("Correction from Ben");
         async move { held.then_some(()) }
     })
     .await;
@@ -348,7 +366,7 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
         .unwrap();
 
     let news = last_turn(
-        &room
+        &workspace
             .next_request(&sent, "the coordinator's news turn")
             .await,
     );
@@ -372,7 +390,7 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
         ))
         .unwrap();
 
-    let hinted = last_turn(&room.next_request(&sent, "item 2's next turn").await);
+    let hinted = last_turn(&workspace.next_request(&sent, "item 2's next turn").await);
     assert!(
         hinted.contains("Correction from Ben")
             && hinted
@@ -387,7 +405,7 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
         ))
         .unwrap();
 
-    let redo = room
+    let redo = workspace
         .next_request(&sent, "item 1 again, by a fresh agent")
         .await;
     assert_eq!(messages(&redo), 1, "a fresh conversation");
@@ -404,20 +422,22 @@ async fn news_reaches_the_running_item_as_a_hint_and_redoes_a_done_one() {
             &serde_json::json!({"steps": posts(&post, &[("Alfa ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer
         .send(plan_call(
             "c3",
             &serde_json::json!({"steps": [], "reply": "Done."}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let held = chat_parts_text(&room.ana.0, &ours);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     assert!(
         held.contains("Alfa ready") && held.contains("Bravo ready per Ben"),
         "{held}"
     );
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// What a plan of no steps that says `reply` is, as a canned model turn.
@@ -430,11 +450,17 @@ fn reply_only(id: &str, reply: &str) -> serde_json::Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room.ana.1.message("In Chat, post Alpha ready").unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
+        .ana
+        .1
+        .message("In Chat, post Alpha ready")
+        .unwrap();
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -442,12 +468,12 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
                 {"text": "post Alpha ready", "apps": ["chat"]}]}),
         ))
         .unwrap();
-    room.next_request(&sent, "item 1's agent").await;
+    workspace.next_request(&sent, "item 1's agent").await;
     answer
         .send(reply_only("i1", "cannot: the chat is not shown here"))
         .unwrap();
 
-    let again = room
+    let again = workspace
         .next_request(&sent, "item 1's agent, asked again")
         .await;
     assert_eq!(messages(&again), 1, "a fresh conversation");
@@ -463,11 +489,13 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
             &serde_json::json!({"steps": posts(&offered(&again, "post"), &[("Alpha ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer.send(reply_only("c2", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    assert!(chat_parts_text(&room.ana.0, &ours).contains("Alpha ready"));
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    assert!(chat_parts_text(&workspace.ana.0, &ours).contains("Alpha ready"));
+    Box::pin(workspace.close()).await;
 }
 
 /// An item's agent plans with what the records the request is about hold
@@ -476,10 +504,10 @@ async fn an_item_s_agent_that_cannot_before_trying_is_asked_again_and_acts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::granting(&url, &[CHAT, SHEETS])).await;
-    room.ana.0.decompose(true);
-    room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::granting(&url, &[CHAT, SHEETS])).await;
+    workspace.ana.0.decompose(true);
+    workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message(
@@ -487,7 +515,9 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
              request it was",
         )
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -497,7 +527,7 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
                 {"text": "post which request it was", "apps": ["chat"], "after": [2]}]}),
         ))
         .unwrap();
-    let sheet = room.next_request(&sent, "item 1's agent").await;
+    let sheet = workspace.next_request(&sent, "item 1's agent").await;
     answer
         .send(plan_call(
             "i1",
@@ -506,7 +536,7 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
                     "rows": [["Alpha"]]}}]}),
         ))
         .unwrap();
-    let reads = room.next_request(&sent, "item 2's agent").await;
+    let reads = workspace.next_request(&sent, "item 2's agent").await;
     answer
         .send(plan_call(
             "i2",
@@ -514,13 +544,14 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
                 "arguments": {"channel": chat::record::CHAT_CHANNEL, "pageSize": 32}}]}),
         ))
         .unwrap();
-    room.next_request(&sent, "item 2's turn after its read")
+    workspace
+        .next_request(&sent, "item 2's turn after its read")
         .await;
     answer
         .send(reply_only("i3", "Read: Rae requested the LR-2041 code."))
         .unwrap();
 
-    let body = room.next_request(&sent, "item 3's agent").await;
+    let body = workspace.next_request(&sent, "item 3's agent").await;
     let whole = request_text(&body);
     let Some((_, held)) = whole.split_once("What the documents this request is about hold now")
     else {
@@ -543,21 +574,23 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
                 &[("It was LR-2041", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer.send(reply_only("c2", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
 /// Lists two items, the second needing the first, and has item 1's agent
 /// say "cannot" twice (the second time after being asked to try): what the
 /// coordinator's failure turn is told.
 async fn item_1_fails(
-    room: &mut RelayRoom,
+    workspace: &mut RelayWorkspace,
     sent: &std::sync::mpsc::Receiver<String>,
     answer: &std::sync::mpsc::Sender<serde_json::Value>,
 ) -> String {
-    room.next_request(sent, "the coordinator's list").await;
+    workspace.next_request(sent, "the coordinator's list").await;
     answer
         .send(plan_call(
             "c1",
@@ -566,14 +599,16 @@ async fn item_1_fails(
                 {"text": "post Bravo ready", "apps": ["chat"], "after": [1]}]}),
         ))
         .unwrap();
-    room.next_request(sent, "item 1's agent").await;
+    workspace.next_request(sent, "item 1's agent").await;
     answer.send(reply_only("i1", "cannot: no channel")).unwrap();
-    room.next_request(sent, "item 1's agent, asked again").await;
+    workspace
+        .next_request(sent, "item 1's agent, asked again")
+        .await;
     answer
         .send(reply_only("i2", "cannot: the channel is closed"))
         .unwrap();
     last_turn(
-        &room
+        &workspace
             .next_request(sent, "the coordinator's failure turn")
             .await,
     )
@@ -585,15 +620,15 @@ async fn item_1_fails(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready, then Bravo ready")
         .unwrap();
-    let failed = item_1_fails(&mut room, &sent, &answer).await;
+    let failed = item_1_fails(&mut workspace, &sent, &answer).await;
     assert!(
         failed.contains("Item 1 (post Alpha ready) could not be done: the channel is closed.")
             && failed.contains("To have an item done again by a fresh agent")
@@ -609,7 +644,7 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
                 {"item": 1, "note": "post it in the chat channel"}]}),
         ))
         .unwrap();
-    let redo = room.next_request(&sent, "item 1 again").await;
+    let redo = workspace.next_request(&sent, "item 1 again").await;
     let told = last_turn(&redo);
     assert!(
         told.contains("you are the agent of item 1 only: post Alpha ready")
@@ -623,7 +658,7 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
             &serde_json::json!({"steps": posts(&post, &[("Alpha ready", None)])}),
         ))
         .unwrap();
-    let bravo = room.next_request(&sent, "item 2's agent").await;
+    let bravo = workspace.next_request(&sent, "item 2's agent").await;
     assert!(
         last_turn(&bravo).contains("you are the agent of item 2 only: post Bravo ready"),
         "{}",
@@ -635,15 +670,17 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
             &serde_json::json!({"steps": posts(&post, &[("Bravo ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer.send(reply_only("c3", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let held = chat_parts_text(&room.ana.0, &ours);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     assert!(
         held.contains("Alpha ready") && held.contains("Bravo ready"),
         "{held}"
     );
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// A coordinator that goes on without an item that could not be done has
@@ -652,17 +689,17 @@ async fn a_failed_item_goes_to_the_coordinator_which_has_it_done_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready, then Bravo ready")
         .unwrap();
-    item_1_fails(&mut room, &sent, &answer).await;
+    item_1_fails(&mut workspace, &sent, &answer).await;
     answer.send(reply_only("c2", "Go on without it.")).unwrap();
-    let bravo = room.next_request(&sent, "item 2's agent").await;
+    let bravo = workspace.next_request(&sent, "item 2's agent").await;
     let told = last_turn(&bravo);
     assert!(
         told.contains("you are the agent of item 2 only: post Bravo ready")
@@ -678,14 +715,16 @@ async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
                 &[("Bravo ready", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer
         .send(reply_only("c3", "Alpha was not posted."))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Failed);
-    assert!(ana_said(&room).contains("Item 1 (post Alpha ready) could not be done"));
-    assert!(chat_parts_text(&room.ana.0, &ours).contains("Bravo ready"));
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Failed);
+    assert!(ana_said(&workspace).contains("Item 1 (post Alpha ready) could not be done"));
+    assert!(chat_parts_text(&workspace.ana.0, &ours).contains("Bravo ready"));
+    Box::pin(workspace.close()).await;
 }
 
 /// A wait the coordinator holds blocks only the items that need it: an item
@@ -694,17 +733,19 @@ async fn the_items_after_a_failed_one_run_when_the_coordinator_goes_on() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message(
             "Wait for Rae's LR-2041 code in Chat and post that you signed in; post Bravo ready",
         )
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -715,7 +756,7 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
                 {"text": "post Bravo ready", "apps": ["chat"]}]}),
         ))
         .unwrap();
-    let meanwhile = room
+    let meanwhile = workspace
         .next_request(&sent, "item 3's agent, while the wait is held")
         .await;
     let told = last_turn(&meanwhile);
@@ -734,12 +775,12 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
         ))
         .unwrap();
 
-    room.ana_waits(&task).await;
-    room.pump_for(Duration::from_millis(500)).await;
+    workspace.ana_waits(&task).await;
+    workspace.pump_for(Duration::from_millis(500)).await;
     assert!(sent.try_recv().is_err(), "no model call while it waits");
-    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code 4321");
+    post_in_chat(&mut workspace.rae.0, &workspace.rae.1, "LR-2041 code 4321");
 
-    let after = room.next_request(&sent, "item 2's agent").await;
+    let after = workspace.next_request(&sent, "item 2's agent").await;
     let told = last_turn(&after);
     assert!(
         told.contains("you are the agent of item 2 only")
@@ -753,15 +794,17 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
             &serde_json::json!({"steps": posts(&post, &[("Signed in with 4321", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer.send(reply_only("c2", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let held = chat_parts_text(&room.ana.0, &ours);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     assert!(
         held.contains("Bravo ready") && held.contains("Signed in with 4321"),
         "{held}"
     );
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }
 
 /// A message a held wait waits for that arrived during the task before the
@@ -770,15 +813,17 @@ async fn a_held_wait_lets_independent_items_run_and_wakes_on_what_arrives() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_wait_ends_on_what_arrived_before_it_began() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("Post Alpha ready in Chat, wait for Rae's LR-2041 code, then post it")
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -789,13 +834,13 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
                 {"text": "post the code", "apps": ["chat"], "after": [2]}]}),
         ))
         .unwrap();
-    let first = room.next_request(&sent, "item 1's agent").await;
+    let first = workspace.next_request(&sent, "item 1's agent").await;
     // While item 1 is planned, before the wait begins, Rae sends the code.
-    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code 4321");
+    post_in_chat(&mut workspace.rae.0, &workspace.rae.1, "LR-2041 code 4321");
     wait_for("Ana to hold Rae's code", || {
-        room.ana.0.pump();
-        room.rae.0.pump();
-        let held = chat_parts_text(&room.ana.0, &ours).contains("LR-2041 code 4321");
+        workspace.ana.0.pump();
+        workspace.rae.0.pump();
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("LR-2041 code 4321");
         async move { held.then_some(()) }
     })
     .await;
@@ -807,7 +852,7 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
         ))
         .unwrap();
 
-    let after = room.next_request(&sent, "item 3's agent").await;
+    let after = workspace.next_request(&sent, "item 3's agent").await;
     let told = last_turn(&after);
     assert!(
         told.contains("you are the agent of item 3 only: post the code")
@@ -821,11 +866,13 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
             &serde_json::json!({"steps": posts(&post, &[("The code is 4321", None)])}),
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's check").await;
+    workspace
+        .next_request(&sent, "the coordinator's check")
+        .await;
     answer.send(reply_only("c2", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    assert!(chat_parts_text(&room.ana.0, &ours).contains("The code is 4321"));
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    assert!(chat_parts_text(&workspace.ana.0, &ours).contains("The code is 4321"));
+    Box::pin(workspace.close()).await;
 }
 
 /// A news turn that lists the items already listed again, as they were or
@@ -834,15 +881,17 @@ async fn a_held_wait_ends_on_what_arrived_before_it_began() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::start(&url)).await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    let mut workspace = Box::pin(RelayWorkspace::start(&url)).await;
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready and Bravo ready")
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -851,17 +900,17 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
                 {"text": "post Bravo ready", "apps": ["chat"]}]}),
         ))
         .unwrap();
-    let first = room.next_request(&sent, "item 1's agent").await;
-    room.ben_joins().await;
+    let first = workspace.next_request(&sent, "item 1's agent").await;
+    workspace.ben_joins().await;
     post_in_chat(
-        &mut room.ben.0,
-        &room.ben.1,
+        &mut workspace.ben.0,
+        &workspace.ben.1,
         "From Ben: please also post Delta ready",
     );
     wait_for("Ana to hold Ben's post", || {
-        room.ana.0.pump();
-        room.ben.0.pump();
-        let held = chat_parts_text(&room.ana.0, &ours).contains("please also post Delta");
+        workspace.ana.0.pump();
+        workspace.ben.0.pump();
+        let held = chat_parts_text(&workspace.ana.0, &ours).contains("please also post Delta");
         async move { held.then_some(()) }
     })
     .await;
@@ -873,7 +922,7 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
         ))
         .unwrap();
     let news = last_turn(
-        &room
+        &workspace
             .next_request(&sent, "the coordinator's news turn")
             .await,
     );
@@ -892,7 +941,7 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
         ))
         .unwrap();
     for (number, word) in [(2, "Bravo"), (3, "Delta")] {
-        let body = room.next_request(&sent, "the next item's agent").await;
+        let body = workspace.next_request(&sent, "the next item's agent").await;
         assert!(
             last_turn(&body).contains(&format!(
                 "you are the agent of item {number} only: post {word} ready"
@@ -907,7 +956,11 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
             ))
             .unwrap();
     }
-    let check = last_turn(&room.next_request(&sent, "the coordinator's check").await);
+    let check = last_turn(
+        &workspace
+            .next_request(&sent, "the coordinator's check")
+            .await,
+    );
     assert!(
         check.contains(
             "1. post Alpha ready (done); 2. post Bravo ready (done); 3. post Delta ready (done)."
@@ -915,16 +968,16 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
         "no item listed twice: {check}"
     );
     answer.send(reply_only("c3", "Done.")).unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
-/// An item's agent has the room's content as one agent has it: after an
-/// item imported a document the room keeps, the next item imports the PDF
-/// the room keeps by its address and reads its text, rather than being
+/// An item's agent has the workspace's content as one agent has it: after an
+/// item imported a document the workspace keeps, the next item imports the PDF
+/// the workspace keeps by its address and reads its text, rather than being
 /// handed the document the item before it imported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
+async fn an_item_s_agent_imports_a_pdf_the_workspace_keeps_and_reads_it() {
     const WRITER: &str = "so.tilo.word-processor";
     const PDF: &str = "so.tilo.pdf-viewer";
     let content = tilo_content::ContentStore::memory();
@@ -935,14 +988,14 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
         .put(&pdf(&["Payslip September net pay 2140.55"]))
         .unwrap();
     let (url, sent, answer) = answered_model_endpoint();
-    let mut room = Box::pin(RelayRoom::granting_with(
+    let mut workspace = Box::pin(RelayWorkspace::granting_with(
         &url,
         &[CHAT, WRITER, PDF],
         content,
     ))
     .await;
-    room.ana.0.decompose(true);
-    let task = room
+    workspace.ana.0.decompose(true);
+    let task = workspace
         .ana
         .1
         .message(&format!(
@@ -950,7 +1003,9 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
              payslips, the PDF tilo.content:{payslips}"
         ))
         .unwrap();
-    room.next_request(&sent, "the coordinator's list").await;
+    workspace
+        .next_request(&sent, "the coordinator's list")
+        .await;
     answer
         .send(plan_call(
             "c1",
@@ -960,7 +1015,7 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
         ))
         .unwrap();
 
-    let first = room.next_request(&sent, "item 1's agent").await;
+    let first = workspace.next_request(&sent, "item 1's agent").await;
     answer
         .send(plan_call(
             "i1",
@@ -970,7 +1025,7 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
         ))
         .unwrap();
 
-    let second = past_check(&mut room, &sent, &answer, "item 2's agent").await;
+    let second = past_check(&mut workspace, &sent, &answer, "item 2's agent").await;
     assert!(
         last_turn(&second).contains("1. open the details (done)"),
         "{}",
@@ -990,7 +1045,8 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
         ))
         .unwrap();
 
-    let check = last_turn(&past_check(&mut room, &sent, &answer, "the coordinator's check").await);
+    let check =
+        last_turn(&past_check(&mut workspace, &sent, &answer, "the coordinator's check").await);
     assert!(
         check.contains("2. read the payslips (done)") && check.contains("net pay 2140.55"),
         "the PDF was imported and read: {check}"
@@ -1001,20 +1057,20 @@ async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
             &serde_json::json!({"steps": [], "reply": "Read."}),
         ))
         .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    Box::pin(room.close()).await;
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(workspace.close()).await;
 }
 
 /// The next planning request, once the running item's agent was answered
 /// with nothing more to do if it is first asked to check what its steps
 /// wrote.
 async fn past_check(
-    room: &mut RelayRoom,
+    workspace: &mut RelayWorkspace,
     sent: &std::sync::mpsc::Receiver<String>,
     answer: &std::sync::mpsc::Sender<serde_json::Value>,
     what: &str,
 ) -> String {
-    let next = room.next_request(sent, what).await;
+    let next = workspace.next_request(sent, what).await;
     if !last_turn(&next).contains("what they wrote may still be wrong") {
         return next;
     }
@@ -1024,7 +1080,7 @@ async fn past_check(
             &serde_json::json!({"steps": [], "reply": "It is done."}),
         ))
         .unwrap();
-    room.next_request(sent, what).await
+    workspace.next_request(sent, what).await
 }
 
 /// The model of the request `body`.
@@ -1052,20 +1108,22 @@ async fn a_coordinated_task_plans_its_items_with_the_item_model() {
     let planner =
         tilo_agent_participant::ModelPlanner::new(endpoint(&own_url, "canned-coordinator"))
             .with_item_model(endpoint(&item_url, "canned-items"));
-    let mut room = Box::pin(RelayRoom::planned_by(
+    let mut workspace = Box::pin(RelayWorkspace::planned_by(
         Box::new(planner),
         &[CHAT],
         tilo_content::ContentStore::memory(),
     ))
     .await;
-    room.ana.0.decompose(true);
-    let ours = room.ana.0.open(CHAT, None).unwrap();
-    let task = room
+    workspace.ana.0.decompose(true);
+    let ours = workspace.ana.0.open(CHAT, None).unwrap();
+    let task = workspace
         .ana
         .1
         .message("In Chat, post Alpha ready and Bravo ready")
         .unwrap();
-    let list = room.next_request(&to_own, "the coordinator's list").await;
+    let list = workspace
+        .next_request(&to_own, "the coordinator's list")
+        .await;
     assert_eq!(model_of(&list), "canned-coordinator");
     assert!(last_turn(&list).contains("List the request's items"));
     own.send(plan_call(
@@ -1077,7 +1135,7 @@ async fn a_coordinated_task_plans_its_items_with_the_item_model() {
     .unwrap();
 
     for (number, word) in [(1, "Alpha"), (2, "Bravo")] {
-        let body = room.next_request(&to_items, "an item's agent").await;
+        let body = workspace.next_request(&to_items, "an item's agent").await;
         assert_eq!(model_of(&body), "canned-items");
         assert!(
             last_turn(&body).contains(&format!(
@@ -1099,7 +1157,9 @@ async fn a_coordinated_task_plans_its_items_with_the_item_model() {
             .unwrap();
     }
 
-    let check = room.next_request(&to_own, "the coordinator's check").await;
+    let check = workspace
+        .next_request(&to_own, "the coordinator's check")
+        .await;
     assert_eq!(model_of(&check), "canned-coordinator");
     assert!(last_turn(&check).contains("Every item has ended"));
     own.send(plan_call(
@@ -1107,12 +1167,12 @@ async fn a_coordinated_task_plans_its_items_with_the_item_model() {
         &serde_json::json!({"steps": [], "reply": "All posted."}),
     ))
     .unwrap();
-    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
-    let held = chat_parts_text(&room.ana.0, &ours);
+    assert_eq!(workspace.ana_ends(&task).await, TaskState::Completed);
+    let held = chat_parts_text(&workspace.ana.0, &ours);
     for word in ["Alpha", "Bravo"] {
         assert!(held.contains(&format!("{word} ready")), "{held}");
     }
-    room.pump_for(Duration::from_millis(300)).await;
+    workspace.pump_for(Duration::from_millis(300)).await;
     assert!(to_own.try_recv().is_err() && to_items.try_recv().is_err());
-    Box::pin(room.close()).await;
+    Box::pin(workspace.close()).await;
 }

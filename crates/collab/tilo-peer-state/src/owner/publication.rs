@@ -115,7 +115,7 @@ impl<'a> NativeOutgoingEntry<'a> {
         self.0.channel
     }
     /// How the store keeps this entry: a write appends after the record's
-    /// checkpoint, while a checkpoint of this author's own — the room's
+    /// checkpoint, while a checkpoint of this author's own — the workspace's
     /// governance snapshot or its sealed compaction of a record — stands as
     /// the whole of what it retained there, so the store drops the frames it
     /// covers.
@@ -328,22 +328,22 @@ fn allowed(
     }
     Ok(allowed)
 }
-/// Whether a host file of layout `version` may carry `storage`. Room
+/// Whether a host file of layout `version` may carry `storage`. Workspace
 /// records came in with layout 4; later layouts carry them as it does.
 ///
 /// # Errors
-/// A room record or its publication does not belong in that layout.
+/// A workspace record or its publication does not belong in that layout.
 pub fn validate_file_layout(
     version: u32,
     storage: &record::NativeAuthorityStorage,
 ) -> Result<(), String> {
-    for room in storage.rooms.values() {
-        match (version, room.version, room.publication.is_some()) {
-            (4.., 2, true) if room.effect_history_root.is_none() => {}
-            (4.., 3, true) if room.effect_history_root.is_some() => {}
+    for workspace in storage.workspaces.values() {
+        match (version, workspace.version, workspace.publication.is_some()) {
+            (4.., 2, true) if workspace.effect_history_root.is_none() => {}
+            (4.., 3, true) if workspace.effect_history_root.is_some() => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
-        if let Some(publication) = &room.publication {
+        if let Some(publication) = &workspace.publication {
             bounds(publication)?;
         }
     }
@@ -393,7 +393,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         return Err("native outgoing entry must be an exact document".into());
     };
     Ok(OwnerCommitRequest {
-        room: cluster_id.clone(),
+        workspace: cluster_id.clone(),
         operation: CommitOperation::Document {
             app: app_id.clone(),
             record: record_id.clone(),
@@ -486,14 +486,14 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         &NeighbourMsg::AppDocument {
             peer,
             app_id: app.clone(),
-            cluster_id: request.room.clone(),
+            cluster_id: request.workspace.clone(),
             record_id: record.clone(),
             envelope: envelope.clone(),
         },
         MAX_BYTES,
     )
 }
-/// Room for `bytes` in the outgoing custody.
+/// Workspace for `bytes` in the outgoing custody.
 pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
     let publication = state(view)?;
     let total = bounds(publication)?;
@@ -512,7 +512,7 @@ pub(crate) fn replace_governance_checkpoint(
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
-    let message = view.peer.room_message();
+    let message = view.peer.workspace_message();
     let bytes = encode(&message, MAX_BYTES)?;
     let existing = state(view)?.governance.first();
     if existing.is_some_and(|entry| entry.bytes == bytes && entry.binding == binding) {
@@ -558,10 +558,10 @@ pub(crate) fn replace_governance_checkpoint(
     Ok(())
 }
 
-/// Publish `changes`, room changes this member's device made itself, for
-/// the room's host to admit as it admits every member's: one retained
+/// Publish `changes`, workspace changes this member's device made itself, for
+/// the workspace's host to admit as it admits every member's: one retained
 /// delta, joined with the changes still waiting from before, which stays
-/// until the room's governance carries them all
+/// until the workspace's governance carries them all
 /// ([`retire_member_changes`]).
 pub(crate) fn add_member_changes(
     view: &mut NativeCommittedView,
@@ -580,7 +580,7 @@ pub(crate) fn add_member_changes(
     }
     let message = NeighbourMsg::SyncResp {
         changes: joined,
-        room: view.record.room.to_string(),
+        room: view.record.workspace.to_string(),
     };
     let bytes = encode(&message, MAX_BYTES)?;
     let old = state(view)?
@@ -626,15 +626,15 @@ pub(crate) fn add_member_changes(
     Ok(())
 }
 
-/// The changes a member's published room delta carries.
+/// The changes a member's published workspace delta carries.
 fn member_changes(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     match postcard::from_bytes(bytes).map_err(|e| e.to_string())? {
         NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
-        _ => Err("native membership publication is not a room delta".into()),
+        _ => Err("native membership publication is not a workspace delta".into()),
     }
 }
 
-/// The hashes of `changes`, encoded room changes.
+/// The hashes of `changes`, encoded workspace changes.
 pub(crate) fn change_hashes(
     changes: &[Vec<u8>],
 ) -> Result<BTreeSet<automerge::ChangeHash>, String> {
@@ -648,11 +648,11 @@ pub(crate) fn change_hashes(
         .collect()
 }
 
-/// Let go of this member's published room changes once the room's
+/// Let go of this member's published workspace changes once the workspace's
 /// governance, as one of the owner's devices sent it (`governed`), carries
-/// every one of them: the host admitted them. A room its governor started
+/// every one of them: the host admitted them. A workspace its governor started
 /// over from a newer base no longer holds them as they were made: that base
-/// is what the room is now, and they go too.
+/// is what the workspace is now, and they go too.
 pub(crate) fn retire_member_changes(
     view: &mut NativeCommittedView,
     governed: &BTreeSet<automerge::ChangeHash>,
@@ -664,7 +664,11 @@ pub(crate) fn retire_member_changes(
         return Ok(());
     }
     let made = change_hashes(&member_changes(&existing.bytes)?)?;
-    if !made.is_subset(governed) && made.iter().all(|hash| view.peer.room_holds_change(hash)) {
+    if !made.is_subset(governed)
+        && made
+            .iter()
+            .all(|hash| view.peer.workspace_holds_change(hash))
+    {
         return Ok(());
     }
     let publication = view
@@ -688,13 +692,13 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     if existing.incremental {
         return Ok(());
     }
-    let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
+    let bytes = encode(&view.peer.workspace_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
         crate::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
     ) {
         crate::owner::checkpoint::binding(
-            view.record.room,
+            view.record.workspace,
             view.peer
                 .workspace()
                 .workspace_checkpoint_root()?
@@ -884,12 +888,12 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         return validate_member_changes(view, entry);
     }
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-    if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.room.to_string())
-        || encode(&view.peer.room_message(), MAX_BYTES)? != entry.bytes
+    if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.workspace.to_string())
+        || encode(&view.peer.workspace_message(), MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
         || entry.incremental
     {
-        return Err("native governance checkpoint differs from canonical room policy".into());
+        return Err("native governance checkpoint differs from canonical workspace policy".into());
     }
     let (channel, retention) = neighbour_wire::retention(&message, true)
         .ok_or("unsupported native governance checkpoint")?;
@@ -898,7 +902,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     }
     if let crate::owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
         if view.peer.workspace().workspace_checkpoint_root()? != Some(root)
-            || entry.binding != crate::owner::checkpoint::binding(view.record.room, root)
+            || entry.binding != crate::owner::checkpoint::binding(view.record.workspace, root)
         {
             return Err("native checkpoint publication differs from signed root".into());
         }
@@ -933,28 +937,30 @@ fn receipted(view: &NativeCommittedView, binding: &CommitBinding) -> bool {
             .values()
             .any(|receipt| &receipt.receipt.binding == binding)
 }
-/// A member's published room changes: a delta of changes this device made,
-/// every one of them in the room it holds, bound to its membership receipt.
+/// A member's published workspace changes: a delta of changes this device made,
+/// every one of them in the workspace it holds, bound to its membership receipt.
 fn validate_member_changes(
     view: &NativeCommittedView,
     entry: &StoredOutgoing,
 ) -> Result<(), String> {
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
     let NeighbourMsg::SyncResp { changes, room } = &message else {
-        return Err("native membership publication is not a room delta".into());
+        return Err("native membership publication is not a workspace delta".into());
     };
-    if room != &view.record.room.to_string()
+    if room != &view.record.workspace.to_string()
         || encode(&message, MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
     {
-        return Err("native membership publication differs from its room".into());
+        return Err("native membership publication differs from its workspace".into());
     }
     // The actor this replica writes under: who wrote a change is never
-    // read from its actor, only which copy of the room made it.
-    let made_here = view.peer.room_actor_for(&view.device().device_public_key);
+    // read from its actor, only which copy of the workspace made it.
+    let made_here = view
+        .peer
+        .workspace_actor_for(&view.device().device_public_key);
     for bytes in changes {
         let change = automerge::Change::from_bytes(bytes.clone()).map_err(|e| e.to_string())?;
-        if change.actor_id() != &made_here || !view.peer.room_holds_change(&change.hash()) {
+        if change.actor_id() != &made_here || !view.peer.workspace_holds_change(&change.hash()) {
             return Err("native membership publication carries a change not made here".into());
         }
     }
@@ -981,11 +987,11 @@ pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool,
     {
         return Ok(false);
     }
-    // A member's own room changes wait for the governance that retires
+    // A member's own workspace changes wait for the governance that retires
     // them, which any replay may bring.
     if let Some(checkpoint) = publication.governance.first()
         && (checkpoint.incremental
-            || encode(&view.peer.room_message(), MAX_BYTES)? != checkpoint.bytes)
+            || encode(&view.peer.workspace_message(), MAX_BYTES)? != checkpoint.bytes)
     {
         return Ok(false);
     }
@@ -1063,14 +1069,14 @@ pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<
     retired(&view.peer, &message, view.device().device_public_key)
 }
 impl NativeWorkspaceOwner {
-    /// Read `room`'s outgoing custody: what the relay session may send now.
+    /// Read `workspace`'s outgoing custody: what the relay session may send now.
     pub fn with_outgoing<T>(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         now: SystemTime,
         read: impl FnOnce(&NativeCommittedView, NativeOutgoing<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        self.with_current(room, |view| {
+        self.with_current(workspace, |view| {
             view.peer
                 .permissions(view.device().device_public_key, now)
                 .map_err(|error| error.to_string())?;
@@ -1083,36 +1089,36 @@ impl NativeWorkspaceOwner {
             )
         })
     }
-    /// How many of this device's committed writes to `room` are still in
-    /// its outgoing custody: not yet admitted by the room's governor.
+    /// How many of this device's committed writes to `workspace` are still in
+    /// its outgoing custody: not yet admitted by the workspace's governor.
     ///
     /// # Errors
-    /// The room is not held here or is fenced.
-    pub fn unadmitted_writes(&self, room: RoomId) -> Result<usize, String> {
-        self.with_current(room, |view| Ok(state(view)?.entries.len()))
+    /// The workspace is not held here or is fenced.
+    pub fn unadmitted_writes(&self, workspace: RoomId) -> Result<usize, String> {
+        self.with_current(workspace, |view| Ok(state(view)?.entries.len()))
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         now: SystemTime,
     ) -> Result<NativeOutgoingStatus, String> {
-        self.with_current(room, |view| status(view, now))
+        self.with_current(workspace, |view| status(view, now))
     }
     /// Retire what the governor admitted and replace expired increments by
     /// a fresh recovery projection signed with `key`.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, the room is fenced or the record
+    /// `key` is not the enrolled device, the workspace is fenced or the record
     /// cannot be published.
     pub fn reconcile_outgoing(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native outgoing signer differs from selected device".into());
         }
@@ -1150,10 +1156,10 @@ impl NativeWorkspaceOwner {
                 .generation()
                 .checked_add(1)
                 .ok_or("native owner generation exhausted")?;
-            self.publish_room(room, candidate, None)?;
+            self.publish_workspace(workspace, candidate, None)?;
         }
-        // Re-read the committed room so a publication that cannot be served is reported.
-        self.with_current(room, |view| {
+        // Re-read the committed workspace so a publication that cannot be served is reported.
+        self.with_current(workspace, |view| {
             state(view)?;
             allowed(view, now)?;
             Ok(())
@@ -1167,17 +1173,17 @@ impl NativeWorkspaceOwner {
     /// refuses stays exactly as it was.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, it may no longer write, the room is
+    /// `key` is not the enrolled device, it may no longer write, the workspace is
     /// fenced or the renewals cannot be committed.
     pub fn renew_outgoing(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         key: &SigningKey,
         reseal: &mut Reseal<'_>,
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native outgoing signer differs from selected device".into());
         }
@@ -1220,9 +1226,9 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_room(room, candidate, None)
+        self.publish_workspace(workspace, candidate, None)
     }
-    /// Compact every sealed record history of `room` that has used most of
+    /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit the compactions
     /// into this device's outgoing custody, where they publish as the
     /// checkpoints they are. `open` opens any write of a history this
@@ -1237,17 +1243,17 @@ impl NativeWorkspaceOwner {
     /// maintains its own copy this way; no host compacts for it.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, it may no longer write, the room
+    /// `key` is not the enrolled device, it may no longer write, the workspace
     /// is fenced, or a compaction cannot be committed.
     pub fn compact_outgoing(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         key: &SigningKey,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealRecord<'_>,
         now: SystemTime,
     ) -> Result<usize, String> {
-        if self.with_current(room, |view| {
+        if self.with_current(workspace, |view| {
             Ok(view
                 .peer
                 .publication()
@@ -1257,7 +1263,7 @@ impl NativeWorkspaceOwner {
             return Ok(0);
         }
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native compaction signer differs from selected device".into());
         }
@@ -1297,7 +1303,7 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(compacted)
     }
 }
@@ -1311,7 +1317,7 @@ mod encoding_tests {
             id: [7; 32],
             bytes,
             binding: CommitBinding {
-                room: "room".into(),
+                workspace: "room".into(),
                 target: crate::owner_commit::CommitTarget::Document {
                     app: "so.tilo.code".into(),
                     record: "a".into(),

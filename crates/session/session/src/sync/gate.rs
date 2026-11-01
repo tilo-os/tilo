@@ -42,7 +42,7 @@ impl Client {
             if *peer == plane.publisher {
                 return None;
             }
-            let room = plane.rooms.iter().find(|room| room.ws == *ws)?;
+            let room = plane.workspaces.iter().find(|room| room.ws == *ws)?;
             let known = room
                 .peers
                 .iter()

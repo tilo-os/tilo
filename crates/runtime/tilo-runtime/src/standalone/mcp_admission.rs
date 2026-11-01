@@ -1,6 +1,6 @@
-//! Exact selected-room material for a single runtime MCP execution.
+//! Exact selected-workspace material for a single runtime MCP execution.
 //! Uses existing custody and enrollment; never enrolls, provisions or grants.
-use super::{Arc, Connect, Joined, RoomId, room_topic};
+use super::{Arc, Connect, Joined, RoomId, workspace_topic};
 use ed25519_dalek::Signer as _;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
@@ -8,7 +8,7 @@ use tilo_user_identity::DeviceCert;
 /// Why an admitted run may not go on.
 ///
 /// The client sees the refusal; only what it can act on is said, so a
-/// changed custody (the room or device this run was admitted for is gone)
+/// changed custody (the workspace or device this run was admitted for is gone)
 /// and custody that could not be read (a disk or identity store that failed
 /// this once) are never the same answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +59,7 @@ impl std::error::Error for Refusal {}
 
 pub(in crate::standalone) struct SessionAdmission {
     caller: Caller,
-    room: RoomId,
+    workspace: RoomId,
     certificate: DeviceCert,
     enrollment: (tilo_peer_state::join::TransportHint, u64),
     presentation: Vec<u8>,
@@ -84,7 +84,7 @@ impl SessionAdmission {
         self.check_original_custody(joined)
     }
 
-    /// Compare the custody this run was admitted with to the room's now.
+    /// Compare the custody this run was admitted with to the workspace's now.
     ///
     /// Only a comparison that was actually made can end the run: material
     /// that could not be read (a full disk, a busy identity store) says
@@ -92,11 +92,11 @@ impl SessionAdmission {
     /// run keeps its lease. Ending it there would kill the person's whole
     /// agent session over one transient failure.
     fn check_original_custody(&self, joined: &Joined) -> Result<(), Refusal> {
-        let (certificate, enrollment) = match joined.mcp_material(self.room) {
+        let (certificate, enrollment) = match joined.mcp_material(self.workspace) {
             Ok(material) => material,
             Err(reason) => {
                 tracing::warn!(
-                    room = %self.room,
+                    workspace = %self.workspace,
                     %reason,
                     "an admitted run's custody could not be read; refusing this call, keeping the run"
                 );
@@ -105,8 +105,8 @@ impl SessionAdmission {
         };
         if certificate != self.certificate || enrollment != self.enrollment {
             tracing::warn!(
-                room = %self.room,
-                "an admitted run's room or device custody changed; ending the run"
+                workspace = %self.workspace,
+                "an admitted run's workspace or device custody changed; ending the run"
             );
             self.caller.retire_execution();
             return Err(Refusal::Ended);
@@ -118,12 +118,14 @@ impl SessionAdmission {
 impl Joined {
     fn mcp_material(
         &self,
-        room: RoomId,
+        workspace: RoomId,
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
         // Read apart, so a custody that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
-        let (certificate, _) = self.custody.current_native_material(room_topic(room)?)?;
-        let enrollment = self.owner.with_current(room, |view| {
+        let (certificate, _) = self
+            .custody
+            .current_native_material(workspace_topic(workspace)?)?;
+        let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;
         Ok((certificate, enrollment))
@@ -131,27 +133,29 @@ impl Joined {
 
     pub(in crate::standalone) fn admit_mcp_execution(
         &self,
-        room: &str,
+        workspace: &str,
         actor: &str,
     ) -> Result<Arc<SessionAdmission>, String> {
-        let selected = RoomId::parse(room).ok_or("invalid exact MCP room")?;
-        if selected.is_nil() || selected.to_string() != room {
-            return Err("noncanonical MCP room".into());
+        let selected = RoomId::parse(workspace).ok_or("invalid exact MCP workspace")?;
+        if selected.is_nil() || selected.to_string() != workspace {
+            return Err("noncanonical MCP workspace".into());
         }
-        // Only a room this device currently takes part in under its
+        // Only a workspace this device currently takes part in under its
         // enrolled custody is admitted.
         Connect::new(self.owner.clone(), selected)?.material(&self.custody)?;
         let (certificate, enrollment) = self.mcp_material(selected)?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room)
+                .in_room(workspace)
                 // Preserve the standalone host's existing foreign-device restriction,
                 // including when a signed certificate permits a stronger device.
                 .from_foreign_device(true)
                 .in_new_execution();
         if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(actor.into()) {
             caller.retire_execution();
-            return Err("selected room identity differs from the runtime profile actor".into());
+            return Err(
+                "selected workspace identity differs from the runtime profile actor".into(),
+            );
         }
         // The one owner observer is already installed. Register this exact
         // lease, then re-read the pinned material: a concurrent native fence
@@ -159,18 +163,20 @@ impl Joined {
         let registration = self.executions.register_checked(selected, &caller, || {
             let current = self.mcp_material(selected)?;
             if current != (certificate.clone(), enrollment.clone()) {
-                return Err("room changed while admitting execution".into());
+                return Err("workspace changed while admitting execution".into());
             }
             Ok(())
         })?;
         let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.into(),
+            workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&certificate)
                 .map_err(|error| error.to_string())?,
             proof: self
                 .custody
                 .device_signing_key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }
@@ -178,7 +184,7 @@ impl Joined {
         .map_err(|error| error.to_string())?;
         let admission = Arc::new(SessionAdmission {
             caller,
-            room: selected,
+            workspace: selected,
             certificate,
             enrollment,
             presentation,
@@ -189,10 +195,13 @@ impl Joined {
         Ok(admission)
     }
 
-    pub(in crate::standalone) fn recheck_mcp_executions(&self, room: RoomId) -> Result<(), String> {
+    pub(in crate::standalone) fn recheck_mcp_executions(
+        &self,
+        workspace: RoomId,
+    ) -> Result<(), String> {
         // Baselines come only from host-admitted sessions, never a presented
         // certificate. Release the registry lock before material reads.
-        let admissions = self.executions.admissions(room)?;
+        let admissions = self.executions.admissions(workspace)?;
         self.recheck_admissions(&admissions)
     }
 
@@ -203,7 +212,7 @@ impl Joined {
         let mut result = Ok(());
         for admission in admissions {
             // An execution may end normally after the snapshot. Its lifetime
-            // says nothing about the room's custody, so only the pinned
+            // says nothing about the workspace's custody, so only the pinned
             // material is compared; a retired run stays retired. Custody
             // that could not be read is retried by the next pass, as the
             // announced change stays pending.

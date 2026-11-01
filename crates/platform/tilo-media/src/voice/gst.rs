@@ -9,6 +9,8 @@ use super::{
 };
 mod codec;
 mod device;
+#[cfg(feature = "test-support")]
+pub mod software;
 pub use codec::{OpusDecoder, OpusEncoder, test_tone};
 pub use device::CaptureStop;
 use device::{DevicePipeline, Permit};
@@ -114,7 +116,7 @@ impl VoiceAudio {
     }
     /// A software output: no driver can hold its transition, so it has no
     /// startup deadline and becomes ready whenever it reaches Playing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn from_output(pipeline: gst::Pipeline, source: gst_app::AppSrc) -> Result<Self, AudioError> {
         Self::start_output(pipeline, source, None, None)
     }

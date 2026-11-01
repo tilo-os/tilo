@@ -1222,7 +1222,7 @@ fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
 fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     let (mut workspace, done) = today_workspace();
     // The person narrowed this agent in the workspace: changes to the todo app ask first.
-    let mut policy = policy::RoomPolicy::new("workspace", "ada");
+    let mut policy = policy::WorkspacePolicy::new("workspace", "ada");
     policy.grants.push(agent_answers::grant(
         "workspace",
         "agent-task:7",

@@ -157,6 +157,7 @@ pub enum PlayerCommand {
     Next,
     Previous,
     SetPosition { track_id: String, position_us: i64 },
+    Stop,
 }
 
 /// Where a cross-device resume's media comes from.

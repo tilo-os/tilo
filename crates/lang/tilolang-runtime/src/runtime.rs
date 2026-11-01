@@ -462,7 +462,7 @@ impl Runtime {
         Ok(self.core.store.borrow_mut().create(&record)?)
     }
 
-    /// Create the per-room root of a type, by id or by a name one loaded package declares: the
+    /// Create the per-workspace root of a type, by id or by a name one loaded package declares: the
     /// resource `root T` and a named root reach (`root-<type id>`).
     ///
     /// # Errors
@@ -479,18 +479,18 @@ impl Runtime {
         Ok(self.core.store.borrow_mut().create_with_id(&record, &id)?)
     }
 
-    /// Read a field of a resource, by field id or name.
+    /// Read a field of a resource, by field id or name. A resource of an app this runtime does
+    /// not run reads its field from the reading its app publishes, as a view's code does.
     ///
     /// # Errors
     ///
-    /// `NotFound` for an unknown type or field; a store failure.
+    /// `NotFound` for an unknown type or field; a store failure, or a reading that does not fit
+    /// the type the app declares.
     pub fn read(&self, at: &ResourceRef, field: &str) -> Result<Value, RuntimeError> {
         let (_, info) = self
             .core
-            .registry
-            .borrow()
-            .type_info(&at.ty)
-            .ok_or_else(|| RuntimeError::NotFound(format!("type {}", at.ty)))?;
+            .type_of_ref(&at.ty)
+            .map_err(RuntimeError::NotFound)?;
         let f = info
             .field_by_id_or_name(field)
             .ok_or_else(|| {

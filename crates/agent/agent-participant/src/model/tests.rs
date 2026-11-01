@@ -692,12 +692,12 @@ fn canned(actions: &[&str], why: &str, then: Option<&str>) -> ModelPlanner {
 pub(crate) fn route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
-        cluster_id: "room".into(),
+        cluster_id: "workspace".into(),
         record: record.into(),
     }
 }
 
-/// Notes open on `n1` with one operation, and a sheet the room has.
+/// Notes open on `n1` with one operation, and a sheet the workspace has.
 fn context() -> PlanContext {
     let (open, _) = catalogue(&PlanContext {
         open: Vec::new(),
@@ -1052,7 +1052,7 @@ fn a_clause_names_an_app_whose_name_has_two_words() {
     assert!(names_app(&words("add a sheet in sheets"), "so.tilo.sheets"));
 }
 
-/// An open of a document the room already has is an open of its app,
+/// An open of a document the workspace already has is an open of its app,
 /// whatever its record id holds, and names that record.
 #[test]
 fn a_record_open_opens_its_app() {
@@ -1093,7 +1093,7 @@ fn a_record_open_opens_its_app() {
     assert_eq!(surface::opens_record(&edit), None);
 }
 
-/// The room's documents are offered by their titles, also while another
+/// The workspace's documents are offered by their titles, also while another
 /// record of their app is open, and a model reading the applications
 /// list is shown them apart from the open that creates a new one.
 #[test]
@@ -1117,7 +1117,7 @@ fn existing_documents_are_offered_by_their_titles() {
     assert_eq!(
         label("record.so.tilo.word-processor.uuid:launch#open").as_deref(),
         Some(
-            "open the room's so.tilo.word-processor document \"Launch page\" (then export, read or edit it)"
+            "open the workspace's so.tilo.word-processor document \"Launch page\" (then export, read or edit it)"
         )
     );
     assert!(
@@ -1138,7 +1138,7 @@ fn existing_documents_are_offered_by_their_titles() {
     );
     assert!(
         summary.contains(
-            "record.so.tilo.word-processor.uuid:launch#open — open the room's \
+            "record.so.tilo.word-processor.uuid:launch#open — open the workspace's \
                  so.tilo.word-processor document \"Launch page\" (then export, read or edit it) \
                  (opens this document of so.tilo.word-processor the workspace already has"
         ),
@@ -1326,7 +1326,7 @@ pub(crate) fn canvas_context() -> PlanContext {
         open: vec![(route("so.tilo.canvas", "c1"), published.clone())],
         apps: vec!["so.tilo.canvas".into()],
         reference: vec![("so.tilo.canvas".into(), published)],
-        room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         ..PlanContext::default()
     }
 }
@@ -1438,7 +1438,7 @@ fn timeline_context(clips: usize) -> PlanContext {
         open: vec![(route(app, "v1"), published)],
         apps: vec![app.into()],
         reference: vec![(app.into(), project)],
-        room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         ..PlanContext::default()
     }
 }
@@ -1485,7 +1485,7 @@ fn a_replan_lists_the_clips_earlier_steps_added_beside_the_projects_export() {
     assert!(!turn.contains(&briefed.reference));
 }
 
-/// The casework room after a wait: Chat open on the room's record with
+/// The casework workspace after a wait: Chat open on the workspace's record with
 /// Lena's channel, Mail with `messages` messages and Sheets
 /// with `sheets` sheets, each resource publishing a dozen operations.
 fn casework_context(messages: usize, sheets: usize) -> PlanContext {
@@ -1550,7 +1550,7 @@ fn casework_context(messages: usize, sheets: usize) -> PlanContext {
             "so.tilo.mail".into(),
             "so.tilo.sheets".into(),
         ],
-        room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         ..PlanContext::default()
     }
 }
@@ -1740,7 +1740,7 @@ fn a_previewed_app_is_planned_without_opening_it_first() {
     );
     assert!(
         ids.contains(&"record.so.tilo.sheets.s9#open".to_owned()),
-        "the room's documents stay offered: {ids:?}"
+        "the workspace's documents stay offered: {ids:?}"
     );
     let steps = canned(&["sheets.sheet:1#set-cells"], "", None)
         .plan("put Visits in A1", &context)
@@ -1840,7 +1840,7 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
                 "y".repeat(3_000)
             ),
         ],
-        room: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         ..PlanContext::default()
     };
     let (offered, _) = catalogue(&after_context);
@@ -1982,7 +1982,7 @@ pub(crate) fn look_context() -> PlanContext {
 }
 
 /// Reads whose every read renders the picture at `rendered`, with the
-/// room's content in `content`; it keeps what it was asked to look at.
+/// workspace's content in `content`; it keeps what it was asked to look at.
 pub(crate) struct Looks {
     pub(crate) rendered: String,
     pub(crate) content: BTreeMap<String, Vec<u8>>,
@@ -2004,7 +2004,7 @@ impl Looks {
         }
     }
 
-    /// Keep `bytes` as the room's content at the address of `fill`.
+    /// Keep `bytes` as the workspace's content at the address of `fill`.
     pub(crate) fn keep(&mut self, fill: char, bytes: Vec<u8>) -> String {
         let address = crate::vision::tests::address(fill);
         self.content
@@ -2032,7 +2032,7 @@ impl Reads for Looks {
         self.content
             .get(hash)
             .cloned()
-            .ok_or_else(|| "the room keeps no such content".into())
+            .ok_or_else(|| "the workspace keeps no such content".into())
     }
 }
 
@@ -2317,7 +2317,7 @@ fn read_view_answers_in_the_same_conversation() {
     assert!(results(&second)[0].starts_with("Not read:"));
 }
 
-/// A room with many word-processor documents (more than are offered by
+/// A workspace with many word-processor documents (more than are offered by
 /// title), among them the Q3 partner brief, a stale copy and a decoy.
 fn searched_context() -> (PlanContext, DocumentRoute) {
     let writer = "so.tilo.word-processor";
@@ -2347,11 +2347,11 @@ fn searched_context() -> (PlanContext, DocumentRoute) {
     (context, route(writer, "uuid:w14"))
 }
 
-/// `search_room` finds a record by what it holds, beyond the titles
+/// `search_workspace` finds a record by what it holds, beyond the titles
 /// offered and among a stale copy and a decoy; the plan opens it by the id
 /// the answer showed, which no plan could name before the search.
 #[test]
-fn search_room_finds_a_record_and_the_plan_opens_it() {
+fn search_workspace_finds_a_record_and_the_plan_opens_it() {
     let (context, found) = searched_context();
     let open = crate::search::open_id(&found);
     let (catalogue, _) = catalogue(&context);
@@ -2366,7 +2366,7 @@ fn search_room_finds_a_record_and_the_plan_opens_it() {
             called("p0", tilo_agent::tools::PLAN, &plan),
             called(
                 "s1",
-                crate::search::SEARCH_ROOM,
+                crate::search::SEARCH_WORKSPACE,
                 &serde_json::json!({"query": "Q3 partner review", "app": "word processor"}),
             ),
             called("p1", tilo_agent::tools::PLAN, &plan),
@@ -2389,7 +2389,7 @@ fn search_room_finds_a_record_and_the_plan_opens_it() {
     assert!(matches!(&steps[1].action, StepAction::Continue(rest) if rest.contains("deck")));
     let requests = sent.lock().unwrap().clone();
     assert_eq!(requests.len(), 3);
-    assert!(tool_names(&requests[0]).contains(&crate::search::SEARCH_ROOM.to_owned()));
+    assert!(tool_names(&requests[0]).contains(&crate::search::SEARCH_WORKSPACE.to_owned()));
     assert_eq!(requests[0].tools, requests[2].tools, "stable tools");
     let refused = &results(&requests[1])[0];
     assert!(refused.contains("Plan refused"), "unsearched: {refused}");
@@ -2404,12 +2404,12 @@ fn search_room_finds_a_record_and_the_plan_opens_it() {
     );
     let system = text_of(&requests[0].messages[0]);
     assert!(
-        system.contains("when it is offered, only some are, so call `search_room` first"),
+        system.contains("when it is offered, only some are, so call `search_workspace` first"),
         "{system}"
     );
 }
 
-/// What `search_room` adds to every request, in tokens: bounded.
+/// What `search_workspace` adds to every request, in tokens: bounded.
 #[test]
 fn the_search_tool_costs_little() {
     let definition = serde_json::to_string(&crate::search::definition()).unwrap();
@@ -2581,7 +2581,7 @@ fn the_plan_tool_waits_and_says_little() {
         names,
         [
             tilo_agent::tools::DESCRIBE_OPERATION,
-            crate::search::SEARCH_ROOM,
+            crate::search::SEARCH_WORKSPACE,
             READ_VIEW,
             LOOK_CONTENT,
             tilo_agent::tools::PLAN

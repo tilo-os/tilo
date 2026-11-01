@@ -263,7 +263,7 @@ fn grants_and_restrictions_lapse_at_their_expiry() {
 }
 
 /// A capability serves exactly its subject: one app, a bearer token, a
-/// room's members, or one person however they are named.
+/// workspace's members, or one person however they are named.
 #[test]
 fn a_capability_serves_only_its_subject() {
     let caps = vec![CapOverride::grant(
@@ -317,27 +317,27 @@ fn a_capability_serves_only_its_subject() {
     );
 }
 
-/// A room subject covers exactly that room's members, and one person is one
-/// subject whether named by key or by hex id.
+/// A workspace subject covers exactly that workspace's members, and one person
+/// is one subject whether named by key or by hex id.
 #[test]
-fn rooms_and_people_are_matched_by_identity() {
+fn workspaces_and_people_are_matched_by_identity() {
     let caps = vec![CapOverride::grant(
-        Subject::room("ws-design"),
+        Subject::workspace("ws-design"),
         Scope::FsPath("/var/workspace/design".into()),
         Access::Write,
     )];
     let path = fs("/var/workspace/design/logo.svg");
-    let insider = Actor::person("bob").in_room("ws-design");
-    let outsider = Actor::person("carol").in_room("ws-finance");
+    let insider = Actor::person("bob").in_workspace("ws-design");
+    let outsider = Actor::person("carol").in_workspace("ws-finance");
     assert_eq!(
         decide(&insider, &path, Access::Write, &caps),
         CapDecision::Allow,
-        "membership of the granted room carries the capability"
+        "membership of the granted workspace carries the capability"
     );
     assert_eq!(
         decide(&outsider, &path, Access::Write, &caps),
         CapDecision::NotGranted,
-        "being in a *different* room grants nothing here"
+        "being in a *different* workspace grants nothing here"
     );
 
     let k = key(3);

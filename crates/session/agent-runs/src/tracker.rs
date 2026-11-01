@@ -14,8 +14,8 @@ use crate::AgentRuns;
 impl TrackerRuns for AgentRuns {
     /// Only the rooms this session holds a workspace of: it keeps no other
     /// room's runs.
-    fn requires_room(&self, room: &str) -> bool {
-        self.knows(room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        self.knows(workspace)
     }
 
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String> {

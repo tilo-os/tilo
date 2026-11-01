@@ -62,7 +62,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     let ticket = issue_invitation(
         InviteGrant {
             workspace_id: 7,
-            room: peer.room().into(),
+            room: peer.workspace_id().into(),
             issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],

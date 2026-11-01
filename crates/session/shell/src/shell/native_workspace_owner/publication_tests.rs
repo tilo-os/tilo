@@ -54,7 +54,7 @@ pub(crate) fn edit(
     };
     (
         OwnerCommitRequest {
-            room: room.to_string(),
+            workspace: room.to_string(),
             operation: CommitOperation::Document {
                 app: app_id,
                 record: record_id,
@@ -345,7 +345,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
         .receive(
             room,
             TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
-            remote.room_message(),
+            remote.workspace_message(),
             now,
         )
         .unwrap();
@@ -440,7 +440,7 @@ fn resend_known_history(
         unreachable!()
     };
     OwnerCommitRequest {
-        room: room.to_string(),
+        workspace: room.to_string(),
         operation: CommitOperation::Document {
             app: app_id,
             record: record_id,
@@ -939,7 +939,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     internals::append_local(&mut candidate, outgoing).unwrap();
     internals::seal(&mut candidate).unwrap();
     let mut prospective = tree_of(&owner).read().clone();
-    internals::insert_room(&mut prospective.native_authority, room, candidate);
+    internals::insert_workspace(&mut prospective.native_authority, room, candidate);
     tilo_peer_state::owner::preflight(
         &prospective.native_authority,
         tilo_peer_state::owner::MAX_AUTHORITY_BYTES,

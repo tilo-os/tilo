@@ -81,7 +81,7 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                 "a".repeat(64),
             ]);
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let _subscription = fixture.fanout.subscribe_rooms(
+            let _subscription = fixture.fanout.subscribe_workspaces(
                 vec![fixture.route.cluster_id.clone()],
                 Box::new(move |event, _| {
                     event_tx.send(event.clone()).unwrap();
@@ -169,7 +169,7 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 .await
                 .unwrap();
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let _subscription = fixture.fanout.subscribe_rooms(
+            let _subscription = fixture.fanout.subscribe_workspaces(
                 vec![fixture.route.cluster_id.clone()],
                 Box::new(move |event, _| {
                     event_tx.send(event.clone()).unwrap();

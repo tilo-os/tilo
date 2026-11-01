@@ -51,7 +51,7 @@ fn a_saved_shortcut_lives_in_the_room_through_later_commits_and_a_restart() {
     let saved = mirrored(&tree, fixture.room);
     assert_eq!(saved.len(), 1);
     assert_eq!(
-        tilo_peer_state::room::proven_saver(
+        tilo_peer_state::workspace::proven_saver(
             &fixture.room.to_string(),
             &saved[0],
             &tilo_user_identity::RevocationList::new(),
@@ -65,7 +65,7 @@ fn a_saved_shortcut_lives_in_the_room_through_later_commits_and_a_restart() {
             .with_current(fixture.room, |view| {
                 Ok(tilo_automation::decode_saved(
                     &tilo_desktop_model::projection::workspace_shortcuts_of(
-                        view.peer().admitted_room().ok_or("no room")?,
+                        view.peer().admitted_workspace().ok_or("no room")?,
                     ),
                 ))
             })

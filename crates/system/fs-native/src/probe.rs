@@ -505,7 +505,8 @@ fn probe_fs_mark(root: &Path) -> Outcome {
 }
 
 /// Whether the journal can suppress repeated `FAN_MODIFY` of one file with
-/// an inode ignore mark, for files in the top-level subvolume and in a room
+/// an inode ignore mark, for files in the top-level subvolume and in a
+/// workspace
 /// subvolume.
 fn probe_modify_ignore(root: &Path, scratch: &Path) -> Outcome {
     let group = match Group::new(fan::FAN_CLASS_NOTIF | fan::FAN_REPORT_DFID_NAME_TARGET, 0) {
@@ -524,7 +525,7 @@ fn probe_modify_ignore(root: &Path, scratch: &Path) -> Outcome {
     let sub = scratch.join("ignore");
     let mut results = Vec::new();
     let mut all = true;
-    for (label, path) in [("top-level subvolume", &top), ("room subvolume", &sub)] {
+    for (label, path) in [("top-level subvolume", &top), ("workspace subvolume", &sub)] {
         let file = match write_file(path, 16, 0) {
             Ok(f) => f,
             Err(e) => return Outcome::No(e.to_string()),
@@ -755,8 +756,8 @@ fn probe_pre_content(scratch: &Path) -> Outcome {
         Some(None) => "event raised without range info".to_owned(),
         None => return Outcome::No("no event for a read of a marked file".into()),
     };
-    // One group serving placeholders in several room subvolumes.
-    let other = scratch.join("pc-second-room");
+    // One group serving placeholders in several workspace subvolumes.
+    let other = scratch.join("pc-second-workspace");
     let second = btrfs::create_subvolume(&other)
         .and_then(|()| sparse_file(&other.join("pc"), 4096))
         .and_then(|f| rec.mark_inode(&f));
@@ -764,7 +765,7 @@ fn probe_pre_content(scratch: &Path) -> Outcome {
     match second {
         Ok(()) => Outcome::Yes(format!("{range}; one group marks inodes in two subvolumes")),
         Err(e) => Outcome::Yes(format!(
-            "{range}; a second subvolume in the same group: {} (one group per room)",
+            "{range}; a second subvolume in the same group: {} (one group per workspace)",
             errno_name(&e)
         )),
     }

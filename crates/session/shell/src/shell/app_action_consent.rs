@@ -220,7 +220,7 @@ pub(crate) fn session_attended() -> bool {
 /// a collaborator's application reaching this broker is not answered on
 /// this screen.
 fn is_session_person(request: &AppActionConsentRequest) -> bool {
-    crate::shell::state::RoomId::parse(&request.room)
+    crate::shell::state::RoomId::parse(&request.workspace)
         .is_some_and(|room| crate::shell::state::local_user_id_for_room(&room) == request.person)
 }
 
@@ -231,7 +231,7 @@ mod tests {
     fn request(person: &str) -> AppActionConsentRequest {
         AppActionConsentRequest {
             handle: "app-action:1".into(),
-            room: uuid::Uuid::nil().to_string(),
+            workspace: uuid::Uuid::nil().to_string(),
             person: person.into(),
             app_id: "so.tilo.shortcuts".into(),
             target_app: "so.tilo.agent".into(),

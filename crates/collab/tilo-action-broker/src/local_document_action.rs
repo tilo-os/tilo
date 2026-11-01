@@ -177,7 +177,7 @@ mod tests {
                 }
                 "custody" => serde_json::json!({
                     "root": vec![1; 32], "device": vec![2; 32], "agent": null,
-                    "app_id": "app", "room": "room", "document": "document"
+                    "app_id": "app", "room": "workspace", "document": "document"
                 }),
                 "context" => serde_json::json!(tilo_actions::ActionContext::default()),
                 "group" => serde_json::json!({"id": "g", "label": "g", "kind": "edit"}),
@@ -215,7 +215,7 @@ mod tests {
                 ),
                 "custody" => serde_json::json!({
                     "root": vec![1; 32], "device": vec![2; 32], "agent": null,
-                    "app_id": "app", "room": "room", "document": "document"
+                    "app_id": "app", "room": "workspace", "document": "document"
                 }),
                 "group" => serde_json::json!({"kind": "edit", "label": "Edit", "id": "g"}),
                 _ => serde_json::json!("different"),

@@ -45,7 +45,7 @@ impl crate::services::LauncherServices for Installed {
 }
 
 /// A workspace owned by a person, with agent `scribe` admitted as an
-/// observer (it reads the room) and let use Notes.
+/// observer (it reads the workspace) and let use Notes.
 fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceId(14), "Home");
     workspace.set_owner("owner");
@@ -79,18 +79,18 @@ fn broker(
     state
 }
 
-/// The installed apps `caller` is told of in `room`, as the agent surface
+/// The installed apps `caller` is told of in `workspace`, as the agent surface
 /// asks for them.
 fn installed(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
-    room: &str,
+    workspace: &str,
 ) -> Result<CataloguePage, ActionHostError> {
     state
         .action_query(
             caller,
             &CatalogueQuery {
-                provider: Some(workspace_provider(room)),
+                provider: Some(workspace_provider(workspace)),
                 resource_name: Some(APPLICATION_RESOURCE_KIND.into()),
                 max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
                 ..CatalogueQuery::default()
@@ -102,7 +102,7 @@ fn installed(
         .expect("the broker answers")
 }
 
-/// Who publishes in `room`, as the agent surface asks for the running apps.
+/// Who publishes in `workspace`, as the agent surface asks for the running apps.
 fn publishers(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
@@ -124,11 +124,11 @@ fn publishers(
 #[test]
 fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
     let workspace = workspace();
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
-    let agent = Caller::local_agent("scribe").in_room(&room);
+    let agent = Caller::local_agent("scribe").in_room(&workspace_id);
 
-    let page = installed(&state, &agent, &room).expect("the workspace is reachable");
+    let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
     let listed: Vec<(String, Option<String>)> = page
         .rows
         .iter()
@@ -154,8 +154,8 @@ fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
     );
 
     // The person is offered both to open, as before.
-    let owner = Caller::local_person("owner").in_room(&room);
-    let page = installed(&state, &owner, &room).expect("the owner reaches it");
+    let owner = Caller::local_person("owner").in_room(&workspace_id);
+    let page = installed(&state, &owner, &workspace_id).expect("the owner reaches it");
     drop(state);
     assert!(
         page.rows.iter().all(|row| row.action.is_some()) && page.rows.len() == 2,
@@ -167,13 +167,13 @@ fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
 #[test]
 fn an_agent_in_a_workspace_with_nothing_reads_an_empty_list() {
     let workspace = workspace();
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let state = broker(vec![workspace], Vec::new(), true);
-    let agent = Caller::local_agent("scribe").in_room(&room);
+    let agent = Caller::local_agent("scribe").in_room(&workspace_id);
 
     let page = publishers(&state, &agent).expect("reachable, with nothing running");
     assert!(page.providers.is_empty() && page.rows.is_empty());
-    let page = installed(&state, &agent, &room).expect("reachable, with nothing installed");
+    let page = installed(&state, &agent, &workspace_id).expect("reachable, with nothing installed");
     drop(state);
     assert!(page.rows.is_empty());
 }
@@ -185,17 +185,17 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
         other => panic!("an unreachable workspace answered {other:?}"),
     };
     let workspace = workspace();
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
 
     // Not a member: the person removed it, or never admitted it here.
     let state = broker(vec![workspace.clone()], vec![NOTES], true);
-    let stranger = Caller::local_agent("intruder").in_room(&room);
+    let stranger = Caller::local_agent("intruder").in_room(&workspace_id);
     let why = reason(publishers(&state, &stranger));
     assert!(
         why.contains("intruder") && why.contains("no longer a member of workspace Home"),
         "{why}"
     );
-    let why = reason(installed(&state, &stranger, &room));
+    let why = reason(installed(&state, &stranger, &workspace_id));
     assert!(why.contains("no longer a member"), "{why}");
 
     // The workspace it was admitted to is gone from this device.
@@ -205,14 +205,14 @@ fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
     assert!(why.contains("no longer on this device"), "{why}");
 
     // A person's own caller is not diagnosed: what it may not see is absent.
-    let person = Caller::local_person("someone").in_room(&room);
+    let person = Caller::local_person("someone").in_room(&workspace_id);
     let answered = publishers(&state, &person);
     drop(state);
     assert!(answered.is_ok(), "{answered:?}");
 
     // The session's workspaces never reached the broker.
     let detached = broker(vec![workspace], vec![NOTES], false);
-    let agent = Caller::local_agent("scribe").in_room(&room);
+    let agent = Caller::local_agent("scribe").in_room(&workspace_id);
     let why = reason(publishers(&detached, &agent));
     drop(detached);
     assert!(why.contains("not attached"), "{why}");

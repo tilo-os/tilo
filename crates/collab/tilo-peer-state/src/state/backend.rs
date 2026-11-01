@@ -2,7 +2,7 @@
 use super::{
     AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert,
     ExactAdmissions, GovernedIdentity, NeighbourMsg, RedemptionReceipt, RevocationList, Role,
-    Route, StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, room,
+    Route, StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
 };
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
@@ -224,18 +224,18 @@ impl Clone for PeerDocument {
 }
 
 pub(super) struct PeerCore {
-    pub(super) room: String,
-    /// The room owner's user root: every device it certifies may write as the owner.
+    pub(super) workspace: String,
+    /// The workspace owner's user root: every device it certifies may write as the owner.
     pub(super) owner: [u8; 32],
     /// The device this replica was made on or joined through. A device on
     /// an operating system Tilo does not control is held to the foreign
-    /// bound in the room, except this one: a room made on such a device is
+    /// bound in the workspace, except this one: a workspace made on such a device is
     /// governed from it.
     pub(super) origin: [u8; 32],
     pub(super) certificates: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
     pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
-    pub(super) room_doc: Option<CachedDocument>,
+    pub(super) workspace_doc: Option<CachedDocument>,
     pub(super) documents: Shared<BTreeMap<Route, StoredDocument>>,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
@@ -248,13 +248,13 @@ pub(super) struct PeerCore {
 impl Clone for PeerCore {
     fn clone(&self) -> Self {
         Self {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             owner: self.owner,
             origin: self.origin,
             certificates: self.certificates.clone(),
             revocations: self.revocations.clone(),
             receipts: self.receipts.clone(),
-            room_doc: self.room_doc.clone(),
+            workspace_doc: self.workspace_doc.clone(),
             documents: self.documents.clone(),
             pending: self.pending.clone(),
             pending_bytes: self.pending_bytes,

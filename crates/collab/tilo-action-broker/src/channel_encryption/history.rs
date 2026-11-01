@@ -12,12 +12,16 @@ impl ChannelKeyAccess {
     ///
     /// Refuses unavailable existing channel keys or epochs and invalid ciphertext.
     /// This read never creates a channel, requests access or rejoins a group.
-    pub fn open_history_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
+    pub fn open_history_write(
+        &self,
+        workspace: RoomId,
+        envelope: &SignedOp,
+    ) -> Result<Vec<u8>, String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
         let keys = self
-            .run(|service| service.existing_keys(room, metadata.channel))
+            .run(|service| service.existing_keys(workspace, metadata.channel))
             .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")?;
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
@@ -35,15 +39,15 @@ impl ChannelKeyAccess {
     /// This device holds no current key for the record's channel.
     pub fn seal_checkpoint(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         app: &str,
         record: &str,
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let name = room.to_string();
+        let name = workspace.to_string();
         let channel = collab_types::document_channel_id(app, &name, record);
         let artifact = collab_types::document_artifact_id(app, &name, record);
-        let (access, _) = self.access(room, channel);
+        let (access, _) = self.access(workspace, channel);
         let ChannelAccess::Ready(keys) = access else {
             return Err("this device holds no current key for the record's channel".into());
         };

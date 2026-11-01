@@ -372,7 +372,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
     )?;
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the room writes under.
-    peer.write_as_room_host();
+    peer.write_as_workspace_host();
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
@@ -394,7 +394,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
     let message = match postcard::from_bytes::<NeighbourMsg>(body) {
         Ok(message) => message,
         Err(error) => {
-            tracing::warn!(room = %peer.room(), %error, "a change the governor published does not decode");
+            tracing::warn!(room = %peer.workspace_id(), %error, "a change the governor published does not decode");
             return false;
         }
     };
@@ -404,7 +404,7 @@ fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime
     match peer.receive_from(TransportOrigin::RetainedRelayDelta(governor), message, now) {
         Ok(outcome) => outcome.changed || outcome.metadata_changed,
         Err(error) => {
-            tracing::debug!(room = %peer.room(), %error, "a governance change was not taken in");
+            tracing::debug!(room = %peer.workspace_id(), %error, "a governance change was not taken in");
             false
         }
     }

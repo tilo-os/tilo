@@ -9,10 +9,15 @@
 
 use std::io::{BufRead as _, Write as _};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
+use tilo_actions::{DoorError, ResourceSpec};
+use tilo_audio_service::media::MediaService;
 use tilo_audio_service::mpris::Mpris;
 use tilo_audio_service::policy::{self, PolicyEvent};
+use tilo_audio_service::sound::{SoundService, SystemGraph, destinations};
 use tilo_audio_service::{DeviceEvent, Event, Request};
+use tilo_service::{Service, Services, Started, Wake, lines};
 
 fn emit(event: &Event) {
     let mut out = std::io::stdout().lock();
@@ -35,17 +40,8 @@ fn main() {
     unsafe {
         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
     }
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .thread_name("tilo-audio-mpris")
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            tracing::error!(target: "tilo::audio_policy", %error, "no runtime for MPRIS");
-            return;
-        }
+    let Some(runtime) = mpris_runtime() else {
+        return;
     };
     if std::env::args().skip(1).any(|arg| arg == "--serve") {
         serve();
@@ -74,39 +70,117 @@ fn main() {
                 connected: event == DeviceEvent::Connected,
             });
         },
+        || {},
         move || mpris.pause_playing(),
         events,
         &received,
     );
 }
 
+/// The runtime the MPRIS client is polled on.
+fn mpris_runtime() -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("tilo-audio-mpris")
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::error!(target: "tilo::audio_policy", %error, "no runtime for MPRIS");
+            None
+        }
+    }
+}
+
+/// The sound service as what plays reads it, and as the session invokes it.
+struct SharedSound(Arc<Mutex<SoundService>>);
+
+impl Service for SharedSound {
+    fn seated(&mut self, person: &str, earlier: &[String]) {
+        if let Ok(mut sound) = self.0.lock() {
+            sound.seated(person, earlier);
+        }
+    }
+
+    fn resources(&self) -> Vec<ResourceSpec> {
+        self.0
+            .lock()
+            .map(|sound| sound.resources())
+            .unwrap_or_default()
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.0.lock().ok().and_then(|sound| sound.read(resource))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Started, DoorError> {
+        let mut sound = self.0.lock().map_err(|_| DoorError::Unavailable {
+            code: "no_sound".to_owned(),
+            reason: "the sound did not answer".to_owned(),
+        })?;
+        sound.invoke(resource, action, arguments)
+    }
+
+    fn poll(&mut self) -> bool {
+        self.0.lock().is_ok_and(|mut sound| sound.poll())
+    }
+
+    fn settle(&mut self) {
+        if let Ok(mut sound) = self.0.lock() {
+            sound.settle();
+        }
+    }
+}
+
+/// The sound service over the graph this machine has, waking `wake` for
+/// every change it sees.
+fn start_sound(wake: Wake) -> Option<SharedSound> {
+    match SoundService::new(Arc::new(SystemGraph::default()), Some(wake)) {
+        Ok(sound) => Some(SharedSound(Arc::new(Mutex::new(sound)))),
+        Err(error) => {
+            tracing::error!(%error, "the sound service did not start");
+            None
+        }
+    }
+}
+
 /// The session's audio service: the policy on a thread of its own, the
 /// sound and media resources served on the pipes until the session closes
 /// them.
 fn serve() {
-    use std::sync::Arc;
-    use tilo_audio_service::media::{MediaService, pause_playing};
-    use tilo_audio_service::sound::{SoundService, SystemGraph};
-    use tilo_service::{Services, lines};
-
+    let Some(runtime) = mpris_runtime() else {
+        return;
+    };
     let (incoming, requests, wake) = lines::incoming();
-    let sound = match SoundService::new(Arc::new(SystemGraph::default()), Some(wake.clone())) {
-        Ok(sound) => sound,
-        Err(error) => {
-            tracing::error!(%error, "the sound service did not start");
-            return;
-        }
+    let Some(SharedSound(sound)) = start_sound(wake.clone()) else {
+        return;
     };
-    let refresh = sound.refresher();
-    let (media, mpris) = match MediaService::start(Some(wake)) {
-        Ok(started) => started,
-        Err(error) => {
-            tracing::error!(%error, "the media service did not start");
-            return;
-        }
+    let Ok(opened) = sound.lock() else {
+        tracing::error!("the sound service did not start");
+        return;
     };
+    let refresh = opened.refresher();
+    drop(opened);
+    // What plays offers the graph's outputs as its destinations: the sound
+    // service owns them, so the card names the nodes it routes to.
+    let outputs = {
+        let graph = Arc::clone(&sound);
+        Box::new(move || {
+            graph
+                .lock()
+                .map_or_else(|_| Vec::new(), |sound| destinations(sound.sound()))
+        })
+    };
+    let media = MediaService::start(runtime.handle().clone(), Some(wake), outputs);
+    let mpris = media.mpris().clone();
     let mut services = Services::default();
-    services.add(Box::new(sound));
+    services.add(Box::new(SharedSound(sound)));
     services.add(Box::new(media));
     let (events, received) = mpsc::channel();
     let stop = events.clone();
@@ -119,10 +193,10 @@ fn serve() {
         .spawn(move || {
             policy::serve(
                 move |event| {
-                    refresh();
                     heard.device(event);
                 },
-                move || pause_playing(mpris.as_ref()),
+                refresh,
+                move || mpris.pause_playing(),
                 events,
                 &received,
             );

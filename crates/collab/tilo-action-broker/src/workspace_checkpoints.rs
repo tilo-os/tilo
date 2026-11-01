@@ -1,16 +1,16 @@
-//! Checkpoints are ordinary room resources; arguments cannot supply caller custody.
+//! Checkpoints are ordinary workspace resources; arguments cannot supply caller custody.
 use super::{InvocationEnvelope, PublishedAction, PublishedInput};
 use tilo_peer_state::workspace_checkpoint::CheckpointCommand;
 pub(super) const RESOURCE: &str = "desktop:checkpoints";
 
 pub(super) fn intent(
-    room: &str,
+    workspace: &str,
     caller: &tilo_user_identity::DeviceCert,
     envelope: &InvocationEnvelope,
 ) -> Result<serde_json::Value, String> {
     let command = command(envelope)?.ok_or("checkpoint command absent")?;
     let request = tilo_peer_state::workspace_checkpoint::CheckpointRequest {
-        room: room.into(),
+        workspace: workspace.into(),
         invocation: envelope.invocation.0,
         caller: caller.clone(),
         command,
@@ -131,30 +131,30 @@ pub(super) fn actions() -> Vec<PublishedAction> {
 impl super::AppBrokerState {
     fn authorize_checkpoint_request(
         &self,
-        room: &str,
+        workspace: &str,
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<(), String> {
         let provider = &request.target.provider;
-        let peer = if let Some((target_room, app)) =
+        let peer = if let Some((target_workspace, app)) =
             tilo_actions::remote::application_provider(provider)
         {
-            if target_room != room || app != "so.tilo.desktop" {
+            if target_workspace != workspace || app != "so.tilo.desktop" {
                 return Err("checkpoint provider changed".into());
             }
-            self.ready_publisher(app, room, None, &request.target.address)
+            self.ready_publisher(app, workspace, None, &request.target.address)
                 .ok_or("checkpoint provider unavailable")?
         } else if super::launchable::is_launchable_provider(provider) {
             let surface = self
                 .launchable
                 .surface_for(provider)
                 .ok_or("checkpoint provider unavailable")?;
-            if surface.route.cluster_id != room || surface.app_id != "so.tilo.desktop" {
+            if surface.route.cluster_id != workspace || surface.app_id != "so.tilo.desktop" {
                 return Err("checkpoint provider changed".into());
             }
             self.ready_publisher(
                 &surface.app_id,
-                room,
+                workspace,
                 Some(&surface.route.record_id),
                 &request.target.address,
             )
@@ -173,7 +173,7 @@ impl super::AppBrokerState {
             .find(|surface| {
                 surface.peer_id == peer
                     && surface.app_id == "so.tilo.desktop"
-                    && surface.route.cluster_id == room
+                    && surface.route.cluster_id == workspace
             })
             .and_then(|surface| {
                 surface.actions.iter().find(|action| {
@@ -189,7 +189,7 @@ impl super::AppBrokerState {
             .map_err(|e| e.to_string())?
             / 1_000_000_000;
         self.authorize_invocation_permission(
-            room,
+            workspace,
             (
                 "so.tilo.desktop",
                 "workspace-checkpoint",
@@ -197,7 +197,7 @@ impl super::AppBrokerState {
                 &action.action,
             ),
             &action.contract.need(),
-            &self.caller_actor(caller, room),
+            &self.caller_actor(caller, workspace),
             now,
         )?;
         Ok(())
@@ -205,7 +205,7 @@ impl super::AppBrokerState {
 
     pub(super) fn checkpoint_replay(
         &self,
-        room: &str,
+        workspace: &str,
         certificate: &tilo_user_identity::DeviceCert,
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
@@ -220,7 +220,7 @@ impl super::AppBrokerState {
         {
             return Err("checkpoint replay requires an authenticated person".into());
         }
-        self.authorize_checkpoint_request(room, caller, request)?;
+        self.authorize_checkpoint_request(workspace, caller, request)?;
         let envelope = InvocationEnvelope {
             id: 0,
             invocation: request.invocation,
@@ -237,7 +237,7 @@ impl super::AppBrokerState {
             actor: String::new(),
             context: None,
         };
-        let mut intent = intent(room, certificate, &envelope)?;
+        let mut intent = intent(workspace, certificate, &envelope)?;
         intent
             .as_object_mut()
             .ok_or("checkpoint intent invalid")?
@@ -269,7 +269,7 @@ impl super::AppBrokerState {
             let mut record = None;
             for owner in owners {
                 let key = super::InvocationKey {
-                    room: room.into(),
+                    workspace: workspace.into(),
                     host: journal.host(),
                     owner,
                     invocation: request.invocation,
@@ -288,7 +288,7 @@ impl super::AppBrokerState {
         if !record.admitted_request_is(&intent) {
             return Err("checkpoint invocation belongs to another command or caller".into());
         }
-        self.authorize_checkpoint_result(room, Some(certificate), &record)?;
+        self.authorize_checkpoint_result(workspace, Some(certificate), &record)?;
         let mut ledger = self
             .remote_invocations
             .lock()
@@ -310,7 +310,7 @@ impl super::AppBrokerState {
 
     pub(super) fn authorize_checkpoint_result(
         &self,
-        room: &str,
+        workspace: &str,
         certificate: Option<&tilo_user_identity::DeviceCert>,
         record: &super::DurableInvocation,
     ) -> Result<(), String> {
@@ -340,12 +340,12 @@ impl super::AppBrokerState {
                 .ok_or("checkpoint contract missing")?,
         )
         .map_err(|_| "checkpoint contract invalid")?;
-        self.authorize_checkpoint_update(room, certificate, action, &contract, &record.update)
+        self.authorize_checkpoint_update(workspace, certificate, action, &contract, &record.update)
     }
 
     fn authorize_checkpoint_update(
         &self,
-        room: &str,
+        workspace: &str,
         certificate: Option<&tilo_user_identity::DeviceCert>,
         action: &str,
         contract: &tilo_actions::ActionContract,
@@ -360,10 +360,10 @@ impl super::AppBrokerState {
             .map_err(|e| e.to_string())?
             / 1_000_000_000;
         self.authorize_invocation_permission(
-            room,
+            workspace,
             ("so.tilo.desktop", "workspace-checkpoint", RESOURCE, action),
             &contract.need(),
-            &self.certified_person(room, certificate),
+            &self.certified_person(workspace, certificate),
             now,
         )?;
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
@@ -381,7 +381,7 @@ impl super::AppBrokerState {
             .as_ref()
             .ok_or("checkpoint service unavailable")?
             .checkpoint_result_access(
-                room,
+                workspace,
                 certificate,
                 id,
                 matches!(action, "capture" | "name-bind"),
@@ -390,7 +390,7 @@ impl super::AppBrokerState {
 
     pub(super) fn authorize_checkpoint_job(
         &self,
-        room: &str,
+        workspace: &str,
         certificate: Option<&tilo_user_identity::DeviceCert>,
         job: u64,
     ) -> Result<(), String> {
@@ -403,12 +403,12 @@ impl super::AppBrokerState {
             .map_err(|_| "checkpoint registry unavailable")?
             .get(&job)
             .cloned();
-        if let Some((original_room, action, contract)) = checkpoint {
-            if original_room != room {
-                return Err("checkpoint result room changed".into());
+        if let Some((original_workspace, action, contract)) = checkpoint {
+            if original_workspace != workspace {
+                return Err("checkpoint result workspace changed".into());
             }
             return self.authorize_checkpoint_update(
-                room,
+                workspace,
                 certificate,
                 &action,
                 &contract,
@@ -440,7 +440,7 @@ impl super::AppBrokerState {
                 return Ok(());
             };
             let key = super::InvocationKey {
-                room: room.into(),
+                workspace: workspace.into(),
                 host: journal.host(),
                 owner,
                 invocation: update.invocation(),
@@ -450,7 +450,7 @@ impl super::AppBrokerState {
             record
         };
         if let Some(record) = record {
-            self.authorize_checkpoint_result(room, certificate, &record)?;
+            self.authorize_checkpoint_result(workspace, certificate, &record)?;
         }
         Ok(())
     }
@@ -485,7 +485,7 @@ mod tests {
         ));
         for field in [
             "caller",
-            "room",
+            "workspace",
             "signing_key",
             "governor",
             "invocation",

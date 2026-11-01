@@ -40,7 +40,7 @@ fn authorize(
         .peer()
         .permissions(device, std::time::SystemTime::now())
         .map_err(|error| error.to_string())?;
-    if member.policy.room != room
+    if member.policy.workspace != room
         || !member.allows(
             &member.policy.node().app(settings_sections::APP_ID),
             tilo_action_policy::ActionKind::Outside,
@@ -78,7 +78,8 @@ impl DisplayControlServices for NativeDisplayControl {
         if !device_owner(context.root(), context.device())? {
             return Err("This session does not own the device.".into());
         }
-        let room = RoomId::parse(context.room()).ok_or("The admitted Settings room is invalid.")?;
+        let room =
+            RoomId::parse(context.workspace()).ok_or("The admitted Settings room is invalid.")?;
         let tree = self
             .tree
             .upgrade()
@@ -88,7 +89,7 @@ impl DisplayControlServices for NativeDisplayControl {
             .installed_native_owner()
             .ok_or("The current native owner is unavailable.")?;
         owner.with_current(room, |view| {
-            authorize(view, context.root(), context.device(), context.room())?;
+            authorize(view, context.root(), context.device(), context.workspace())?;
             execute()
         })
     }

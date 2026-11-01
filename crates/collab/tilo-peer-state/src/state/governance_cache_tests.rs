@@ -1,8 +1,8 @@
-//! Governance is decoded once per room document state, not once per message.
+//! Governance is decoded once per workspace document state, not once per message.
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
@@ -29,8 +29,14 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
     let (a, ac) = device(&root, 2);
     let (_, bc) = device(&root, 3);
     let roster = vec![ac.clone(), bc];
-    let mut governor =
-        StatePeer::new(ROOM, ac.clone(), roster.clone(), RevocationList::new(), now).unwrap();
+    let mut governor = StatePeer::new(
+        WORKSPACE,
+        ac.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
     let documents = (0..records)
         .map(|index| {
             let mut document = AutoCommit::new();
@@ -49,14 +55,14 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
     governor
         .install_seed(
             SeedState {
-                room_changes: seed_room(ROOM, &ac, &roster).unwrap(),
+                workspace_changes: seed_workspace(WORKSPACE, &ac, &roster).unwrap(),
                 documents,
             },
             &a,
             now,
         )
         .unwrap();
-    let replica = StatePeer::new(ROOM, ac, roster, RevocationList::new(), now).unwrap();
+    let replica = StatePeer::new(WORKSPACE, ac, roster, RevocationList::new(), now).unwrap();
     (governor, replica, a, now)
 }
 
@@ -71,14 +77,14 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
         .unwrap();
     assert_eq!(messages.len(), MESSAGES);
     replica
-        .receive(source, governor.room_message(), now)
+        .receive(source, governor.workspace_message(), now)
         .unwrap();
     // Counted without touching the cache under test.
-    let identities = room::governance_of(replica.core.room_doc.as_deref())
+    let identities = workspace::governance_of(replica.core.workspace_doc.as_deref())
         .identities
         .len();
     assert_eq!(identities, 2, "both roster devices are governed identities");
-    crate::room::POLICY_READS.with(|count| count.set(0));
+    crate::workspace::POLICY_READS.with(|count| count.set(0));
     crate::cached_document::IDENTITY_DECODES.with(|count| count.set(0));
     for message in messages {
         // The production admission path: role lookup, then capability decision.
@@ -87,7 +93,7 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     }
     assert_eq!(replica.rows(), governor.rows());
     assert_eq!(
-        crate::room::POLICY_READS.with(std::cell::Cell::get),
+        crate::workspace::POLICY_READS.with(std::cell::Cell::get),
         1,
         "capabilities are decoded once for the governance state, not per message"
     );
@@ -98,31 +104,34 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     );
 }
 
-/// The governor writes `receipts` into its room document, as an owner commit
-/// does, and returns the room message that carries them.
+/// The governor writes `receipts` into its workspace document, as an owner commit
+/// does, and returns the workspace message that carries them.
 fn publish_receipts(governor: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
-    let room = governor.core.room_doc.as_deref_mut().unwrap();
-    let ledger = match room.get(ROOT, "effect_receipts_v1").unwrap() {
+    let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
+    let ledger = match workspace.get(ROOT, "effect_receipts_v1").unwrap() {
         Some((_, object)) => object,
-        None => room
+        None => workspace
             .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
             .unwrap(),
     };
     // The governor's own slice: who recorded them is not what is measured.
-    let object = match room.get(&ledger, "governor").unwrap() {
+    let object = match workspace.get(&ledger, "governor").unwrap() {
         Some((_, object)) => object,
-        None => room.put_object(&ledger, "governor", ObjType::Map).unwrap(),
+        None => workspace
+            .put_object(&ledger, "governor", ObjType::Map)
+            .unwrap(),
     };
     for (key, bytes) in receipts {
-        room.put(&object, *key, automerge::ScalarValue::Bytes(bytes.to_vec()))
+        workspace
+            .put(&object, *key, automerge::ScalarValue::Bytes(bytes.to_vec()))
             .unwrap();
     }
-    room.commit();
-    governor.room_message()
+    workspace.commit();
+    governor.workspace_message()
 }
 
 fn receipt_decodes() -> usize {
-    crate::room::RECEIPT_DECODES.with(std::cell::Cell::get)
+    crate::workspace::RECEIPT_DECODES.with(std::cell::Cell::get)
 }
 
 #[test]
@@ -130,7 +139,7 @@ fn sync_resp_decodes_each_receipt_once() {
     let (mut governor, mut replica, a, now) = governor_and_replica(1);
     let source = a.verifying_key().to_bytes();
     replica
-        .receive(source, governor.room_message(), now)
+        .receive(source, governor.workspace_message(), now)
         .unwrap();
     // Spaced JSON: a re-encoding would not reproduce these bytes.
     let first: Vec<(String, Vec<u8>)> = (0..5)
@@ -146,7 +155,7 @@ fn sync_resp_decodes_each_receipt_once() {
         .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
         .collect();
     let message = publish_receipts(&mut governor, &rows);
-    crate::room::RECEIPT_DECODES.with(|count| count.set(0));
+    crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica.receive(source, message, now).unwrap();
     assert_eq!(receipt_decodes(), first.len(), "each new receipt once");
     for (key, bytes) in &first {
@@ -159,7 +168,7 @@ fn sync_resp_decodes_each_receipt_once() {
 
     // A later sync restating every admitted receipt decodes only the new one.
     let message = publish_receipts(&mut governor, &[("invocation-5", br#"{"outcome":"late"}"#)]);
-    crate::room::RECEIPT_DECODES.with(|count| count.set(0));
+    crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica.receive(source, message, now).unwrap();
     assert_eq!(receipt_decodes(), 1, "only the new receipt is decoded");
     assert_eq!(replica.core.receipts.len(), first.len() + 1);
@@ -177,9 +186,9 @@ fn sync_resp_decodes_each_receipt_once() {
     );
     replica.receive(source, message, now).unwrap();
     assert_eq!(replica.core.receipts.get(&first[0].0), Some(&first[0].1));
-    crate::room::RECEIPT_DECODES.with(|count| count.set(0));
+    crate::workspace::RECEIPT_DECODES.with(|count| count.set(0));
     replica
-        .receive(source, governor.room_message(), now)
+        .receive(source, governor.workspace_message(), now)
         .unwrap();
     assert_eq!(receipt_decodes(), 0, "an unchanged sync decodes nothing");
 

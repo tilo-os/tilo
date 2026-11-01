@@ -514,7 +514,7 @@ where
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
-    let server = session.mcp_session_factory(session.room())?()?;
+    let server = session.mcp_session_factory(session.workspace())?()?;
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
     let server = std::sync::Arc::new(server);

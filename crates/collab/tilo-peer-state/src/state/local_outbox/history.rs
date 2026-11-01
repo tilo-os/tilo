@@ -566,14 +566,14 @@ fn remember(key: Key, history: &Arc<Automerge>) {
 /// The identity of a route's reservation: everything its encoded size
 /// depends on besides the bytes of the histories, which `parts` name.
 pub(super) fn reservation_key(
-    room: &str,
+    workspace: &str,
     app: &str,
     record: &str,
     selected: [u8; 32],
     parts: &[Key],
 ) -> Key {
     let mut hasher = blake3::Hasher::new_derive_key("tilo recovery reservation v1");
-    for text in [room, app, record] {
+    for text in [workspace, app, record] {
         hasher.update(&(text.len() as u64).to_le_bytes());
         hasher.update(text.as_bytes());
     }

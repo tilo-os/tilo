@@ -11,7 +11,7 @@
 //! the devices their root certified and nobody else, whichever room the
 //! window showing the record is in.
 
-use super::{NetCmd, PersonalFabricPayload, ShellNetwork, room_topic_id};
+use super::{NetCmd, PersonalFabricPayload, ShellNetwork, workspace_topic_id};
 use crate::shell::state::RoomId;
 use neighbour_wire::NeighbourMsg;
 use std::collections::{BTreeSet, HashMap};
@@ -83,7 +83,7 @@ impl ShellNetwork {
         }
         RoomId::parse(&route.cluster_id)
             .filter(|room| !room.is_nil())
-            .map(room_topic_id)
+            .map(workspace_topic_id)
     }
 
     /// Ask the devices of `route`'s room for `hash`.
@@ -623,7 +623,7 @@ pub(super) mod tests {
         assert_eq!(pieces.len(), 3);
         for msg in pieces {
             tablet.net.dispatch_neighbour_msg(
-                room_topic_id(room),
+                workspace_topic_id(room),
                 laptop.transport,
                 None,
                 false,
@@ -657,7 +657,7 @@ pub(super) mod tests {
         device
             .net
             .dispatch_net_event(super::super::NetEvent::HostMember {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
                 host: iroh::SecretKey::from_bytes(&[0x0A; 32]).public(),
                 device: peer.transport,
                 active: up,
@@ -804,7 +804,7 @@ pub(super) mod tests {
 
         // A collaborator asking a room topic for it is never answered.
         on_laptop.dispatch_neighbour_msg(
-            room_topic_id(collab_types::person_room(&user).into()),
+            workspace_topic_id(collab_types::person_room(&user).into()),
             phone.public(),
             None,
             false,

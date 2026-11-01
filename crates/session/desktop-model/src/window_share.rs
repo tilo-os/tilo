@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 
 use tilo_action_policy::share::{is_of_share, share_id_prefix};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, GrantId, Level, RoomPolicy, Segment, Subject, TreePath,
+    ActionKind, Answer, Context, GrantId, Level, Segment, Subject, TreePath, WorkspacePolicy,
 };
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
@@ -245,7 +245,7 @@ pub struct WindowShare {
 /// minted is nobody's to show.
 #[must_use]
 pub fn window_shares(
-    policy: &RoomPolicy,
+    policy: &WorkspacePolicy,
     owners: &BTreeMap<u16, String>,
     now_ms: u64,
 ) -> BTreeMap<TabId, WindowShare> {
@@ -258,7 +258,7 @@ pub fn window_shares(
         let Subject::Person(giver) = &grant.granted_by else {
             continue;
         };
-        if grant.node.room_id() != Some(policy.room.as_str())
+        if grant.node.room_id() != Some(policy.workspace.as_str())
             || !grant
                 .id
                 .as_str()
@@ -294,7 +294,7 @@ pub fn window_shares(
         if grant.answer != Answer::Allow
             || !grant.kinds.contains(ActionKind::Read)
             || !grant.is_live(&cx)
-            || grant.node.room_id() != Some(policy.room.as_str())
+            || grant.node.room_id() != Some(policy.workspace.as_str())
         {
             continue;
         }
@@ -345,7 +345,7 @@ mod tests {
             window_of_node(&node),
             Some(("so.tilo.notes".to_owned(), tab))
         );
-        let mut policy = RoomPolicy::new(ROOM, "owner".to_owned());
+        let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
         let grants = share_grants(ROOM, "ana", &window_share_id(tab), &node, ShareAccess::View)
             .expect("a window is one resource of the room");
         let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
@@ -413,7 +413,7 @@ mod tests {
 
         let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
         let share = |shows: &WindowShows, kind: &str| {
-            let mut policy = RoomPolicy::new(ROOM, "owner".to_owned());
+            let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
             for (id, node) in [
                 (window_share_id(tab), window_node(ROOM, app, tab)),
                 (
@@ -452,7 +452,7 @@ mod tests {
         }
 
         // A window with nothing shown beside it is an outside window's.
-        let mut policy = RoomPolicy::new(ROOM, "owner".to_owned());
+        let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
         policy.grants.extend(
             share_grants(
                 ROOM,

@@ -118,7 +118,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            room: ROOM.into(),
+            workspace: ROOM.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -282,7 +282,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            room: ROOM.into(),
+                            workspace: ROOM.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },
@@ -393,7 +393,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         publish(
             &session,
             &NeighbourMsg::MlsGovernance {
-                room: ROOM.into(),
+                workspace: ROOM.into(),
                 frame: Box::new(frame),
                 delivery: 3,
             },
@@ -519,7 +519,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            room: ROOM.into(),
+            workspace: ROOM.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -585,7 +585,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            room: ROOM.into(),
+                            workspace: ROOM.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },
@@ -690,7 +690,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            room: ROOM.into(),
+            workspace: ROOM.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -728,7 +728,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            room: ROOM.into(),
+                            workspace: ROOM.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },

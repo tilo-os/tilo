@@ -35,11 +35,11 @@ impl JoinedChannel {
 }
 
 impl NativeCheckout {
-    fn matches(&self, app: &str, room: &str, instance: u64, pid: u32, start: u64) -> bool {
+    fn matches(&self, app: &str, workspace: &str, instance: u64, pid: u32, start: u64) -> bool {
         self.route.app_id == app
-            && self.route.cluster_id == room
+            && self.route.cluster_id == workspace
             && self.connection.app_id == app
-            && self.connection.workspace_id == room
+            && self.connection.workspace_id == workspace
             && self.connection.continuation_instance == Some(instance)
             && self.connection.matches_process(pid, start)
     }
@@ -51,7 +51,7 @@ impl AppBrokerState {
     pub(crate) fn native_checkout(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         instance: u64,
         pid: u32,
         start: u64,
@@ -63,7 +63,7 @@ impl AppBrokerState {
             .iter()
             .filter(|(_, checkout)| {
                 checkout.route.app_id == app
-                    && checkout.route.cluster_id == room
+                    && checkout.route.cluster_id == workspace
                     && checkout.connection.continuation_instance == Some(instance)
             })
             .map(|(peer, checkout)| (*peer, checkout.clone()))
@@ -74,7 +74,7 @@ impl AppBrokerState {
         }
         let mut matched = None;
         for (peer, checkout) in candidates {
-            if !checkout.matches(app, room, instance, pid, start)
+            if !checkout.matches(app, workspace, instance, pid, start)
                 || self
                     .revalidate_admission(&checkout.route, &checkout.identity)
                     .is_err()
@@ -100,7 +100,7 @@ impl AppBrokerState {
                         && current.identity == checkout.identity
                         && Arc::ptr_eq(&current.connection, &checkout.connection)
                 });
-            if !current || !checkout.matches(app, room, instance, pid, start) {
+            if !current || !checkout.matches(app, workspace, instance, pid, start) {
                 return None;
             }
             // Multiple current channels are not evidence of one checkout.

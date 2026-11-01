@@ -80,9 +80,10 @@ pub fn reference_hash(value: &str) -> Option<&str> {
 /// the window whose code is running.
 ///
 /// A hash is never a capability by itself: only a store that answers for
-/// one room ([`tilo_content::ContentStore::room_scoped`]) resolves a
-/// reference, and it serves an address only when that room references it.
-/// So a caller can name only content readable in the room it acts in.
+/// one workspace ([`tilo_content::ContentStore::workspace_scoped`]) resolves
+/// a reference, and it serves an address only when that workspace references
+/// it. So a caller can name only content readable in the workspace it acts
+/// in.
 ///
 /// # Errors
 ///
@@ -105,7 +106,7 @@ pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
         return Err(ContentRefusal::NotAReference(named));
     }
     let store = current().ok_or_else(|| ContentRefusal::NoStore(named.clone()))?;
-    if !store.room_scoped() {
+    if !store.workspace_scoped() {
         return Err(ContentRefusal::NotInRoom(named));
     }
     store
@@ -248,11 +249,11 @@ mod tests {
     /// A byte parameter takes its bytes inline or by a reference to content
     /// the window's room holds, and refuses any other hash.
     #[test]
-    fn a_byte_parameter_reads_a_reference_only_from_the_rooms_store() {
+    fn a_byte_parameter_reads_a_reference_only_from_the_workspaces_store() {
         let window = tilo_wake::WakeScope::new();
-        let room = ContentStore::memory_in_room();
-        register(&window.handle(), room.clone());
-        let held = room.put(b"a picture the room holds").unwrap();
+        let workspace = ContentStore::memory_in_workspace();
+        register(&window.handle(), workspace.clone());
+        let held = workspace.put(b"a picture the workspace holds").unwrap();
         let reference = tilo_actions::content_resource(&held).unwrap();
         let elsewhere = tilo_content::hash_bytes(b"content kept elsewhere");
         let _entered = window.enter();

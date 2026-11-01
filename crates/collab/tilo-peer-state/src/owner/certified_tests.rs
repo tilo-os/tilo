@@ -1,6 +1,6 @@
 use super::*;
 use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, MemberRole};
-use crate::{SeedState, StatePeer, seed_room};
+use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
@@ -64,12 +64,12 @@ fn actual_redemption_at(
         &device_key,
         "Joining device",
     );
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let workspace_id = tilo_relay_protocol::room_workspace_id(room).unwrap();
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: room.into(),
+        room: workspace.into(),
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -83,7 +83,7 @@ fn actual_redemption_at(
     let signed = join::issue_invitation(
         InviteGrant {
             workspace_id,
-            room: room.into(),
+            room: workspace.into(),
             issuer: governor.clone(),
             role: MemberRole::Editor,
             nonce: [75; 16],
@@ -115,7 +115,7 @@ fn actual_redemption_at(
     let redemption =
         join::verify_join_proof(&proof, &challenge, &device, &RevocationList::new(), ns).unwrap();
     let mut peer = StatePeer::new(
-        room,
+        workspace,
         governor.clone(),
         vec![governor.clone()],
         RevocationList::new(),
@@ -124,7 +124,12 @@ fn actual_redemption_at(
     .unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(room, &governor, std::slice::from_ref(&governor)).unwrap(),
+            workspace_changes: seed_workspace(
+                workspace,
+                &governor,
+                std::slice::from_ref(&governor),
+            )
+            .unwrap(),
             documents: vec![],
         },
         &governor_key,
@@ -141,13 +146,13 @@ fn actual_redemption_at(
         invite_id: join.invite_id(),
         device_cert: device.clone(),
         role: MemberRole::Editor,
-        room: room.into(),
+        room: workspace.into(),
         workspace_id,
         host: governor,
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
-        governance_messages: vec![postcard::to_stdvec(&peer.room_message()).unwrap()],
+        governance_messages: vec![postcard::to_stdvec(&peer.workspace_message()).unwrap()],
         generation: 1,
     };
     (
@@ -202,7 +207,7 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
 
 fn pending_owner() -> (tempfile::TempDir, crate::owner::NativeWorkspaceOwner) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let owner = crate::owner::open_file(&directory.path().join("joined-rooms.json")).unwrap();
+    let owner = crate::owner::open_file(&directory.path().join("joined-workspaces.json")).unwrap();
     (directory, owner)
 }
 
@@ -218,7 +223,10 @@ fn native_enrollment_retains_exact_complete_bytes_and_rejects_tampering() {
     assert_eq!(restored.proof_digest(), intent.proof_digest());
     let (_directory, owner) = pending_owner();
     let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let stored = owner.pending_enrollment(intent.room()).unwrap().unwrap();
+    let stored = owner
+        .pending_enrollment(intent.workspace())
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.id(), &id);
     assert_eq!(stored.intent_bytes(), saved);
     let mut record: IntentRecord = postcard::from_bytes(&saved).unwrap();

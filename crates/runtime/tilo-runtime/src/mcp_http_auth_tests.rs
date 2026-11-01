@@ -9,7 +9,7 @@ fn every_listen_address_requires_a_nonempty_token() {
             let config = Config {
                 address: address.parse().unwrap(),
                 token: token.map(str::to_owned),
-                room: None,
+                workspace: None,
             };
             assert_eq!(
                 config.validate().is_ok(),
@@ -46,7 +46,7 @@ fn no_log_line_names_the_mcp_bearer_token() {
     let config = Config {
         address: "127.0.0.1:7391".parse().unwrap(),
         token: Some(read_token(&path).unwrap()),
-        room: Some("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa".into()),
+        workspace: Some("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa".into()),
     };
     let printed = [
         format!("{config:?}"),
@@ -129,7 +129,7 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
         let sink = Arc::new(WatchRecorder::default());
         let endpoint = Endpoint::build(
             StubHost::default(),
-            "room".into(),
+            "workspace".into(),
             "owner".into(),
             token.map(str::to_owned),
             None,

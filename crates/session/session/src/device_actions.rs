@@ -291,7 +291,7 @@ mod tests {
 
     use super::*;
 
-    const ROOM: &str = testing::ROOM;
+    const ROOM: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
     const PATIENCE: Duration = Duration::from_secs(20);
     const APP: &str = "so.tilo.notes";

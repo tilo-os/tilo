@@ -30,7 +30,7 @@
 //! - `survey.json`: the operations each app's fresh record publishes;
 //!   `survey_final.json`: what each record offers at the end.
 //!
-//! An action the room's owner ran (`"as": "owner"` in the log: a
+//! An action the workspace's owner ran (`"as": "owner"` in the log: a
 //! scenario's setup no agent's grant reaches) is applied as the owner, its
 //! change merged into the record the agents' actions are applied to.
 //!
@@ -80,7 +80,7 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_agent_participant::{AppCatalogue, ConfinedReplica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CANVAS: &str = "so.tilo.canvas";
 const SHEETS: &str = "so.tilo.sheets";
 const WRITER: &str = "so.tilo.word-processor";
@@ -115,7 +115,7 @@ struct Logged {
     resources: Option<Vec<String>>,
     #[serde(default)]
     value: Option<Value>,
-    /// `owner` for a step the room's owner ran (a scenario's setup the
+    /// `owner` for a step the workspace's owner ran (a scenario's setup the
     /// agents' grants do not reach); an agent's otherwise.
     #[serde(default, rename = "as")]
     actor: Option<String>,
@@ -623,10 +623,10 @@ fn argument_match(replica: &ConfinedReplica, rewritten: &str, ids: &IdMap) -> Op
     twins.next().is_none().then(|| twin.to_owned())
 }
 
-/// Run `address` as the room's owner on the record `held` holds, as the
-/// run's owner did through the host's room actions: on an owner's copy of
+/// Run `address` as the workspace's owner on the record `held` holds, as the
+/// run's owner did through the host's workspace actions: on an owner's copy of
 /// the record as it stands, whose change is then merged into `held`, as the
-/// host publishes an owner's change to the room. The answer, and whether the
+/// host publishes an owner's change to the workspace. The answer, and whether the
 /// record changed.
 fn as_owner(
     catalogue: &AppCatalogue,
@@ -641,7 +641,7 @@ fn as_owner(
     let owner = ConfinedReplica::open(
         catalogue,
         held.app_id(),
-        ROOM,
+        WORKSPACE,
         "owner",
         &ReplicaActor::Owner,
         Seed::Existing {
@@ -739,7 +739,7 @@ fn campaign_replay() {
         if let Ok(replica) = ConfinedReplica::open(
             &catalogue,
             app,
-            ROOM,
+            WORKSPACE,
             "replay",
             &ReplicaActor::Agent,
             Seed::New,
@@ -787,7 +787,7 @@ fn campaign_replay() {
             let replica = ConfinedReplica::open(
                 &catalogue,
                 &action.app,
-                ROOM,
+                WORKSPACE,
                 "replay",
                 &ReplicaActor::Agent,
                 Seed::New,

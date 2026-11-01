@@ -10,12 +10,12 @@ use super::*;
 /// A workbook whose `read` answers cells as Sheets does, and a notes app
 /// whose `read` answers a page.
 #[derive(Default)]
-struct Room {
+struct Workspace {
     cells: BTreeMap<String, serde_json::Value>,
     asked: Vec<ViewRef>,
 }
 
-impl Reads for Room {
+impl Reads for Workspace {
     fn read(&mut self, view: &ViewRef) -> Result<serde_json::Value, String> {
         self.asked.push(view.clone());
         match (view.app.as_str(), view.operation.as_str()) {
@@ -50,8 +50,8 @@ impl Reads for Room {
     }
 }
 
-fn room() -> Room {
-    let mut room = Room::default();
+fn workspace() -> Workspace {
+    let mut workspace = Workspace::default();
     for (item, rows) in [
         ("Sheet1!B4", json!([[1200.5]])),
         ("Sheet1!B2:B4", json!([[400], [300.5], [500]])),
@@ -79,9 +79,11 @@ fn room() -> Room {
             ]),
         ),
     ] {
-        room.cells.insert(item.to_owned(), json!({ "rows": rows }));
+        workspace
+            .cells
+            .insert(item.to_owned(), json!({ "rows": rows }));
     }
-    room
+    workspace
 }
 
 fn bound(
@@ -91,7 +93,7 @@ fn bound(
     let serde_json::Value::Object(mut arguments) = arguments else {
         return Err("arguments are an object".into());
     };
-    bind(&mut arguments, params, &mut room())?;
+    bind(&mut arguments, params, &mut workspace())?;
     Ok(serde_json::Value::Object(arguments))
 }
 
@@ -214,14 +216,14 @@ fn a_missing_value_or_a_bad_expression_names_the_reference() {
 
 #[test]
 fn a_read_quoted_twice_is_read_once() {
-    let mut room = room();
+    let mut workspace = workspace();
     let mut arguments = json!({"a": "{{Sheet1!B4}}", "b": "{{= Sheet1!B4 * 2 }}"})
         .as_object()
         .unwrap()
         .clone();
-    bind(&mut arguments, &[], &mut room).unwrap();
+    bind(&mut arguments, &[], &mut workspace).unwrap();
     assert_eq!(arguments["b"], json!(2401));
-    assert_eq!(room.asked.len(), 1);
+    assert_eq!(workspace.asked.len(), 1);
 }
 
 #[test]

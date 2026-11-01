@@ -1,4 +1,4 @@
-//! Bounded reads of an admitted document in an owner-hosted room.
+//! Bounded reads of an admitted document in an owner-hosted workspace.
 //!
 //! A read is captured from the committed view's live
 //! [`crate::StatePeer`], which is never cloned or saved for a
@@ -10,7 +10,7 @@
 //! those heads, without capturing the document again.
 //!
 //! A canonical checkpoint reaches a receiving owner as several signed frames.
-//! Between the frame that moves the room's coverage and the frame carrying the
+//! Between the frame that moves the workspace's coverage and the frame carrying the
 //! covered snapshot, the record's admitted checkpoint is older than its
 //! coverage. That is a state the owner leaves by itself, not a refusal: the
 //! read reports [`DocumentRead::CheckpointPending`] and hands out nothing.
@@ -18,7 +18,7 @@
 //! A reader that holds an earlier revision this owner handed it (by its
 //! heads) is answered with only the changes since, from the committed view's
 //! own document ([`NativeCommittedView::read_changes`]). That view is what
-//! the room durably committed: its `record.peer` is the view's durable form,
+//! the workspace durably committed: its `record.peer` is the view's durable form,
 //! and both are published together. So the changes lead to the revision a
 //! whole read would hand out. Whatever only a whole read can decide
 //! (a pending checkpoint; an encrypted, incomplete or absent document; a
@@ -47,7 +47,7 @@ pub(crate) fn reset_captures() {
     CAPTURES.with(|count| count.set(0));
 }
 
-/// A document as the room last admitted it.
+/// A document as the workspace last admitted it.
 pub struct CommittedDocument {
     /// Names exactly these heads; equal revisions are equal documents.
     pub revision: [u8; 32],
@@ -81,7 +81,7 @@ pub enum DocumentRead {
     /// The reader already holds this revision.
     Unchanged([u8; 32]),
     Captured(CommittedDocument),
-    /// The room is between the frames of one checkpoint: its coverage names
+    /// The workspace is between the frames of one checkpoint: its coverage names
     /// a snapshot that has not arrived yet. Nothing was read; the reader may
     /// ask again once the rest of the checkpoint is admitted.
     CheckpointPending,
@@ -193,7 +193,7 @@ impl NativeCommittedView {
         let denied = |error| match error {
             PeerDocumentReadError::Denied => "the reader may not read that document".into(),
             PeerDocumentReadError::Missing => {
-                format!("the room does not hold {app} record {record:?}")
+                format!("the workspace does not hold {app} record {record:?}")
             }
             other => other.to_string(),
         };
@@ -218,7 +218,7 @@ impl NativeCommittedView {
 
     /// Read the changes to `app`'s `record` since the revision with the
     /// sorted `heads` (as an earlier read handed them out) for the device
-    /// `reader`, from the committed document's own changes: no room restore
+    /// `reader`, from the committed document's own changes: no workspace restore
     /// and no save of the whole document.
     ///
     /// Checks the reader's document Read permission, as

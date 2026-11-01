@@ -2,7 +2,8 @@
 use super::{
     ArtifactKind, BTreeMap, ChannelState, DocumentMutation, Duration, Ed25519PublicKey,
     LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpKind,
-    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size, room,
+    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle, publication_size,
+    workspace,
 };
 use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
@@ -63,7 +64,7 @@ impl RecoveryHistory {
 /// The unsigned envelope re-sending a route's whole recovered history,
 /// claiming each of its changes.
 fn history_envelope(
-    room: &str,
+    workspace: &str,
     route: &Route,
     history: &automerge::Automerge,
     author: Ed25519PublicKey,
@@ -75,9 +76,9 @@ fn history_envelope(
     collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
     Ok(SignedOp::new_unsigned(
         mutation.encode().map_err(err)?,
-        collab_types::document_artifact_id(&route.app, room, &route.record),
+        collab_types::document_artifact_id(&route.app, workspace, &route.record),
         author,
-        collab_types::document_attestation_id(&route.app, room, &route.record),
+        collab_types::document_attestation_id(&route.app, workspace, &route.record),
         OpKind::Change,
         timestamp,
         sequence,
@@ -234,7 +235,7 @@ impl StatePeer {
     ) -> Result<usize, String> {
         let key = history.keys.as_deref().map(|parts| {
             super::history::reservation_key(
-                &self.core.room,
+                &self.core.workspace,
                 &route.app,
                 &route.record,
                 selected,
@@ -249,7 +250,7 @@ impl StatePeer {
         // u64::MAX reserves sequence width. Serde SystemTime encodes u64
         // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
         let envelope = history_envelope(
-            &self.core.room,
+            &self.core.workspace,
             route,
             history.doc()?,
             Ed25519PublicKey::from_bytes(selected),
@@ -259,7 +260,7 @@ impl StatePeer {
         let shape = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: route.app.clone(),
-            cluster_id: self.core.room.clone(),
+            cluster_id: self.core.workspace.clone(),
             record_id: route.record.clone(),
             envelope: Box::new(envelope),
         };
@@ -367,7 +368,7 @@ impl StatePeer {
             .get(route)
             .ok_or("recovery projection record missing")?;
         if let Some(policy) = policy {
-            room::media::validate_bound_chat_change(
+            workspace::media::validate_bound_chat_change(
                 &policy,
                 &route.app,
                 &route.record,
@@ -402,7 +403,7 @@ impl StatePeer {
         channel
             .artifact_records
             .insert(envelope.artifact, route.record.clone());
-        channel.room.clone_from(&self.core.room);
+        channel.room.clone_from(&self.core.workspace);
         channel.grants.clone_from(&member.policy.grants);
         channel.surfaces.clone_from(&self.surfaces);
         if reserved {
@@ -551,7 +552,7 @@ impl PeerOutboxMut<'_> {
                     .checked_add(1)
                     .ok_or("recovery projection sequence exhausted")?;
                 let mut envelope = history_envelope(
-                    &candidate.core.room,
+                    &candidate.core.workspace,
                     route,
                     history.doc()?,
                     author,
@@ -574,7 +575,7 @@ impl PeerOutboxMut<'_> {
                 NeighbourMsg::AppDocument {
                     peer: peer_handle(&selected),
                     app_id: route.app.clone(),
-                    cluster_id: candidate.core.room.clone(),
+                    cluster_id: candidate.core.workspace.clone(),
                     record_id: route.record.clone(),
                     envelope: Box::new(envelope),
                 }

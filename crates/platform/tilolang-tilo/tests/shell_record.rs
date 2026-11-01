@@ -504,7 +504,7 @@ fn set_screen(r: &mut Replica, field: &str, on: bool) {
 fn undo(r: &mut Replica) {
     use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
     use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
-    use tilolang_tilo::instance::room::HostHistoryEdit;
+    use tilolang_tilo::instance::record::HostHistoryEdit;
 
     let edit = HistoryEdit::Undo {
         steps: None,

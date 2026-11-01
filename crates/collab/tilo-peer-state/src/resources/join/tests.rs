@@ -38,7 +38,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     .unwrap();
     let grant = InviteGrant {
         workspace_id: 42,
-        room: peer.room().into(),
+        room: peer.workspace_id().into(),
         issuer: member.clone(),
         role: MemberRole::Editor,
         nonce: [17; 16],
@@ -74,7 +74,7 @@ fn responses() -> Vec<JoinTransportResponse> {
     )
     .unwrap();
     let membership = MembershipChallenge::new(
-        peer.room(),
+        peer.workspace_id(),
         42,
         &peer.owner_certificates()[0],
         &member,
@@ -89,7 +89,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         invite_id: verified.invite_id(),
         device_cert: member,
         role: MemberRole::Editor,
-        room: peer.room().into(),
+        room: peer.workspace_id().into(),
         workspace_id: 42,
         host: peer.owner_certificates()[0].clone(),
         certified_roster: peer.certificates(),
@@ -168,11 +168,11 @@ fn bounded_join_response_nested_buffers_past_the_limit_are_refused() {
         Err(PeerResourceError::Capacity)
     ));
     // Each message is a byte sequence, so every byte is a collection entry.
-    let roomy = OuterLimits {
+    let limits = OuterLimits {
         allocation_bytes: 256 * 1024,
         collection_entries: 65536,
     };
-    assert!(BoundedJoinResponse::decode(&bytes, roomy).is_ok());
+    assert!(BoundedJoinResponse::decode(&bytes, limits).is_ok());
 }
 
 #[test]

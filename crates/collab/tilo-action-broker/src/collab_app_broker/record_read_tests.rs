@@ -27,18 +27,18 @@ impl DocumentBytes for Bytes {
     }
 }
 
-/// A document owner holding every record the room has, each captured as its route's bytes,
+/// A document owner holding every record the workspace has, each captured as its route's bytes,
 /// re-checking the reader's read between the two chunks of every capture (and running
 /// `between` there, as a change landing mid-capture would).
 #[derive(Default)]
 struct Owner {
     captures: AtomicUsize,
     between: Mutex<Option<Box<dyn Fn() + Send>>>,
-    /// For a room whose records are sealed channels: what this device holds of them.
+    /// For a workspace whose records are sealed channels: what this device holds of them.
     sealed: Option<Sealed>,
 }
 
-/// The records of a sealed room this device holds writes of, by record id.
+/// The records of a sealed workspace this device holds writes of, by record id.
 struct Sealed {
     /// Records whose writes make the whole record.
     whole: Vec<&'static str>,
@@ -47,7 +47,7 @@ struct Sealed {
 }
 
 impl NativeDocumentReads for Owner {
-    fn requires_room(&self, _: &str) -> bool {
+    fn requires_workspace(&self, _: &str) -> bool {
         self.sealed.is_none()
     }
     fn seals_records(&self, _: &str) -> bool {
@@ -60,8 +60,8 @@ impl NativeDocumentReads for Owner {
             Some(_) => RecordRead::Own,
         }
     }
-    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
-        self.record_read(room, app, record) != RecordRead::Own
+    fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        self.record_read(workspace, app, record) != RecordRead::Own
             || self
                 .sealed
                 .as_ref()
@@ -104,7 +104,7 @@ impl LocalPersonServices for Person {
     }
 }
 
-/// The room's origin, recording every change it was handed and who it was for.
+/// The workspace's origin, recording every change it was handed and who it was for.
 #[derive(Default)]
 struct Origin(
     Mutex<
@@ -119,14 +119,14 @@ struct Origin(
 impl RecordChangeServices for Origin {
     fn apply(
         &self,
-        room: &str,
+        workspace: &str,
         change: &tilo_actions::remote::RecordChange,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<serde_json::Value, String> {
         self.0
             .lock()
             .unwrap()
-            .push((room.to_owned(), change.clone(), invoker.clone()));
+            .push((workspace.to_owned(), change.clone(), invoker.clone()));
         Ok(serde_json::json!({"ok": {"value": null, "resources": []}, "differs": false}))
     }
 }
@@ -138,13 +138,13 @@ struct Fixture {
     membership: crate::test_support::WorkspaceTreeHandle,
     reads: Arc<dyn tilo_actions::remote::RecordReads>,
     person: String,
-    room: String,
+    workspace: String,
     /// The grant that admits the agent `scribe`.
     scribe: tilo_action_policy::GrantId,
     _scratch: tempfile::TempDir,
 }
 
-/// A room its person owns, with agent `scribe` admitted to read it.
+/// A workspace its person owns, with agent `scribe` admitted to read it.
 fn fixture() -> Fixture {
     fixture_with(Owner::default())
 }
@@ -158,16 +158,16 @@ fn fixture_with(owner: Owner) -> Fixture {
     let person = principal_id_for_root(certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::new(WorkspaceId(71), "Record reads");
     workspace.set_owner(person.clone());
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let scribe = workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
-    // Mail's changes the room keeps from the agent.
+    // Mail's changes the workspace keeps from the agent.
     workspace.deny(
         Subject::agent("scribe"),
         &TreePath::root().app(MAIL),
         KindSet::UNDOABLE,
     );
-    // One Notes record the room keeps from the agent, though its person may read it.
+    // One Notes record the workspace keeps from the agent, though its person may read it.
     workspace.deny(
         Subject::agent("scribe"),
         &TreePath::root().app(NOTES).resource("private"),
@@ -188,7 +188,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     let state = Arc::clone(broker.state());
     let reads = state
         .record_reads()
-        .expect("a host that keeps the room's documents");
+        .expect("a host that keeps the workspace's documents");
     Fixture {
         state,
         origin,
@@ -196,7 +196,7 @@ fn fixture_with(owner: Owner) -> Fixture {
         membership,
         reads,
         person,
-        room,
+        workspace: workspace_id,
         scribe,
         _scratch: scratch,
     }
@@ -207,7 +207,7 @@ impl Fixture {
     fn task(&self, agent: &str) -> Caller {
         Caller::local_agent(agent)
             .acting_for(self.person.clone())
-            .in_room(self.room.clone())
+            .in_room(self.workspace.clone())
             .in_new_execution()
     }
 
@@ -229,17 +229,17 @@ impl Fixture {
 
 /// `person`'s own record of Mail, the one an app with `records: .own` keeps.
 fn own_record(person: &str) -> String {
-    tilo_action_policy::member_record_id(person, "tilolang.room")
+    tilo_action_policy::member_record_id(person, "tilolang.workspace")
 }
 
 #[test]
-fn an_agent_task_reads_the_room_records_and_its_persons_own() {
+fn an_agent_task_reads_the_workspace_records_and_its_persons_own() {
     let f = fixture();
     let task = f.task("scribe");
     assert_eq!(
         f.read(&task, NOTES, "").unwrap(),
         RecordCopy::Document(format!("{NOTES}/").into_bytes()),
-        "the room's Notes record, with no Notes window anywhere"
+        "the workspace's Notes record, with no Notes window anywhere"
     );
     let own = own_record(&f.person);
     assert_eq!(
@@ -250,7 +250,7 @@ fn an_agent_task_reads_the_room_records_and_its_persons_own() {
 }
 
 #[test]
-fn a_sealed_rooms_record_this_device_holds_nothing_of_reads_as_none_yet() {
+fn a_sealed_workspaces_record_this_device_holds_nothing_of_reads_as_none_yet() {
     let f = fixture_with(Owner {
         sealed: Some(Sealed {
             whole: vec!["kept"],
@@ -262,12 +262,12 @@ fn a_sealed_rooms_record_this_device_holds_nothing_of_reads_as_none_yet() {
     assert_eq!(
         f.read(&task, NOTES, "").unwrap(),
         RecordCopy::Absent,
-        "no app ever wrote the room's Notes record: the room has none yet"
+        "no app ever wrote the workspace's Notes record: the workspace has none yet"
     );
     assert_eq!(
         f.read(&task, NOTES, "kept").unwrap(),
         RecordCopy::Document(format!("{NOTES}/kept").into_bytes()),
-        "a record the room holds is read from its writes"
+        "a record the workspace holds is read from its writes"
     );
     let torn = f.read(&task, NOTES, "torn").unwrap_err();
     assert!(
@@ -289,12 +289,12 @@ fn a_record_either_may_not_read_stays_unreadable() {
         ),
         "another member's own record"
     );
-    // A record the room denies the agent: its person's authority does not widen it.
+    // A record the workspace denies the agent: its person's authority does not widen it.
     assert!(matches!(
         f.read(&task, NOTES, "private"),
         Err(ActionHostError::Refused { .. })
     ));
-    // An agent the room grants nothing reads nothing, whatever its person may.
+    // An agent the workspace grants nothing reads nothing, whatever its person may.
     assert!(f.read(&f.task("idle"), NOTES, "").is_err());
     assert_eq!(
         f.owner.captures.load(Ordering::Acquire),
@@ -336,7 +336,7 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
     };
     // The person reads through their own apps' custody, not this door.
     let person = Caller::local_person(f.person.clone())
-        .in_room(f.room.clone())
+        .in_room(f.workspace.clone())
         .in_new_execution();
     assert!(refused(&person));
     // An agent the person's own device handed its session to carries that device's
@@ -345,10 +345,12 @@ fn only_an_agent_task_acting_for_its_person_reads_records_here() {
     assert!(refused(&handed));
     // An agent acting for nobody, and an app.
     let alone = Caller::local_agent("scribe")
-        .in_room(f.room.clone())
+        .in_room(f.workspace.clone())
         .in_new_execution();
     assert!(refused(&alone));
-    assert!(refused(&Caller::local_app(NOTES).in_room(f.room.clone())));
+    assert!(refused(
+        &Caller::local_app(NOTES).in_room(f.workspace.clone())
+    ));
     assert_eq!(f.owner.captures.load(Ordering::Acquire), 0);
     drop(f.state);
 }
@@ -371,8 +373,8 @@ fn an_agent_tasks_change_reaches_the_origin_acting_for_its_person() {
     let answer = changes.apply(&f.task("scribe"), &change(NOTES)).unwrap();
     assert_eq!(answer["differs"], false);
     let handed = f.origin.0.lock().unwrap();
-    let (room, applied, invoker) = handed.first().expect("the origin was handed the change");
-    assert_eq!(room, &f.room);
+    let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
+    assert_eq!(workspace, &f.workspace);
     assert_eq!(applied, &change(NOTES));
     assert_eq!(invoker.actor, "agent:scribe");
     assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
@@ -380,7 +382,7 @@ fn an_agent_tasks_change_reaches_the_origin_acting_for_its_person() {
 }
 
 #[test]
-fn a_change_the_room_denies_the_agent_never_reaches_the_origin() {
+fn a_change_the_workspace_denies_the_agent_never_reaches_the_origin() {
     let f = fixture();
     let changes = f.state.record_changes().unwrap();
     assert!(matches!(
@@ -395,7 +397,7 @@ fn only_an_agent_task_acting_for_its_person_changes_records_here() {
     let f = fixture();
     let changes = f.state.record_changes().unwrap();
     let person = Caller::local_person(f.person.clone())
-        .in_room(f.room.clone())
+        .in_room(f.workspace.clone())
         .in_new_execution();
     for caller in [person.clone(), person.delegated_to("scribe")] {
         assert!(matches!(

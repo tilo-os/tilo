@@ -1,10 +1,10 @@
 //! An agent's view on the person's desk.
 //!
 //! No action is performed out of sight: when an agent starts working in a
-//! record that no window on the room's shared desktop shows, it adds a tab
+//! record that no window on the workspace's shared desktop shows, it adds a tab
 //! for that record to the desktop, right after the group showing the record
 //! it worked in before (the view its task already occupies), on whichever
-//! strip holds that. Every page of the room draws it from the synced desktop
+//! strip holds that. Every page of the workspace draws it from the synced desktop
 //! as it draws its own tabs, mounting the app over the record locally:
 //! nothing is streamed. A record already on the desk is left where the
 //! people put it.
@@ -26,7 +26,7 @@ pub(crate) struct View<'a> {
 }
 
 /// The change that puts `view` on the shared `desktop`, written by
-/// `author`; `None` when a tab already shows the record, or the room has no
+/// `author`; `None` when a tab already shows the record, or the workspace has no
 /// shared desktop.
 pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
@@ -146,7 +146,7 @@ mod tests {
     /// A desk with the person's strip (Chat) and the strip the agent's task
     /// runs on (Notes, which it works in), as one shared desktop change.
     fn desk() -> Vec<u8> {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Workspace");
         workspace.strips = vec![
             Strip {
                 id: StripId(10),
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn a_room_without_a_shared_desktop_gets_nothing() {
+    fn a_workspace_without_a_shared_desktop_gets_nothing() {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",

@@ -211,7 +211,7 @@ mod tests {
         // owner entered, governed by the person this device's protected
         // identity names.
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
+        let room = RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap();
         let active = tree.desktop.active;
         assert!(tree.stand_in_room(active, room));
         tree.desktop.workspaces[0].set_owner(&person);

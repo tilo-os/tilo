@@ -1,10 +1,10 @@
-//! A device's participation in a call of a room it joined.
+//! A device's participation in a call of a workspace it joined.
 //!
-//! The room's governor records each call in the room's governance, bound to
+//! The workspace's governor records each call in the workspace's governance, bound to
 //! one voice channel of a chat record; see [`tilo_relay_protocol::voice`]. A
 //! [`Participation`] finds the active call bound to a channel (or asks the
 //! governor to open the channel's call, which any member may: joining a
-//! voice channel is joining its call), joins it over the room's relay session
+//! voice channel is joining its call), joins it over the workspace's relay session
 //! and keeps the governor's current grant. That grant
 //! is the whole admission to the relay's voice carrier: the participation
 //! is the carrier's [`ClientAuthority`] while the grant still admits its
@@ -13,11 +13,11 @@
 //!
 //! The caller routes the session's [`VoiceEvent`]s to [`Participation::apply`],
 //! repeats [`Participation::heartbeat`] every
-//! [`tilo_relay_protocol::voice::HEARTBEAT`] and, when it dials the room
+//! [`tilo_relay_protocol::voice::HEARTBEAT`] and, when it dials the workspace
 //! again, [`Participation::rejoin`]s over the new session: the relay ties a
 //! participation to the connection it joined over.
 //!
-//! A room's governance changes (a call starting, a mute) advance its
+//! A workspace's governance changes (a call starting, a mute) advance its
 //! continuity; they do not end a participation. Membership is checked on
 //! every carrier authorization and custody on every heartbeat.
 
@@ -77,8 +77,8 @@ struct Stops {
 /// One device's participation in one call; see the [module docs](self).
 pub struct Participation {
     owner: NativeWorkspaceOwner,
-    room: RoomId,
-    workspace: u64,
+    workspace: RoomId,
+    workspace_id: u64,
     device: [u8; 32],
     alive: AtomicBool,
     leaving: AtomicBool,
@@ -93,17 +93,17 @@ pub struct Participation {
 }
 
 impl Participation {
-    /// Join the call bound to `channel` in `room` over the room's relay
+    /// Join the call bound to `channel` in `workspace` over the workspace's relay
     /// `session`, opening it when none is active. `check` vets the device's
     /// custody.
     pub fn open(
         owner: NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         channel: &Channel,
         session: &RelayCoeditSession,
         check: impl Fn(&NativeCommittedView) -> Result<(), String>,
     ) -> Result<Arc<Self>, String> {
-        let (workspace, device, call) = owner.with_current(room, |view| {
+        let (workspace_id, device, call) = owner.with_current(workspace, |view| {
             check(view)?;
             view.peer()
                 .permissions(view.device().device_public_key, SystemTime::now())
@@ -117,17 +117,17 @@ impl Participation {
             let mut calls = policy.iter().flat_map(|policy| {
                 policy.calls.iter().filter(|(_, call)| {
                     call.binding.same_channel(&binding)
-                        && call.phase == crate::room::media::CallPhaseV1::Active
+                        && call.phase == crate::workspace::media::CallPhaseV1::Active
                 })
             });
             let call = calls.next().map(|(id, _)| *id);
             if calls.next().is_some() {
                 return Err("ambiguous governed call".into());
             }
-            Ok((view.workspace(), view.device().device_public_key, call))
+            Ok((view.workspace_id(), view.device().device_public_key, call))
         })?;
-        if session.workspace_id() != workspace {
-            return Err("the session belongs to another room".into());
+        if session.workspace_id() != workspace_id {
+            return Err("the session belongs to another workspace".into());
         }
         let phase = if call.is_some() {
             Phase::Joining
@@ -142,7 +142,8 @@ impl Participation {
             muted: true,
             ..Showing::default()
         };
-        let participation = Self::joining(owner, room, workspace, device, phase, call, muted);
+        let participation =
+            Self::joining(owner, workspace, workspace_id, device, phase, call, muted);
         match (phase, call) {
             (Phase::Starting(request), _) => session.voice_call(
                 request,
@@ -155,37 +156,37 @@ impl Participation {
             (_, Some(call)) => session.voice_join(call, None),
             (_, None) => return Err("governed call missing".into()),
         }
-        .map_err(|_| "the room's relay session is gone")?;
+        .map_err(|_| "the workspace's relay session is gone")?;
         Ok(participation)
     }
 
-    /// Join `room`'s window carrier
-    /// ([`tilo_relay_protocol::voice::windows_call`]) over the room's relay
+    /// Join `workspace`'s window carrier
+    /// ([`tilo_relay_protocol::voice::windows_call`]) over the workspace's relay
     /// `session`: the call on which its member devices publish the windows
     /// of host programs they run and view each other's. It needs no governed
-    /// call; the governor grants it while the room shares its layout.
+    /// call; the governor grants it while the workspace shares its layout.
     /// `check` vets the device's custody.
     pub fn open_windows(
         owner: NativeWorkspaceOwner,
-        room: RoomId,
+        workspace: RoomId,
         session: &RelayCoeditSession,
         check: impl Fn(&NativeCommittedView) -> Result<(), String>,
     ) -> Result<Arc<Self>, String> {
-        let (workspace, device) = owner.with_current(room, |view| {
+        let (workspace_id, device) = owner.with_current(workspace, |view| {
             check(view)?;
             view.peer()
                 .permissions(view.device().device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?;
-            Ok((view.workspace(), view.device().device_public_key))
+            Ok((view.workspace_id(), view.device().device_public_key))
         })?;
-        if session.workspace_id() != workspace {
-            return Err("the session belongs to another room".into());
+        if session.workspace_id() != workspace_id {
+            return Err("the session belongs to another workspace".into());
         }
-        let call = tilo_relay_protocol::voice::windows_call(&room.to_string());
+        let call = tilo_relay_protocol::voice::windows_call(&workspace.to_string());
         let participation = Self::joining(
             owner,
-            room,
             workspace,
+            workspace_id,
             device,
             Phase::Joining,
             Some(call),
@@ -193,16 +194,16 @@ impl Participation {
         );
         session
             .voice_join(call, None)
-            .map_err(|_| "the room's relay session is gone")?;
+            .map_err(|_| "the workspace's relay session is gone")?;
         Ok(participation)
     }
 
-    /// A participation in `phase` showing `showing`, fenced by its room's
+    /// A participation in `phase` showing `showing`, fenced by its workspace's
     /// custody.
     fn joining(
         owner: NativeWorkspaceOwner,
-        room: RoomId,
-        workspace: u64,
+        workspace: RoomId,
+        workspace_id: u64,
         device: [u8; 32],
         phase: Phase,
         call: Option<[u8; 32]>,
@@ -210,8 +211,8 @@ impl Participation {
     ) -> Arc<Self> {
         let participation = Arc::new(Self {
             owner,
-            room,
             workspace,
+            workspace_id,
             device,
             alive: AtomicBool::new(true),
             leaving: AtomicBool::new(false),
@@ -232,28 +233,27 @@ impl Participation {
             fence: Mutex::new(None),
         });
         let weak = Arc::downgrade(&participation);
-        let fence =
-            participation
-                .owner
-                .observe_fences(Arc::new(move |fenced_room: RoomId, _: u64| {
-                    if fenced_room == room
-                        && let Some(participation) = weak.upgrade()
-                    {
-                        // The owner holds its continuity write lock here. Pause
-                        // local resources without reading it again; a heartbeat
-                        // ends the participation if custody no longer admits it.
-                        participation.pause();
-                        participation.changed.notify_waiters();
-                    }
-                }));
+        let fence = participation.owner.observe_fences(Arc::new(
+            move |fenced_workspace: RoomId, _: u64| {
+                if fenced_workspace == workspace
+                    && let Some(participation) = weak.upgrade()
+                {
+                    // The owner holds its continuity write lock here. Pause
+                    // local resources without reading it again; a heartbeat
+                    // ends the participation if custody no longer admits it.
+                    participation.pause();
+                    participation.changed.notify_waiters();
+                }
+            },
+        ));
         *participation.fence.lock() = Some(fence);
         participation
     }
 
-    /// The room's relay workspace.
+    /// The relay workspace this participation's workspace is carried on.
     #[must_use]
-    pub const fn workspace(&self) -> u64 {
-        self.workspace
+    pub const fn workspace_id(&self) -> u64 {
+        self.workspace_id
     }
 
     /// This participation's id, once granted.
@@ -292,7 +292,7 @@ impl Participation {
                         if session
                             .is_none_or(|session| session.voice_join(call.call, None).is_err())
                         {
-                            self.refuse("the room's relay session is gone".into());
+                            self.refuse("the workspace's relay session is gone".into());
                         }
                     }
                     Ok(_) => {
@@ -338,7 +338,7 @@ impl Participation {
                 self.refuse(reason.clone());
                 true
             }
-            // The room's rosters, for whoever asked; no participation's.
+            // The workspace's rosters, for whoever asked; no participation's.
             VoiceEvent::Calls(_) => false,
         }
     }
@@ -351,7 +351,7 @@ impl Participation {
         check: impl Fn(&NativeCommittedView) -> Result<(), String>,
     ) -> Result<(), String> {
         self.live()?;
-        if let Err(error) = self.owner.with_current(self.room, |view| {
+        if let Err(error) = self.owner.with_current(self.workspace, |view| {
             check(view)?;
             view.peer()
                 .permissions(self.device, SystemTime::now())
@@ -372,7 +372,7 @@ impl Participation {
         if let (Some(call), Some(id)) = (call, id) {
             session
                 .voice_join(call, Some(id))
-                .map_err(|_| "the room's relay session is gone")?;
+                .map_err(|_| "the workspace's relay session is gone")?;
             self.say_showing(session)?;
         }
         Ok(())
@@ -414,12 +414,12 @@ impl Participation {
         if let (Some(call), Some(id)) = (call, id) {
             session
                 .voice_show(call, id, showing)
-                .map_err(|_| "the room's relay session is gone")?;
+                .map_err(|_| "the workspace's relay session is gone")?;
         }
         Ok(())
     }
 
-    /// Join again over `session`, a new connection to the room's relay. The
+    /// Join again over `session`, a new connection to the workspace's relay. The
     /// current grant stays until the governor grants the new participation;
     /// its carrier then no longer matches and is replaced.
     pub fn rejoin(&self, session: &RelayCoeditSession) -> Result<(), String> {
@@ -434,12 +434,12 @@ impl Participation {
         };
         let Some(call) = call else {
             // The start went over the old connection; its answer is lost.
-            self.refuse("the room reconnected while the call was starting".into());
-            return Err("the room reconnected while the call was starting".into());
+            self.refuse("the workspace reconnected while the call was starting".into());
+            return Err("the workspace reconnected while the call was starting".into());
         };
         session
             .voice_join(call, None)
-            .map_err(|_| "the room's relay session is gone".into())
+            .map_err(|_| "the workspace's relay session is gone".into())
     }
 
     /// Stop locally, then tell the governor this participation ends. Only
@@ -633,7 +633,7 @@ impl Participation {
         if !self.authorized() {
             return Err("the participation lapsed".into());
         }
-        self.owner.with_current(self.room, |view| {
+        self.owner.with_current(self.workspace, |view| {
             view.peer()
                 .permissions(self.device, SystemTime::now())
                 .map_err(|error| error.to_string())?;

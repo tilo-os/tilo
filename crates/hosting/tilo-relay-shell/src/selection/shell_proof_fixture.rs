@@ -218,7 +218,8 @@ pub(crate) fn generate() -> ShellProofFixture {
     owner
         .install_seed(
             tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &governor, &certificates).unwrap(),
+                workspace_changes: tilo_peer_state::seed_workspace(ROOM, &governor, &certificates)
+                    .unwrap(),
                 documents: vec![
                     seed(NOTES, 1, &[("title", "Notes"), ("body", "unchanged")]),
                     seed(WORD_PROCESSOR, 2, &[("title", "Draft")]),

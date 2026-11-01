@@ -13,7 +13,7 @@
 //! the loop for each read ([`ReadAsk`]), wakes it, and waits for the answer;
 //! the loop answers on its next pump, free to as it is not planning itself.
 //! A picture the plan shows its model is asked of the loop the same way
-//! ([`LookAsk`]): the room's content store is the loop's.
+//! ([`LookAsk`]): the workspace's content store is the loop's.
 
 use std::sync::Arc;
 use std::sync::mpsc;

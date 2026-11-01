@@ -107,25 +107,41 @@ pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
     *prefs.lock_recover() = DeskWidgetPrefs::from_document(document);
 }
 
+/// What the desk's layer reads of the session: the person's desk widgets,
+/// the fold the session's keys share, the overview's open flag, what plays,
+/// and the bars' reveal the desk's band and policy follow.
+pub(crate) struct DeskLook {
+    pub(crate) widgets: Prefs,
+    /// Shared with the session's keys, which fold an open card on Escape.
+    pub(crate) fold: DeskFold,
+    /// Whether the overview is over the desk, which folds it.
+    pub(crate) overview: Rc<Cell<bool>>,
+    /// What plays, as the session reads it from the player Quick Settings
+    /// shows.
+    pub(crate) music: DeskMusic,
+    /// When each display's bar shows over the window covering it.
+    pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+}
+
 /// The desk of this session's workspace and the policy placing its windows,
 /// with what its tree asks of the session. The chrome above it asks through
 /// the same list.
-///
-/// The widgets share `fold` with the session's keys, which fold an open card
-/// on Escape, and read `overview` to fold it while the overview is over the
-/// desk. `music` is what plays, as the session reads it from the player
-/// Quick Settings shows.
 pub(crate) fn desk(
     options: &Options,
     activity: &crate::activity::Activity,
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
-    widgets: Prefs,
-    fold: DeskFold,
-    overview: Rc<Cell<bool>>,
-    music: DeskMusic,
+    looked: DeskLook,
 ) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
+    let DeskLook {
+        widgets,
+        fold,
+        overview,
+        music,
+        reveals,
+    } = looked;
     let asks = Rc::new(RefCell::new(Vec::new()));
+    let band_reveals = Rc::clone(&reveals);
     let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
         // The desk's windows ask it for the workspace's activity, and the
         // apps running beside it ask the same model through the broker.
@@ -151,8 +167,46 @@ pub(crate) fn desk(
                 beneath,
             )
             .with_asks(Rc::clone(&asks))
-            .with_wallpaper(move |workspace| pictures.picture(workspace)),
+            .with_wallpaper(move |workspace| pictures.picture(workspace))
+            .with_reveals(Rc::clone(&band_reveals)),
         )
     });
+    let mut policy = policy;
+    policy.with_samples(Rc::new(RefCell::new(BarSamples { reveals })));
     (desktop, policy, asks)
+}
+
+/// What the desk's policy sends the bars' reveal: the pointer wherever it
+/// goes, presses, and fingers on the screen, which the chrome follows beyond
+/// where it draws.
+struct BarSamples {
+    reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+}
+
+impl tilo_surface_host::PointerSamples for BarSamples {
+    fn moved(&mut self, x: f64, y: f64) {
+        let now = ui::time::now();
+        self.reveals
+            .borrow_mut()
+            .motion(ui::vello::kurbo::Point::new(x, y), now);
+    }
+
+    fn pressed(&mut self, x: f64, y: f64) {
+        self.reveals
+            .borrow_mut()
+            .press(ui::vello::kurbo::Point::new(x, y));
+    }
+
+    fn touch(&mut self, touch: tilo_compositor::TouchSample) -> bool {
+        use tilo_desktop::topbar::Finger;
+        let now = ui::time::now();
+        let mut reveals = self.reveals.borrow_mut();
+        let (finger, x, y) = match touch {
+            tilo_compositor::TouchSample::Down { x, y } => (Finger::Down, x, y),
+            tilo_compositor::TouchSample::Move { x, y } => (Finger::Move, x, y),
+            tilo_compositor::TouchSample::Lift { x, y } => (Finger::Lift, x, y),
+            tilo_compositor::TouchSample::Cancel => (Finger::Cancel, 0.0, 0.0),
+        };
+        reveals.touch(finger, ui::vello::kurbo::Point::new(x, y), now)
+    }
 }

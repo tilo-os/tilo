@@ -1,7 +1,7 @@
 //! Btrfs subvolumes and snapshots.
 //!
-//! Capture epochs are read-only snapshots of a room's subvolume: one atomic,
-//! crash-consistent image of every file in the room, taken without pausing
+//! Capture epochs are read-only snapshots of a workspace's subvolume: one
+//! atomic, crash-consistent image of every file in it, taken without pausing
 //! writers.
 
 use std::ffi::OsStr;

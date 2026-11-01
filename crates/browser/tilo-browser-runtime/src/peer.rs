@@ -1621,7 +1621,7 @@ pub struct WasmPeer {
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
     /// The room the person takes part in through this page, once joined
     /// as a person rather than a spectator: the one that names them.
-    person_room: RefCell<Option<String>>,
+    speaking_room: RefCell<Option<String>>,
 }
 
 /// Tell `room` its member, the page's person, goes by `name` from now on:
@@ -1772,7 +1772,7 @@ impl WasmPeer {
             handle,
             listeners,
             replication,
-            person_room: RefCell::default(),
+            speaking_room: RefCell::default(),
         })
     }
 
@@ -1849,7 +1849,7 @@ impl WasmPeer {
                 if let Some(identity) = ui::local_identity::load() {
                     name_in_room(&self.handle, room, &identity.display_name);
                 }
-                *self.person_room.borrow_mut() = Some(room.to_owned());
+                *self.speaking_room.borrow_mut() = Some(room.to_owned());
             }
         }
         Ok(())
@@ -2509,7 +2509,7 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
-        if let Some(room) = self.person_room.borrow().as_deref() {
+        if let Some(room) = self.speaking_room.borrow().as_deref() {
             name_in_room(&self.handle, room, &name);
         }
         if crate::page_person::speaks(self.id) {

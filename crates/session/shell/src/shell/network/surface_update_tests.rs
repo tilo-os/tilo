@@ -9,7 +9,7 @@ use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tilo_network_actor::{HostIdentity, native_ingress};
-use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture};
+use tilo_peer_state::owner::testing::{APP, WORKSPACE, raw_fixture};
 
 /// The Chat surface this device has installed.
 const INSTALLED: &str = "[[resources]]\nkind = \"chat\"\nlabel = \"Chat\"\nversion = 1\n";
@@ -122,7 +122,7 @@ fn a_write_naming_a_newer_chat_surface_updates_chat_and_is_then_applied() {
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     let (certificate, hint, continuity) = owner
         .with_current(room, |view| {
             Ok((

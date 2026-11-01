@@ -13,6 +13,8 @@ use crate::policy::{PowerAction, PowerPolicy};
 /// The battery's charge/discharge state, mirroring the `UPower`
 /// `org.freedesktop.UPower.Device.State` enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "service", serde(rename_all = "kebab-case"))]
 pub enum BatteryState {
     Unknown,
     Charging,

@@ -2,7 +2,7 @@
 //! late, in the real compiled Chat mounted in a browser page.
 //!
 //! A writer's device posts enough to fill three parts of the chat's
-//! messages and hands the room's host the chat and parts 1 and 2 only: the
+//! messages and hands the workspace's host the chat and parts 1 and 2 only: the
 //! host never had part 0. A reader's page joins later, so the host replays
 //! it the head (part 2). Its reader scrolls back: part 1 is asked of the
 //! host and its messages arrive, then part 0 is asked, the host has none of
@@ -89,15 +89,15 @@ pub async fn run(bundle: &str) {
     let reader = enrol(&bob, "fixture-reader", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
-    let rooms = hosted.relay.rooms().unwrap();
-    let room = rooms.create("Scrollback acceptance").await.unwrap();
-    let mut native = Browser::open_room(&hosted, &writer, &host, &room.room).await;
+    let workspaces = hosted.relay.rooms().unwrap();
+    let workspace = workspaces.create("Scrollback acceptance").await.unwrap();
+    let mut native = Browser::open_workspace(&hosted, &writer, &host, &workspace.room).await;
 
     let author = "Fixture owner".to_string();
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
-        &room.room,
+        &workspace.room,
         &author,
         tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
@@ -179,7 +179,7 @@ pub async fn run(bundle: &str) {
     }
     let route = super::super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
-        cluster_id: room.room.clone(),
+        cluster_id: workspace.room.clone(),
         record: source.wire_record().into(),
     };
     native
@@ -195,7 +195,7 @@ pub async fn run(bundle: &str) {
         }
         native
             .peer
-            .publish(part_route(&room.room, &changed), &mutation)
+            .publish(part_route(&workspace.room, &changed), &mutation)
             .unwrap();
         handed.push(part);
     }
@@ -218,9 +218,9 @@ pub async fn run(bundle: &str) {
     })
     .await;
 
-    // The head is in the room's catalogue before the reader comes.
+    // The head is in the workspace's catalogue before the reader comes.
     let head_part = chat::parts::part(2);
-    let provider = record_provider(&part_route(&room.room, &head_part));
+    let provider = record_provider(&part_route(&workspace.room, &head_part));
     let (message, message_kind) = published_message(&source, &last);
     let query = CatalogueQuery {
         provider: Some(provider.clone()),
@@ -240,7 +240,7 @@ pub async fn run(bundle: &str) {
         }
     })
     .await;
-    admit_person(&hosted, &host, &room.room, &reader, MemberRole::Editor).await;
+    admit_person(&hosted, &host, &workspace.room, &reader, MemberRole::Editor).await;
 
     // Another of the reader's devices joining now is replayed the chat and
     // the head, and nothing of part 1 until it asks.
@@ -248,13 +248,13 @@ pub async fn run(bundle: &str) {
     admit_person(
         &hosted,
         &host,
-        &room.room,
+        &workspace.room,
         &probe_device,
         MemberRole::Viewer,
     )
     .await;
-    let mut probe = open_admitted_peer(&hosted, &probe_device, &host, &room.room).await;
-    let head_route = part_route(&room.room, &head_part);
+    let mut probe = open_admitted_peer(&hosted, &probe_device, &host, &workspace.room).await;
+    let head_route = part_route(&workspace.room, &head_part);
     tilo_test_env::within("a joining device is replayed the head", async {
         while probe.documents.get(&head_route).is_none_or(Vec::is_empty) {
             probe.pump();
@@ -271,7 +271,7 @@ pub async fn run(bundle: &str) {
     assert!(
         !probe
             .documents
-            .contains_key(&part_route(&room.room, &chat::parts::part(1))),
+            .contains_key(&part_route(&workspace.room, &chat::parts::part(1))),
         "an earlier part is not replayed: {replayed:?}"
     );
     probe.peer.close();
@@ -288,7 +288,7 @@ pub async fn run(bundle: &str) {
     let reader_root = hex::encode(reader.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
-        "origin": hosted.web.origin, "room": room.room, "provider": provider,
+        "origin": hosted.web.origin, "workspace": workspace.room, "provider": provider,
         "record": route.record,
         "reference": {"id": channel_id, "kind": channel_kind},
         "root": reader_root, "decoy": decoy, "seed": reader.key.to_bytes(),

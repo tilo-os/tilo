@@ -1,7 +1,7 @@
 //! The prerequisite queue holds an app message while what it waits for is
 //! still in flight. It is bounded, and it never refuses the input being
 //! admitted: a held message whose prerequisite does not come is let go with
-//! why, and the room goes on.
+//! why, and the workspace goes on.
 use super::*;
 use crate::DropReason;
 use crate::admission_tests::seeded;
@@ -27,7 +27,7 @@ fn incremental(
         .unwrap()
 }
 
-/// `message` as `key`'s write at `seq`: signed by a device the room never
+/// `message` as `key`'s write at `seq`: signed by a device the workspace never
 /// certifies, so the certificate it waits for never comes.
 fn as_author(message: &NeighbourMsg, key: &SigningKey, seq: u64) -> NeighbourMsg {
     let mut message = message.clone();
@@ -50,7 +50,7 @@ fn value(peer: &StatePeer, name: &str) -> Option<String> {
 }
 
 #[test]
-fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_room_goes_on() {
+fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_workspace_goes_on() {
     let (mut receiver, key, _, _, now) = seeded();
     receiver.select_admission_v5().unwrap();
     let mut author = receiver.clone();
@@ -98,7 +98,7 @@ fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_room
     // The queue survives a restart within its bounds.
     let restored = StatePeer::restore(
         &receiver.durable().unwrap(),
-        receiver.room(),
+        receiver.workspace_id(),
         receiver.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
@@ -212,7 +212,7 @@ fn a_message_let_go_is_asked_for_again_once_what_it_waited_for_lands_and_then_ap
         "the member's change was let go: {let_go:?}"
     );
     assert_eq!(value(&receiver, "second"), None);
-    // What it built on arrives: the room's host is asked to replay.
+    // What it built on arrives: the workspace's host is asked to replay.
     let landed = receiver.receive_from_report(member, first, now).unwrap();
     assert!(matches!(landed.primary(), InputDisposition::Accepted(_)));
     assert!(

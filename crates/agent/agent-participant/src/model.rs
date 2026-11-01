@@ -65,7 +65,7 @@ pub const MOST_STEPS: usize = 40;
 pub struct Briefing {
     /// The operations of the apps the agent may use with their parameters
     /// in full. The same bytes for every agent and task granted the same
-    /// apps, whatever the room holds, so it follows the instructions as
+    /// apps, whatever the workspace holds, so it follows the instructions as
     /// system content, where a provider's prompt cache keeps it
     /// (`catalog::system_messages`); empty when there is none.
     pub reference: String,
@@ -82,11 +82,11 @@ pub struct Briefing {
     /// the list of what is published names one whose signature is the same
     /// without repeating it.
     pub described: BTreeMap<(String, String, String), String>,
-    /// The prompt-cache routing key every planning request in the room
+    /// The prompt-cache routing key every planning request in the workspace
     /// shares, so its agents' requests reach the cache their common prefix
     /// is in.
     pub cache_key: Option<String>,
-    /// The room's records [`crate::search::SEARCH_ROOM`] searches
+    /// The workspace's records [`crate::search::SEARCH_WORKSPACE`] searches
     /// ([`PlanContext::searchable`]).
     pub searchable: Vec<crate::search::SearchDoc>,
     /// Whether a plan of no steps, with a reply saying so, is an answer
@@ -124,7 +124,7 @@ impl Briefing {
         self.left_out || self.reference.is_empty()
     }
 
-    /// Whether `search_room` is offered: only when the room holds more
+    /// Whether `search_workspace` is offered: only when the workspace holds more
     /// records than the briefing names (`KNOWN_OFFERED`). Where every
     /// record is shown, a search only costs a turn.
     #[must_use]
@@ -500,8 +500,8 @@ fn single_operation(
     })
 }
 
-/// Records of one app the room already has that are offered to open, those
-/// people have open first, then the latest changed. A campaign room holds a
+/// Records of one app the workspace already has that are offered to open, those
+/// people have open first, then the latest changed. A campaign workspace holds a
 /// handful of documents per app (a brief, a launch page, notes from each
 /// member), and a task names one of them by its title: four left the one
 /// it named off the list as soon as a few more were made. Each costs one
@@ -561,7 +561,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
         }
     }
     for app in &context.apps {
-        // The room's own documents of this app come before a new one, so
+        // The workspace's own documents of this app come before a new one, so
         // a task about "the notes" works on the notes people already have;
         // offered too while another record of the app is open, as a task
         // may be about a document other than the one the agent made.
@@ -614,7 +614,7 @@ fn app_open_offer(app: &str, second: bool) -> Offer {
         format!(
             "{app} is not open, so none of what it can do is listed yet. Opening it creates a \
              new, empty record and puts its own operations on the list. To change a document \
-             the room already has, open that one with its record.{app}.<record>#open instead."
+             the workspace already has, open that one with its record.{app}.<record>#open instead."
         )
     };
     Offer {
@@ -641,7 +641,7 @@ fn app_open_offer(app: &str, second: bool) -> Offer {
     }
 }
 
-/// Where the open of each record `search_room` may find runs: it opens by
+/// Where the open of each record `search_workspace` may find runs: it opens by
 /// the id the answer shows, as an offered record does, without a line of
 /// the list for each.
 fn found_targets(context: &PlanContext, targets: &mut BTreeMap<String, Target>) {
@@ -730,7 +730,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         catalogue.offers.iter().map(Offer::id).collect();
     let mut briefing = Briefing {
         state: briefing_state(context, catalogue),
-        cache_key: Some(cache_key(&context.room)),
+        cache_key: Some(cache_key(&context.workspace)),
         searchable: context.searchable.clone(),
         may_plan_nothing: context.may_plan_nothing,
         pictures: Vec::new(),
@@ -745,15 +745,15 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
     briefing
 }
 
-/// The prompt-cache routing key of every planning request in `room`: a
-/// hash of it, so the provider is not told the room.
-fn cache_key(room: &str) -> String {
-    if room.is_empty() {
+/// The prompt-cache routing key of every planning request in `workspace`: a
+/// hash of it, so the provider is not told the workspace.
+fn cache_key(workspace: &str) -> String {
+    if workspace.is_empty() {
         return "tilo-agent-plan".into();
     }
     format!(
         "tilo-agent-plan-{}",
-        blake3::hash(room.as_bytes())
+        blake3::hash(workspace.as_bytes())
             .to_hex()
             .get(..16)
             .unwrap_or_default()
@@ -774,7 +774,7 @@ fn briefing_state(context: &PlanContext, catalogue: &Catalogue) -> String {
                 state,
                 "{app} is not open yet: planning any of its operations listed above opens a new, \
                  empty {app} document first and runs them there (no open step needed); to change \
-                 a document the room already has, plan its record.{app}.<record>#open instead and \
+                 a document the workspace already has, plan its record.{app}.<record>#open instead and \
                  put the rest in `then`."
             );
         }
@@ -800,18 +800,20 @@ fn opened_by_step(offer: &Offer, context: &PlanContext) -> bool {
         && tilo_agent::tools::opened_app(offer).is_none()
 }
 
-/// The offer that opens `record`, a document of `app` the room already has,
+/// The offer that opens `record`, a document of `app` the workspace already has,
 /// named `title` when its app names it: the title is in its labels, so a
 /// task that names the document finds it.
 fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> ActionDescriptor {
     let (resource_label, action_label) = match title {
         Some(title) => (
             title.to_owned(),
-            format!("open the room's {app} document \"{title}\" (then export, read or edit it)"),
+            format!(
+                "open the workspace's {app} document \"{title}\" (then export, read or edit it)"
+            ),
         ),
         None => (
             format!("{app} document {record}"),
-            format!("open the room's {app} document {record} (untitled)"),
+            format!("open the workspace's {app} document {record} (untitled)"),
         ),
     };
     ActionDescriptor {
@@ -824,7 +826,7 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
         keywords: Vec::new(),
         icon: None,
         description: Some(format!(
-            "A {app} document this room already has, which people may be looking at. \
+            "A {app} document this workspace already has, which people may be looking at. \
              Opening it puts its operations on the list, and they change this document: \
              to edit or add to it, open it here; app.{app}#open would create a new one."
         )),
@@ -849,7 +851,7 @@ struct PlanningReads<'a> {
     sees: bool,
     /// The content hashes of the pictures apps rendered for this task (its
     /// steps' looks and exports, its plans' reads): shown whatever the
-    /// agent may do with the room's own pictures.
+    /// agent may do with the workspace's own pictures.
     rendered: std::collections::BTreeSet<String>,
 }
 
@@ -887,7 +889,7 @@ impl<'a> PlanningReads<'a> {
 
     /// What a re-plan's first turn shows a model that sees: the newest
     /// picture the task's steps looked at, then the pictures its steps read
-    /// since its last plan ([`PlanContext::read_pictures`]), the room's own
+    /// since its last plan ([`PlanContext::read_pictures`]), the workspace's own
     /// only where the agent may show them.
     fn newest_look(&mut self) -> Vec<Picture> {
         if !self.sees {
@@ -903,7 +905,7 @@ impl<'a> PlanningReads<'a> {
         for address in &context.read_pictures {
             let rendered = crate::vision::content_hash(address)
                 .is_some_and(|hash| self.rendered.contains(&hash));
-            if (rendered || context.room_pictures)
+            if (rendered || context.workspace_pictures)
                 && !shown.iter().any(|(looked, _)| looked == address)
             {
                 shown.push((address.clone(), rendered));
@@ -1003,8 +1005,8 @@ impl PlanReads for PlanningReads<'_> {
                 .is_some_and(|hash| self.rendered.contains(&hash));
             let why = if !self.sees {
                 Some(crate::vision::NOT_SEEING)
-            } else if !rendered && !self.context.room_pictures {
-                Some(crate::vision::ROOM_WITHHELD)
+            } else if !rendered && !self.context.workspace_pictures {
+                Some(crate::vision::WORKSPACE_WITHHELD)
             } else {
                 None
             };
@@ -1065,8 +1067,8 @@ impl PlanReads for PlanningReads<'_> {
     }
 
     /// The picture at `address`: one an app rendered for this task, or —
-    /// only where the agent may show them ([`PlanContext::room_pictures`])
-    /// — one of the room's own. A PDF is looked at page by page in
+    /// only where the agent may show them ([`PlanContext::workspace_pictures`])
+    /// — one of the workspace's own. A PDF is looked at page by page in
     /// pdf-viewer.
     fn look(&mut self, address: &str) -> Result<Seen, String> {
         let hash = crate::vision::content_hash(address).ok_or_else(|| {
@@ -1081,10 +1083,10 @@ impl PlanReads for PlanningReads<'_> {
             return Err(format!("{address}: {why}"));
         }
         let rendered = self.rendered.contains(&hash);
-        if !rendered && !self.context.room_pictures {
+        if !rendered && !self.context.workspace_pictures {
             return Err(crate::vision::withheld(
                 &address,
-                crate::vision::ROOM_WITHHELD,
+                crate::vision::WORKSPACE_WITHHELD,
             ));
         }
         let picture = crate::vision::prepare(&address, &bytes, rendered)?;

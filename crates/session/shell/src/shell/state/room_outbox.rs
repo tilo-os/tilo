@@ -154,7 +154,7 @@ impl Outgoing {
 }
 
 /// Take what `document`, `workspace`'s room's admitted document, says
-/// about it ([`tilo_peer_state::room::adopt_room`]), with what `outbox`
+/// about it ([`tilo_peer_state::workspace::adopt_workspace`]), with what `outbox`
 /// shows ahead of the room still in force: its receipts recorded, its
 /// capabilities taken back, its grants revoked. Returns whether the
 /// workspace changed.
@@ -171,7 +171,7 @@ pub(crate) fn adopt_room_document(
             RoomChange::Governance(_) | RoomChange::WindowUnshare { .. } => None,
         })
         .collect();
-    let mut changed = tilo_peer_state::room::adopt_room(workspace, document, &kept);
+    let mut changed = tilo_peer_state::workspace::adopt_workspace(workspace, document, &kept);
     changed |= keep_taken_back(workspace, outbox);
     changed
 }

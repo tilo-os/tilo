@@ -143,7 +143,7 @@ fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() 
     );
 
     // Ada owns the room and is away; the person is an Editor in it.
-    let mut room = policy::RoomPolicy::new(LOCAL_ROOM, "ada");
+    let mut room = policy::WorkspacePolicy::new(LOCAL_ROOM, "ada");
     room.members.insert(ME.into(), Role::Editor);
     app.set_permissions(PermissionContext::from_standing(
         LOCAL_ROOM,

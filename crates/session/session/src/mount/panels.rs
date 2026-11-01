@@ -10,7 +10,9 @@ use tilo_compositor::Compositor;
 use tilo_desktop::overlays::Overlays;
 
 use crate::controls::SessionControls;
-use crate::keys::{DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys};
+use crate::keys::{
+    ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
+};
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
 use crate::{DeviceHost, Doors, OnboardingView, Options, PanelHost, QuickSettings, SessionCommand};
@@ -82,6 +84,9 @@ pub(crate) struct KeyContext {
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
     /// What stands over the desk, which Escape closes from the top.
     pub(crate) overlays: Overlays,
+    /// When each display's bar shows over the window covering it, which
+    /// Super asks for.
+    pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -99,6 +104,7 @@ pub(crate) fn mount_controls(
         displays,
         fold,
         overlays,
+        reveals,
     }: KeyContext,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
@@ -124,8 +130,11 @@ pub(crate) fn mount_controls(
         guide,
         DeskKeys::new(fold, overlays),
         displays,
-        controller,
-        controller_keys,
+        ControllerKeys {
+            last: controller,
+            own: controller_keys,
+        },
+        reveals,
     )));
     (commands, invocations, triggered)
 }

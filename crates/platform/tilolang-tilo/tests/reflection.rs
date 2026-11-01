@@ -1,5 +1,5 @@
 //! Reflection over the log: `created(r)`, `updated(r)` and `history(r)` read who made each
-//! version of a resource, when and by which action, from the room record's changes, on every
+//! version of a resource, when and by which action, from the workspace record's changes, on every
 //! replica. A scenario's `as who at time` blocks are recorded as that person's, at that time.
 
 use automerge::AutoCommit;
@@ -343,7 +343,7 @@ fn rows(view: &mut tilolang_runtime::ViewInstance, n: usize) -> Vec<String> {
     out
 }
 
-/// A room of `n` topics, opened one a minute from 08:00, and the root.
+/// A workspace of `n` topics, opened one a minute from 08:00, and the root.
 fn topics(n: usize) -> (Replica, tilolang_runtime::value::ResourceRef, Vec<Value>) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TOPICS, "")]);
     let root = ada.host.root_of("so.tilo.lang.topics").unwrap();

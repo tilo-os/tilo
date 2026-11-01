@@ -37,7 +37,10 @@ use tilo_actions::remote::ActionHost;
 
 pub const ADDRESS_ENV: &str = "TILO_RUNTIME_MCP_HTTP";
 pub const TOKEN_FILE_ENV: &str = "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE";
-pub const ROOM_ENV: &str = "TILO_RUNTIME_MCP_ROOM";
+pub const WORKSPACE_ENV: &str = "TILO_RUNTIME_MCP_WORKSPACE";
+/// What [`WORKSPACE_ENV`] was called, still read: a service manager's unit
+/// written before the rename sets it.
+const LEGACY_WORKSPACE_ENV: &str = "TILO_RUNTIME_MCP_ROOM";
 const SESSION_HEADER: &str = "mcp-session-id";
 const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
 const MAX_SESSIONS: usize = 256;
@@ -52,7 +55,7 @@ pub struct Config {
     pub token: Option<String>,
     /// Explicit host-selected audience; validated against current admission
     /// by `RuntimeServices` before the endpoint is created.
-    pub room: Option<String>,
+    pub workspace: Option<String>,
 }
 
 impl Config {
@@ -62,7 +65,7 @@ impl Config {
     /// # Errors
     ///
     /// Rejects an unparsable address, a missing, unreadable or empty token
-    /// file, or a malformed room UUID.
+    /// file, or a malformed workspace UUID.
     pub fn from_env() -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os(ADDRESS_ENV) else {
             return Ok(None);
@@ -74,17 +77,18 @@ impl Config {
         let token = std::env::var_os(TOKEN_FILE_ENV)
             .map(|path| read_token(Path::new(&path)))
             .transpose()?;
-        let room = std::env::var_os(ROOM_ENV)
+        let workspace = std::env::var_os(WORKSPACE_ENV)
+            .or_else(|| std::env::var_os(LEGACY_WORKSPACE_ENV))
             .map(|value| {
                 value
                     .into_string()
-                    .map_err(|_| invalid(format!("{ROOM_ENV} must be a room UUID")))
+                    .map_err(|_| invalid(format!("{WORKSPACE_ENV} must be a workspace UUID")))
             })
             .transpose()?;
         let config = Self {
             address,
             token,
-            room,
+            workspace,
         };
         config.validate()?;
         Ok(Some(config))
@@ -93,13 +97,14 @@ impl Config {
     /// # Errors
     ///
     /// Rejects an endpoint without a nonempty token, including on loopback,
-    /// or a non-canonical selected room UUID.
+    /// or a non-canonical selected workspace UUID.
     pub fn validate(&self) -> io::Result<()> {
-        if self.room.as_deref().is_some_and(|room| {
-            uuid::Uuid::parse_str(room).map_or(true, |id| id.is_nil() || id.to_string() != room)
+        if self.workspace.as_deref().is_some_and(|workspace| {
+            uuid::Uuid::parse_str(workspace)
+                .map_or(true, |id| id.is_nil() || id.to_string() != workspace)
         }) {
             return Err(invalid(format!(
-                "{ROOM_ENV} must be a canonical non-nil room UUID"
+                "{WORKSPACE_ENV} must be a canonical non-nil workspace UUID"
             )));
         }
         if self
@@ -124,7 +129,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("address", &self.address)
             .field("token", &self.token.as_ref().map(|_| REDACTED))
-            .field("room", &self.room)
+            .field("workspace", &self.workspace)
             .finish()
     }
 }
@@ -163,7 +168,7 @@ impl<H> Drop for Session<H> {
 /// The per-endpoint state shared by every connection.
 pub struct Endpoint<H> {
     host: H,
-    room: String,
+    workspace: String,
     actor: String,
     token: Option<String>,
     computer: Option<Arc<crate::computer::Computer>>,
@@ -189,12 +194,12 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     #[must_use]
     pub fn new(
         host: H,
-        room: String,
+        workspace: String,
         actor: String,
         token: Option<String>,
         computer: Option<Arc<crate::computer::Computer>>,
     ) -> Arc<Self> {
-        Self::with_viewer(host, room, actor, token, computer, None)
+        Self::with_viewer(host, workspace, actor, token, computer, None)
     }
 
     /// Also answer `/viewer/invitations` for a partner-hosted viewer. A
@@ -202,7 +207,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     #[must_use]
     pub fn with_viewer(
         host: H,
-        room: String,
+        workspace: String,
         actor: String,
         token: Option<String>,
         computer: Option<Arc<crate::computer::Computer>>,
@@ -212,12 +217,12 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             let sink: Arc<dyn crate::watch::WatchSink> = computer;
             WatchLease::new(sink, WATCH_LEASE)
         });
-        Self::build(host, room, actor, token, computer, viewer, watch)
+        Self::build(host, workspace, actor, token, computer, viewer, watch)
     }
 
     fn build(
         host: H,
-        room: String,
+        workspace: String,
         actor: String,
         token: Option<String>,
         computer: Option<Arc<crate::computer::Computer>>,
@@ -226,7 +231,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     ) -> Arc<Self> {
         Arc::new(Self {
             host,
-            room,
+            workspace,
             actor,
             token,
             computer,
@@ -415,9 +420,13 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let id = uuid::Uuid::new_v4().to_string();
         let server = match self.session_factory.get() {
             Some(factory) => factory().ok()?,
-            None => McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone()),
+            None => McpServer::new(
+                self.host.clone(),
+                self.workspace.clone(),
+                self.actor.clone(),
+            ),
         };
-        if !server.audience_matches(&self.room, &self.actor) {
+        if !server.audience_matches(&self.workspace, &self.actor) {
             return None;
         }
         let server = server

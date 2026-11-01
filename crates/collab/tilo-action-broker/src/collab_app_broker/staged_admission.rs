@@ -93,22 +93,14 @@ pub(super) struct DefiniteOutcome<'a> {
     pub(super) state: &'a AppBrokerState,
     pub(super) id: Option<u64>,
     pub(super) durable: invocation_journal::Durable,
-    pub(super) heard: Option<(
-        tilo_relay_session::client::CertifiedAction,
-        tilo_actions::InvocationUpdate,
-    )>,
 }
 
 impl DefiniteOutcome<'_> {
     /// Wait for the write without holding the broker's loop, then tell the
-    /// network. The invocation is left to expiry and disconnects again.
+    /// caller. The invocation is left to expiry and disconnects again.
     pub(super) async fn settle(mut self) -> Result<(), String> {
         let durable = std::mem::replace(&mut self.durable, invocation_journal::Durable::settled());
-        durable.wait().await?;
-        if let Some((evidence, update)) = self.heard.take() {
-            self.state.peer_action_queue.publish(evidence, update);
-        }
-        Ok(())
+        durable.wait().await
     }
 }
 
@@ -239,7 +231,7 @@ impl AppBrokerState {
             self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self
-                    .persist_uncertain_outcome(&pending, invocation_journal::unknown(invocation));
+                    .persist_uncertain_outcome(&pending, &invocation_journal::unknown(invocation));
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }

@@ -68,14 +68,14 @@ async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
-/// A room on a relay with an invitation for Bob, which Bob's device proved
+/// A workspace on a relay with an invitation for Bob, which Bob's device proved
 /// with `held` and the host admitted, but whose answer it never took in:
 /// the proof stays retained, to be sent again.
 struct Admitted {
     relay: Relay,
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     invitation: String,
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
@@ -109,12 +109,12 @@ impl Admitted {
         )
         .await
         .unwrap();
-        let rooms = relay.rooms().unwrap();
-        let room = rooms.create("Design review").await.unwrap();
-        rooms.enter(&room.room, &laptop).await.unwrap();
-        let invitation = rooms
+        let workspaces = relay.rooms().unwrap();
+        let workspace = workspaces.create("Design review").await.unwrap();
+        workspaces.enter(&workspace.room, &laptop).await.unwrap();
+        let invitation = workspaces
             .issue(
-                &room.room,
+                &workspace.room,
                 &laptop,
                 IssueInvitationRequest {
                     request_id: [9; 32],
@@ -130,12 +130,13 @@ impl Admitted {
         let invitation = join::encode_invitation_text(&invitation.signed_invitation);
         let directory = tempfile::tempdir().unwrap();
         let owner =
-            tilo_peer_state::owner::open_file(&directory.path().join("joined-rooms.json")).unwrap();
+            tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
+                .unwrap();
         let client = WorkspaceJoinClient::new(endpoint(&desk_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
             custody(&held, &desk_key),
-            room.workspace_id,
+            workspace.workspace_id,
             None,
             invitation.clone(),
             owner.clone(),
@@ -147,8 +148,8 @@ impl Admitted {
             relay,
             _state: state,
             _directory: directory,
-            room: room.room,
-            workspace_id: room.workspace_id,
+            workspace: workspace.room,
+            workspace_id: workspace.workspace_id,
             invitation,
             owner,
             client,
@@ -156,20 +157,20 @@ impl Admitted {
         }
     }
 
-    /// The room changes after the host admitted the proof, so the host no
-    /// longer replays its answer: the device takes the room in through the
+    /// The workspace changes after the host admitted the proof, so the host no
+    /// longer replays its answer: the device takes the workspace in through the
     /// membership exchange.
     async fn moves_on(&self) {
         self.relay
             .rooms()
             .unwrap()
-            .rename(&self.room, "Lounge")
+            .rename(&self.workspace, "Lounge")
             .await
             .unwrap();
     }
 
     /// Send the retained proof again with `custody`'s certificate, and take
-    /// the room in: the host must answer for `current` in place of
+    /// the workspace in: the host must answer for `current` in place of
     /// `replaced`, and the device be the member it admitted.
     async fn retry(&self, current: &DeviceCert, replaced: &DeviceCert) {
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
@@ -193,7 +194,7 @@ impl Admitted {
             "the host holds it in place of the certificate it replaced"
         );
         self.owner.install(&enrollment, SystemTime::now()).unwrap();
-        let joined = tilo_desktop_model::RoomId::parse(&self.room).unwrap();
+        let joined = tilo_desktop_model::RoomId::parse(&self.workspace).unwrap();
         let role = self
             .owner
             .with_current(joined, |view| {
@@ -239,7 +240,7 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
 }
 
 /// The certificate the host admitted ran out before the device took the
-/// room in. The host does not refuse the retained proof for it, forever:
+/// workspace in. The host does not refuse the retained proof for it, forever:
 /// the device proves its membership again with the renewal.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal() {
@@ -281,8 +282,8 @@ async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal(
 /// issued again for it, which never expires like the one before. The
 /// retained proof is still this device's, and is answered for the new
 /// certificate. The laptop's Lounge (2026-10-23): admitted days before,
-/// the room moved on since, and the identity restored before the device
-/// took the room in.
+/// the workspace moved on since, and the identity restored before the device
+/// took the workspace in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_after_an_identity_restore_keeps_the_retained_join() {
     let mut before = None;

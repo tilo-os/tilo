@@ -39,7 +39,7 @@ use tilo_lock::MutexRecover as _;
 
 /// What the door needs of the bot's session and replicas.
 pub trait DoorParticipant: Send {
-    fn room(&self) -> &str;
+    fn workspace(&self) -> &str;
     /// The held records and what each offers the bot now.
     fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)>;
     /// Whether the record at `route` is held.
@@ -205,9 +205,9 @@ impl<P: DoorParticipant> BotDoor<P> {
         }
     }
 
-    /// Forget the steps this door took. For a run whose changes the room
+    /// Forget the steps this door took. For a run whose changes the workspace
     /// refused part of: run again, it finds the steps whose changes stand
-    /// in the records' history and takes the others anew, reading the room
+    /// in the records' history and takes the others anew, reading the workspace
     /// as it now is, instead of answering every step from what it did the
     /// first time.
     pub fn forget_steps(&self) {
@@ -243,7 +243,7 @@ impl<P: DoorParticipant> BotDoor<P> {
 
     fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
         let participant = self.lock();
-        let room = participant.room().to_owned();
+        let workspace = participant.workspace().to_owned();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         for (route, offered) in participant.offered() {
@@ -258,7 +258,7 @@ impl<P: DoorParticipant> BotDoor<P> {
             providers.push(CatalogueProvider {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
-                room: room.clone(),
+                room: workspace.clone(),
                 record_id: route.record.clone(),
                 browsable: false,
             });
@@ -279,7 +279,7 @@ impl<P: DoorParticipant> BotDoor<P> {
         // a bot its installation lets post under other names.
         let invoker = self.invoker().with_appearance(request.appearance.clone());
         let mut participant = self.lock();
-        let route = record_of(&request.target.provider, participant.room())
+        let route = record_of(&request.target.provider, participant.workspace())
             .filter(|route| participant.holds(route))
             .ok_or(ActionHostError::UnknownAction)?;
         let step = request.context.as_ref().and_then(RunStep::of);

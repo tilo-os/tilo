@@ -1785,10 +1785,20 @@ struct ShellPlatform {
 
 impl Platform for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
-        for compiled in self.packages.iter() {
-            if let Err(error) = host.load_compiled(compiled) {
-                tracing::error!(app = compiled.meta.app, %error, "a shell package did not load");
+        // The packages the shell uses are other apps' here: their records are the ones their
+        // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
+        // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
+        // holds the shell's own records only.
+        let Some((shell, uses)) = self.packages.split_last() else {
+            return 0;
+        };
+        for compiled in uses {
+            if let Err(error) = host.load_foreign_package(&compiled.wasm, &compiled.meta) {
+                tracing::error!(app = compiled.meta.app, %error, "a package the shell uses did not load");
             }
+        }
+        if let Err(error) = host.load_compiled(shell) {
+            tracing::error!(app = shell.meta.app, %error, "the shell package did not load");
         }
         host.runtime().set_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
@@ -1843,8 +1853,10 @@ fn shell_standing(
     app: &str,
     person: &str,
 ) -> impl Fn() -> Option<tilo_action_policy::Standing> + 'static {
-    use tilo_action_policy::{Answer, Grant, KindSet, RoomPolicy, Standing, Subject, TreePath};
-    let mut policy = RoomPolicy::new(SHELL_ROOM, person);
+    use tilo_action_policy::{
+        Answer, Grant, KindSet, Standing, Subject, TreePath, WorkspacePolicy,
+    };
+    let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),
         Subject::app(app),

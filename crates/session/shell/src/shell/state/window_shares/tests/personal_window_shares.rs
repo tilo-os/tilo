@@ -20,7 +20,7 @@ use tilo_desktop_model::projection::{
     ROOM_LAYOUT_KEY, RoomLayout, project_room_policy, room_policy_of,
 };
 use tilo_desktop_model::window_share::{window_node, window_share_id};
-use tilo_peer_state::room::{RoomAdmission, Standing, Writer, admit_room_changes};
+use tilo_peer_state::workspace::{Standing, WorkspaceAdmission, Writer, admit_workspace_changes};
 use tilo_test_env::{FakeDocumentNet, Peer};
 
 pub(super) const ROOM: &str = "2c4e6a8b-1d3f-4a5b-8c7d-9e0f1a2b3c4d";
@@ -67,10 +67,10 @@ impl Member {
         if arrived.is_empty() {
             return;
         }
-        let admitted = admit_room_changes(
-            RoomAdmission {
+        let admitted = admit_workspace_changes(
+            WorkspaceAdmission {
                 before: self.admitted.as_ref(),
-                room: ROOM,
+                workspace: ROOM,
                 // The governor is a device of the room's owner.
                 source: Writer {
                     key: host_key,

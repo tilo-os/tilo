@@ -1,11 +1,12 @@
 //! Touchscreens and touchpad gestures, routed.
 //!
 //! A touch on a hosted surface reaches it as a pointer press (hosts take
-//! pointer input only); every other touch goes to the client surface under
-//! it through the seat's touch handle and stays with that surface until the
-//! finger lifts. Touchpad gestures of one or two fingers belong to the client
-//! under the pointer (`zwp_pointer_gestures_v1`: a browser's pinch-to-zoom);
-//! three or more are offered to the desktop first
+//! pointer input only); the desktop is offered every touch first and may
+//! take it (the top edge's swipe); every other touch goes to the client
+//! surface under it through the seat's touch handle and stays with that
+//! surface until the finger lifts. Touchpad gestures of one or two fingers
+//! belong to the client under the pointer (`zwp_pointer_gestures_v1`: a
+//! browser's pinch-to-zoom); three or more are offered to the desktop first
 //! ([`crate::WindowPolicy::gesture`]).
 
 use smithay::input::pointer::{
@@ -18,6 +19,7 @@ use smithay::utils::{Logical, Point, Serial};
 
 use crate::gestures;
 use crate::input::{BTN_LEFT, GestureEvent};
+use crate::policy::TouchSample;
 use crate::state::State;
 
 /// A client surface and its origin in the logical layout.
@@ -29,6 +31,9 @@ pub(crate) struct Touches {
     /// Fingers on a hosted surface, by slot: the host's index and where
     /// the finger is.
     hosts: Vec<(u32, usize, Point<f64, Logical>)>,
+    /// Fingers the desktop took, by slot and where the finger is
+    /// ([`crate::WindowPolicy::touch`]): nothing under them sees them.
+    pub(crate) desktop: Vec<(u32, Point<f64, Logical>)>,
     /// Fingers on client surfaces.
     pub(crate) clients: Vec<Finger>,
     /// The gesture in flight belongs to the desktop.
@@ -63,6 +68,11 @@ impl State {
         time: u32,
     ) {
         let at = self.clamp_to_outputs(at);
+        if !self.locked() && self.policy.touch(TouchSample::Down { x: at.x, y: at.y }) {
+            self.touch.desktop.retain(|(held, _)| *held != slot);
+            self.touch.desktop.push((slot, at));
+            return;
+        }
         if !self.locked()
             && let Some(index) = self.host_under(at)
             && let Some(host) = self.hosts.get_mut(index)
@@ -112,6 +122,16 @@ impl State {
         let at = self.clamp_to_outputs(at);
         if self.drag_finger() == Some(slot) {
             self.drag_touch_motion(slot, at, time);
+            return;
+        }
+        if let Some((_, last)) = self
+            .touch
+            .desktop
+            .iter_mut()
+            .find(|(held, _)| *held == slot)
+        {
+            *last = at;
+            self.policy.touch(TouchSample::Move { x: at.x, y: at.y });
             return;
         }
         if let Some((_, index, last)) = self
@@ -164,6 +184,16 @@ impl State {
         }
         if let Some(position) = self
             .touch
+            .desktop
+            .iter()
+            .position(|(held, _)| *held == slot)
+        {
+            let (_, at) = self.touch.desktop.remove(position);
+            self.policy.touch(TouchSample::Lift { x: at.x, y: at.y });
+            return;
+        }
+        if let Some(position) = self
+            .touch
             .hosts
             .iter()
             .position(|(held, _, _)| *held == slot)
@@ -202,6 +232,10 @@ impl State {
     }
 
     pub(crate) fn touch_cancel(&mut self) {
+        if !self.touch.desktop.is_empty() {
+            self.touch.desktop.clear();
+            self.policy.touch(TouchSample::Cancel);
+        }
         for (_, index, _) in std::mem::take(&mut self.touch.hosts) {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(BTN_LEFT, false);
