@@ -714,9 +714,9 @@ fn a_bearer_token_carries_exactly_its_own_authority() {
         "a read link is not a write link"
     );
     assert_eq!(
-        ws.room_readers_at(tilo_clock::unix_now()),
+        ws.workspace_readers_at(tilo_clock::unix_now()),
         vec![(ALICE.to_string(), None)],
-        "a share link grants no standing in the room"
+        "a share link grants no standing in the workspace"
     );
 
     let wrong =
