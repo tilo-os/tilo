@@ -213,7 +213,9 @@ impl Checker<'_> {
                 Type::RichText => vec![Ty::RichText],
                 _ => Vec::new(),
             };
-            if self.bind_typed(&node, value, &want).is_some() {
+            // A document's title is drawn by a control that declares it, as TextInput does.
+            let titled = d.prop("title").is_some_and(|title| title.ty == Type::Bool);
+            if self.bind_typed(&node, value, &want, titled).is_some() {
                 self.emit(host(
                     Imp::UiPropH,
                     vec![node, Ex::str("bind"), Ex::str(name)],

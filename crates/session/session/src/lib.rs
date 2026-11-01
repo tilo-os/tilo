@@ -82,8 +82,8 @@ mod owner_session;
 mod panels;
 mod people;
 mod plane;
-mod press_outside;
 pub mod portal_link;
+mod press_outside;
 mod projection;
 mod projection_video;
 mod questions;
@@ -1316,7 +1316,15 @@ impl Session {
         // The desk as the session publishes it, and the shell's bar over the
         // chrome, which reads it through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
+        // The runs people ask of this session's agents: the session keeps
+        // its own, or plays the run channel a test handed it. Its broker
+        // delivers them, it is one of the session's services, and the desk
+        // shows each run's conversation.
+        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
+        });
         let desk = || desk_resource::Desk {
+            runs: std::sync::Arc::clone(&agent_runs),
             handle: handle.clone(),
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
@@ -1440,12 +1448,6 @@ impl Session {
             .build()?;
         let (shortcut_library, saved_shortcuts) =
             plane::ShortcutLibrary::new(automation_runtime.handle().clone());
-        // The runs people ask of this session's agents: the session keeps
-        // its own, or plays the run channel a test handed it. Its broker
-        // delivers them, and it is one of the session's services.
-        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
-            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
-        });
         // What each of this device's rooms revokes, read from the rooms the
         // engine holds: the broker's decisions and the automation's arming
         // both refuse a device its room revoked.

@@ -74,13 +74,13 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         let want = match (prim, name) {
             ("toggle", "bind") => {
-                let _ = self.bind_typed(&node, value, &[Ty::Bool]);
+                let _ = self.bind_typed(&node, value, &[Ty::Bool], false);
                 return true;
             }
             ("date", "bind") => {
                 let day = [Ty::Date, Ty::Option(Box::new(Ty::Date))];
                 // Only a date that may be none can be cleared.
-                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day) {
+                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day, false) {
                     let yes = Ex::new(Ek::Bool(true), Ty::Bool);
                     self.prop(node, "optional", yes, value.span);
                 }
@@ -455,7 +455,7 @@ impl Checker<'_> {
                 }
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
-                    if self.bind_typed(&node, value, &[Ty::Bool]).is_some() {
+                    if self.bind_typed(&node, value, &[Ty::Bool], false).is_some() {
                         self.emit(host(
                             Imp::UiPropH,
                             vec![node.clone(), Ex::str("bind"), Ex::str("checkbox")],

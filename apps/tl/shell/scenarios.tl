@@ -245,6 +245,28 @@ scenario "a person's menu" {
     d.agents.insert(Agent(key: "fieldwork", name: "Fieldwork", state: "running", doing: "Sorting the inbox", mark: "3 threads filed", unseen: 3))
 }
 
+/// A conversation with the session's agent: what Ada asked, the agent's words between its
+/// steps, a program it ran that printed two notes, one that changed a note, one of Ada's own
+/// that did not compile, and the agent's answer.
+scenario "a conversation with the agent" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "10:42 AM"
+    d.workspace = "Studio"
+    d.here = "conversation"
+    d.runs.insert(Run(key: "r1", title: "Tidy the launch notes", agent: "claude", phase: "done", active: false))
+    d.run_entries.insert(RunEntry(key: "r1/1", run: "r1", seq: 1, author: "ada", text: "Tidy the launch notes: pin the checklist and drop the old draft title."))
+    d.run_entries.insert(RunEntry(key: "r1/2", run: "r1", seq: 2, author: "agent:claude", by_agent: true, text: "I will look for the launch notes first."))
+    d.run_entries.insert(RunEntry(key: "r1/3", run: "r1", seq: 3, author: "agent:claude", by_agent: true, step: true, text: "find(notes.Note, \"launch\")", outcome: "done", answer: "n1 \"Launch checklist\"\nn2 \"Launch day (old draft)\""))
+    d.entry_refs.insert(EntryRef(key: "r1/3/0", entry: "r1/3", resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist"))
+    d.entry_refs.insert(EntryRef(key: "r1/3/1", entry: "r1/3", resource: "tl:so.tilo.lang.notes:n2", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch day (old draft)"))
+    d.run_entries.insert(RunEntry(key: "r1/4", run: "r1", seq: 4, author: "agent:claude", by_agent: true, step: true, text: "notes.pin(n1)\nn2.title = \"Launch day\"", outcome: "done", answer: "n1 \"Launch checklist\" pinned\nn2 \"Launch day\""))
+    d.entry_refs.insert(EntryRef(key: "r1/4/0", entry: "r1/4", changed: true, resource: "tl:so.tilo.lang.notes:n1", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch checklist", change: "Pin"))
+    d.entry_refs.insert(EntryRef(key: "r1/4/1", entry: "r1/4", changed: true, resource: "tl:so.tilo.lang.notes:n2", app_id: "so.tilo.lang.notes", type_kind: "notes.Note", label: "Launch day", change: "Rename"))
+    d.run_entries.insert(RunEntry(key: "r1/5", run: "r1", seq: 5, author: "ada", step: true, text: "notes.Note.count(", outcome: "rejected", answer: "// line 1: expected an argument or `)` after `(`"))
+    d.run_entries.insert(RunEntry(key: "r1/6", run: "r1", seq: 6, author: "agent:claude", by_agent: true, text: "The checklist is pinned and the old draft is called Launch day now."))
+}
+
 /// The desk's notices a scenario starts from: what apps and an agent said today.
 action seed_notices(d: Desk) -> Int {
     d.notices.insert(Notice(key: "n1", title: "Mia mentioned you in Release planning", body: "Can you check the launch date?", origin_app: "Notes", group: "Notes", kind: "info", read: false, wants_reply: true))

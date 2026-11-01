@@ -100,6 +100,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "composer.tl",
         include_str!("../../../../apps/tl/shell/composer.tl"),
     ),
+    (
+        "conversation.tl",
+        include_str!("../../../../apps/tl/shell/conversation.tl"),
+    ),
     ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
@@ -350,6 +354,9 @@ pub struct NoticeActionReading {
     pub label: String,
 }
 
+mod runs;
+pub use runs::{EntryRefReading, RunEntryReading, RunReading};
+
 /// A timer or stopwatch running in Clocks, as the bar's clock reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerReading {
@@ -443,6 +450,15 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The runs of what the person asked the session's agents, oldest first.
+    #[serde(default)]
+    pub runs: Vec<RunReading>,
+    /// Each run's conversation, entry by entry, oldest first.
+    #[serde(default)]
+    pub run_entries: Vec<RunEntryReading>,
+    /// What each program of a run's conversation printed and changed.
+    #[serde(default)]
+    pub entry_refs: Vec<EntryRefReading>,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -909,6 +925,9 @@ pub struct SessionOrigin {
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
+    runs: BTreeMap<String, Kept<RunReading>>,
+    run_entries: BTreeMap<String, Kept<RunEntryReading>>,
+    entry_refs: BTreeMap<String, Kept<EntryRefReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -932,6 +951,9 @@ impl SessionOrigin {
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
             tray: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            run_entries: BTreeMap::new(),
+            entry_refs: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -1235,6 +1257,73 @@ impl SessionOrigin {
                         ("notice", text(&a.notice)),
                         ("key", text(&a.key)),
                         ("label", text(&a.label)),
+                    ]
+                },
+            ));
+        }
+        // The runs of the session's agents and their conversations: each entry and each
+        // reference names what it is of by key, as a notice's actions name their notice.
+        if let (Ok(ty), Some(collection)) = (kind("run"), field(desk, "runs")) {
+            writes.extend(sync_items(
+                &mut self.runs,
+                &reading.runs,
+                root,
+                &collection,
+                ty,
+                |r| r.key.clone(),
+                |r| {
+                    vec![
+                        ("key", text(&r.key)),
+                        ("title", text(&r.title)),
+                        ("agent", text(&r.agent)),
+                        ("phase", text(&r.phase)),
+                        ("active", Value::Bool(r.active)),
+                        ("live", text(&r.live)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("run_entry"), field(desk, "run_entries")) {
+            writes.extend(sync_items(
+                &mut self.run_entries,
+                &reading.run_entries,
+                root,
+                &collection,
+                ty,
+                |e| e.key.clone(),
+                |e| {
+                    vec![
+                        ("key", text(&e.key)),
+                        ("run", text(&e.run)),
+                        ("seq", Value::Int(e.seq)),
+                        ("author", text(&e.author)),
+                        ("by_agent", Value::Bool(e.by_agent)),
+                        ("step", Value::Bool(e.step)),
+                        ("text", text(&e.text)),
+                        ("outcome", text(&e.outcome)),
+                        ("answer", text(&e.answer)),
+                    ]
+                },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("entry_ref"), field(desk, "entry_refs")) {
+            writes.extend(sync_items(
+                &mut self.entry_refs,
+                &reading.entry_refs,
+                root,
+                &collection,
+                ty,
+                |r| r.key.clone(),
+                |r| {
+                    vec![
+                        ("key", text(&r.key)),
+                        ("entry", text(&r.entry)),
+                        ("changed", Value::Bool(r.changed)),
+                        ("resource", text(&r.resource)),
+                        ("app_id", text(&r.app_id)),
+                        ("type_kind", text(&r.type_kind)),
+                        ("label", text(&r.label)),
+                        ("change", text(&r.change)),
                     ]
                 },
             ));

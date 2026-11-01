@@ -19,7 +19,20 @@ use tilo_surface_host::{DeskReading, shell_part};
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]).
-pub(crate) type DeskKey = (u64, i64, u32, bool, u64, u64, u64, u64, u64, u64, String);
+pub(crate) type DeskKey = (
+    u64,
+    i64,
+    u32,
+    bool,
+    u64,
+    u64,
+    u64,
+    u64,
+    u64,
+    u64,
+    String,
+    u64,
+);
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
@@ -46,7 +59,7 @@ pub(crate) enum DeskEffect {
     /// Show the surface `surface` over the desk's windows, or close it when it is up.
     ShowSurface {
         #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces` or `composer`"
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces`, `composer` or `conversation`"
         )]
         surface: String,
     },
@@ -97,6 +110,9 @@ pub(crate) struct Desk {
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     /// The surface the person is in, as the chrome keeps it.
     pub(crate) overlays: Rc<crate::overlays::Overlays>,
+    /// The runs of what the person asked the session's agents: each run's conversation is
+    /// the desk's to show (shell.md §8.1).
+    pub(crate) runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
 }
 
 /// What a window with no title is called.
@@ -205,6 +221,7 @@ impl Desk {
             self.notices.revision(),
             self.overlays.revision(),
             self.overlays.here(),
+            self.runs.revision(),
         )
     }
 
@@ -239,6 +256,7 @@ impl Desk {
                     .collect()
             })
         });
+        let conversations = Conversations::of(&self.runs.readings());
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
             clock: ui::clock::time_of_day(&now),
@@ -296,6 +314,9 @@ impl Desk {
             badges: self.signals.badges(),
             people,
             tray: self.tray_items(),
+            runs: conversations.runs,
+            run_entries: conversations.entries,
+            entry_refs: conversations.refs,
             // What the screen says of its edges moves without the desk; the link publishes it
             // beside this reading and carries it over (`SessionLink::publish_edges`).
             ..DeskReading::default()
@@ -446,6 +467,119 @@ struct ClocksActivity {
 /// An app that names no `active` shows its activity.
 fn active_unless_told() -> bool {
     true
+}
+
+/// The runs of the session's agents as the desk names them: each run, each entry of its
+/// conversation, and what each program in it printed and changed (shell.md §8.1), keyed so
+/// an entry keeps its key while older ones are let go.
+#[derive(Default)]
+struct Conversations {
+    runs: Vec<shell_part::RunReading>,
+    entries: Vec<shell_part::RunEntryReading>,
+    refs: Vec<shell_part::EntryRefReading>,
+}
+
+impl Conversations {
+    fn of(runs: &[tilo_agent_runs::wire::Run]) -> Self {
+        use tilo_agent_runs::wire::Said;
+        let mut made = Self::default();
+        for run in runs {
+            made.runs.push(shell_part::RunReading {
+                key: run.id.clone(),
+                title: run.title.clone(),
+                agent: run.agent.clone(),
+                phase: phase_name(run.phase).to_owned(),
+                active: run.phase.active(),
+                live: run
+                    .live
+                    .as_ref()
+                    .filter(|live| live.end.is_none())
+                    .map(|live| live.text.clone())
+                    .unwrap_or_default(),
+            });
+            for entry in &run.transcript {
+                let key = format!("{}/{}", run.id, entry.seq);
+                let mut reading = shell_part::RunEntryReading {
+                    key: key.clone(),
+                    run: run.id.clone(),
+                    seq: i64::try_from(entry.seq).unwrap_or(i64::MAX),
+                    author: entry.author.clone(),
+                    by_agent: entry.by_agent(),
+                    ..shell_part::RunEntryReading::default()
+                };
+                match &entry.said {
+                    Said::Prose { text } => reading.text.clone_from(text),
+                    Said::Step { step } => {
+                        reading.step = true;
+                        match serde_json::from_value::<tilo_reference::ProgramStep>(step.clone()) {
+                            Ok(step) => made.step(&key, &mut reading, step),
+                            Err(error) => {
+                                // The runs wrote it from a `ProgramStep`: one that does not read
+                                // back is a bug of theirs, said where it shows and logged.
+                                tracing::error!(%error, entry = key, "a run's step does not read");
+                                "failed".clone_into(&mut reading.outcome);
+                                reading.answer = format!("This step does not read: {error}");
+                            }
+                        }
+                    }
+                }
+                made.entries.push(reading);
+            }
+        }
+        made
+    }
+
+    /// The program `step` into `reading`, and what it printed and changed under `entry`.
+    fn step(
+        &mut self,
+        entry: &str,
+        reading: &mut shell_part::RunEntryReading,
+        step: tilo_reference::ProgramStep,
+    ) {
+        use tilo_reference::StepOutcome;
+        reading.text = step.program;
+        match step.outcome {
+            StepOutcome::Done => "done",
+            StepOutcome::Rejected => "rejected",
+            StepOutcome::Preview => "preview",
+            StepOutcome::Asked => "asked",
+            StepOutcome::Failed => "failed",
+        }
+        .clone_into(&mut reading.outcome);
+        reading.answer = step.answer.join("\n");
+        let printed = step.refs.into_iter().map(|at| (at, false, String::new()));
+        let changed = step
+            .changes
+            .into_iter()
+            .map(|change| (change.resource, true, change.action));
+        for (number, (at, changed, action)) in printed.chain(changed).enumerate() {
+            self.refs.push(shell_part::EntryRefReading {
+                key: format!("{entry}/{number}"),
+                entry: entry.to_owned(),
+                changed,
+                resource: at.reference.id,
+                app_id: at.app,
+                type_kind: at.reference.kind,
+                label: at.reference.label,
+                change: action,
+            });
+        }
+    }
+}
+
+/// A run's phase, by the name its reading gives it.
+const fn phase_name(phase: tilo_agent_runs::wire::Phase) -> &'static str {
+    use tilo_agent_runs::wire::Phase;
+    match phase {
+        Phase::Approved => "approved",
+        Phase::Accepted => "accepted",
+        Phase::Planning => "planning",
+        Phase::Executing => "executing",
+        Phase::Waiting => "waiting",
+        Phase::Done => "done",
+        Phase::Failed => "failed",
+        Phase::Stopped => "stopped",
+    }
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar
