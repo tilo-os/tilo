@@ -981,7 +981,25 @@ impl Core {
         if target.ty.is_empty() {
             target.ty = self.stored_type(&target);
         }
+        // Another app's resource is known here by the reading its app published of it, which
+        // names its type.
+        if target.ty.is_empty()
+            && let Some(ty) = self.foreign.borrow().type_of(&id)
+        {
+            target.ty = ty;
+        }
         if target.ty.is_empty() {
+            // Another app's resource whose reading has not come in yet: the view runs again
+            // when a new one does.
+            let key = crate::foreign::known_key();
+            let (generation, seen) = {
+                let states = self.view_states.borrow();
+                (
+                    states.generation(&key),
+                    states.get(&key).cloned().unwrap_or_else(Value::none),
+                )
+            };
+            self.note_state_read(key, generation, &seen)?;
             // Gone, or not synced here yet: the place still stands, showing nothing.
             return self.ret_h(Value::none());
         }

@@ -81,8 +81,9 @@ pub const PRIMS: &[Prim] = &[
     // A resource drawn through its type's default view, as its own package draws it, whatever
     // its type: what a shell composes a place from when it knows the resource by id alone
     // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
-    // (`meta(r).opens`).
-    prim_of("show", &["of"], &[]),
+    // (`meta(r).opens`). `view` (`Text`, a view's id or name, as an arrangement keeps it) draws
+    // it through another of its package's views that takes it alone; empty for the default.
+    prim_of("show", &["of"], &["view"]),
 ];
 
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it

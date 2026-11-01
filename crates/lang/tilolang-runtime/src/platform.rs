@@ -1160,6 +1160,9 @@ impl Core {
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
+        // Another app's resource names its type `app#Type`, as its readings come in.
+        let resolved = self.registry.borrow().type_id(ty);
+        let ty = resolved.as_deref().unwrap_or(ty);
         let (pkg, _) =
             self.registry.borrow().type_info(ty).ok_or_else(|| {
                 format!("meta: type `{ty}` is not declared by any loaded package")
