@@ -84,6 +84,18 @@ pub(crate) fn fullscreen(window: &Window) -> bool {
         .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
 }
 
+/// Whether `window` is fullscreen or was just told to be: the compositor keeps it over its
+/// display from the configure that grants it, before the client acknowledges it, until it
+/// leaves. A policy's arrangement does not move it meanwhile, so a granted fullscreen holds.
+pub(crate) fn held_fullscreen(window: &Window) -> bool {
+    window.toplevel().is_some_and(|toplevel| {
+        toplevel
+            .with_pending_state(|pending| pending.states.contains(xdg_toplevel::State::Fullscreen))
+    }) || window
+        .x11_surface()
+        .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
+}
+
 impl State {
     /// Whether a fullscreen window covers `output`.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {

@@ -894,6 +894,10 @@ impl State {
             else {
                 continue;
             };
+            // A granted fullscreen covers its display until the window leaves it.
+            if crate::requests::held_fullscreen(&window) {
+                continue;
+            }
             if let Some(x11) = window.x11_surface() {
                 let size = arrangement
                     .size
