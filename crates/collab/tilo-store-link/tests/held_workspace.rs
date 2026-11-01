@@ -1,6 +1,6 @@
-//! A short-lived room is an ordinary workspace held by a store device.
+//! A short-lived workspace is an ordinary workspace held by a store device.
 //!
-//! The workspace is made on one person's device, with no room service in
+//! The workspace is made on one person's device, with no host service in
 //! between; its history is kept, sealed, at a store device that never holds a
 //! key. A guest is invited and joins over the workspace-join exchange, reads
 //! the whole history back from the store, and keeps reading what changes
@@ -49,7 +49,7 @@ use tilo_peer_state::owner::{
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_relay_session::workspace_join::{WorkspaceJoinClient, WorkspaceJoinProtocol};
-use tilo_store_link::{StoreSession, room_cursors, workspace_of};
+use tilo_store_link::{StoreSession, workspace_cursors, workspace_of};
 use tilo_store_node::{ALPN, Appetite, FixedAccess, Store, StoreNode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -108,13 +108,13 @@ fn hint(
     endpoint: &Endpoint,
     cert: &DeviceCert,
     key: &SigningKey,
-    room: &RoomId,
+    workspace_id: &RoomId,
     workspace: u64,
 ) -> TransportHint {
     IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: room.to_string(),
+        room: workspace_id.to_string(),
         workspace_id: workspace,
         endpoint_addr: addr(endpoint),
         host_user_public_key: cert.user_public_key,
@@ -135,12 +135,12 @@ fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     }
 }
 
-fn channel(room: &RoomId) -> ChannelId {
-    collab_types::document_channel_id(APP, &room.to_string(), RECORD)
+fn channel(workspace_id: &RoomId) -> ChannelId {
+    collab_types::document_channel_id(APP, &workspace_id.to_string(), RECORD)
 }
 
-fn artifact(room: &RoomId) -> ArtifactId {
-    collab_types::document_artifact_id(APP, &room.to_string(), RECORD)
+fn artifact(workspace_id: &RoomId) -> ArtifactId {
+    collab_types::document_artifact_id(APP, &workspace_id.to_string(), RECORD)
 }
 
 fn sealer(
@@ -166,10 +166,10 @@ fn opener(keys: &ChannelContentKeys) -> impl FnMut(&SignedOp) -> Result<Vec<u8>,
     }
 }
 
-/// Invite `guest` into `room`, redeemed at the device that answers joins.
+/// Invite `guest` into the workspace, redeemed at the device that answers joins.
 fn invitation(
     owner: &NativeWorkspaceOwner,
-    room: &RoomId,
+    workspace_id: &RoomId,
     member: &DeviceCert,
     key: &SigningKey,
     guest: &DeviceCert,
@@ -178,7 +178,7 @@ fn invitation(
 ) -> String {
     let issued = owner
         .issue_invitation(
-            *room,
+            *workspace_id,
             member,
             IssueInvitationRequest {
                 request_id: [7; 32],
@@ -197,7 +197,7 @@ fn invitation(
 }
 
 /// `guest` joins `workspace` with `invitation` from `endpoint`, taking the
-/// room in at `owner`.
+/// workspace in at `owner`.
 async fn joins(
     endpoint: Endpoint,
     cert: &DeviceCert,
@@ -221,7 +221,7 @@ async fn joins(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
+async fn a_short_lived_workspace_is_held_by_a_store_device() {
     let directory = tempfile::tempdir().unwrap();
     let a_root = SigningKey::from_bytes(&[21; 32]);
     let b_root = SigningKey::from_bytes(&[31; 32]);
@@ -234,28 +234,32 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     let now = SystemTime::now();
     let author = a_key.verifying_key().to_bytes();
 
-    // A makes the workspace on its own device: no room service, no host of
+    // A makes the workspace on its own device: no host service, no host of
     // anyone else's.
     let a = open_file(&directory.path().join("a.json")).unwrap();
-    let room = a
+    let workspace_id = a
         .create_workspace("Launch review", &a_cert, &a_key, now)
         .unwrap();
-    let workspace = workspace_of(&room.to_string()).unwrap();
+    let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     assert!(
-        a.with_current(room, |view| Ok(view.hosted_here())).unwrap(),
+        a.with_current(workspace_id, |view| Ok(view.hosted_here()))
+            .unwrap(),
         "the device that made the workspace keeps it"
     );
 
     // Its record, and its keys: the members' alone, never the store's.
     let record = ApplicationRecord::host(APP, RECORD).unwrap();
-    a.prepare_application_record(room, &a_cert, &a_key, &record, now)
+    a.prepare_application_record(workspace_id, &a_cert, &a_key, &record, now)
         .unwrap();
-    let group =
-        ChannelGroup::create(channel(&room), MemberKey::generate("owner").unwrap()).unwrap();
+    let group = ChannelGroup::create(
+        channel(&workspace_id),
+        MemberKey::generate("owner").unwrap(),
+    )
+    .unwrap();
     let keys = group.content_keys().unwrap();
     let b_keys = keys.clone();
     let c_keys = keys.clone();
-    let artifact = artifact(&room);
+    let artifact = artifact(&workspace_id);
 
     // A writes, sealed, and folds the record into a sealed checkpoint: what
     // a store device keeps of it is ciphertext from the first frame on.
@@ -263,8 +267,8 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     document.put(ROOT, "value", "before the guests").unwrap();
     document.commit_edit("fixture", "value");
     let change = document.save_incremental();
-    publish(&a, room, &change, &keys, artifact, &a_key, now);
-    compact(&a, room, &keys, artifact, &a_key, now);
+    publish(&a, workspace_id, &change, &keys, artifact, &a_key, now);
+    compact(&a, workspace_id, &keys, artifact, &a_key, now);
 
     // The workspace's store device admits its members and keeps only what is
     // sealed.
@@ -302,7 +306,11 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     .await
     .unwrap();
     assert!(
-        a_session.keep_room(&a, room, now).await.unwrap() >= 1,
+        a_session
+            .keep_workspace(&a, workspace_id, now)
+            .await
+            .unwrap()
+            >= 1,
         "the store keeps the sealed checkpoint of the record"
     );
     let lineages = store.lineages(workspace);
@@ -323,11 +331,11 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
         workspace,
         invitation(
             &a,
-            &room,
+            &workspace_id,
             &a_cert,
             &a_key,
             &b_cert,
-            hint(&a_endpoint, &a_cert, &a_key, &room, workspace),
+            hint(&a_endpoint, &a_cert, &a_key, &workspace_id, workspace),
             now,
         ),
         &b,
@@ -335,7 +343,8 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     )
     .await;
     assert!(
-        !b.with_current(room, |view| Ok(view.hosted_here())).unwrap(),
+        !b.with_current(workspace_id, |view| Ok(view.hosted_here()))
+            .unwrap(),
         "B holds the workspace without having made it"
     );
 
@@ -350,13 +359,19 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     .await
     .unwrap();
     assert_eq!(
-        b_session.catch_up_room(&b, room, now).await.unwrap(),
+        b_session
+            .catch_up_workspace(&b, workspace_id, now)
+            .await
+            .unwrap(),
         1,
         "the store replays the checkpoint the workspace's history starts at"
     );
-    assert_eq!(read_value(&b, room, &b_keys), "\"before the guests\"");
+    assert_eq!(
+        read_value(&b, workspace_id, &b_keys),
+        "\"before the guests\""
+    );
     assert!(
-        !room_cursors(&b, room).unwrap().is_empty(),
+        !workspace_cursors(&b, workspace_id).unwrap().is_empty(),
         "B stands at the history it read"
     );
 
@@ -365,20 +380,35 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     document.put(ROOT, "value", "while B was away").unwrap();
     document.commit_edit("fixture", "value");
     let change = document.save_after(&heads);
-    publish(&a, room, &change, &keys, artifact, &a_key, now);
-    assert!(a_session.keep_room(&a, room, now).await.unwrap() >= 1);
-    assert_eq!(b_session.catch_up_room(&b, room, now).await.unwrap(), 1);
-    assert_eq!(read_value(&b, room, &b_keys), "\"while B was away\"");
+    publish(&a, workspace_id, &change, &keys, artifact, &a_key, now);
+    assert!(
+        a_session
+            .keep_workspace(&a, workspace_id, now)
+            .await
+            .unwrap()
+            >= 1
+    );
+    assert_eq!(
+        b_session
+            .catch_up_workspace(&b, workspace_id, now)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        read_value(&b, workspace_id, &b_keys),
+        "\"while B was away\""
+    );
 
     // A lets B invite, and B takes that governance in, before A goes away.
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
-            workspace: room.to_string(),
+            workspace: workspace_id.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: a_cert.clone(),
                 command: WorkspaceMembershipCommand::Grant {
-                    grant: invite_grant(&a_cert, &b_cert, &room),
+                    grant: invite_grant(&a_cert, &b_cert, &workspace_id),
                 },
             },
         },
@@ -386,11 +416,11 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
         now,
     )
     .unwrap();
-    for message in outgoing(&a, room, now) {
+    for message in outgoing(&a, workspace_id, now) {
         // What B already holds is an exact retry, and admits as one.
         let _report = b
             .receive(
-                room,
+                workspace_id,
                 TransportOrigin::RetainedRelayDelta(author),
                 message,
                 now,
@@ -424,11 +454,11 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
         workspace,
         invitation(
             &b,
-            &room,
+            &workspace_id,
             &b_cert,
             &b_key,
             &c_cert,
-            hint(&b_endpoint, &b_cert, &b_key, &room, workspace),
+            hint(&b_endpoint, &b_cert, &b_key, &workspace_id, workspace),
             now,
         ),
         &c,
@@ -444,9 +474,12 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     )
     .await
     .unwrap();
-    c_session.catch_up_room(&c, room, now).await.unwrap();
+    c_session
+        .catch_up_workspace(&c, workspace_id, now)
+        .await
+        .unwrap();
     assert_eq!(
-        read_value(&c, room, &c_keys),
+        read_value(&c, workspace_id, &c_keys),
         "\"while B was away\"",
         "the guest reads everything, from the store alone"
     );
@@ -468,26 +501,29 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
 
     // The sharer founds the workspace and writes what it shares.
     let a = open_file(&directory.path().join("a.json")).unwrap();
-    let room = a
+    let workspace_id = a
         .create_workspace("Shared notes", &a_cert, &a_key, now)
         .unwrap();
-    let workspace = workspace_of(&room.to_string()).unwrap();
+    let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     let record = ApplicationRecord::host(APP, RECORD).unwrap();
-    a.prepare_application_record(room, &a_cert, &a_key, &record, now)
+    a.prepare_application_record(workspace_id, &a_cert, &a_key, &record, now)
         .unwrap();
-    let group =
-        ChannelGroup::create(channel(&room), MemberKey::generate("owner").unwrap()).unwrap();
+    let group = ChannelGroup::create(
+        channel(&workspace_id),
+        MemberKey::generate("owner").unwrap(),
+    )
+    .unwrap();
     let keys = group.content_keys().unwrap();
     let b_keys = keys.clone();
     let c_keys = keys.clone();
-    let artifact = artifact(&room);
+    let artifact = artifact(&workspace_id);
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "the sharer's line").unwrap();
     document.commit_edit("sharer", "value");
     let change = document.save_incremental();
-    publish(&a, room, &change, &keys, artifact, &a_key, now);
+    publish(&a, workspace_id, &change, &keys, artifact, &a_key, now);
     // What it shares is a baseline: the checkpoint a guest's copy starts from.
-    compact(&a, room, &keys, artifact, &a_key, now);
+    compact(&a, workspace_id, &keys, artifact, &a_key, now);
 
     let store = Arc::new(Store::open(directory.path().join("store"), Appetite::StoreAll).unwrap());
     let mut access = FixedAccess::new();
@@ -521,7 +557,13 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     )
     .await
     .unwrap();
-    assert!(a_session.keep_room(&a, room, now).await.unwrap() >= 1);
+    assert!(
+        a_session
+            .keep_workspace(&a, workspace_id, now)
+            .await
+            .unwrap()
+            >= 1
+    );
 
     // The guest joins by invitation and reads the share from the store.
     let b = open_file(&directory.path().join("b.json")).unwrap();
@@ -533,11 +575,11 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
         workspace,
         invitation(
             &a,
-            &room,
+            &workspace_id,
             &a_cert,
             &a_key,
             &b_cert,
-            hint(&a_endpoint, &a_cert, &a_key, &room, workspace),
+            hint(&a_endpoint, &a_cert, &a_key, &workspace_id, workspace),
             now,
         ),
         &b,
@@ -553,18 +595,33 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     )
     .await
     .unwrap();
-    assert_eq!(b_session.catch_up_room(&b, room, now).await.unwrap(), 1);
-    assert_eq!(read_value(&b, room, &b_keys), "\"the sharer's line\"");
+    assert_eq!(
+        b_session
+            .catch_up_workspace(&b, workspace_id, now)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        read_value(&b, workspace_id, &b_keys),
+        "\"the sharer's line\""
+    );
 
     // The guest writes too: a member's own sealed line, kept at the store
     // beside the sharer's.
-    let mut guest = read_document(&b, room, &b_keys);
+    let mut guest = read_document(&b, workspace_id, &b_keys);
     let heads = guest.get_heads();
     guest.put(ROOT, "value", "the guest's line").unwrap();
     guest.commit_edit("guest", "value");
     let change = guest.save_after(&heads);
-    publish(&b, room, &change, &b_keys, artifact, &b_key, now);
-    assert!(b_session.keep_room(&b, room, now).await.unwrap() >= 1);
+    publish(&b, workspace_id, &change, &b_keys, artifact, &b_key, now);
+    assert!(
+        b_session
+            .keep_workspace(&b, workspace_id, now)
+            .await
+            .unwrap()
+            >= 1
+    );
     let lineages = store.lineages(workspace);
     assert_eq!(
         lineages.len(),
@@ -573,18 +630,21 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     );
 
     // The sharer catches up from the store and sees the guest's edit.
-    a_session.catch_up_room(&a, room, now).await.unwrap();
-    assert_eq!(read_value(&a, room, &keys), "\"the guest's line\"");
+    a_session
+        .catch_up_workspace(&a, workspace_id, now)
+        .await
+        .unwrap();
+    assert_eq!(read_value(&a, workspace_id, &keys), "\"the guest's line\"");
 
     // The guest may hand the share on, as the sharer allows before it goes.
     a.commit_workspace_membership_command(
         OwnerCommitRequest {
-            workspace: room.to_string(),
+            workspace: workspace_id.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: a_cert.clone(),
                 command: WorkspaceMembershipCommand::Grant {
-                    grant: invite_grant(&a_cert, &b_cert, &room),
+                    grant: invite_grant(&a_cert, &b_cert, &workspace_id),
                 },
             },
         },
@@ -592,10 +652,10 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
         now,
     )
     .unwrap();
-    for message in outgoing(&a, room, now) {
+    for message in outgoing(&a, workspace_id, now) {
         let _report = b
             .receive(
-                room,
+                workspace_id,
                 TransportOrigin::RetainedRelayDelta(a_author),
                 message,
                 now,
@@ -627,11 +687,11 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
         workspace,
         invitation(
             &b,
-            &room,
+            &workspace_id,
             &b_cert,
             &b_key,
             &c_cert,
-            hint(&b_endpoint, &b_cert, &b_key, &room, workspace),
+            hint(&b_endpoint, &b_cert, &b_key, &workspace_id, workspace),
             now,
         ),
         &c,
@@ -647,9 +707,12 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
     )
     .await
     .unwrap();
-    c_session.catch_up_room(&c, room, now).await.unwrap();
+    c_session
+        .catch_up_workspace(&c, workspace_id, now)
+        .await
+        .unwrap();
     assert_eq!(
-        read_value(&c, room, &c_keys),
+        read_value(&c, workspace_id, &c_keys),
         "\"the guest's line\"",
         "the later guest reads what both members wrote, from the store alone"
     );
@@ -658,7 +721,7 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
 /// Publish `change` to the record as A's sealed write.
 fn publish(
     owner: &NativeWorkspaceOwner,
-    room: RoomId,
+    workspace_id: RoomId,
     change: &[u8],
     keys: &ChannelContentKeys,
     artifact: ArtifactId,
@@ -667,7 +730,7 @@ fn publish(
 ) {
     owner
         .commit_document_with_current(
-            room,
+            workspace_id,
             |view| {
                 let mut peer = view.peer().clone();
                 let message = peer.publication_mut().publish_sealed_incremental(
@@ -689,7 +752,7 @@ fn publish(
 /// in place of the writes it covers.
 fn compact(
     owner: &NativeWorkspaceOwner,
-    room: RoomId,
+    workspace_id: RoomId,
     keys: &ChannelContentKeys,
     artifact: ArtifactId,
     key: &SigningKey,
@@ -697,7 +760,7 @@ fn compact(
 ) {
     owner
         .commit_document_with_current(
-            room,
+            workspace_id,
             |view| {
                 let mut peer = view.peer().clone();
                 let message = peer.publication_mut().compact_sealed_history(
@@ -738,11 +801,11 @@ fn document_write(message: NeighbourMsg) -> Result<OwnerCommitRequest, String> {
 /// The record's document as `owner` holds it.
 fn read_document(
     owner: &NativeWorkspaceOwner,
-    room: RoomId,
+    workspace_id: RoomId,
     keys: &ChannelContentKeys,
 ) -> AutoCommit {
     let opened = owner
-        .with_current(room, |view| {
+        .with_current(workspace_id, |view| {
             view.peer()
                 .publication()
                 .opened_document(APP, RECORD, &mut opener(keys))
@@ -753,8 +816,12 @@ fn read_document(
     AutoCommit::load(&opened.document).unwrap()
 }
 
-fn read_value(owner: &NativeWorkspaceOwner, room: RoomId, keys: &ChannelContentKeys) -> String {
-    let read = read_document(owner, room, keys);
+fn read_value(
+    owner: &NativeWorkspaceOwner,
+    workspace_id: RoomId,
+    keys: &ChannelContentKeys,
+) -> String {
+    let read = read_document(owner, workspace_id, keys);
     read.get(ROOT, "value")
         .unwrap()
         .expect("the record has a value")
@@ -762,10 +829,14 @@ fn read_value(owner: &NativeWorkspaceOwner, room: RoomId, keys: &ChannelContentK
         .to_string()
 }
 
-/// What `owner` publishes for `room` now.
-fn outgoing(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<NeighbourMsg> {
+/// What `owner` publishes for `workspace_id` now.
+fn outgoing(
+    owner: &NativeWorkspaceOwner,
+    workspace_id: RoomId,
+    now: SystemTime,
+) -> Vec<NeighbourMsg> {
     owner
-        .with_outgoing(room, now, |_, outgoing| {
+        .with_outgoing(workspace_id, now, |_, outgoing| {
             Ok(outgoing
                 .entries()
                 .map(|entry| postcard::from_bytes(entry.bytes()).unwrap())
@@ -774,17 +845,17 @@ fn outgoing(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<
         .unwrap()
 }
 
-/// Let `member` invite into `room`, as the workspace's maker allows it.
+/// Let `member` invite into the workspace, as the maker allows it.
 fn invite_grant(
     maker: &DeviceCert,
     member: &DeviceCert,
-    room: &RoomId,
+    workspace_id: &RoomId,
 ) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "invite:guest",
         tilo_action_policy::Subject::person(hex::encode(member.user_public_key)),
         tilo_action_policy::roles::governance_action(
-            &room.to_string(),
+            &workspace_id.to_string(),
             tilo_action_policy::roles::governance::INVITE,
         ),
         tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
