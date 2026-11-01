@@ -41,7 +41,6 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_system_service::power_surface(),
         crate::displays::surface(),
         crate::desk_resource::surface(),
-        crate::arrangement::surface(),
     ]
 }
 

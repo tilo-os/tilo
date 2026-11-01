@@ -381,7 +381,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         session,
         "tilo",
         json!({"program": format!(
-            "device.place(device.arrangement, resource: \"{note}\", x: 80, y: 60)"
+            "session.place(workspace: .none, row: .none, strip: .none, place: .none, resource: \"{note}\", view: .none, x: .some(80), y: .some(60), width: .none, height: .none)"
         )}),
     );
     assert!(!failed, "the program ran: {placed_it}");

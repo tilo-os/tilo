@@ -110,15 +110,10 @@ impl Core {
                 if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app) {
                     continue;
                 }
-                // A description of what the platform publishes (the device's sound, the
-                // person's arrangement) holds no records: there is nothing of it to find.
-                let only_published = !p.code
-                    && !p.meta.named_roots.is_empty()
-                    && p.meta
-                        .named_roots
-                        .iter()
-                        .all(|root| root.published.is_some());
-                if only_published {
+                // A description alone (`Runtime::load_foreign`: the device's sound, the
+                // session's windows) is read from the readings its publisher hands in, never
+                // from a record: there is nothing of it to find.
+                if !p.code {
                     continue;
                 }
                 held.push(app.clone());

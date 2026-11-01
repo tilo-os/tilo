@@ -179,10 +179,13 @@ impl TaskSession {
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
         reads.borrow_mut().apps = apps.keys().cloned().collect();
-        // The platform's packages: no record holds their resources, so they are read by no
-        // record read; their actions are invoked on the resource the session publishes.
+        // The platform's packages, the session's own among them: no record holds their
+        // resources, so they are read by no record read; their actions are invoked on the
+        // resource the session publishes.
         let mut published = std::collections::HashSet::new();
-        for meta in crate::platform_apps::platform_packages()? {
+        let mut platform = crate::platform_apps::platform_packages()?;
+        platform.push(crate::platform_apps::session_package()?);
+        for meta in platform {
             if apps.contains_key(&meta.app) {
                 continue;
             }
@@ -202,6 +205,7 @@ impl TaskSession {
             door: Rc::clone(door),
             apps,
             published,
+            addresses: crate::platform_apps::session_addresses()?,
             steps: Rc::clone(&steps),
         });
         let asked = Rc::clone(door);
@@ -353,6 +357,8 @@ struct DoorInvoker {
     apps: HashMap<String, Meta>,
     /// The platform's apps, whose resources the session publishes under their own ids.
     published: std::collections::HashSet<String>,
+    /// The resource each of the session's loose actions is published on, by the action's id.
+    addresses: std::collections::BTreeMap<String, String>,
     steps: Rc<RefCell<Steps>>,
 }
 
@@ -364,7 +370,7 @@ impl Invoker for DoorInvoker {
         };
         let published = self.published.contains(app);
         let call = if published {
-            published_call(meta, invocation)
+            published_call(meta, invocation, &self.addresses)
         } else {
             call_of(&self.apps, meta, invocation)
         };
@@ -429,8 +435,13 @@ impl Invoker for DoorInvoker {
 /// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
 /// resource the session publishes it as (`shell:arrangement`), with every other argument as the
 /// published action takes it, by name. The call says it is the session's (`published`), which the
-/// door sends to the session's own provider.
-fn published_call(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
+/// door sends to the session's own provider. A loose action (the session's `place`) goes to the
+/// resource `addresses` says it is published on.
+fn published_call(
+    meta: &Meta,
+    invocation: &Invocation,
+    addresses: &std::collections::BTreeMap<String, String>,
+) -> Result<Json, String> {
     let Invocation::Action {
         app,
         action,
@@ -444,16 +455,27 @@ fn published_call(meta: &Meta, invocation: &Invocation) -> Result<Json, String> 
             meta.title
         ));
     };
-    let subject = subject
-        .as_ref()
-        .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?;
     // A platform package's action is its published verb, by the same id (`show-surface`).
-    let resource = subject.id_string();
+    let resource = match subject {
+        Some(subject) => subject.id_string(),
+        None => addresses
+            .get(action)
+            .cloned()
+            .filter(|_| app == crate::platform_apps::SESSION_APP)
+            .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?,
+    };
     let mut arguments = serde_json::Map::new();
     for (name, value) in args {
         if matches!(value, Value::Ref(r) if r.target.id_string() == resource) {
             continue;
         }
+        // An optional argument given as `.none` is not sent: the published action's own default
+        // holds. One given as `.some(x)` is sent as `x`, as the published action takes it.
+        let value = match value {
+            Value::Opt(None) => continue,
+            Value::Opt(Some(inner)) => inner.as_ref(),
+            other => other,
+        };
         let json = match value {
             Value::Ref(r) => json!(r.target.id_string()),
             other => tilolang_runtime::value::to_json(other)

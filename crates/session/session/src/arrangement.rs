@@ -1053,66 +1053,6 @@ fn user(person: &str) -> UserId {
     UserId(person.to_owned())
 }
 
-/// The arrangement as a program reaches it: the verbs a caller who does not
-/// hold the arrangement's ids names (`device.place(device.arrangement, …)`), each the
-/// published action of the same id. A program, a script and an agent place
-/// a resource and take the step back with these; the drag's own actions
-/// (`open-into`, `move-place`, `resize-strip`), which name a strip by its
-/// id, stay the shell's. Shell.md §8.3: "the agent, the REPL and a
-/// reference's activation call `arrangement.place(r, view:)`".
-#[must_use]
-pub fn surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<ArrangementSurface, ArrangementVerb>(
-        "arrangement",
-        "Arrangement",
-    )
-}
-
-/// The arrangement's reading as [`surface`] names it.
-#[derive(tilo_resource::JsonSchema)]
-struct ArrangementSurface {
-    /// Which preset the person shows: `strips`, `frames` or `spaces`.
-    #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
-    preset: String,
-}
-
-/// What [`surface`] offers: the published arranging actions a program names,
-/// each with the arguments a program gives. The published action takes more
-/// (the view, the size), each with its own default there; a package read
-/// from a surface has no code to compute a default, so an argument a program
-/// may leave out is left out here.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "so.tilo.session.arrangement")]
-pub(crate) enum ArrangementVerb {
-    /// Put a resource on the canvas of the workspace in front as its primary view
-    Place {
-        #[param("The resource it shows, by its id")]
-        resource: String,
-        #[param("Its canvas x")]
-        x: i64,
-        #[param("Its canvas y")]
-        y: i64,
-    },
-    /// Put what a text finds on the canvas
-    PlaceFound {
-        #[param("What to find and place")]
-        text: String,
-        #[param("Its canvas x")]
-        x: i64,
-        #[param("Its canvas y")]
-        y: i64,
-    },
-    /// Close a place; its window goes with it
-    ClosePlace {
-        #[param("The place to close")]
-        place: i64,
-    },
-    /// Undo the last arranging step
-    Undo,
-    /// Redo the last undone arranging step
-    Redo,
-}
-
 /// The person's arranging actions, published as every other action is: a
 /// person's own drag, the palette, a script and an agent all arrange through
 /// them, and the catalogue lists them.

@@ -162,12 +162,8 @@ const SHELL_USES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// What the session publishes, described as the package `so.tilo.session`
-/// (`tilo_session::session_package`): the shell calls the session's actions through it.
-const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
-
 /// The package id of the session's description.
-pub const SESSION_APP: &str = "so.tilo.session";
+pub const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
 
 /// The session's package: its resources' types and actions, which the shell's views call as
 /// any package's (`session.show_surface(surface: "launcher")`).
@@ -175,12 +171,12 @@ pub const SESSION_APP: &str = "so.tilo.session";
 /// # Errors
 /// The description does not read.
 pub fn session_package() -> Result<tilolang_tilo::tilolang::PackageMeta, String> {
-    tilolang_tilo::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
+    tilolang_tilo::platform_apps::session_package()
 }
 
 /// The resource each of the session's loose actions is published on, by the action's id.
 fn session_addresses() -> BTreeMap<String, String> {
-    tilolang_tilo::catalogue::addresses(SESSION_DESCRIPTION).unwrap_or_else(|error| {
+    tilolang_tilo::platform_apps::session_addresses().unwrap_or_else(|error| {
         tracing::error!(%error, "the session's description gives no addresses");
         BTreeMap::new()
     })
