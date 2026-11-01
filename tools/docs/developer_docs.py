@@ -239,12 +239,17 @@ class Linker:
         self.api_routes: dict[str, str] = {}
         for book in books:
             for page in book.pages:
-                route = book.url(page)
-                if page.source in self.routes and self.routes[page.source] != route:
+                if page.source in self.by_source:
                     raise DocsError(f"{page.source}: published by more than one book")
                 self.by_source[page.source] = page
-                self.routes[page.source] = route
-            self.api_routes.update({source: book.base + book.api_path for source in book.api_sources})
+                # Only this book's pages get site addresses. A related book is
+                # listed so links into it are checked, but the export feeds one
+                # book of a site; an address in another book's base would point
+                # at a page that site does not serve.
+                if book is manifest:
+                    self.routes[page.source] = book.url(page)
+            if book is manifest:
+                self.api_routes.update({source: book.base + book.api_path for source in book.api_sources})
         self.ref = f"commit/{commit}" if commit else "branch/main"
         self.anchors: dict[str, set[str]] = {}
 
@@ -263,8 +268,7 @@ class Linker:
             return target, f"{target}: leaves the repository"
         repo_path = "" if repo_path == "." else repo_path
         suffix = f"#{fragment}" if fragment else ""
-        linked = self.by_source.get(repo_path)
-        if linked is not None:
+        if repo_path in self.routes:
             return self.routes[repo_path] + suffix, self.check_anchor(repo_path, fragment)
         if repo_path.rstrip("/") in self.api_routes:
             return self.api_routes[repo_path.rstrip("/")], None
