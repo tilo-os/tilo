@@ -99,8 +99,8 @@ impl DeviceActions {
             .cloned()
             .unwrap_or_else(|| EndpointAddr::new(id));
         Ok(Arc::new(self.0.plane.remote(
-            self.0.endpoint.clone(),
-            addr,
+            &self.0.endpoint,
+            &addr,
             workspace,
         )))
     }

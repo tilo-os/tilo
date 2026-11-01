@@ -17,6 +17,8 @@
 pub mod actions;
 pub mod colorimetry;
 pub mod hdr_metadata;
+/// Work one device offers another: the question, and what each answers.
+pub mod offer;
 pub mod presence_slot;
 pub mod record_sync;
 pub mod retention;
@@ -1189,7 +1191,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b18",
+                "0b19",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

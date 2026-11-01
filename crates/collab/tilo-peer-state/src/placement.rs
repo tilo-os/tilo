@@ -15,147 +15,8 @@
 //! says why instead ([`Decline`]), and the requester keeps what it knows
 //! about every device it asked.
 
-use serde::{Deserialize, Serialize};
-
-/// How a device is powered, best first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Power {
-    /// Stable external power.
-    External,
-    Charging,
-    /// No reliable observation.
-    Unknown,
-    /// Running from a battery above the critical threshold.
-    Battery,
-}
-
-/// Why a device will not run the request it was offered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Decline {
-    /// The device that asked. It is never its own remote worker: work with
-    /// no other willing device runs where it was asked, or not at all.
-    Requester,
-    /// Not connected, so the offer never came back.
-    Offline,
-    /// A store keeps ciphertext and holds no keys: it never runs work.
-    StoreOnly,
-    /// It does not hold the workspace the request names.
-    WorkspaceNotHeld,
-    /// It cannot run the app the request's action belongs to.
-    AppNotInstalled,
-    /// Its person asked the device to avoid discretionary work.
-    DataSaving,
-    /// Its battery is critically low.
-    CriticalBattery,
-}
-
-impl Decline {
-    /// Stable token for logs and action output.
-    #[must_use]
-    pub const fn token(self) -> &'static str {
-        match self {
-            Self::Requester => "requester",
-            Self::Offline => "offline",
-            Self::StoreOnly => "store_only",
-            Self::WorkspaceNotHeld => "workspace_not_held",
-            Self::AppNotInstalled => "app_not_installed",
-            Self::DataSaving => "data_saving",
-            Self::CriticalBattery => "critical_battery",
-        }
-    }
-}
-
-/// What a device says of itself when it is offered work: the answer to one
-/// offer, from its own state.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is a separate fact the device reports, not a mode"
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct State {
-    /// Whether this is the device that asked.
-    pub requester: bool,
-    /// Whether it is connected right now.
-    pub online: bool,
-    /// Whether it holds the workspace's keys and state.
-    pub holds_workspace: bool,
-    /// Whether it can run the request's app.
-    pub app_installed: bool,
-    /// Whether it is a store of the workspace rather than a participant.
-    pub store_role: bool,
-    /// Its person asked it to avoid discretionary work.
-    pub data_saving: bool,
-    /// Bumped-out-of-shape low battery: not while there is anything else.
-    pub critical_battery: bool,
-    /// Operator preference; higher wins.
-    pub priority: i32,
-    pub power: Power,
-    /// Work already in hand per thousand slots; lower wins.
-    pub load_permille: u32,
-    /// Measured round trip to the requester; lower wins.
-    pub latency_ms: u32,
-}
-
-impl State {
-    /// What this device ranks by, or why it declines.
-    ///
-    /// # Errors
-    ///
-    /// The first rule it fails, in the order a person would state them.
-    pub fn verdict(&self) -> Result<Rank, Decline> {
-        let decline = if self.requester {
-            Decline::Requester
-        } else if !self.online {
-            Decline::Offline
-        } else if self.store_role {
-            Decline::StoreOnly
-        } else if !self.holds_workspace {
-            Decline::WorkspaceNotHeld
-        } else if !self.app_installed {
-            Decline::AppNotInstalled
-        } else if self.data_saving {
-            Decline::DataSaving
-        } else if self.critical_battery {
-            Decline::CriticalBattery
-        } else {
-            return Ok(Rank {
-                priority: self.priority,
-                power: self.power,
-                load_permille: self.load_permille,
-                latency_ms: self.latency_ms,
-            });
-        };
-        Err(decline)
-    }
-}
-
-/// What a willing device was ranked by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Rank {
-    /// Operator preference; higher wins.
-    pub priority: i32,
-    /// Power standing; better wins.
-    pub power: Power,
-    /// Work in hand per thousand slots; lower wins.
-    pub load_permille: u32,
-    /// Measured round trip; lower wins.
-    pub latency_ms: u32,
-}
-
-impl Rank {
-    /// Sort key: smaller is better.
-    fn key(&self, device: [u8; 32]) -> (std::cmp::Reverse<i32>, Power, u32, u32, [u8; 32]) {
-        (
-            std::cmp::Reverse(self.priority),
-            self.power,
-            self.load_permille,
-            self.latency_ms,
-            device,
-        )
-    }
-}
+pub use neighbour_wire::offer::{Decline, Power, Rank, State};
+use serde::Serialize;
 
 /// One device that was asked, and what the requester made of its answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -226,6 +87,17 @@ fn short(device: &[u8; 32]) -> String {
     hex::encode(device.get(..4).unwrap_or_default())
 }
 
+/// Sort key: smaller is better.
+fn key(rank: &Rank, device: [u8; 32]) -> (std::cmp::Reverse<i32>, Power, u32, u32, [u8; 32]) {
+    (
+        std::cmp::Reverse(rank.priority),
+        rank.power,
+        rank.load_permille,
+        rank.latency_ms,
+        device,
+    )
+}
+
 /// Pick the device a request goes to among the ones that were asked.
 #[must_use]
 pub fn pick(answers: impl IntoIterator<Item = ([u8; 32], State)>) -> Choice {
@@ -237,7 +109,7 @@ pub fn pick(answers: impl IntoIterator<Item = ([u8; 32], State)>) -> Choice {
         })
         .collect::<Vec<_>>();
     considered.sort_by(|left, right| match (&left.verdict, &right.verdict) {
-        (Ok(a), Ok(b)) => a.key(left.device).cmp(&b.key(right.device)),
+        (Ok(a), Ok(b)) => key(a, left.device).cmp(&key(b, right.device)),
         (Ok(_), Err(_)) => std::cmp::Ordering::Less,
         (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         (Err(_), Err(_)) => left.device.cmp(&right.device),

@@ -17,6 +17,7 @@ sources = [
     "crates/hosting/tilo-delivery-protocol/src/transport_v2/presence.rs",
     "crates/collab/neighbour-wire/src/lib.rs",
     "crates/collab/neighbour-wire/src/actions.rs",
+    "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
     "crates/collab/neighbour-wire/src/presence_slot.rs",
@@ -40,7 +41,7 @@ sources = [
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/peer.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "State"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -591,6 +592,14 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PeerPresencePayload::Wave" = "#12 struct"
 "PeerPresencePayload::Wave.seq" = "#0 u32"
 "PeerPresencePayload::Wave.target" = "#1 String"
+"PlaneFrame" = "enum external"
+"PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
+"PlaneFrame::Offer" = "#1 tuple(Query)"
+"Power" = "enum external"
+"Power::battery" = "#3 unit"
+"Power::charging" = "#1 unit"
+"Power::external" = "#0 unit"
+"Power::unknown" = "#2 unit"
 "PresenceColour" = "alias Option<String>"
 "PresenceItem" = "struct"
 "PresenceItem.keep_prefix" = "#1 u32"
@@ -598,6 +607,10 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PresenceItem.middle" = "#3 Vec<u8> with=serde_bytes"
 "PresenceItem.slot" = "#0 Option<u16>"
 "PresenceKey" = "alias String"
+"Query" = "struct"
+"Query.request_id" = "#1 Uuid"
+"Query.route" = "#2 Route"
+"Query.workspace" = "#0 String"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
 "RevocationEntry.revoked_at_ns" = "#2 u64"
@@ -609,6 +622,10 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "RevocationReason::Lost" = "#0 unit"
 "RevocationReason::Retired" = "#2 unit"
 "RevocationReason::Stolen" = "#1 unit"
+"Route" = "struct"
+"Route.action" = "#2 String"
+"Route.app" = "#0 String"
+"Route.resource" = "#1 String"
 "Showing" = "struct"
 "Showing.camera" = "#0 bool"
 "Showing.deafened" = "#3 bool"
@@ -636,6 +653,18 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedWire.action" = "#1 Vec<u8> with=serde_bytes"
 "SignedWire.issued_at_ns" = "#0 u64"
 "SignedWire.signature" = "#2 [u8; 64] with=serde_bytes"
+"State" = "struct"
+"State.app_installed" = "#3 bool"
+"State.critical_battery" = "#6 bool"
+"State.data_saving" = "#5 bool"
+"State.holds_workspace" = "#2 bool"
+"State.latency_ms" = "#10 u32"
+"State.load_permille" = "#9 u32"
+"State.online" = "#1 bool"
+"State.power" = "#8 Power"
+"State.priority" = "#7 i32"
+"State.requester" = "#0 bool"
+"State.store_role" = "#4 bool"
 "SurfaceDecodeLimit" = "struct"
 "SurfaceDecodeLimit.codec" = "#0 String"
 "SurfaceDecodeLimit.max" = "#1 Option<(u32, u32)>"
