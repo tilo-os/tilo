@@ -804,7 +804,10 @@ async fn run(
     mut accepted: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
 ) {
     shared.lane.install(shared.calls.clone());
-    shared.live.store(true, Ordering::Release);
+    // Whether the call is live is the channel's keys to say, not this task's
+    // starting: a call whose keys are still on their way joins the channel and
+    // says so until `refresh` brings it up, whether or not the lane is already
+    // dialling.
     let (joined, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     for device in dialled {
         let calls = shared.calls.clone();
