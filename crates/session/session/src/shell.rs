@@ -98,14 +98,19 @@ impl Shell {
         Ok(shell)
     }
 
-    /// Make a part for each output `compositor` shows that has none, and drop the parts of
-    /// outputs it no longer shows: one bar per display, following a display plugged in or
-    /// taken away.
+    /// Make a part for each output `compositor` shows that has none, stand each part on its
+    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one bar
+    /// per display, following a display plugged in, moved or taken away. A part whose display
+    /// went keeps its place with the compositor and the door, drawing and offering nothing, and
+    /// stands again when that display comes back, so unplugging and replugging makes no new
+    /// part. Cheap when nothing changed, which is what every frame runs.
     fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
         let outputs = outputs_of(compositor);
-        // The parts still standing on an output the compositor shows stay; the rest go.
-        self.parts
-            .retain(|(name, _)| outputs.iter().any(|(shown, _)| shown == name));
+        for (name, part) in &self.parts {
+            if !outputs.iter().any(|(shown, _)| shown == name) {
+                part.borrow_mut().set_display(None);
+            }
+        }
         let fullscreen = compositor.fullscreen_outputs();
         for (name, rect) in &outputs {
             if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
@@ -206,23 +211,7 @@ impl Shell {
     /// made or dropped per output, and a part on a display a fullscreen window owns steps
     /// aside. Cheap when nothing changed, which is what every frame runs.
     pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
-        let outputs = outputs_of(compositor);
-        let fullscreen = compositor.fullscreen_outputs();
-        let grown = outputs.len() != self.parts.len()
-            || !outputs
-                .iter()
-                .all(|(name, _)| self.parts.iter().any(|(shown, _)| shown == name));
-        if grown {
-            self.follow_outputs(compositor, doors);
-            return;
-        }
-        for (name, rect) in &outputs {
-            if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
-                let mut part = part.borrow_mut();
-                part.set_display(Some((name.clone(), *rect)));
-                part.set_fullscreen(fullscreen.clone());
-            }
-        }
+        self.follow_outputs(compositor, doors);
     }
 
     /// The outputs' bounding box `(x, y, w, h)`, as a screen-edge reading names them: every
@@ -403,6 +392,7 @@ impl Shell {
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.parts
             .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
             .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
 
@@ -411,14 +401,14 @@ impl Shell {
     pub(crate) fn parts(&self) -> Vec<BarPlace> {
         self.parts
             .iter()
-            .map(|(name, part)| {
+            .filter_map(|(name, part)| {
                 let part = part.borrow();
-                let (_, rect) = part.placement().unwrap_or_default();
-                BarPlace {
+                let (_, rect) = part.placement()?;
+                Some(BarPlace {
                     output: name.clone(),
                     rect,
                     aside: part.aside(),
-                }
+                })
             })
             .collect()
     }

@@ -1733,6 +1733,10 @@ pub struct ShellPart {
     /// The output this part stands on: its connector name, and its logical rectangle
     /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
     output: Option<(String, (i32, i32, u32, u32))>,
+    /// The display the part stood on, which went (unplugged, turned off): while it is gone the
+    /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
+    /// until it is told a display again.
+    gone: Option<String>,
     /// The outputs a fullscreen window covers, by connector name: the part on one of them
     /// steps aside, as the desktop's own bar does there, and leaves the display to the window.
     fullscreen: Vec<String>,
@@ -1837,6 +1841,7 @@ impl ShellPart {
             refusals: Vec::new(),
             band: band.max(1),
             output: None,
+            gone: None,
             fullscreen: Vec::new(),
             cover: false,
             edges: HostEdges {
@@ -1917,8 +1922,9 @@ impl ShellPart {
         };
         let scale = self.widgets.placement().scale;
         if self.fullscreen.contains(&name) && !self.cover {
-            // Nothing of the part stands there: a zero-height placement at the cover's origin
-            // draws nothing and takes no pointer.
+            // Nothing of the part stands there: the smallest placement keeps its layout cheap,
+            // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
+            // it lies over the window.
             self.widgets.set_placement(Placement {
                 origin: (x, y),
                 size: (width.max(1), 1),
@@ -2020,13 +2026,32 @@ impl ShellPart {
 
     /// Stand the part on `output`, its connector name and logical rectangle `(x, y, w, h)`:
     /// the part is one display's, and follows that display as it is added, moved or turned
-    /// off. Every part of one shell is told its own display; none spans them all.
+    /// off. Every part of one shell is told its own display; none spans them all. `None`: the
+    /// display went, and the part stands nowhere until it is told one again.
     pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
         if self.output == output {
             return;
         }
+        if output.is_some() {
+            self.gone = None;
+        } else {
+            // What it drew goes with its display: nothing of it stands anywhere now.
+            self.gone = self.output.take().map(|(name, _)| name);
+            self.cover = false;
+        }
         self.output = output;
         self.place(self.edges);
+    }
+
+    /// Whether the display the part stood on went, and it stands nowhere now.
+    fn retired(&self) -> bool {
+        self.gone.is_some()
+    }
+
+    /// Whether the part shows nothing at all now: its display went, or a fullscreen window
+    /// owns it. It has no layers and takes no pointer then.
+    fn hidden(&self) -> bool {
+        self.retired() || self.aside()
     }
 
     /// Tell the part which output's or outputs' windows cover the whole display, by connector
@@ -2257,6 +2282,11 @@ impl ShellPart {
 }
 
 impl crate::Published for ShellPart {
+    /// A part whose display went offers nothing: the parts still standing answer the door.
+    fn offered(&self) -> bool {
+        !self.retired()
+    }
+
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         crate::Published::resources(&mut self.widgets)
     }
@@ -2320,6 +2350,11 @@ impl ShellPart {
 
 impl SurfaceHost for ShellPart {
     fn layers(&self) -> Vec<HostLayer> {
+        // Aside for a fullscreen window, the window has the whole display: not a row of the
+        // bar's pixels stands over it.
+        if self.hidden() {
+            return Vec::new();
+        }
         self.widgets.layers()
     }
 
@@ -2334,6 +2369,9 @@ impl SurfaceHost for ShellPart {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        if self.hidden() {
+            return false;
+        }
         // While a menu of the part's is up, a press anywhere over it is the part's: outside
         // the menu it closes it, as a press outside any menu does.
         if self.cover
@@ -2368,7 +2406,7 @@ impl SurfaceHost for ShellPart {
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         // A part not yet told which output it stands on spans all of them, as a bar stretched
         // across the tightest bounding box there is.
-        if self.output.is_some() {
+        if self.output.is_some() || self.retired() {
             return;
         }
         let Some((x0, y0, x1, y1)) = outputs
@@ -2778,6 +2816,10 @@ mod tests {
             !part.accepts_pointer(100.0, 10.0),
             "the window under it takes the pointer"
         );
+        assert!(
+            part.layers().is_empty(),
+            "not a row of the bar is handed to the compositor over the window"
+        );
         // The window leaves fullscreen: the bar is back, in its band.
         part.set_fullscreen(Vec::new());
         assert!(!part.aside());
@@ -2786,6 +2828,27 @@ mod tests {
             (1280, 32),
             "back to the band"
         );
+    }
+
+    #[test]
+    fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
+        let (mut part, _link) = part();
+        let display = part.placement().expect("the part stands on its display");
+        part.set_display(None);
+        assert!(part.layers().is_empty(), "nothing of it is drawn");
+        assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
+        assert!(
+            !crate::Published::offered(&part),
+            "the door reaches the bars still standing, not this one"
+        );
+        // The compositor tells it of the outputs left: it does not stretch over them.
+        part.outputs_changed(&[(1280, 0, 1280, 800)]);
+        assert_eq!(part.placement(), None, "it stays off the other display");
+        // The display comes back: the bar stands on it again.
+        part.set_display(Some(display.clone()));
+        assert_eq!(part.placement(), Some(display));
+        assert!(crate::Published::offered(&part));
+        assert_eq!(part.widgets.placement().size, (1280, 32), "in its band");
     }
 
     #[test]
