@@ -122,11 +122,20 @@ def main(argv: list[str]) -> None:
     if defaults:
         argv = argv[1:]
     packages = []
+    excluded = set()
     for index, arg in enumerate(argv):
         if arg in ("-p", "--package"):
             packages.append(argv[index + 1])
         elif arg == "--workspace" and not defaults:
             packages.extend(NATIVE_TEST_FEATURES)
+        elif arg == "--exclude":
+            excluded.add(argv[index + 1])
+        elif arg.startswith("--exclude="):
+            excluded.add(arg.removeprefix("--exclude="))
+    # t selects a family as `--workspace --exclude <the members outside it>`. A package-qualified
+    # feature of a member left out is refused by cargo outright ("none of the selected packages
+    # contains these features"), which ended every package of the family without a verdict.
+    packages = [package for package in packages if package not in excluded]
     print(" ".join(default_builds(packages) if defaults else arguments(packages)))
 
 
