@@ -24,7 +24,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 JUNIT = Path("target/nextest/ci/junit.xml")
+ROOT = Path(__file__).resolve().parents[2]
 NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import package_features  # noqa: E402
 
 
 def entries(text: str) -> list[dict[str, str]]:
@@ -44,9 +48,17 @@ def command(entry: dict[str, str], golden: str) -> list[str]:
     expression = f"({entry['filter']})"
     if golden.strip():
         expression += f" and not ({golden.strip()})"
-    # The ci profile sets up the test environment where the tests run (.config/nextest.toml).
-    return ["cargo", "nextest", "run", "--locked", "--profile", "ci", "--no-tests=fail",
-            "-p", entry["package"], "--test", entry["test"], "-E", expression]
+    # Through the CI wrapper, as the affected shard's own run is: it builds the
+    # binaries and artifacts its tests drive, and the ci profile sets up the
+    # test environment where the tests run (.config/nextest.toml).
+    # The package's own test features come as flags here: cargo leaves a target
+    # whose Cargo.toml requires one (`--test` names it, so it cannot be left
+    # out) unbuildable without them, and outside CI no build of the package
+    # enables them (tools/ci/package_features.py).
+    return ["bash", str(ROOT / "tools/ci/nextest.sh"), "cargo", "nextest", "run", "--locked",
+            "--profile", "ci", "--no-tests=fail",
+            "-p", entry["package"], "--test", entry["test"],
+            *package_features.arguments([entry["package"]]), "-E", expression]
 
 
 def merge(reports: list[Path], output: Path) -> None:
