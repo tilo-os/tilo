@@ -197,6 +197,10 @@ impl SurfaceHost for Popover {
         self.host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -285,6 +289,10 @@ impl SurfaceHost for Banners {
         self.host.prepare_frame()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -370,6 +378,10 @@ impl SurfaceHost for Readout {
 
     fn prepare_frame(&mut self) -> bool {
         self.host.prepare_frame()
+    }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.host.next_deadline()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -463,6 +475,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn prepare_frame(&mut self) -> bool {
         self.0.borrow_mut().prepare_frame()
+    }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.0.borrow().next_deadline()
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

@@ -393,6 +393,13 @@ impl Compositor {
             .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
         backend
             .into_iter()
+            .chain(
+                self.data
+                    .state
+                    .hosts
+                    .iter()
+                    .filter_map(|host| host.next_deadline()),
+            )
             .chain(self.keys.next_deadline())
             .chain(alert)
             .min()

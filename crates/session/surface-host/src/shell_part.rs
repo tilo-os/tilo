@@ -1171,6 +1171,10 @@ impl SurfaceHost for ShellPart {
         self.widgets.cursor()
     }
 
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.widgets.next_deadline()
+    }
+
     fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         if input || self.due() {

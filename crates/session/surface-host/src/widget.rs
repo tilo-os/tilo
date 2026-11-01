@@ -380,6 +380,16 @@ impl SurfaceHost for WidgetHost {
         self.input(&key_event(key));
     }
 
+    /// A frame is due now while the tree moves, and a change it owes the
+    /// compositor is one too; else the earliest deadline the tree sets.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        let schedule = self.host.frame_schedule();
+        if schedule.needs_animation_frame || self.owed {
+            return Some(std::time::Instant::now());
+        }
+        schedule.next_wake_deadline
+    }
+
     fn prepare_frame(&mut self) -> bool {
         // Translucent material records what lies below it; the compositor
         // blurs that and hands it back (`set_backdrops`). The images are
