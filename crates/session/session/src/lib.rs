@@ -101,6 +101,7 @@ mod wallpapers;
 mod window_motion;
 mod window_share;
 mod window_warmth;
+mod workspace_gate;
 mod workspace_settings;
 mod workspaces;
 
@@ -1127,6 +1128,11 @@ impl Session {
             .ok()
         });
         let sync = start_collaboration(&options, media, engine.clone());
+        // What other members send here is the workspaces' to admit: their
+        // policies are read from the desk this session shows.
+        if let Some(sync) = &sync {
+            sync.attach_desk(handle.clone());
+        }
         // The person's private messages, carried by that same endpoint.
         let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with

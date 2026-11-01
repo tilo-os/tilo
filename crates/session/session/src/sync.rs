@@ -37,6 +37,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace};
+use tilo_desktop_surface::DesktopHandle;
 use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
@@ -48,6 +49,8 @@ use tilo_network_actor::{
 use crate::channels::ChannelLink;
 use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
+
+mod gate;
 
 /// The app id the desktop of a room says its own presence under, as the
 /// browser, the agents and every app reading a room expect it.
@@ -281,8 +284,24 @@ impl Room {
     }
 
     /// Their device's certificate arrived: it names the device and the
-    /// person it belongs to.
+    /// person it belongs to. Only the sender's own, validly signed
+    /// certificate says who is there: one naming another device, or signed by
+    /// nobody, is refused, so nobody here can be named as somebody else.
     fn certified(&mut self, from: EndpointId, cert: &tilo_user_identity::DeviceCert) {
+        if cert.device_public_key != *from.as_bytes() {
+            tracing::warn!(
+                peer = %from,
+                device = %hex::encode(cert.device_public_key),
+                "refusing a certificate that is not the sender's own device"
+            );
+            return;
+        }
+        if let Err(error) =
+            tilo_user_identity::verify_device_cert_at(cert, tilo_clock::unix_now_ns())
+        {
+            tracing::warn!(peer = %from, %error, "refusing a device certificate");
+            return;
+        }
         self.with(from, |peer| {
             peer.user = Some(hex::encode(cert.user_public_key));
             let label = cert.device_label.trim();
@@ -570,6 +589,10 @@ pub struct Client {
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
+    /// The desk this session shows, whose workspaces' policies hold every
+    /// member's messages to what the workspace grants them: `None` until the
+    /// session hands it over ([`Self::attach_desk`]).
+    desk: RefCell<Option<DesktopHandle>>,
     /// The certificates each of the person's other devices was heard with,
     /// by its publisher.
     siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
@@ -729,6 +752,7 @@ impl Client {
             engine,
             link,
             user,
+            desk: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
             endpoint,
@@ -901,6 +925,23 @@ impl Client {
     /// pointer went. A session's loop calls this for everything the peer
     /// actor hands it.
     pub fn hear(&self, event: NetEvent) {
+        // Every message from another member is the workspace's to admit
+        // before anything here takes it: what a member the workspace's policy
+        // narrowed may send is what that policy grants them, and nothing
+        // else. A refused message is dropped where it arrives, with the
+        // reason said here.
+        if let Some(reason) = self.refusal(&event) {
+            if let NetEvent::Msg { ws, peer, msg, .. } = &event {
+                tracing::warn!(
+                    ws,
+                    peer = %peer,
+                    kind = msg.kind(),
+                    %reason,
+                    "dropping a workspace message"
+                );
+            }
+            return;
+        }
         self.keep_personal(&event);
         // What a room says of its channels' governance is the session's
         // channels' to take in, wherever the message came from.
@@ -1522,6 +1563,7 @@ impl Client {
                 engine: None,
                 link: None,
                 user: None,
+                desk: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
@@ -1532,6 +1574,20 @@ impl Client {
             },
             said,
         )
+    }
+
+    /// The same plane, taken part in as `person` (their user root, hex): what
+    /// a device's certificate says of it on a plane that has one, and what
+    /// the workspaces' policies hold its members' messages to.
+    #[cfg(test)]
+    pub(crate) fn taking_part_as(mut self, person: &str) -> Self {
+        let mut root = [0u8; 32];
+        assert!(
+            hex::decode_to_slice(person, &mut root).is_ok(),
+            "a person is their root key"
+        );
+        self.user = Some(root);
+        self
     }
 }
 
@@ -2226,7 +2282,7 @@ mod tests {
     ) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
         let own = OwnPresence {
             label: label.to_owned(),
-            user: user.map(|user| hex::encode([user; 32])),
+            user: user.map(person),
             ..OwnPresence::default()
         };
         let (sync, said) = Client::offline(device(0xf0), own);
@@ -2269,10 +2325,21 @@ mod tests {
 
     /// A device's identity announcement: which person it is a device of,
     /// and what to call it.
+    /// The person the device `seed` is a device of, in the hex everyone here
+    /// knows them by: the root key its certificate is signed with.
+    fn person(seed: u8) -> String {
+        hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+    }
+
     fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
         let from = device(from);
-        let cert = DeviceCert {
-            user_public_key: [user; 32],
+        let root = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *from.as_bytes(),
             device_label: device_label.to_owned(),
             capabilities: DeviceCapabilities {
@@ -2287,6 +2354,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
         NetEvent::Msg {
             ws: topic(ROOM),
             peer: from,
@@ -2373,7 +2441,7 @@ mod tests {
         let people = sync.show(&mut tree, &|_| None);
         assert_eq!(people.len(), 1);
         assert_eq!(people[0].label, "Framework 16");
-        assert_eq!(people[0].user, Some(hex::encode([0xaa; 32])));
+        assert_eq!(people[0].user, Some(person(0xaa)));
 
         let collaborators = &tree.workspaces[0].collaborators;
         assert_eq!(collaborators.len(), 1);

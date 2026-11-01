@@ -199,7 +199,11 @@ mod tests {
     /// The person a device is a device of, in the hex everyone here knows
     /// them by.
     fn person(seed: u8) -> String {
-        hex::encode([seed; 32])
+        hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
     }
 
     fn room() -> RoomId {
@@ -264,8 +268,9 @@ mod tests {
     /// A device's identity: the person it is a device of, and its name here.
     fn hello(from: u8, label: &str) -> NetEvent {
         let device_key = device(from);
-        let cert = tilo_user_identity::DeviceCert {
-            user_public_key: [from; 32],
+        let root = ed25519_dalek::SigningKey::from_bytes(&[from; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device_key.as_bytes(),
             device_label: label.to_owned(),
             capabilities: tilo_user_identity::DeviceCapabilities {
@@ -280,6 +285,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
         said(
             from,
             neighbour_wire::NeighbourMsg::IdentityHello {
