@@ -198,6 +198,36 @@ fn typing_into_the_open_search_reaches_its_query() {
     });
 }
 
+/// The same, for search opened by the chord the person presses: Super+Space
+/// through the seat reaches the desk's own search, and what they type next
+/// reaches its query.
+#[test]
+fn typing_after_the_search_chord_reaches_its_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for keycode in [46, 30, 38] {
+        type_key(&mut session, keycode);
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
+    });
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
