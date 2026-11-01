@@ -378,3 +378,25 @@ fn the_part_stands_in_the_band_the_shell_records_dock_names() {
     );
     assert_eq!(part.widgets.placement().size, (1280, 32));
 }
+
+/// A display wide enough for every part: the bar names the strip and shows the person the
+/// session publishes with nothing touching the desk. The part hands the app the space the
+/// frame gave its view the moment it is laid out, so the bar is full rather than waiting for
+/// the person's first press to hear how much space it has.
+#[test]
+fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, _link) = part();
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    let labels: Vec<String> = crate::Published::accessible_labels(&mut part);
+    assert!(
+        labels.iter().any(|label| label == "Main"),
+        "the bar names the strip: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Pat"),
+        "the bar shows the person: {labels:?}"
+    );
+}

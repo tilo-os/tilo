@@ -2391,6 +2391,14 @@ impl ShellPart {
             .downcast_mut::<AppWindow>()
     }
 
+    fn window_ref(&self) -> Option<&AppWindow> {
+        self.widgets
+            .host()
+            .root_widget()
+            .as_any()?
+            .downcast_ref::<AppWindow>()
+    }
+
     /// Commit what the instance planned to the shell's record, as the door would, and bring
     /// the instance up to date with it. Whether anything was committed.
     fn commit(&mut self) -> bool {
@@ -2547,8 +2555,15 @@ impl ShellPart {
         &self.refusals
     }
 
+    /// Whether the window holds something for the instance it has not sent: the space a layout
+    /// gave a view, or what the person did. The part turns to hand it over, so a view is told
+    /// the space it has without anything being touched, rather than at the person's next press.
+    fn owes(&self) -> bool {
+        self.window_ref().is_some_and(AppWindow::owes)
+    }
+
     fn due(&self) -> bool {
-        self.input || self.again || self.origin.borrow().due()
+        self.input || self.again || self.owes() || self.origin.borrow().due()
     }
 }
 
@@ -2729,6 +2744,11 @@ impl SurfaceHost for ShellPart {
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
+        // What the window owes the app goes over before the part settles: it asks for the
+        // frame that hands it over rather than sleeping on it.
+        if self.owes() {
+            return Some(std::time::Instant::now());
+        }
         self.widgets.next_deadline()
     }
 
@@ -2741,6 +2761,12 @@ impl SurfaceHost for ShellPart {
             self.turn();
         }
         let mut drew = self.draw();
+        // The frame's layout gave the views their space: the app hears of it now, so the next
+        // frame shows what a view makes of the space it has, and a part nobody touches is told
+        // it rather than waiting for the person's first press.
+        if self.owes() && self.turn() {
+            drew |= self.draw();
+        }
         // The toolkit takes input in at its frame: what the person pressed reports there, and
         // the instance hears of it now rather than at the next input.
         if input {

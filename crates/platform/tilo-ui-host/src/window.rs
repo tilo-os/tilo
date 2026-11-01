@@ -951,6 +951,15 @@ impl AppWindow {
 
     // ----- what the person did -------------------------------------------------------------
 
+    /// Whether the window holds a message for the app it has not sent: a space a layout gave a
+    /// view, what the person did, a row asked for. An embedder that only sends when it has
+    /// something to say asks this, so a window nothing touches still hands the app what its
+    /// frame gave its views.
+    #[must_use]
+    pub fn owes(&self) -> bool {
+        !self.out.is_empty()
+    }
+
     /// Send the app what the person did since the last frame: one batch.
     pub fn flush(&mut self) {
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
