@@ -62,7 +62,9 @@ pub enum SessionCommand {
     /// way from how it is.
     NightLight { on: Option<bool> },
     /// Paste the files copied to the clipboard into this folder, as a copy
-    /// or (after a cut) a move.
+    /// or (after a cut) a move. The clipboard's own `paste-files` action is
+    /// how it is asked now; this is what a command recorded before that
+    /// carries.
     PasteFiles { destination: String },
     /// Type in the next of the person's keyboard input sources.
     NextInputSource,

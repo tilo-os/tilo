@@ -843,6 +843,13 @@ pub enum CentreAction {
         #[param("The notification")]
         notification: u64,
     },
+    /// Hold fresh banners back until turned off again
+    #[effect(own_device, idempotent)]
+    SetQuiet {
+        /// Whether to hold them back
+        #[param("Whether to hold banners back")]
+        on: bool,
+    },
 }
 
 /// The centre as the session's services publish it: what it keeps, why fresh
@@ -925,6 +932,11 @@ impl Service for Served {
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
             CentreAction::Open { notification } => {
                 self.notifications.borrow().ask_open(notification);
+            }
+            CentreAction::SetQuiet { on } => {
+                if let Err(error) = self.notifications.borrow().set_do_not_disturb(on) {
+                    tracing::warn!(%error, "do not disturb was not kept");
+                }
             }
         }
         Ok(Started::Done(ActionOutput::default()))

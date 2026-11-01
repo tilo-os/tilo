@@ -27,17 +27,18 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use settings_store::clipboard_history::{HISTORY, PASTE, StoredCopy, StoredHistory, StoredPaste};
 use settings_store::paste_shortcut::{self, PasteShortcut};
-use tilo_actions::{ActionAddress, ActionOutput, ActionParam, DoorError, ParamType, ResourceSpec};
+use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
 use tilo_device_fabric::link::FabricLink;
 use tilo_device_fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use tilo_quick_settings::hosted::ClipboardCopy;
-use tilo_service::{Service, Started, reading};
+use tilo_resource::Effect;
+use tilo_service::{Service, Started, decode, offer, reading};
 use ui::dnd::CopiedFiles;
 
 use super::clipboard_files;
-use crate::controls::{CLIPBOARD_RESOURCE, SessionCommand};
+use crate::controls::CLIPBOARD_RESOURCE;
 use crate::i18n::t;
 
 /// The clipboard's history and the read of the selection filling it.
@@ -487,23 +488,16 @@ impl Clipboard {
 /// copied files into a folder.
 pub(crate) struct Served {
     clipboard: Rc<Clipboard>,
-    /// What the session's own actions ask of the compositor.
-    commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// The history's generation last reported as what its reading shows.
     reported: Cell<u64>,
 }
 
 impl Served {
-    /// The service publishing `clipboard`, carrying its actions out as
-    /// [`SessionCommand`]s the loop runs.
-    pub(crate) fn new(
-        clipboard: Rc<Clipboard>,
-        commands: Rc<RefCell<Vec<SessionCommand>>>,
-    ) -> Self {
+    /// The service publishing `clipboard`.
+    pub(crate) fn new(clipboard: Rc<Clipboard>) -> Self {
         Self {
             reported: Cell::new(clipboard.generation()),
             clipboard,
-            commands,
         }
     }
 }
@@ -525,12 +519,21 @@ impl Service for Served {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        let command = crate::controls::command_of(
-            &self.resources(),
-            &ActionAddress::new(resource, action),
-            arguments,
-        )?;
-        self.commands.borrow_mut().push(command);
+        match decode::<ClipboardAction>(&self.resources(), resource, action, arguments)? {
+            ClipboardAction::Paste { copy } => self.clipboard.ask(Ask::Paste(copy)),
+            ClipboardAction::Pin { copy, pinned } => {
+                self.clipboard.pin(&copy, pinned);
+            }
+            ClipboardAction::Remove { copy } => {
+                self.clipboard.remove(&copy);
+            }
+            ClipboardAction::Clear => {
+                self.clipboard.clear();
+            }
+            ClipboardAction::PasteFiles { destination } => {
+                self.clipboard.paste_files(Path::new(&destination));
+            }
+        }
         Ok(Started::Done(ActionOutput::default()))
     }
 
@@ -544,26 +547,57 @@ impl Service for Served {
     }
 }
 
+/// What the clipboard resource offers: pasting a copy again, what the person
+/// does with the history, and pasting the copied files into a folder.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.clipboard")]
+pub(crate) enum ClipboardAction {
+    /// Put a copy back on the clipboard and paste it into the app in front
+    #[effect(own_device)]
+    Paste {
+        /// The copy's key, as the history's rows carry it
+        #[param("The copy")]
+        copy: String,
+    },
+    /// Keep a copy at the front of the history, or let it go with the rest
+    #[effect(own_device, idempotent)]
+    Pin {
+        /// The copy's key, as the history's rows carry it
+        #[param("The copy")]
+        copy: String,
+        /// Whether to keep it
+        #[param("Whether to keep it")]
+        pinned: bool,
+    },
+    /// Remove one copy from the history
+    #[effect(own_device, idempotent)]
+    Remove {
+        /// The copy's key, as the history's rows carry it
+        #[param("The copy")]
+        copy: String,
+    },
+    /// Clear the history, keeping what the person pinned
+    #[effect(own_device, idempotent)]
+    Clear,
+    /// Paste the copied files into a folder, as a copy or (after a cut) a move
+    #[effect(own_device)]
+    PasteFiles {
+        /// The folder to paste them into
+        #[param("The folder")]
+        destination: String,
+    },
+}
+
 /// What the person copied, and pasting it into a folder.
 fn clipboard_resource() -> ResourceSpec {
-    ResourceSpec::new(
-        CLIPBOARD_RESOURCE,
-        tilo_action_policy::roles::SESSION_KIND,
-        t("session-clipboard"),
+    offer::<ClipboardAction>(
+        ResourceSpec::new(
+            CLIPBOARD_RESOURCE,
+            tilo_action_policy::roles::SESSION_KIND,
+            t("session-clipboard"),
+        )
+        .with_granted_reading(),
     )
-    .with_granted_reading()
-    .with_action(crate::controls::action(
-        "paste-files",
-        t("session-clipboard-paste-files"),
-        vec![ActionParam::required_owned(
-            "destination",
-            ParamType::Text,
-            t("session-param-paste-destination"),
-        )],
-        |args| SessionCommand::PasteFiles {
-            destination: args.text("destination").unwrap_or_default().to_owned(),
-        },
-    ))
 }
 
 /// How often the fabric is read when nothing was copied here.

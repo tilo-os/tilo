@@ -530,6 +530,35 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     assert!(!rig.signals.quiet());
 }
 
+/// The switch the panel shows is a verb of the centre: turning it on holds
+/// the next banner back, and the centre says why it is held.
+#[test]
+fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
+    let rig = rig();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+
+    invoke(&mut served, "set-quiet", serde_json::json!({ "on": true }));
+    assert!(served.poll(), "the switch changed the centre's reading");
+    assert_eq!(
+        centre_of(&served).quiet.as_deref(),
+        Some(notifications::quiet_label(&QuietReason::DoNotDisturb).as_str()),
+    );
+
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
+    assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
+
+    invoke(&mut served, "set-quiet", serde_json::json!({ "on": false }));
+    assert!(served.poll(), "the switch changed the centre's reading");
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(rig.feed().banners.len(), 1, "banners come back");
+    assert!(centre_of(&served).quiet.is_none());
+}
+
 /// While an app presents it holds the machine from going idle, which is how
 /// the desk knows the screen is being watched by others: a notification
 /// arriving then makes no sound, its banner is held, and the bar and the

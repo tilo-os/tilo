@@ -1784,10 +1784,9 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(mount::clipboard::Served::new(
-                Rc::clone(&shared.clipboard),
-                Rc::clone(&shared.commands),
-            )));
+            .add(Box::new(mount::clipboard::Served::new(Rc::clone(
+                &shared.clipboard,
+            ))));
         // What people said to this person is personal too: the centre
         // publishes its rows itself, as a reading only a granted caller
         // reads, and the dismiss and act verbs the panel invokes.
