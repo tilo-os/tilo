@@ -417,6 +417,7 @@ fn cost_at_1080p() {
         sampling: Sampling::Smooth,
         cell_px: 0.0,
         refraction: Refraction::NONE,
+        legible: crate::backdrop::Legible::ANY,
         below: stripes(target.0, target.1),
         ground,
     };
@@ -931,12 +932,11 @@ fn the_shipped_liquid_glass_shows_what_lies_below() {
     assert!(spread >= 20, "the panel shows nothing below: {row:?}");
 }
 
-/// The bar and a panel over a window, under Liquid Glass in one frame, both
-/// show the stripes below them: every region of the frame is substituted,
-/// not only the first. The window ground stays opaque, as every finish's
-/// does.
+/// The bar, a window and a panel over it, under Liquid Glass in one frame,
+/// all show the stripes below them: every region of the frame is
+/// substituted, not only the first, and the window's ground is glass too.
 #[test]
-fn a_liquid_bar_and_panel_in_one_frame_both_show_what_lies_below() {
+fn a_liquid_bar_window_and_panel_in_one_frame_all_show_what_lies_below() {
     let (width, height) = (256, 192);
     let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
     let ground = theme.tokens.colors.surfaces.base;
@@ -963,7 +963,11 @@ fn a_liquid_bar_and_panel_in_one_frame_both_show_what_lies_below() {
     );
     crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
     let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 2, "the bar and the panel sample");
+    assert_eq!(
+        surfaces.len(),
+        3,
+        "the bar, the window and the panel sample"
+    );
     let frame = BackdropFrame::from_single_scene(surfaces);
     let mut renderer = OffscreenRenderer::new(width, height);
     renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
@@ -973,7 +977,194 @@ fn a_liquid_bar_and_panel_in_one_frame_both_show_what_lies_below() {
         row.iter().max().unwrap() - row.iter().min().unwrap()
     };
     assert!(spread(40..120, 12) >= 12, "the bar shows nothing below");
+    assert!(spread(20..60, 120) >= 12, "the window shows nothing below");
     assert!(spread(130..180, 100) >= 12, "the panel shows nothing below");
+}
+
+/// Glass and Pixelated keep a window's ground their fill: only their
+/// floating chrome and bars sample what lies below.
+#[test]
+fn a_glass_or_pixelated_window_ground_samples_nothing() {
+    for preset in [crate::theme::Preset::Glass, crate::theme::Preset::Pixelated] {
+        let theme = Theme::preset(preset);
+        let mut scene = stripes(256, 192);
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        let window = RoundedRect::from_rect(Rect::new(8.0, 30.0, 120.0, 186.0), 12.0);
+        let ground = theme.tokens.colors.surfaces.content;
+        fill_role(
+            &mut scene,
+            Affine::IDENTITY,
+            &window,
+            SurfaceRole::Window,
+            &theme,
+            ground,
+        );
+        assert!(recording.finish().is_empty(), "{preset:?}'s window sampled");
+    }
+}
+
+/// The legible range compresses luminance evenly in contrast and keeps
+/// colour: black and white land on its ends, order is kept, a red stays
+/// red and a green green, and the whole range leaves colours as they are.
+#[test]
+fn the_legible_range_compresses_luminance_and_keeps_hue() {
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let legible = Legible::of(&theme, crate::chrome::panel_ground(&theme));
+    assert!(legible.compresses());
+    let luminance = |[r, g, b]: [f64; 3]| {
+        crate::color::relative_luminance(Color::new([r as f32, g as f32, b as f32, 1.0]))
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 2e-3;
+    assert!(close(luminance(legible.tone([1.0; 3])), legible.light));
+    assert!(close(luminance(legible.tone([0.0; 3])), legible.dark));
+    let greys: Vec<f64> = (0..=10)
+        .map(|step| luminance(legible.tone([f64::from(step) / 10.0; 3])))
+        .collect();
+    assert!(greys.windows(2).all(|pair| pair[0] < pair[1]), "{greys:?}");
+    let [r, g, b] = legible.tone([0.9, 0.1, 0.1]);
+    assert!(r > 2.0 * g && r > 2.0 * b, "red became {r} {g} {b}");
+    let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
+    assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
+    assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
+    // Lifted into a light theme's range, a near-black page with a faint
+    // blue cast stays a near-grey, not a lavender.
+    let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+    let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
+    let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
+    assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
+    // A red lifted stays red.
+    let [r, g, b] = lifted.tone([0.9, 0.1, 0.1]);
+    assert!(r > g + 0.1 && r > b + 0.1, "red became {r} {g} {b}");
+}
+
+/// Wide columns of saturated colour and white: a bright, photo-like
+/// backdrop with hue to keep.
+fn colour_stripes(width: u32, height: u32) -> Scene {
+    let colours = [
+        Color::from_rgb8(230, 40, 40),
+        Color::from_rgb8(40, 200, 60),
+        Color::from_rgb8(40, 80, 230),
+        Color::from_rgb8(250, 220, 40),
+        Color::WHITE,
+    ];
+    let mut scene = Scene::new();
+    for column in 0..width.div_ceil(16) {
+        let x = f64::from(column * 16);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            colours[column as usize % colours.len()],
+            None,
+            &Rect::new(x, 0.0, x + 16.0, f64::from(height)),
+        );
+    }
+    scene
+}
+
+/// A white page with lines of dark text on it.
+fn white_page(width: u32, height: u32) -> Scene {
+    let mut scene = Scene::new();
+    let page = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &page);
+    for line in 0..height / 12 {
+        let y = f64::from(line * 12 + 4);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(20, 20, 24),
+            None,
+            &Rect::new(6.0, y, f64::from(width) - 30.0, y + 4.0),
+        );
+    }
+    scene
+}
+
+/// `below` with a window filling most of it and a floating panel over that,
+/// in `theme`, rendered with the backdrop pass.
+fn render_over(theme: &Theme, mut scene: Scene) -> Vec<u8> {
+    let (width, height) = (256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    let window = RoundedRect::from_rect(Rect::new(4.0, 4.0, 60.0, 188.0), 12.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &window,
+        SurfaceRole::Window,
+        theme,
+        theme.tokens.colors.surfaces.content,
+    );
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, theme);
+    let frame = BackdropFrame::from_single_scene(recording.finish());
+    let mut renderer = OffscreenRenderer::new(width, height);
+    renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
+    renderer.render(&scene, Color::BLACK)
+}
+
+/// Over a white page and over bright colour, text on every translucent
+/// finish's panel (and, under Liquid Glass, on its window) keeps the
+/// theme's contrast floor at every pixel, while what lies below still
+/// shows: compressed, not flattened.
+#[test]
+fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_finish() {
+    use crate::theme::Preset;
+    let width = 256;
+    let floor = crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST - 0.1;
+    for preset in [
+        Preset::LiquidGlass,
+        Preset::LiquidGlassLight,
+        Preset::Glass,
+        Preset::Pixelated,
+    ] {
+        let theme = Theme::preset(preset);
+        let ink = theme.tokens.colors.text_dim;
+        for (name, below) in [
+            ("white page", white_page(256, 192)),
+            ("colour", colour_stripes(256, 192)),
+        ] {
+            let seen = render_over(&theme, below);
+            let mut areas = vec![("panel", (70..186, 54..140))];
+            if matches!(preset, Preset::LiquidGlass | Preset::LiquidGlassLight) {
+                areas.push(("window", (10..54, 20..170)));
+            }
+            for (area, (xs, ys)) in areas {
+                for y in ys.step_by(3) {
+                    for x in xs.clone().step_by(3) {
+                        let [r, g, b, _] = pixel(&seen, width, x, y);
+                        let ratio =
+                            crate::color::contrast_ratio(ink, Color::from_rgba8(r, g, b, 255));
+                        assert!(
+                            ratio >= floor,
+                            "{preset:?} {area} over the {name} at ({x}, {y}): {ratio:.2}:1"
+                        );
+                    }
+                }
+            }
+        }
+        // Over the colour, the panel still shows it: not one flat colour.
+        let seen = render_over(&theme, colour_stripes(256, 192));
+        let row: Vec<u16> = (100..160)
+            .map(|x| brightness(pixel(&seen, width, x, 96)))
+            .collect();
+        let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
+        assert!(spread >= 6, "{preset:?} flattens the colour: {row:?}");
+    }
+}
+
+/// Under Liquid Glass, a red column shows red through the panel and a green
+/// one green: the compression dims what lies below without greying it.
+#[test]
+fn liquid_glass_keeps_the_colour_of_what_lies_below() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let seen = render_over(&theme, colour_stripes(256, 192));
+    // Columns are 16 px: red at 80..96, green at 96..112 (column 5 and 6
+    // of five colours repeating: 5 % 5 = red, 6 % 5 = green).
+    let [r, g, _, _] = pixel(&seen, width, 88, 96);
+    assert!(r > g + 12, "red shows as {r} {g}");
+    let [r, g, _, _] = pixel(&seen, width, 104, 96);
+    assert!(g > r + 12, "green shows as {r} {g}");
 }
 
 /// Over the stripes, a Liquid panel's rim shows what lies further in (the
@@ -1116,4 +1307,109 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
             .any(|value| value.abs_diff(brightness(ground)) > 6),
         "the cells are the placeholder's flat ground: {row:?}"
     );
+}
+
+/// Under Liquid Glass: the stripes, the bar, a window at `window_x`, then
+/// `mark` (drawn over the window, under the panel) and the panel.
+fn liquid_desk(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let ground = theme.tokens.colors.surfaces.base;
+    let mut scene = stripes(256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, 256.0, 24.0), 0.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &bar,
+        SurfaceRole::Bar,
+        &theme,
+        ground,
+    );
+    let window = RoundedRect::from_rect(Rect::new(window_x, 30.0, window_x + 112.0, 186.0), 12.0);
+    fill_role(
+        &mut scene,
+        Affine::IDENTITY,
+        &window,
+        SurfaceRole::Window,
+        &theme,
+        ground,
+    );
+    if let Some(mark) = mark {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(220, 30, 30),
+            None,
+            &mark,
+        );
+    }
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, &theme);
+    (scene, BackdropFrame::from_single_scene(recording.finish()))
+}
+
+/// A frame whose backdrops have not changed shows every region from the
+/// sample it kept, with no pass; a region whose backdrop changed (a window
+/// moved, something drawn under the panel) is taken anew, the others kept,
+/// and the frame matches one rendered from scratch.
+#[test]
+fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
+    let (width, height) = (256, 192);
+    let mut renderer = OffscreenRenderer::new(width, height);
+    let show = |renderer: &mut OffscreenRenderer, (scene, frame): (Scene, BackdropFrame)| {
+        renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
+        let pixels = renderer.render(&scene, Color::BLACK);
+        (pixels, renderer.backdrop_stats())
+    };
+    let fresh = |desk: (Scene, BackdropFrame)| {
+        let mut renderer = OffscreenRenderer::new(width, height);
+        renderer.set_backdrop(Some(std::sync::Arc::new(desk.1)));
+        renderer.render(&desk.0, Color::BLACK)
+    };
+    let (first, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    assert_eq!((stats.substituted, stats.reused), (3, 0));
+    let (again, stats) = show(&mut renderer, liquid_desk(8.0, None));
+    assert_eq!(
+        (stats.substituted, stats.reused),
+        (3, 3),
+        "an idle frame ran a pass"
+    );
+    assert_eq!(first, again);
+
+    // Something new under the panel only: the bar and the window keep
+    // their samples.
+    let mark = Some(Rect::new(120.0, 60.0, 180.0, 120.0));
+    let (marked, stats) = show(&mut renderer, liquid_desk(8.0, mark));
+    assert_eq!((stats.substituted, stats.reused), (3, 2));
+    assert_eq!(marked, fresh(liquid_desk(8.0, mark)));
+
+    // The window moves: the bar keeps its sample; the window, and the
+    // panel showing it, are taken anew.
+    let (moved, stats) = show(&mut renderer, liquid_desk(20.0, mark));
+    assert_eq!((stats.substituted, stats.reused), (3, 1));
+    assert_eq!(moved, fresh(liquid_desk(20.0, mark)));
+}
+
+/// Light Liquid Glass is clear bright glass: over a white page its panel is
+/// nearly white, the page's dark lines still show through it, and a red
+/// column shows red.
+#[test]
+fn light_liquid_glass_is_clear_and_bright() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+    let seen = render_over(&theme, white_page(256, 192));
+    // Rows 4..8 of each 12 carry a line; row 10 is paper.
+    let paper = pixel(&seen, width, 128, 94);
+    assert!(
+        paper[..3].iter().all(|&c| c >= 220),
+        "the panel over paper is {paper:?}"
+    );
+    let line = pixel(&seen, width, 128, 90);
+    assert!(
+        brightness(paper) > brightness(line) + 60,
+        "the page's lines are gone: {line:?} on {paper:?}"
+    );
+    let seen = render_over(&theme, colour_stripes(256, 192));
+    let [r, g, b, _] = pixel(&seen, width, 88, 96);
+    assert!(r > g + 12 && r > b + 12, "red shows as {r} {g} {b}");
 }

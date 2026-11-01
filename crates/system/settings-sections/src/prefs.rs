@@ -1757,6 +1757,14 @@ impl AppearancePrefs {
         self.choose_theme(&theme);
         Ok(())
     }
+
+    /// Draw every app dark or light, each with the theme chosen for that
+    /// mode; a schedule stops until a theme is chosen again.
+    #[action(id = "set-dark-mode", label = "Dark mode")]
+    pub fn set_dark_mode(&mut self, on: bool) -> Result<(), ui::tilo_resource::Refusal> {
+        self.mode = if on { "dark" } else { "light" }.into();
+        Ok(())
+    }
 }
 
 impl AppearancePrefs {
@@ -1857,6 +1865,14 @@ impl ui::storage::SettingsSchema for NotificationPrefs {
 
 #[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
 impl NotificationPrefs {
+    /// Silence notifications until it is turned off again, or let them
+    /// through: banners and sounds wait, the centre still keeps them.
+    #[action(id = "set-do-not-disturb", label = "Do not disturb")]
+    pub fn set_do_not_disturb(&mut self, on: bool) -> Result<(), ui::tilo_resource::Refusal> {
+        self.do_not_disturb = on;
+        Ok(())
+    }
+
     /// Mute one app's notifications for a while, counted from when the
     /// action was made, or unmute it.
     #[action(label = "Mute an app")]

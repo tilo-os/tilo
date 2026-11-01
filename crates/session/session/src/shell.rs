@@ -1,7 +1,8 @@
-//! The shell on the native session: the tilolang shell package's top bar
-//! (`apps/tl/shell`), shown as a layer by a [`ShellPart`], kept in step with
-//! the session's desk (`crate::desk`) and asking the session's door for what
-//! the person presses.
+//! The shell on the native session: the tilolang shell package
+//! (`apps/tl/shell`) shown by a [`ShellPart`] per display — its top bar over
+//! the desktop, or the whole screen under the windows, which stand in its
+//! wells — kept in step with the session's desk (`crate::desk`) and asking the
+//! session's door for what the person presses.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,8 +10,9 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
+use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_service::Services;
-use tilo_surface_host::shell_part::{ArrangementReading, Ask};
+use tilo_surface_host::shell_part::{ArrangementReading, Ask, ShellLayer};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
@@ -23,6 +25,23 @@ use crate::panels::Held;
 /// A package does not compile: its diagnostics.
 pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
     tilo_surface_host::shell_part::compile_shell()
+}
+
+/// The device's resources the session publishes, as their surfaces: the sound, the network,
+/// Bluetooth, the battery and the displays, each its reading and the actions it offers. The
+/// shell's views read them as `so.tilo.device` (`device-surface.json` beside this crate, which
+/// the shell compiles against and a test holds to this).
+#[must_use]
+pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
+    vec![
+        tilo_audio_service::sound::surface(),
+        tilo_connectivity_service::network_surface(),
+        tilo_connectivity_service::bluetooth_surface(),
+        tilo_session_power::battery_surface(),
+        tilo_system_service::power_surface(),
+        crate::displays::surface(),
+        crate::desk_resource::surface(),
+    ]
 }
 
 /// The height of the band the chrome leaves the shell's bar, logical pixels.
@@ -70,15 +89,31 @@ pub(crate) struct Shell {
     /// The band the chrome leaves the bar, logical pixels: a window reaching into it covers a
     /// bar there.
     band: u32,
+    /// What each part stands as: the bar's band, or the whole screen.
+    layer: ShellLayer,
+    /// The wells the screen's views report, which the desktop places the windows at: `None`
+    /// for the bar, which has no windows of its own.
+    wells: Option<ui::widget::Wells>,
+    /// The services' revision the platform readings were last read at: they are read again
+    /// only when it moved.
+    services_seen: Option<u64>,
+    /// The theme the person's appearance settings make: every part draws in it, and a part
+    /// made for a display plugged in later starts in it.
+    theme: ui::Theme,
 }
 
 impl Shell {
-    /// The shell's bar over every output of `compositor`, published on `doors`.
+    /// The shell over every output of `compositor` as `layer`, published on `doors`. The
+    /// whole screen's views report their wells to `wells`, the handle the window policy
+    /// places every window by ([`tilo_surface_host::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut Doors,
         desk: Desk,
         scale: f64,
+        layer: ShellLayer,
+        wells: Option<ui::widget::Wells>,
+        theme: ui::Theme,
     ) -> Result<Self, String> {
         let packages = compile()?;
         let app = packages
@@ -99,6 +134,10 @@ impl Shell {
             person: String::new(),
             scale,
             band: band(),
+            layer,
+            wells,
+            services_seen: None,
+            theme,
         };
         shell.person = shell.desk.person.clone();
         shell.follow_outputs(compositor, doors);
@@ -160,12 +199,14 @@ impl Shell {
                 // other display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
+            self.layer,
             // The bar's band, at rest: what the chrome leaves it.
             self.band,
             self.scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
-            None,
+            self.wells.clone(),
         );
+        part.set_theme(self.theme.clone());
         part.set_display(Some((output.to_owned(), rect)));
         part.set_fullscreen(fullscreen.to_vec());
         part.set_edges(self.edges());
@@ -242,6 +283,25 @@ impl Shell {
         let width = u32::try_from(x1.saturating_sub(x0)).ok()?;
         let height = u32::try_from(y1.saturating_sub(y0)).ok()?;
         Some((x0, y0, width.max(1), height.max(1)))
+    }
+
+    /// Hand the shell the readings of the platform's resources its views read (the sound, the
+    /// battery, the appearance setting), as `services` publish them, whenever what they
+    /// publish may have moved.
+    pub(crate) fn publish_readings(&mut self, services: &Services) {
+        let revision = services.revision();
+        if self.services_seen.replace(revision) == Some(revision) {
+            return;
+        }
+        // A resource no service of this device serves (no Bluetooth, no battery) is published
+        // empty: the device has none of it, so a view reads its fields as absent (off, empty)
+        // and shows the device without it.
+        for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+            let reading = services
+                .read(resource)
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+            self.link.publish_reading(resource, &ty, reading);
+        }
     }
 
     /// Hand the shell the reading of every resource a place of `arrangement` names, from what
@@ -358,9 +418,8 @@ impl Shell {
 
     /// Run what the shell asked through `invoke` (the session's door).
     ///
-    /// The shell's effects carry every argument as text
-    /// (`outside("session.run", (resource, action, [(name, value)]))`),
-    /// so each is typed here by the type the action itself declares for it: a workspace's key
+    /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the
+    /// door with every argument as text, so each is typed here by the type the action itself declares for it: a workspace's key
     /// is text even when it reads as digits, and a count is a number. `types` answers with the
     /// declared type of `(resource, action)`'s argument `name`, when the door publishes it.
     pub(crate) fn serve(
@@ -407,6 +466,14 @@ impl Shell {
             }
         }
         work
+    }
+
+    /// Draw every part in `theme`: the person changed their appearance.
+    pub(crate) fn set_theme(&mut self, theme: &ui::Theme) {
+        self.theme = theme.clone();
+        for (_, part) in &self.parts {
+            part.borrow_mut().set_theme(theme.clone());
+        }
     }
 
     /// What the bar refused since the session started, in its words: every display's, and
@@ -504,6 +571,47 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
+/// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
+/// whose band the screen's bar takes. It draws nothing and takes no pointer, and still answers
+/// the chords it answers anywhere, so a key the person presses does what it did.
+pub(crate) struct Aside<T>(pub(crate) T);
+
+impl<T: SurfaceHost> SurfaceHost for Aside<T> {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.0.claim_key(key, locked, inhibited)
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.0.key(key);
+    }
+
+    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        self.0.outputs_changed(outputs);
+    }
+
+    fn cursor(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        // It keeps up with what it hears, and shows none of it.
+        self.0.prepare_frame();
+        false
+    }
+}
+
 impl crate::Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
@@ -530,6 +638,7 @@ impl crate::Session {
         }
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
+        shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&arrangement, &self.shared.services.borrow());
         shell.publish_arrangement(arrangement);
         // What the screen says of its edges is what a bar or dock that shows only sometimes
@@ -545,6 +654,12 @@ impl crate::Session {
             return Ok(());
         }
         let doors = &self.shared.doors;
+        let search = &self.shared.search;
+        let room = self.shared.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        });
         let resources = doors.resources();
         shell.serve(
             |resource, action, name| {
@@ -553,6 +668,22 @@ impl crate::Session {
                     .map(|param| param.ty)
             },
             |resource, action, arguments| {
+                // An app's own `open` (`session.open(app)`) starts it in the workspace in
+                // front, as the launcher's row of it does.
+                if let Some(app) = resource
+                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+                    .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
+                {
+                    return search
+                        .perform_checked(
+                            &room,
+                            tilo_desktop_search::Target::Launch {
+                                app: app.to_owned(),
+                            },
+                            &mut |own| doors.invoke(&own.address, &own.arguments).map(drop),
+                        )
+                        .map_err(|error| error.to_string());
+                }
                 doors
                     .invoke(&ActionAddress::new(resource, action), arguments)
                     .map(drop)
@@ -629,5 +760,20 @@ mod tests {
             tilo_surface_host::shell_part::shell_ids(),
             "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
         );
+    }
+
+    /// The device's surface the shell compiles against is the one the session publishes.
+    #[test]
+    fn the_device_surface_file_is_what_the_session_publishes() {
+        let published = super::device_surfaces();
+        let committed = tilolang_tilo::platform_apps::device_surfaces()
+            .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
+        if committed != published {
+            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+                .expect("a surface writes as JSON");
+            panic!(
+                "crates/session/session/device-surface.json is not what the session publishes; write:\n{text}"
+            );
+        }
     }
 }

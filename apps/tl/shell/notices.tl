@@ -2,7 +2,7 @@
 /// of the desk's notices (`session.notice`, and each action of a notice through
 /// `session.notice_action`), grouped by what sent them: an app, or the agent task that did.
 /// Each notice carries its sender's own actions, in the order its sender put them, and each
-/// action is the sender's, run through the session (`session.notify`).
+/// action is the sender's, called on the desk (`device.act_on_notice`).
 ///
 /// A banner is the centre's newest notice, lifted out of it; a group is an app's or a task's
 /// notices together. Nothing here decides what a notice means: its kind, its sender and its
@@ -16,8 +16,8 @@ view notices(d: Desk) {
     lens query: Text = ""
     let all = d.notices.sort_by(n -> n.key)
     let shown = all.matching(query)
-    row(at: .top_trailing, padding: .related) {
-        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }) {
+    row(fill, distribute: .end, padding: .related) {
+        ui.FloatingPanel(width: if space.compact { .none } else { .some(360.0) }, fill: if space.compact { 1.0 } else { 0.0 }) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)
@@ -25,7 +25,7 @@ view notices(d: Desk) {
                     spacer
                     if not all.is_empty() {
                         ui.Button("Clear all", icon: .trash, size: .small) {
-                            on press: clear_notices(d)
+                            on press: device.clear_notices(device.desk)
                         }
                     }
                 }
@@ -87,11 +87,11 @@ view notice_row(d: Desk, n: Notice) {
     row(gap: .related, align: .center, wrap: true) {
         for a in actions_of(d, n) {
             ui.Button(a.label, size: .small) {
-                on press: notice_action(n, a.key)
+                on press: device.act_on_notice(device.desk, notice: n.key, action: a.key)
             }
         }
         ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
-            on press: dismiss_notice(n)
+            on press: device.dismiss_notice(device.desk, notice: n.key)
         }
     }
 }
@@ -118,8 +118,8 @@ view banner(d: Desk) {
 view banner_full(d: Desk, n: Notice) {
     let actions = actions_of(d, n)
     ui.Banner(n.title, message: .some(banner_line(n)), kind: if n.kind == "error" { .error } else if n.kind == "warning" { .warning } else if n.kind == "success" { .success } else { .info }, action: if actions.is_empty() { .none } else { .some(actions.first()?.label ?? "Open") }) {
-        on act: notice_action(n, actions.first()?.key ?? "")
-        on dismiss: dismiss_notice(n)
+        on act: device.act_on_notice(device.desk, notice: n.key, action: actions.first()?.key ?? "")
+        on dismiss: device.dismiss_notice(device.desk, notice: n.key)
     }
 }
 
@@ -134,11 +134,11 @@ view banner_row(d: Desk, n: Notice) {
         row(gap: .related, wrap: true) {
             for a in actions_of(d, n) {
                 ui.Button(a.label, size: .small) {
-                    on press: notice_action(n, a.key)
+                    on press: device.act_on_notice(device.desk, notice: n.key, action: a.key)
                 }
             }
             ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
-                on press: dismiss_notice(n)
+                on press: device.dismiss_notice(device.desk, notice: n.key)
             }
         }
     }

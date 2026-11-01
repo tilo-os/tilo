@@ -310,15 +310,15 @@ impl Core {
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
             ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
             SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
-            StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
-            Withdraw, WorkspaceMembers,
+            StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt, TimeShift,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Viewer, Withdraw, WorkspaceMembers,
         };
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp | StrFind
-            | StrSlice | StrReplace => self.text_import(imp, mem, a),
+            StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
+            | StrFind | StrSlice | StrReplace => self.text_import(imp, mem, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
             | ListSortByKey | ListReverse | ListGetH | ListEnd | TupleNew | TupleSetI
             | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF

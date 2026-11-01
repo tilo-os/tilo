@@ -843,12 +843,41 @@ impl Core {
             self.text(a.h(1)?)?,
             self.text(a.h(2)?)?,
         );
+        let (pkg, info) = self.type_of_ref(&ty)?;
+        // A named root of an app this runtime does not run is the resource the session
+        // publishes it as: `device.sound` reads the reading of `sound`. Any other resource of
+        // such an app (`resource(id, of: T)`) is the one its id names.
+        if pkg.foreign && id == format!("root-{}", info.id) {
+            let published = pkg
+                .meta
+                .named_roots
+                .iter()
+                .find(|root| root.ty == info.id)
+                .and_then(|root| root.published.clone());
+            let Some(doc) = published else {
+                return trap(format!(
+                    "`{}` of `{}` is not published by the session",
+                    info.name, pkg.meta.app
+                ));
+            };
+            let author = Some(self.module_of_frame()?);
+            return self.ret_h(Value::Ref(RefValue {
+                target: Rc::new(ResourceRef {
+                    doc,
+                    item: None,
+                    ty: format!("{}#{}", pkg.meta.app, info.name),
+                }),
+                author,
+            }));
+        }
         let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
             return trap(format!("`{id}` is not a reference id"));
         };
-        self.type_of_ref(&ty)?;
-        // A root nobody opened yet is still the root: it reads as it would start.
-        if !target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok() {
+        // Another app's resource is its app's to know (`resource(id, of: T)`); a root nobody
+        // opened yet is still the root: it reads as it would start.
+        if !crate::foreign::is_foreign(&target)
+            && (!target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok())
+        {
             self.verify_ref(&target)?;
         }
         let author = Some(self.module_of_frame()?);

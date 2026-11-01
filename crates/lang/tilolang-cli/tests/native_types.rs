@@ -154,3 +154,43 @@ fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
         "{error}"
     );
 }
+
+/// Every package of `apps/tl` builds from its directory with its committed ids, after the
+/// packages it uses: tilolang ones among its siblings, and native apps by their committed
+/// descriptions (the shell `use`s `so.tilo.session`) and the platform's packages
+/// (`so.tilo.device`, `so.tilo.settings`).
+#[test]
+fn every_example_package_builds_from_its_directory_with_its_committed_ids() {
+    let apps = repo().join("apps/tl");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&apps)
+        .expect("apps/tl reads")
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.join("app.tl").is_file())
+        .collect();
+    dirs.sort();
+    assert!(dirs.len() >= 6, "{dirs:?}");
+    let mut natives = catalogue::native_apps(&tilolang::source::search_of(
+        dirs.first().expect("a package"),
+        &[],
+    ))
+    .expect("the native apps read");
+    natives.extend(
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read"),
+    );
+    let provided: Vec<String> = natives.iter().map(|meta| meta.app.clone()).collect();
+    for dir in dirs {
+        let order = dependency_order_with(&dir, &[], &provided)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        let built = compile_dirs(&order, &natives, &mut SeededEntropy(1))
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        for b in &built {
+            let committed = std::fs::read_to_string(b.dir.join("app.ids")).expect("app.ids");
+            assert_eq!(
+                b.compiled.ids.to_text(),
+                committed,
+                "{}: app.ids is out of date",
+                b.dir.display()
+            );
+        }
+    }
+}

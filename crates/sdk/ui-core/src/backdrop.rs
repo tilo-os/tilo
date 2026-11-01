@@ -172,6 +172,103 @@ impl Refraction {
     }
 }
 
+/// The luminance range what shows through a translucent surface is
+/// compressed into, so ink chosen against the surface's ground stays
+/// legible over anything below it: the material's band
+/// ([`material_band`]) as relative luminances. The backdrop pass maps what
+/// it sampled into it ([`Self::tone`] is the same arithmetic): luminance
+/// is compressed evenly in contrast (a contrast ratio below becomes a
+/// smaller, fixed power of itself), and each colour keeps its hue: dimmed,
+/// its channels scale with its luminance; lifted, it keeps how far its
+/// channels stand off its grey, so a near-grey stays near-grey. A bright
+/// photo shows dimmed but in its own colours and shapes, a dark page lifted
+/// without a cast, never as one flat colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Legible {
+    /// Relative luminance black maps to.
+    pub dark: f64,
+    /// Relative luminance white maps to.
+    pub light: f64,
+}
+
+impl Default for Legible {
+    fn default() -> Self {
+        Self::ANY
+    }
+}
+
+impl Legible {
+    /// No compression: what lies below shows as it is.
+    pub const ANY: Self = Self {
+        dark: 0.0,
+        light: 1.0,
+    };
+
+    /// The range a surface of `ground` under `theme` holds what shows
+    /// through it in.
+    #[must_use]
+    pub fn of(theme: &Theme, ground: Color) -> Self {
+        let (dark, light) = material_band(theme, ground);
+        let (dark, light) = (
+            crate::color::relative_luminance(dark),
+            crate::color::relative_luminance(light),
+        );
+        Self {
+            dark: dark.min(light),
+            light: dark.max(light),
+        }
+    }
+
+    /// Whether anything is compressed.
+    #[must_use]
+    pub fn compresses(&self) -> bool {
+        self.dark > 0.0 || self.light < 1.0
+    }
+
+    /// `rgb` (sRGB-encoded, 0–1) as it shows through: its relative
+    /// luminance `y` mapped so `(y + 0.05) / 0.05` becomes that ratio to
+    /// the power the band allows over the whole 21:1 range; its linear
+    /// channels' offsets from `y` carried to the new luminance, scaled down
+    /// with it where it falls and kept where it rises; and pulled toward
+    /// grey only where a channel would leave the gamut. The backdrop pass's
+    /// `tone` computes the same.
+    #[must_use]
+    pub fn tone(&self, rgb: [f64; 3]) -> [f64; 3] {
+        if !self.compresses() {
+            return rgb;
+        }
+        let linear = rgb.map(|c| {
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        let y = 0.0722f64.mul_add(linear[2], 0.2126f64.mul_add(linear[0], 0.7152 * linear[1]));
+        let power = ((self.light + 0.05) / (self.dark + 0.05)).ln() / 21f64.ln();
+        let target = (self.dark + 0.05) * ((y + 0.05) / 0.05).powf(power) - 0.05;
+        let keep = if y <= 1e-5 {
+            1.0
+        } else {
+            (target / y).min(1.0)
+        };
+        let mut out = linear.map(|c| (c - y).mul_add(keep, target));
+        let top = out[0].max(out[1]).max(out[2]);
+        if top > 1.0 {
+            let pull = (1.0 - target) / (top - target);
+            out = out.map(|c| (c - target).mul_add(pull, target));
+        }
+        out.map(|c| {
+            let c = c.clamp(0.0, 1.0);
+            if c <= 0.003_130_8 {
+                c * 12.92
+            } else {
+                1.055f64.mul_add(c.powf(1.0 / 2.4), -0.055)
+            }
+        })
+    }
+}
+
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
 pub const MAX_BACKDROP_REGIONS: usize = 4;
@@ -267,8 +364,10 @@ fn paint_body(
     );
     tokens.radius = crate::num::f32_of_f64(radius);
     tokens.params = finish.params().clone();
-    tokens.backdrop = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar)
-        && !(theme.reduce_transparency || theme.forced_colors)
+    tokens.backdrop = matches!(
+        role,
+        SurfaceRole::Window | SurfaceRole::Floating | SurfaceRole::Bar
+    ) && !(theme.reduce_transparency || theme.forced_colors)
         && takes_backdrop(scene);
     if let Some(clip) = &clip {
         scene.push_clip_layer(Fill::NonZero, transform, clip);
@@ -341,8 +440,10 @@ fn takes_backdrop(scene: &Scene) -> bool {
 /// may be translucent or nothing records: the caller draws the brush's
 /// fallback.
 ///
-/// The caller then draws the painter's glaze and holds the whole in the
-/// material's band with [`hold_in_band`], last.
+/// The backdrop pass compresses what it samples into the material's band
+/// ([`Legible`]). Light a painter glazes over the sample, and a backdrop
+/// the host provided ready-made (not the pass's), the caller holds in the
+/// band with [`hold_in_band`] after the glaze.
 pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
@@ -350,21 +451,28 @@ pub(crate) fn fill_backdrop_sample(
     sample: Sample,
     theme: &Theme,
     tint: Color,
-) -> bool {
+) -> Shown {
     let Sample { blur, lens, radius } = sample;
     if theme.reduce_transparency || theme.forced_colors {
-        return false;
+        return Shown::Fallback;
     }
     // Unblurred, a cell-sampled or a bent backdrop is still a backdrop:
     // the Pixelated set shows what lies below without smoothing it, the
     // Liquid set bends it and leaves it sharp.
     let refraction = Refraction::of(lens, radius);
     if lens.sampling == Sampling::Smooth && blur <= 0.0 && !refraction.shows_through() {
-        return false;
+        return Shown::Fallback;
     }
-    let recorded = record(scene, transform, path, blur, lens, refraction, tint);
-    let Some((image, brush_transform)) = recorded else {
-        return false;
+    let legible = Legible::of(theme, tint);
+    let recorded = record(
+        scene,
+        transform,
+        path,
+        (blur, lens, refraction, legible),
+        tint,
+    );
+    let Some((image, brush_transform, provided)) = recorded else {
+        return Shown::Fallback;
     };
     // A cell-sampled backdrop is a few texels across, each one cell: drawn
     // up at the cell grid, its texels are the cells, so it reads as pixels
@@ -383,7 +491,24 @@ pub(crate) fn fill_backdrop_sample(
         Some(brush_transform),
         path,
     );
-    true
+    if provided {
+        Shown::Provided
+    } else {
+        Shown::Compressed
+    }
+}
+
+/// How [`fill_backdrop_sample`] filled a backdrop brush.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shown {
+    /// Not at all: the caller draws the brush's fallback.
+    Fallback,
+    /// With the pass's sample, which the pass compresses into the band;
+    /// a glaze over it is the caller's to hold.
+    Compressed,
+    /// With a backdrop the host provided, which the caller holds in the
+    /// band ([`hold_in_band`]).
+    Provided,
 }
 
 /// Hold what was drawn in `path` over a backdrop inside the material's band
@@ -437,13 +562,16 @@ pub(crate) fn fill_with_ground(
         let tint = see_through_fill(theme, ground);
         if blurs(Material::Floating, theme)
             && tint.components[3] < 1.0
-            && let Some((image, brush_transform)) = record(
+            && let Some((image, brush_transform, _)) = record(
                 scene,
                 transform,
                 shape,
-                theme.tokens.colors.surfaces.material_blur_px,
-                Lens::default(),
-                Refraction::NONE,
+                (
+                    theme.tokens.colors.surfaces.material_blur_px,
+                    Lens::default(),
+                    Refraction::NONE,
+                    Legible::ANY,
+                ),
                 ground,
             )
         {
@@ -491,7 +619,10 @@ pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
 /// the band's light end, none darker than its dark end. Each channel of
 /// the ground lies between the two, so the tint drawn over it stays
 /// inside too, and a panel's text keeps its contrast over a white page, a
-/// black one or a busy one. Inside the band the backdrop shows as it is.
+/// black one or a busy one. What the backdrop pass sampled is already
+/// compressed into the band ([`Legible`]); this holds what it did not
+/// sample (a provided backdrop, the desktop picture) and light glazed over
+/// it.
 fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Theme, ground: Color) {
     use vello::peniko::{BlendMode, Compose, Mix};
     let (dark_end, light_end) = material_band(theme, ground);
@@ -536,6 +667,8 @@ pub struct RecordedBackdrop {
     pub cell_px: f64,
     /// How the backdrop is bent, in recording pixels.
     pub refraction: Refraction,
+    /// The range what shows through is compressed into.
+    pub legible: Legible,
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
@@ -566,6 +699,7 @@ impl RecordedBackdrop {
             sampling: self.sampling,
             cell_px: self.cell_px * scale,
             refraction: self.refraction.scaled(scale),
+            legible: self.legible,
             below: below(self.below),
             ground: self.ground,
         }
@@ -814,11 +948,9 @@ fn record(
     scene: &Scene,
     transform: Affine,
     shape: &impl Shape,
-    blur_px: f32,
-    lens: Lens,
-    refraction: Refraction,
+    (blur_px, lens, refraction, legible): (f32, Lens, Refraction, Legible),
     ground: Color,
-) -> Option<(ImageData, Affine)> {
+) -> Option<(ImageData, Affine, bool)> {
     RECORDING.with(|slot| {
         let mut slot = slot.borrow_mut();
         let recording = slot.as_mut()?;
@@ -866,8 +998,9 @@ fn record(
         // pixels at the part's own coordinates.
         let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
-        let image =
-            provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
+        let given = provided(key, width, height);
+        let ready_made = given.is_some();
+        let image = given.unwrap_or_else(|| placeholder(key, width, height, ground));
         // Brush space is the fill's space: undo `transform`, then map the
         // image onto the surface's bounds in recording coordinates, so the
         // backdrop stays put while the surface scales or slides in.
@@ -886,6 +1019,7 @@ fn record(
             sampling: lens.sampling,
             cell_px: cell_px * device_scale,
             refraction: refraction.scaled(device_scale),
+            legible,
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
@@ -899,7 +1033,7 @@ fn record(
         } else {
             recording.pending.push((address, surface));
         }
-        Some((image, brush_transform))
+        Some((image, brush_transform, ready_made))
     })
 }
 
@@ -986,6 +1120,8 @@ pub struct BackdropRegion {
     pub cell_px: f64,
     /// How the backdrop is bent, in target pixels.
     pub refraction: Refraction,
+    /// The range what shows through is compressed into.
+    pub legible: Legible,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
     /// The opaque panel ground: what the backdrop shows where nothing below
@@ -1035,7 +1171,10 @@ struct Pass {
     band: f32,
     strength: f32,
     dispersion: f32,
-    pad: vec2<f32>,
+    // The luminance range the last pass compresses what it shows into
+    // (`Legible`); `0`, `1` none.
+    dark: f32,
+    light: f32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -1110,22 +1249,54 @@ fn bend(point: vec2<f32>) -> vec2<f32> {
     return -normal * (min(pass_.strength, shorter) * t * t);
 }
 
-// The blur, and in the last pass the lens: the kernel is taken about the
-// point the lens shows, so the bend costs one displaced lookup (three
-// where red and blue part).
+fn linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+fn encoded(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+// What shows through, compressed into the legible range: luminance mapped
+// evenly in contrast, each channel's offset from it scaled down where it
+// falls and kept where it rises, pulled toward grey only where a channel
+// would leave the gamut. The same arithmetic as `Legible::tone`.
+fn tone(c: vec4<f32>) -> vec4<f32> {
+    if (pass_.dark <= 0.0 && pass_.light >= 1.0) {
+        return c;
+    }
+    let lin = linear(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    let y = dot(lin, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let power = log((pass_.light + 0.05) / (pass_.dark + 0.05)) / log(21.0);
+    let aim = (pass_.dark + 0.05) * pow((y + 0.05) / 0.05, power) - 0.05;
+    var keep = 1.0;
+    if (y > 1e-5) {
+        keep = min(aim / y, 1.0);
+    }
+    var out = vec3<f32>(aim) + (lin - vec3<f32>(y)) * keep;
+    let top = max(out.r, max(out.g, out.b));
+    if (top > 1.0) {
+        out = vec3<f32>(aim) + (out - vec3<f32>(aim)) * ((1.0 - aim) / (top - aim));
+    }
+    return vec4<f32>(encoded(clamp(out, vec3<f32>(0.0), vec3<f32>(1.0))), c.a);
+}
+
+// The blur, and in the last pass the lens and the legible range: the
+// kernel is taken about the point the lens shows, so the bend costs one
+// displaced lookup (three where red and blue part).
 @fragment
 fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
     if (pass_.strength <= 0.0 || pass_.band <= 0.0) {
-        return blur_at(source_uv(in.uv));
+        return tone(blur_at(source_uv(in.uv)));
     }
     let shift = bend(in.uv * pass_.size) / pass_.size;
     let seen = blur_at(source_uv(in.uv + shift));
     if (pass_.dispersion <= 0.0) {
-        return seen;
+        return tone(seen);
     }
     let red = blur_at(source_uv(in.uv + shift * (1.0 - pass_.dispersion)));
     let blue = blur_at(source_uv(in.uv + shift * (1.0 + pass_.dispersion)));
-    return vec4<f32>(red.r, seen.g, blue.b, seen.a);
+    return tone(vec4<f32>(red.r, seen.g, blue.b, seen.a));
 }
 ";
 
@@ -1138,6 +1309,9 @@ pub struct BackdropStats {
     pub substituted: usize,
     /// Regions that stay opaque: off target, or their backdrop failed to render.
     pub skipped: usize,
+    /// Of the substituted, those shown from the sample they kept: nothing
+    /// below them changed since it was taken, so no pass ran.
+    pub reused: usize,
     /// CPU time spent encoding and submitting, in microseconds. The GPU
     /// work runs ahead of the frame's own render on the same queue.
     pub encode_us: u64,
@@ -1196,6 +1370,68 @@ pub struct BackdropBlur {
     outputs: Vec<Option<Texture>>,
     /// Placeholders currently substituted on the renderer.
     substituted: Vec<ImageData>,
+    /// What each region slot's output was taken of, so a region whose
+    /// backdrop has not changed shows it again without a pass.
+    taken: Vec<Option<Taken>>,
+}
+
+/// What a region's sample was taken of: everything the pass reads. Equal
+/// to a later frame's region, the sample is still what that region shows.
+struct Taken {
+    below: Scene,
+    rect: Rect,
+    size: (u32, u32),
+    target: (u32, u32),
+    numbers: [u64; 12],
+    colours: [[u32; 4]; 2],
+}
+
+impl Taken {
+    fn of(region: &BackdropRegion, target: (u32, u32), base: Color) -> Self {
+        let lens = region.refraction;
+        Self {
+            below: region.below.clone(),
+            rect: region.rect,
+            size: (region.image.width, region.image.height),
+            target,
+            numbers: [
+                region.blur_px,
+                region.cell_px,
+                lens.strength,
+                lens.band,
+                lens.radius,
+                lens.dispersion,
+                region.legible.dark,
+                region.legible.light,
+                f64::from(u8::from(region.sampling == Sampling::Blocky)),
+                0.0,
+                0.0,
+                0.0,
+            ]
+            .map(f64::to_bits),
+            colours: [region.ground, base].map(|colour| colour.components.map(f32::to_bits)),
+        }
+    }
+
+    /// Whether `region` shows what this sample was taken of.
+    fn holds(&self, other: &Self) -> bool {
+        self.rect == other.rect
+            && self.size == other.size
+            && self.target == other.target
+            && self.numbers == other.numbers
+            && self.colours == other.colours
+            && self.below.encoding_eq(&other.below)
+    }
+}
+
+/// Whether `below` draws any of `images`: another region's sample, taken
+/// anew this frame, which it shows through itself.
+fn shows_any(below: &Scene, images: &[ImageData]) -> bool {
+    !images.is_empty()
+        && below.encoding().resources.patches.iter().any(|patch| {
+            matches!(patch, vello_encoding::Patch::Image { image, .. }
+                if images.iter().any(|taken| taken.data.id() == image.data.id()))
+        })
 }
 
 impl BackdropBlur {
@@ -1297,6 +1533,7 @@ impl BackdropBlur {
             levels: Vec::new(),
             across: None,
             outputs: Vec::new(),
+            taken: Vec::new(),
             substituted: Vec::new(),
         }
     }
@@ -1339,15 +1576,59 @@ impl BackdropBlur {
             return stats;
         }
         queue.write_buffer(&self.passes, 0, &self.strided(&pass_bytes));
+        // Samples taken anew this frame: a region that shows one through
+        // itself is taken anew too.
+        let mut fresh: Vec<ImageData> = Vec::new();
         for (region, plan) in planned {
+            let slot = plan.slot;
+            let now = Taken::of(region, target, base);
+            if self.taken.len() <= slot {
+                self.taken.resize_with(slot.saturating_add(1), || None);
+            }
+            let unchanged = self
+                .taken
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|taken| taken.holds(&now))
+                && !shows_any(&region.below, &fresh);
+            if unchanged && self.show_kept(renderer, region, slot) {
+                stats.substituted = stats.substituted.saturating_add(1);
+                stats.reused = stats.reused.saturating_add(1);
+                continue;
+            }
             if self.render_one(device, queue, renderer, region, &plan, base) {
                 stats.substituted = stats.substituted.saturating_add(1);
+                fresh.push(region.image.clone());
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = Some(now);
+                }
             } else {
                 stats.skipped = stats.skipped.saturating_add(1);
+                if let Some(taken) = self.taken.get_mut(slot) {
+                    *taken = None;
+                }
             }
         }
         stats.encode_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         stats
+    }
+
+    /// Show `slot`'s kept sample in place of `region`'s placeholder.
+    fn show_kept(&mut self, renderer: &mut Renderer, region: &BackdropRegion, slot: usize) -> bool {
+        let Some(Some(output)) = self.outputs.get(slot) else {
+            return false;
+        };
+        renderer.override_image(
+            &region.image,
+            Some(wgpu::TexelCopyTextureInfoBase {
+                texture: output.texture.clone(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            }),
+        );
+        self.substituted.push(region.image.clone());
+        true
     }
 
     /// Drop the substitutions of the last [`Self::prepare`], so later
@@ -1459,16 +1740,23 @@ impl BackdropBlur {
         let Some(last) = last else {
             return false;
         };
-        let across = ensure_texture(
-            device,
-            &mut self.across,
-            last_size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            None,
-        )
-        .view
-        .clone();
-        self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+        // A sharp sample's horizontal pass is one tap, a copy: the last
+        // pass reads the level itself.
+        let across = if plan.sigma > 0.0 {
+            let across = ensure_texture(
+                device,
+                &mut self.across,
+                last_size,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                None,
+            )
+            .view
+            .clone();
+            self.draw(device, &mut encoder, &self.blur, &last, pass, &across);
+            across
+        } else {
+            last
+        };
         pass = pass.saturating_add(1);
         if self.outputs.len() <= slot {
             self.outputs.resize_with(slot.saturating_add(1), || None);
@@ -1642,7 +1930,7 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
                     scale: [f64; 2],
                     step: [f64; 2],
                     (sigma, radius): (f64, i32),
-                    lens: Refraction| {
+                    (lens, legible): (Refraction, Legible)| {
         for value in [
             offset[0], offset[1], scale[0], scale[1], step[0], step[1], sigma,
         ] {
@@ -1657,8 +1945,8 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
             lens.band,
             if bends { lens.strength } else { 0.0 },
             lens.dispersion.max(0.0),
-            0.0,
-            0.0,
+            legible.dark,
+            legible.light,
         ] {
             bytes.extend_from_slice(&(value as f32).to_le_bytes());
         }
@@ -1669,7 +1957,13 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
                 2.0 * f64::from(target.0) / f64::from(source.0),
                 2.0 * f64::from(target.1) / f64::from(source.1),
             ];
-            push([0.0, 0.0], scale, [0.0, 0.0], (1.0, 0), Refraction::NONE);
+            push(
+                [0.0, 0.0],
+                scale,
+                [0.0, 0.0],
+                (1.0, 0),
+                (Refraction::NONE, Legible::ANY),
+            );
         }
     }
     let (width, height) = plan.levels.last().copied().unwrap_or((1, 1));
@@ -1693,7 +1987,7 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
         [1.0, 1.0],
         [1.0 / width, 0.0],
         kernel,
-        Refraction::NONE,
+        (Refraction::NONE, Legible::ANY),
     );
     // The level's texel `j` covers target pixels `source.x0 + j * texel`
     // onward, so the region's rectangle is this sub-rectangle of it.
@@ -1712,7 +2006,7 @@ fn write_passes(bytes: &mut Vec<u8>, plan: &Plan, region: &BackdropRegion) {
         scale,
         [0.0, 1.0 / height],
         kernel,
-        region.refraction,
+        (region.refraction, region.legible),
     );
 }
 

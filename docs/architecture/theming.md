@@ -203,7 +203,8 @@ The shipped presets (`Preset`, `Theme::ALL`):
 | High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
 | High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
 
-Glass, Glass light, Block, Block light, Pixelated and Liquid Glass are plain
+Glass, Glass light, Block, Block light, Pixelated, Liquid Glass and Liquid
+Glass light are plain
 documents in `crates/sdk/ui-core/themes/`.
 
 ### Validation and legibility
@@ -219,6 +220,22 @@ light angle 0–360, edge highlight and specular 0–0.5). A value admitted but
 outside the usable band (radius above 28, density outside 0.75–1.5, base
 size outside 12–18, blur above 48, band above 48) is clamped when the theme
 is built.
+
+**What shows through.** A translucent surface (any finish that samples the
+backdrop: Glass, Pixelated, Liquid) shows what lies below compressed into
+the material's band (`material_band`): on the side of the ground its ink
+stands on, as far as the theme's inks can afford (`material_spread`, at
+most 1.5:1); on the other side, to the end of the neutral ramp. The
+backdrop pass maps each sampled colour's relative luminance into that
+range evenly in contrast and keeps its hue (`backdrop::Legible`): dimmed,
+a colour's channels scale with its luminance; lifted, they keep how far
+they stand off its grey, so a dark page under light glass lifts without a
+cast. A white page under a dark theme's glass shows as a dimmed page with
+its text still on it, and a photo in its own colours, never one flat
+grey. The band's ends are the worst grounds the audit
+measures ink on. Backdrops the pass does not sample (one the compositor
+provides, the published desktop picture) and a painter's glaze are held in
+the band channel by channel instead.
 
 Legibility is measured on the materialized colours against the floors in
 `tokens/contrast.rs` (`FLOORS`). They are WCAG 2.x ratios, and text floors
@@ -281,10 +298,11 @@ interface: `PartPainter` (`paint`, `params`, `transition`), the scene a
 painter returns (fills, strokes, layers; solid, gradient, pattern and
 backdrop brushes) and the wire bytes a wasm painter exchanges. The host is
 `part_paint` in `ui-core`. It resolves a part's tokens, draws the painted
-scene, fills a backdrop brush from the backdrop pass and holds it in the
-material's band, caches settled parts and runs transitions. A backdrop
-brush takes a glaze: the painter's own ops, drawn over the sample and under
-the band, which the host applies last.
+scene, fills a backdrop brush from the backdrop pass, which compresses
+what it samples into the material's band, caches settled parts and runs
+transitions. A backdrop brush takes a glaze: the painter's own ops, drawn
+over the sample; the host holds a glaze in the band after it, channel by
+channel.
 
 **Built-in sets.** Default, Glass and Block (`part_paint::builtin`)
 implement the same `PartPainter` and draw through the same host as a
@@ -563,13 +581,26 @@ Verified against the code at the time of writing:
   light and a specular sheen; Pixelated runs the backdrop pass at one texel
   per cell and draws it unsmoothed; Liquid bends the backdrop along the
   rounded rim like a convex lens, leaves the middle sharp and lights a thin
-  rim from the theme's light angle. A lens (Glass's or Liquid's) is evaluated
+  rim from the theme's light angle; Liquid Glass ships nearly clear (tint
+  0.1 on floating chrome, no blur) and its window ground is glass too, the
+  only finish whose windows sample. A lens (Glass's or Liquid's) is evaluated
   in the backdrop pass itself: its last blur pass takes its kernel about the
   displaced point (`backdrop::Refraction`), so a bent surface costs one
-  displaced lookup and a settled one draws nothing new. Backdrops the
+  displaced lookup and a settled one draws nothing new. The pass keeps
+  each region's sample with what it was taken of (the scene below, the
+  rect, the lens, the range) and shows it again, running nothing, while
+  that is unchanged; a region whose sample another region shows through
+  itself is taken anew with it.
+  Backdrops the
   compositor provides and a strip over the published desktop are shown
-  unbent today. Glass, Glass light, Block, Block light, Pixelated and Liquid
-  Glass ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
+  unbent today and held in the band channel by channel, not compressed. A
+  window shows what lies below only where its scene is layered over it (a
+  shell surface, a shot) or the compositor provides a backdrop; an app's
+  own window over the desktop shows its fallback ground. On a dark theme
+  the band's light end is bound by the light ink, so a white page shows as
+  a mid-dark grey; Liquid Glass light is the bright glass, dark ink over
+  what shows through lifted toward white. Glass, Glass light, Block, Block
+  light, Pixelated, Liquid Glass and Liquid Glass light ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
   `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating
@@ -577,7 +608,11 @@ Verified against the code at the time of writing:
   (`material.selector`) is read by `chrome::paint_selector`; the same three
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
-  live findings and applies or exports only legible themes. Settings'
+  live findings and applies or exports only legible themes. A studio
+  theme keeps the document it was made from (`Theme::origin`), so every
+  role it does not edit (each finish, border, depth, reading face, motion
+  curve, response) round-trips; editing the floating blur or tint keeps its
+  painter. Settings'
   Appearance page offers the theme, density, interface size, face, accent,
   translucency and colour; none of them needs a theme of one's own.
 - **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`

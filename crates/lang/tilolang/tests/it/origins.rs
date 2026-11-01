@@ -56,31 +56,31 @@ fn an_outside_effect_goes_to_a_capability_the_platform_has() {
     assert_eq!(codes(unknown), ["E022"]);
 }
 
-/// `session.run` takes an action invocation as every caller of the action protocol addresses
-/// one, `(resource, action, [(argument, value)…])`; a payload of another shape (an action and
-/// positional arguments) is refused where it is written, not by the session at the press.
+/// The session takes no outside effect: its actions are called as an app's
+/// (`session.focus(window)`), so a string naming one of them is no capability.
 #[test]
-fn a_session_run_is_an_invocation_by_address() {
-    let ok = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.run\", (\"desktop:tab:{d.to}\", \"focus\", []))\n}\naction move(d: D) {\n    outside(\"session.run\", (\"desktop:chrome\", \"move-tab-to-strip\", [(\"tab\", d.to), (\"strip\", \"Main\")]))\n}";
-    assert!(codes(ok).is_empty(), "{:?}", codes(ok));
-    let positional = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.run\", (\"focus-window\", d.to))\n}";
-    assert!(
-        !codes(positional).is_empty(),
-        "an action and its arguments by position"
-    );
-    let loose = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.notify\", (\"session:desk\", \"dismiss-notice\", (\"notice\", d.to)))\n}";
-    assert!(!codes(loose).is_empty(), "arguments outside their list");
-    let text = "type D {\n    to: Text\n}\naction go(d: D) {\n    outside(\"session.act\", (d.to, d.to))\n}";
-    assert!(!codes(text).is_empty(), "session.act takes one text");
+fn the_session_takes_no_outside_effect() {
+    for capability in [
+        "session.run",
+        "session.act",
+        "session.notify",
+        "session.arrange",
+    ] {
+        let src = format!(
+            "type D {{\n    to: Text\n}}\naction go(d: D) {{\n    outside(\"{capability}\", d.to)\n}}"
+        );
+        assert_eq!(codes(&src), ["E022"], "{capability}");
+    }
 }
 
 /// An outside effect is queued on the action's resource: an action that takes none is refused
 /// where it is written, not trapped at its first press.
 #[test]
 fn an_outside_effect_needs_a_resource_to_queue_on() {
-    let none = "action go(key: Text) {\n    outside(\"session.act\", key)\n}";
+    let none = "action go(key: Text) {\n    outside(\"post\", key)\n}";
     assert_eq!(codes(none), ["E047"]);
-    let some = "type D {\n    to: Text\n}\naction go(d: D, key: Text) {\n    outside(\"session.act\", key)\n}";
+    let some =
+        "type D {\n    to: Text\n}\naction go(d: D, key: Text) {\n    outside(\"post\", key)\n}";
     assert!(codes(some).is_empty(), "{:?}", codes(some));
 }
 

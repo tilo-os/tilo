@@ -94,6 +94,7 @@ mod records;
 mod rotation;
 pub mod run;
 mod search;
+pub mod session_package;
 mod setup;
 mod sheets;
 pub mod shell;
@@ -1157,7 +1158,7 @@ impl Session {
         // band, the chrome and the input that reaches for the bar read the one
         // model.
         let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
-        let (desktop, mut policy, asks) = desk::desk(
+        let (desktop, strips, asks) = desk::desk(
             &options,
             &activity,
             notices.clone(),
@@ -1174,7 +1175,7 @@ impl Session {
         // What each open window is told of the desk it stands on, from the
         // settings as they are now; the desk wears the same theme.
         let warmth = window_warmth::Windows::new(presentation.theme.clone(), &options.person);
-        desktop.set_theme(presentation.theme);
+        desktop.set_theme(presentation.theme.clone());
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces, the windows they
         // held, and the apps those windows open again.
@@ -1260,6 +1261,15 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_doors);
+        // The shell drawing the whole screen places the windows in its wells; otherwise the
+        // desktop's strips do.
+        let mut policy = if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen)
+        {
+            desk::DeskPolicy::Wells(desktop.well_policy())
+        } else {
+            desk::DeskPolicy::Strips(strips)
+        };
+        let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
         if let Some(launch) = &options.launch {
             launch.lend_doors(Rc::clone(&window_doors));
@@ -1269,7 +1279,7 @@ impl Session {
         // windows the desk gives a tab as they appear, so one that names no
         // application directory is offered the first time it shows itself.
         downloaded::install(&mut options, &mut policy);
-        let mut compositor = start(Box::new(policy))?;
+        let mut compositor = start(policy.boxed())?;
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
         compositor.set_hosted(!options.machine.is_owned());
@@ -1395,7 +1405,13 @@ impl Session {
             &emoji.link(),
             &overlays,
         )));
-        compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
+        // The shell's whole screen draws its own bar: the desktop's steps aside, and still
+        // answers its chords.
+        if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
+            compositor.add_host(Box::new(shell::Aside(Held(Rc::clone(&chrome)))));
+        } else {
+            compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
+        }
         doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
 
         // The desk as the session publishes it, and the shell's bar over the
@@ -1421,14 +1437,19 @@ impl Session {
             tray: tray.clone(),
         };
         let desk_service = desk();
-        let shell = options
-            .shell_bar
-            .then(|| {
-                shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
-                    .map_err(|why| tracing::error!(why, "the shell's bar did not start"))
-                    .ok()
-            })
-            .flatten();
+        let shell = options.shell.and_then(|layer| {
+            shell::Shell::mount(
+                &mut compositor,
+                &mut doors,
+                desk(),
+                options.scale,
+                layer,
+                wells.clone(),
+                presentation.theme.clone(),
+            )
+            .map_err(|why| tracing::error!(why, ?layer, "the shell did not start"))
+            .ok()
+        });
         // Who is here, over the windows: the roster the bar's faces open and
         // where everyone else's pointer is.
         let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
@@ -2353,6 +2374,14 @@ impl Session {
     /// another workspace, when that workspace's picture or temperature
     /// changes, and when the person chooses another colour.
     fn follow_window_warmth(&mut self) {
+        // A theme the person's settings changed to is what the desk and the shell draw in
+        // from this frame, as every window is told it below.
+        if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
+            self.shared.desktop.set_theme(theme.clone());
+            if let Some(shell) = self.shell.as_mut() {
+                shell.set_theme(&theme);
+            }
+        }
         let Some(tabs) = &mut self.tabs else {
             return;
         };

@@ -673,11 +673,13 @@ pub fn material_spread(colors: &crate::tokens::Colors, ground: vello::peniko::Co
 }
 
 /// The darkest and the lightest colour a translucent surface of `ground`
-/// shows, whatever lies below it: the ground stepped toward each end of the
-/// theme's neutral ramp until it stands [`material_spread`] off it (or
-/// reaches the end). The backdrop pass holds what shows through inside this
-/// band before the tint is laid over it (`crate::backdrop`), so these are
-/// the worst backdrops ink on the material is measured against.
+/// shows, whatever lies below it: on the side of the ground its ink stands
+/// on, the ground stepped toward that end of the theme's neutral ramp until
+/// it stands [`material_spread`] off it (or reaches the end); on the other
+/// side, the ramp's end itself. The backdrop pass compresses what shows
+/// through into this band before the tint is laid over it
+/// (`crate::backdrop::Legible`), so these are the worst backdrops ink on
+/// the material is measured against.
 #[must_use]
 pub fn material_band(
     colors: &crate::tokens::Colors,
@@ -706,7 +708,20 @@ pub fn material_band(
         at(within)
     };
     let stops = &colors.neutral.stops;
-    let (first, last) = (toward(stops[0]), toward(stops[10]));
+    // Ink stands on one side of its ground; what shows through on the other
+    // side only parts further from it, so that side runs to the ramp's end
+    // and keeps more of what lies below.
+    let luminance = crate::color::relative_luminance;
+    let ink_lighter = luminance(colors.text_primary) > luminance(ground);
+    let far = |end: Color| {
+        let [r, g, b, _] = end.components;
+        Color::new([r, g, b, 1.0])
+    };
+    let dark_first = luminance(stops[0]) <= luminance(stops[10]);
+    let (first, last) = match (ink_lighter, dark_first) {
+        (true, true) | (false, false) => (far(stops[0]), toward(stops[10])),
+        (true, false) | (false, true) => (toward(stops[0]), far(stops[10])),
+    };
     if crate::color::relative_luminance(first) <= crate::color::relative_luminance(last) {
         (first, last)
     } else {

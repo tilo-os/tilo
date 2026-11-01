@@ -71,6 +71,43 @@ fn the_shell_ships_every_file_of_its_package() {
     );
 }
 
+/// The shell reaches the session only by calling its actions (`session.focus(window(w))`): it
+/// compiles with no outside effect at all, so no press of it is a string the door reads.
+#[test]
+fn the_shell_compiles_with_no_outside_effect() {
+    compile_shell().expect("the shell compiles");
+    for (name, text) in SHELL_FILES {
+        assert!(
+            !text.contains("outside("),
+            "{name} hands the session an outside effect; call the session's action instead"
+        );
+    }
+}
+
+/// No app names one of the session's actions as a string: each calls it on the session's
+/// package (`use so.tilo.session as session`), which the checker holds to what the door takes.
+#[test]
+fn no_app_hands_the_session_a_string() {
+    let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+    let mut pending = vec![apps];
+    let mut found = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("apps/ reads") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "tl")
+                && std::fs::read_to_string(&path)
+                    .expect("a .tl file reads")
+                    .contains("outside(\"session.")
+            {
+                found.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(found.is_empty(), "outside(\"session.…\") in {found:?}");
+}
+
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
 #[test]
@@ -109,9 +146,9 @@ fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
     );
 }
 
-/// The centre's presses are `session.notify` effects, which carry a tuple: Clear all and a
-/// notice's Dismiss each reach the session as the desk's own action, at that press rather
-/// than at the next input.
+/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
+/// and a notice's Dismiss each reach the session as that action, at that press rather than at
+/// the next input.
 #[test]
 fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
     let _settled = ui::motion::testing::settled();
@@ -275,22 +312,91 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     assert_eq!(
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
-            SWITCH_WORKSPACE.to_owned(),
-            BTreeMap::from([(WORKSPACE_ARG.to_owned(), "2".to_owned())])
+            "switch-workspace".to_owned(),
+            BTreeMap::from([("workspace".to_owned(), "2".to_owned())])
         )),
         "{:?} {:?}",
         part.work(),
         part.refusals()
     );
-    // The session ran it: the effect is settled.
+    // The session ran it.
     link.serve(|_| Ok(()));
-    for _ in 0..4 {
+    assert!(!link.has_asks());
+}
+
+/// A press on an app the person pinned to the dock calls the app's own `open`
+/// (`session.open(app)`): the session's door gets it on the app's resource, as the session
+/// publishes it.
+#[test]
+fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part();
+    let host = part.instance.host().expect("the shell runs");
+    let app = part.instance.app().to_owned();
+    let meta = host.package(&app).expect("the shell's package").meta;
+    let shell = meta
+        .named_roots
+        .iter()
+        .find(|root| root.name == SHELL_RECORD)
+        .map(|root| root.ty.clone())
+        .expect("the shell's record");
+    let shell = host
+        .root_record(&app, &shell)
+        .expect("the shell's record is made");
+    let pin = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "pin")
+        .expect("the shell's `pin`")
+        .id
+        .clone();
+    // The person pins Sheets, as from a menu.
+    host.runtime()
+        .invoke_action(
+            &tilolang_tilo::runtime::Principal::new("Pat"),
+            (
+                pin.as_str(),
+                vec![
+                    Value::resource(&shell),
+                    Value::Text("so.tilo.sheets".to_owned()),
+                    Value::Text("Sheets".to_owned()),
+                    Value::Text("table".to_owned()),
+                    Value::Text(String::new()),
+                ],
+            ),
+        )
+        .expect("Sheets is pinned");
+    // The dock rides the bottom on its own.
+    part.set_edges(HostEdges {
+        bar: false,
+        bar_top: true,
+        dock: true,
+        dock_bottom: true,
+    });
+    // The next reading of the desk's draws the dock again, over the record as it is now.
+    link.publish(DeskReading {
+        clock: "4:29 PM".to_owned(),
+        ..reading()
+    });
+    for _ in 0..6 {
         part.prepare_frame();
     }
-    assert!(!link.has_asks());
+    let labels = crate::Published::accessible_labels(&mut part);
     assert!(
-        part.origin.borrow().in_flight.is_empty(),
-        "the effect was answered"
+        part.control_bounds("Sheets").is_some(),
+        "the dock shows Sheets: {labels:?}"
+    );
+    click(&mut part, "Sheets");
+    let asked: Vec<Ask> = link.asked.borrow().iter().cloned().collect();
+    assert_eq!(
+        asked,
+        vec![Ask {
+            resource: "app.so.tilo.sheets".to_owned(),
+            action: "open".to_owned(),
+            arguments: BTreeMap::new(),
+        }],
+        "{:?}",
+        part.refusals()
     );
 }
 
@@ -377,6 +483,107 @@ fn the_part_stands_in_the_band_the_shell_records_dock_names() {
         "a dock at the bottom alone stands in the bottom band"
     );
     assert_eq!(part.widgets.placement().size, (1280, 32));
+}
+
+/// The person's arrangement: one strip on the desk, its one place a foreign window's (no
+/// record), keyed `p1`.
+fn one_window_arrangement() -> ArrangementReading {
+    ArrangementReading {
+        workspaces: vec![ArrangementWorkspaceReading {
+            key: "w1".to_owned(),
+            name: "Desk".to_owned(),
+        }],
+        rows: vec![ArrangementRowReading {
+            key: "r1".to_owned(),
+            workspace: "w1".to_owned(),
+            name: "Main".to_owned(),
+            shell: String::new(),
+        }],
+        strips: vec![ArrangementStripReading {
+            key: "s1".to_owned(),
+            workspace: "w1".to_owned(),
+            row: "r1".to_owned(),
+            width: 600,
+            placed: true,
+            canvas_width: 600,
+            canvas_height: 400,
+            ..ArrangementStripReading::default()
+        }],
+        places: vec![ArrangementPlaceReading {
+            key: "p1".to_owned(),
+            strip: "s1".to_owned(),
+            shows: "Terminal".to_owned(),
+            ..ArrangementPlaceReading::default()
+        }],
+    }
+}
+
+/// A part standing as `layer`, its wells reporting to the handle it returns, over the
+/// arrangement of one foreign window.
+fn showing_one_window(layer: ShellLayer) -> (ShellPart, ui::widget::Wells) {
+    let wells = ui::widget::Wells::new();
+    let (mut part, link) = super::tests_support::part_as(layer, reading(), Some(wells.clone()));
+    link.publish_arrangement(one_window_arrangement());
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    (part, wells)
+}
+
+/// The whole screen shows the person's arrangement between the bar and the dock, under the
+/// preset switch, and a foreign window's place is a well reported to the window policy's
+/// handle, on the output under the bar.
+#[test]
+fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
+    let (mut part, wells) = showing_one_window(ShellLayer::Screen);
+    assert!(part.below_windows(), "the windows stand over the screen");
+    let labels = crate::Published::accessible_labels(&mut part);
+    for name in ["Notifications", "Strips", "Frames", "Spaces"] {
+        assert!(
+            labels.iter().any(|label| label == name),
+            "the screen shows {name}: {labels:?}"
+        );
+    }
+    let well = wells
+        .well("p1")
+        .unwrap_or_else(|| panic!("the window's place is a well: {labels:?}"));
+    assert!(
+        well.width() >= 1.0 && well.height() >= 1.0 && well.x0 >= 0.0 && well.y0 > 0.0,
+        "the well stands on the output, under the bar: {well:?}"
+    );
+
+    // The strips show each strip's own controls; the framed canvas shows none of them, and its
+    // entry (what typed text finds is placed on the canvas) instead.
+    assert!(
+        labels.iter().any(|label| label == "Bring forward"),
+        "the strips show their controls: {labels:?}"
+    );
+    // The preset switch shows the same place on the framed canvas, its well there.
+    click(&mut part, "Frames");
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        !labels.iter().any(|label| label == "Bring forward")
+            && labels.iter().any(|label| label == "Typed"),
+        "the canvas shows: {labels:?}; refused {:?}",
+        part.refusals()
+    );
+    assert!(
+        wells.well("p1").is_some_and(|well| well.width() >= 1.0),
+        "the place is a well on the canvas"
+    );
+}
+
+/// The bar shows none of the arrangement, and reports no well.
+#[test]
+fn the_bar_shows_none_of_the_arrangement() {
+    let (mut part, wells) = showing_one_window(ShellLayer::Bar);
+    assert!(!part.below_windows(), "the bar rides over the windows");
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        !labels.iter().any(|label| label == "Frames"),
+        "the bar shows no preset switch: {labels:?}"
+    );
+    assert!(wells.well("p1").is_none(), "the bar reports no well");
 }
 
 /// The overview over a window on each of `strips`, the first window's on the first strip.
@@ -555,6 +762,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
+        ShellLayer::Bar,
         32,
         1.0,
         std::sync::Arc::new(|| {}),
@@ -575,4 +783,36 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         "a wide bar names the strip: {:?}",
         crate::Published::accessible_labels(&mut part)
     );
+}
+
+/// With a surface up the part covers its output, and the desk fills it: the dock rides the
+/// output's bottom edge however short the surface is (the notifications with none), on a
+/// phone and on a desktop, never right under what the surface holds.
+#[test]
+fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
+    for (width, height) in [(390, 844), (1280, 800)] {
+        let (mut part, _link) = crate::shell_part::tests_support::part_on(
+            DeskReading {
+                here: "centre".to_owned(),
+                ..reading()
+            },
+            (width, height),
+        );
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        assert_eq!(
+            part.widgets.placement().size,
+            (width, height),
+            "the surface covers the output"
+        );
+        let (_, y, _, h) = part
+            .control_bounds("Dock")
+            .unwrap_or_else(|| panic!("the dock shows at {width}x{height}"));
+        let bottom = y + h;
+        assert!(
+            bottom <= f64::from(height) + 0.5 && bottom >= f64::from(height) - 24.0,
+            "at {width}x{height} the dock ends at {bottom}, not at the bottom edge"
+        );
+    }
 }

@@ -50,6 +50,55 @@ struct ManifestPackage {
     name: String,
 }
 
+/// Where a resource a `surface.toml` lists is published, read beside its surface. A native app
+/// leaves both out: its resources are its records. A description of what a session publishes
+/// says, of each resource kind, the address of the one resource of it (`id`), or that each
+/// resource of it stands alone (`instances`): a window, a run.
+#[derive(Deserialize)]
+struct Published {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    instances: bool,
+}
+
+#[derive(Deserialize)]
+struct PublishedFile {
+    #[serde(default)]
+    resources: Vec<Published>,
+}
+
+fn published(text: &str) -> Result<Vec<Published>, String> {
+    let file: PublishedFile = toml::from_str(text).map_err(|error| error.to_string())?;
+    Ok(file.resources)
+}
+
+/// The address each loose action of a `surface.toml` is published on, by the action's id: the
+/// resource whose `id` the file gives. An action of a resource kind without one (a native
+/// app's, or a kind of `instances`) is sent to the resource it is called on instead.
+///
+/// # Errors
+/// The text is not a surface file, or two resources with an address publish an action of the
+/// same id, so a call of it would name neither.
+pub fn addresses(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let surfaces = parse_surfaces(text)?;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (surface, published) in surfaces.iter().zip(published(text)?) {
+        let Some(id) = published.id else {
+            continue;
+        };
+        for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
+            if let Some(other) = out.insert(verb.id.clone(), id.clone()) {
+                return Err(format!(
+                    "`{}` is published on both `{other}` and `{id}`",
+                    verb.id
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The resources a `surface.toml` lists.
 ///
 /// # Errors
@@ -77,13 +126,29 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     };
     let manifest: Manifest = toml::from_str(&read(&manifest)?)
         .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))?;
-    let surfaces = parse_surfaces(&read(&surface)?)
-        .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))?;
-    Ok(Some(package_of(
+    described(
         &manifest.package.id,
         &manifest.package.name,
-        &surfaces,
-    )))
+        &read(&surface)?,
+    )
+    .map(Some)
+    .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
+}
+
+/// The package of the app `app` named `title` whose `surface.toml` is `text`: what
+/// [`native_app`] reads from a directory, for a description a binary carries.
+///
+/// # Errors
+/// The text is not a surface file.
+pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
+    let surfaces = parse_surfaces(text)?;
+    let instances: Vec<String> = surfaces
+        .iter()
+        .zip(published(text)?)
+        .filter(|(_, published)| published.instances)
+        .map(|(surface, _)| surface.kind.clone())
+        .collect();
+    Ok(package_with(app, title, &surfaces, &instances))
 }
 
 /// The native apps among `search`: each entry an app directory itself or a directory of them.
@@ -191,6 +256,12 @@ const fn effect_class(kind: ActionKind) -> EffectClass {
 /// The package of the app `app` named `title` that publishes `surfaces`. See the module docs.
 #[must_use]
 pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
+    package_with(app, title, surfaces, &[])
+}
+
+/// [`package_of`], where each resource of a kind of `instances` is a type too, though it
+/// stores no fields: its verbs act on the one resource they are called on.
+fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[String]) -> PackageMeta {
     let mut reader = Reader {
         app,
         kinds: BTreeMap::new(),
@@ -209,7 +280,7 @@ pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
         .flat_map(|surface| surface.types.iter().map(|ty| ty.name.as_str()))
         .collect();
     for surface in surfaces {
-        if !surface.fields.is_empty() {
+        if !surface.fields.is_empty() || instances.contains(&surface.kind) {
             let short = kind_type_name(&surface.kind);
             let name = if named.contains(&short.as_str()) {
                 longer_type_name(&surface.kind)
@@ -235,6 +306,13 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    /// The id of the app's type or enum `name`: qualified by the app (`so.tilo.device#Power`),
+    /// as a resource of it is typed, so two apps' types of one name are two types wherever both
+    /// are loaded.
+    fn type_id(&self, name: &str) -> String {
+        format!("{}#{name}", self.app)
+    }
+
     fn surface(&mut self, surface: &Surface) {
         let own = self.kinds.get(&surface.kind).cloned();
         let renamed = self.named_types(surface, own.as_deref());
@@ -296,7 +374,7 @@ impl Reader<'_> {
                     })
                     .collect();
                 self.meta.enums.push(EnumMeta {
-                    id: name.clone(),
+                    id: self.type_id(&name),
                     name,
                     doc: named.doc.clone(),
                     variants,
@@ -308,7 +386,7 @@ impl Reader<'_> {
                     .filter_map(|field| self.field(&name, field, &rename))
                     .collect();
                 self.meta.types.push(TypeMeta {
-                    id: name.clone(),
+                    id: self.type_id(&name),
                     name,
                     doc: named.doc.clone(),
                     fields,
@@ -337,7 +415,7 @@ impl Reader<'_> {
             })
             .collect();
         self.meta.types.push(TypeMeta {
-            id: own.to_owned(),
+            id: self.type_id(own),
             name: own.to_owned(),
             // What people call the resource, when it says more than the type's name.
             doc: if surface.label == own {
@@ -377,8 +455,13 @@ impl Reader<'_> {
                 other if !param.required => FieldType::Option(Box::new(other)),
                 other => other,
             };
+            // A parameter tilolang code cannot give leaves the verb out when it must be given,
+            // and is left to its default when it may be left out.
             let Some(ty) = self.ty(&ty, rename) else {
-                return;
+                if param.required {
+                    return;
+                }
+                continue;
             };
             params.push(ParamMeta {
                 name: action_name(&param.name),
@@ -423,14 +506,16 @@ impl Reader<'_> {
             FieldType::Text | FieldType::RichText => MergeKind::Text,
             _ => MergeKind::Register,
         };
-        // The fields of a tuple variant are numbered; tilolang names them.
-        let name = match field.name.parse::<u32>() {
-            Ok(0) => "value".to_owned(),
-            Ok(index) => format!("value{index}"),
-            Err(_) => field.name.clone(),
+        // The fields of a tuple variant are numbered, and a reading's own keys may be
+        // kebab-cased (`user-switching`); tilolang names each as an identifier, and the id
+        // keeps the key the reading holds it under.
+        let (name, key) = match field.name.parse::<u32>() {
+            Ok(0) => ("value".to_owned(), "value".to_owned()),
+            Ok(index) => (format!("value{index}"), format!("value{index}")),
+            Err(_) => (field.name.replace('-', "_"), field.name.clone()),
         };
         Some(FieldMeta {
-            id: format!("{owner}.{name}"),
+            id: format!("{owner}.{key}"),
             name,
             ty,
             merge,
