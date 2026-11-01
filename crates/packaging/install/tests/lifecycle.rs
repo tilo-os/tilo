@@ -182,23 +182,23 @@ impl Env {
         )
     }
 
-    /// Simulate the app having saved something, in two rooms.
+    /// Simulate the app having saved something, in two workspaces.
     fn seed_state(&self) {
-        for room in ["personal", "b7c1-workspace"] {
+        for workspace in ["personal", "b7c1-workspace"] {
             let dir = self
                 .xdg_data()
                 .join("tilo-rooms")
-                .join(room)
+                .join(workspace)
                 .join("so.tilo.lifecycle");
             std::fs::create_dir_all(dir.join(".local/share")).unwrap();
             std::fs::write(dir.join(".local/share/notes.bin"), b"the user's work").unwrap();
         }
     }
 
-    fn state_exists(&self, room: &str) -> bool {
+    fn state_exists(&self, workspace: &str) -> bool {
         self.xdg_data()
             .join("tilo-rooms")
-            .join(room)
+            .join(workspace)
             .join("so.tilo.lifecycle")
             .exists()
     }
@@ -323,7 +323,7 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(ok, "{out}{err}");
         assert!(out.contains("runtime       : (none declared)"), "{out}");
         assert!(out.contains("integrity     : recorded"), "{out}");
-        assert!(out.contains("saved data    : 2 room(s)"), "{out}");
+        assert!(out.contains("saved data    : 2 workspace(s)"), "{out}");
         assert!(out.contains("personal"), "{out}");
     }
     // Phase `a_thin_package_installs_from_what_the_store_holds`.
@@ -370,7 +370,10 @@ fn uninstall_keeps_state_unless_purged() {
 
         let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--purge"]);
         assert!(ok, "{out}{err}");
-        assert!(out.contains("state    : deleted in 2 room(s)"), "{out}");
+        assert!(
+            out.contains("state    : deleted in 2 workspace(s)"),
+            "{out}"
+        );
         assert!(!env.state_exists("personal"));
         assert!(!env.state_exists("b7c1-workspace"));
     }
@@ -446,7 +449,7 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
             out.contains("plan: uninstall so.tilo.lifecycle 1.0.0"),
             "{out}"
         );
-        assert!(out.contains("saved data: 2 room(s)"), "{out}");
+        assert!(out.contains("saved data: 2 workspace(s)"), "{out}");
         assert!(out.contains("(nothing was removed)"), "{out}");
         assert!(env.payload_root().exists());
     }
