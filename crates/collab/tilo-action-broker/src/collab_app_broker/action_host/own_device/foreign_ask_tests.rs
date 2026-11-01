@@ -177,7 +177,10 @@ fn a_person_at_a_foreign_device_is_asked_on_one_of_their_own() {
         .request_witness(&fixture.caller, None, &request());
     let asked = own_devices.asked_about();
     assert_eq!(asked.len(), 1, "one question names one invocation");
-    assert_eq!(asked[0].room, fixture.room, "about the room it runs in");
+    assert_eq!(
+        asked[0].room, fixture.workspace,
+        "about the workspace it runs in"
+    );
     assert_eq!(
         (
             asked[0].action_label.as_str(),
@@ -242,7 +245,7 @@ fn an_unanswered_question_refuses_the_invocation() {
     let request = request();
     let binding = fixture
         .state
-        .witness_binding("person", &fixture.room, &request);
+        .witness_binding("person", &fixture.workspace, &request);
     // Nobody answers on the person's own device: what comes back to the
     // foreign device is a refusal, never a confirmation.
     let answered = fixture

@@ -132,6 +132,7 @@ fn turn(orientation: DeviceOrientation) -> Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 
     fn output(name: &str) -> OutputInfo {
         OutputInfo {
@@ -141,6 +142,7 @@ mod tests {
             enabled: true,
             rect: Some((0, 0, 800, 600)),
             description: None,
+            colour: DisplayCapabilities::sdr_default(),
         }
     }
 

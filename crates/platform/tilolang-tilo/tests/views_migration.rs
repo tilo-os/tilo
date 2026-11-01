@@ -14,7 +14,7 @@ use tilolang_runtime::{InvokeOutcome, Principal, Value};
 use crate::fixtures::Replica;
 
 const VIEWS: &str = "so.tilo.lang.views";
-const ROOM: &str = "7f0c2b9e-4a51-4c1e-9d6b-3a2f1e0d9c8b";
+const WORKSPACE: &str = "7f0c2b9e-4a51-4c1e-9d6b-3a2f1e0d9c8b";
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
 
 macro_rules! app {
@@ -107,9 +107,9 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     before.commit();
     let kept = reference(&answer);
 
-    // This device's copy of it, where a room this device governs keeps it.
+    // This device's copy of it, where a workspace this device governs keeps it.
     let documents: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-    let mut workspace = room_document(&documents, VIEWS, ROOM).unwrap();
+    let mut workspace = room_document(&documents, VIEWS, WORKSPACE).unwrap();
     workspace.save(&mut before.doc).unwrap();
 
     // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
@@ -118,8 +118,8 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         .unwrap()
         .storage_key();
     let (doc, _writer) = open_stored_adopting(
-        record_document(&documents, VIEWS, ROOM, &key).unwrap(),
-        Some(room_document(&documents, VIEWS, ROOM).unwrap()),
+        record_document(&documents, VIEWS, WORKSPACE, &key).unwrap(),
+        Some(room_document(&documents, VIEWS, WORKSPACE).unwrap()),
     );
     let (after, _) = Replica::new("ada", doc, &[app!("tasks"), app!("chat"), app!("views")]);
 

@@ -74,7 +74,7 @@ fn broker_with_tree(
     let mut workspace = Workspace::new(WorkspaceId(95), "Owner import");
     workspace.set_owner("owner");
     workspace.admit_agent("limited", KindSet::ALL);
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
@@ -97,7 +97,7 @@ fn broker_with_tree(
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(&room),
+            provider: tilo_actions::remote::workspace_provider(&workspace_id),
             address: tilo_actions::ActionAddress::new(RESOURCE, ACTION),
         },
         argument: InvokeArgument::Json(
@@ -113,7 +113,7 @@ fn broker_with_tree(
     (
         state,
         service,
-        Caller::local_person("owner").in_room(room),
+        Caller::local_person("owner").in_room(&workspace_id),
         request,
         tree,
     )
@@ -147,12 +147,18 @@ fn witness(state: &AppBrokerState, actor: &str, request: &InvokeRequest) -> Conf
 
 #[test]
 fn owner_governance_rejects_witness_from_other_original_contexts() {
-    for changed in ["provider", "room", "revision", "invocation", "publication"] {
+    for changed in [
+        "provider",
+        "workspace",
+        "revision",
+        "invocation",
+        "publication",
+    ] {
         let (state, service, owner, mut request) = broker(true);
         let mut binding = state.witness_binding("owner", owner.room().unwrap(), &request);
         match changed {
             "provider" => binding.provider = "another-provider".into(),
-            "room" => binding.room = "another-workspace".into(),
+            "workspace" => binding.workspace = "another-workspace".into(),
             "revision" => binding.revision = Some("previous-publication".into()),
             "invocation" => binding.invocation = tilo_actions::InvocationId::new(),
             "publication" => binding.publication.0 = binding.publication.0.wrapping_add(1),

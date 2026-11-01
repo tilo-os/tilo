@@ -21,8 +21,8 @@ pub(crate) fn fixture() -> Fixture {
     fixture_with(&root, key.clone(), key, join::MemberRole::Editor, false)
 }
 
-/// A device of a second person, enrolled into a room another person governs:
-/// a participant that neither governs nor hosts the room.
+/// A device of a second person, enrolled into a workspace another person governs:
+/// a participant that neither governs nor hosts the workspace.
 pub(crate) fn member_device_fixture() -> Fixture {
     fixture_with(
         &SigningKey::from_bytes(&[96; 32]),
@@ -33,8 +33,8 @@ pub(crate) fn member_device_fixture() -> Fixture {
     )
 }
 
-/// A device of `root` at `key`, enrolled into the room `governor_key`'s
-/// device of the room owner's root governs.
+/// A device of `root` at `key`, enrolled into the workspace `governor_key`'s
+/// device of the workspace owner's root governs.
 fn fixture_with(
     root: &SigningKey,
     key: SigningKey,
@@ -49,7 +49,7 @@ fn fixture_with(
     let mut governor = testing::governor::TestGovernor::empty_interactive(
         testing::certificate(&governor_root, &governor_key, "Governor"),
         governor_key,
-        testing::ROOM,
+        testing::WORKSPACE,
     )
     .unwrap();
     let endpoint = iroh_base::EndpointAddr::new(
@@ -140,12 +140,12 @@ fn route() -> ApplicationRecord {
 }
 
 fn created_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
-    let room = crate::owner::RoomId::parse(testing::ROOM).unwrap();
+    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
     assert!(
         fixture
             .owner
             .prepare_application_record(
-                room,
+                workspace,
                 &fixture.certificate,
                 &fixture.key,
                 &route(),
@@ -157,10 +157,10 @@ fn created_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
 }
 
 fn current_capture(fixture: &Fixture) -> crate::owner::CommittedDocument {
-    let room = crate::owner::RoomId::parse(testing::ROOM).unwrap();
+    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
     fixture
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let crate::owner::DocumentRead::Captured(document) = view.read_document(
                 fixture.certificate.device_public_key,
                 "so.tilo.chat",
@@ -197,7 +197,7 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
     fixture
         .owner
         .with_current(
-            crate::owner::RoomId::parse(testing::ROOM).unwrap(),
+            crate::owner::RoomId::parse(testing::WORKSPACE).unwrap(),
             |view| {
                 let result = view.read_document(
                     fixture.certificate.device_public_key,
@@ -224,13 +224,13 @@ fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
 #[test]
 fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody() {
     let fixture = fixture();
-    let room = crate::owner::RoomId::parse(testing::ROOM).unwrap();
+    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
     assert!(
         fixture
             .owner
             .prepare_application_record(
-                room,
+                workspace,
                 &fixture.certificate,
                 &fixture.key,
                 &route(),
@@ -243,7 +243,7 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
         !fixture
             .owner
             .prepare_application_record(
-                room,
+                workspace,
                 &fixture.certificate,
                 &fixture.key,
                 &route(),
@@ -254,7 +254,7 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let reopened = open_file(&path).unwrap();
     reopened
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let crate::owner::DocumentRead::Captured(document) = view.read_document(
                 fixture.certificate.device_public_key,
                 "so.tilo.chat",
@@ -277,17 +277,17 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
         .unwrap();
     // The original signed snapshot is durably retained, but the native relay
     // only sends admitted incremental projections, never raw snapshots.
-    let custody = reopened.outgoing_status(room, fixture.now).unwrap();
+    let custody = reopened.outgoing_status(workspace, fixture.now).unwrap();
     assert_eq!(custody.pending, 1);
     assert_eq!(custody.blocked, 1);
     assert!(
         reopened
-            .reconcile_outgoing(room, &fixture.key, fixture.now)
+            .reconcile_outgoing(workspace, &fixture.key, fixture.now)
             .unwrap_err()
             .contains("fresh genuine governor checkpoint")
     );
     reopened
-        .with_outgoing(room, fixture.now, |_, outgoing| {
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
             assert_eq!(
                 outgoing.entries().count(),
                 0,
@@ -303,11 +303,11 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     let fixture = fixture();
-    let room = crate::owner::RoomId::parse(testing::ROOM).unwrap();
+    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
     fixture
         .owner
         .prepare_application_record(
-            room,
+            workspace,
             &fixture.certificate,
             &fixture.key,
             &route(),
@@ -316,7 +316,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
         .unwrap();
     let message = fixture
         .owner
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let mut document = automerge::AutoCommit::new();
             document
                 .put(automerge::ROOT, "authored", "keep this user content")
@@ -339,7 +339,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
         !fixture
             .owner
             .prepare_application_record(
-                room,
+                workspace,
                 &fixture.certificate,
                 &fixture.key,
                 &route(),
@@ -350,7 +350,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let reopened = open_file(&path).unwrap();
     reopened
-        .with_current(room, |view| {
+        .with_current(workspace, |view| {
             let document =
                 automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
                     .unwrap();
@@ -365,7 +365,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
             );
             assert_eq!(
                 view.peer().document("so.tilo.chat", ""),
-                fixture.owner.with_current(room, |current| Ok(current
+                fixture.owner.with_current(workspace, |current| Ok(current
                     .peer()
                     .document("so.tilo.chat", "")))?
             );
@@ -377,14 +377,14 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
 #[test]
 fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_mutation() {
     let fixture = fixture();
-    let room = crate::owner::RoomId::parse(testing::ROOM).unwrap();
+    let workspace = crate::owner::RoomId::parse(testing::WORKSPACE).unwrap();
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
     assert!(
         fixture
             .owner
             .prepare_application_record(
-                room,
+                workspace,
                 &fixture.certificate,
                 &SigningKey::from_bytes(&[94; 32]),
                 &route(),
@@ -400,7 +400,7 @@ fn creation_refuses_wrong_key_wrong_certificate_and_undeclared_kind_without_muta
     assert!(
         fixture
             .owner
-            .prepare_application_record(room, &other, &fixture.key, &route(), fixture.now)
+            .prepare_application_record(workspace, &other, &fixture.key, &route(), fixture.now)
             .is_err()
     );
     assert!(

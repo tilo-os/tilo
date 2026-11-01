@@ -74,8 +74,11 @@ pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 
-mod room_status;
-pub use room_status::RoomStatus;
+mod workspace_status;
+pub use workspace_status::WorkspaceStatus;
+
+/// The name the old shell still reads it by; it goes when the shell does.
+pub type RoomStatus = WorkspaceStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {

@@ -31,7 +31,7 @@ fn heads(peer: &StatePeer) -> Vec<automerge::ChangeHash> {
         .unwrap()
         .get_heads()
 }
-/// Host outbox from the double-publish bug: [snapshot N, SyncResp(room with
+/// Host outbox from the double-publish bug: [snapshot N, SyncResp(workspace with
 /// coverage N+1), snapshot N+1], plus the receiver after that whole batch.
 struct DoublePublish {
     receiver: StatePeer,
@@ -48,7 +48,7 @@ fn double_publish() -> DoublePublish {
     let older = snapshot(&mut author, &key, later, "N");
     let newer = snapshot(&mut author, &key, later, "N+1");
     assert_eq!(seq(&newer), seq(&older).checked_add(1).unwrap());
-    let room = author.room_message();
+    let workspace = author.workspace_message();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
 
     let first = receiver
@@ -60,7 +60,9 @@ fn double_publish() -> DoublePublish {
     );
     assert_eq!(receiver.pending_count(), 1);
     // The governance drain retries N against coverage N+1: skipped, not rejected.
-    let governance = receiver.receive_from_report(origin, room, later).unwrap();
+    let governance = receiver
+        .receive_from_report(origin, workspace, later)
+        .unwrap();
     assert_eq!(governance.summary().rejected, 0);
     assert!(governance.settled().is_empty(), "superseded N was admitted");
     assert_eq!(receiver.pending_count(), 0);
@@ -103,7 +105,7 @@ fn superseded_checkpoint_skip_directly_after_governance_does_not_apply() {
     let newer = snapshot(&mut author, &key, later, "N+1");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     receiver
-        .receive_from_report(origin, author.room_message(), later)
+        .receive_from_report(origin, author.workspace_message(), later)
         .unwrap();
     let rows = receiver.rows();
     let floors = receiver.replay_floors();
@@ -129,10 +131,12 @@ fn superseded_checkpoint_lower_coverage_is_never_skipped() {
     let mut author = receiver.clone();
     let later = now.checked_add(Duration::from_secs(301)).unwrap();
     let covered = snapshot(&mut author, &key, later, "N");
-    let room = author.room_message();
+    let workspace = author.workspace_message();
     let ahead = snapshot(&mut author, &key, later, "N+1");
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.receive_from_report(origin, room, later).unwrap();
+    receiver
+        .receive_from_report(origin, workspace, later)
+        .unwrap();
     let route = Route {
         app: "test.app".into(),
         record: "tab:1".into(),
@@ -177,7 +181,7 @@ fn superseded_checkpoint_same_sequence_different_digest_stays_an_error() {
     assert_eq!(seq(&genuine), seq(&counterfeit));
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     receiver
-        .receive_from_report(origin, author.room_message(), later)
+        .receive_from_report(origin, author.workspace_message(), later)
         .unwrap();
     let rows = receiver.rows();
     let durable = receiver.durable().unwrap();

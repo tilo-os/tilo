@@ -68,9 +68,9 @@ impl StatePeer {
         }
     }
 
-    /// Make `change` to the room's members, signed by `key`, the caller's
+    /// Make `change` to the workspace's members, signed by `key`, the caller's
     /// own device: what it writes is admitted as far as the caller's grants
-    /// reach where they made it (`room::membership`), here as on every
+    /// reach where they made it (`workspace::membership`), here as on every
     /// device that receives it.
     pub(super) fn apply_member_change(
         &mut self,
@@ -86,7 +86,7 @@ impl StatePeer {
                 .ok_or_else(|| "a member is named by their user root key".to_owned())
         };
         let by = hex::encode(caller.user_public_key);
-        let room = self.core.room.clone();
+        let workspace = self.core.workspace.clone();
         match change {
             Change::AddMember { person: who, role } | Change::SetRole { person: who, role } => {
                 let role = super::member_role_from_role(*role)
@@ -111,7 +111,7 @@ impl StatePeer {
                 person(who)?;
                 self.governance_mut().put_governed_grants(
                     &[roles::restriction_grant(
-                        &room,
+                        &workspace,
                         who,
                         *until_ms,
                         Subject::Person(by),
@@ -147,9 +147,9 @@ impl StatePeer {
         }
     }
 
-    /// Share `node` with the room as `access` gives, under `share`, as the
+    /// Share `node` with the workspace as `access` gives, under `share`, as the
     /// caller: the grants a receiver admits from them
-    /// ([`crate::room::share::share_grants`]). A share the room already
+    /// ([`crate::workspace::share::share_grants`]). A share the workspace already
     /// holds is no change.
     fn apply_share(
         &mut self,
@@ -165,8 +165,8 @@ impl StatePeer {
         let authority = member.authority(&bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let device = hex::encode(caller.device_public_key);
-        let grants = crate::room::share::share_grants(
-            (self.core.room_doc.as_deref(), &member.policy),
+        let grants = crate::workspace::share::share_grants(
+            (self.core.workspace_doc.as_deref(), &member.policy),
             (&member.person, &device, &authority, &cx),
             share,
             node,
@@ -182,7 +182,7 @@ impl StatePeer {
     }
 
     /// End the share `share` as the caller
-    /// ([`crate::room::share::ended_by`]): no grant of it theirs to end is
+    /// ([`crate::workspace::share::ended_by`]): no grant of it theirs to end is
     /// no change.
     fn apply_unshare(
         &mut self,
@@ -195,8 +195,11 @@ impl StatePeer {
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let cx = tilo_action_policy::Context::at_time(now);
-        let ended =
-            crate::room::share::ended_by(&member.policy, (&member.person, &authority, &cx), share);
+        let ended = crate::workspace::share::ended_by(
+            &member.policy,
+            (&member.person, &authority, &cx),
+            share,
+        );
         if ended.is_empty() {
             return Ok(false);
         }
@@ -204,7 +207,7 @@ impl StatePeer {
             .remove_governed_grants(&ended, key, now)
     }
 
-    /// Give or take back a grant in the room, as the caller: the room's
+    /// Give or take back a grant in the workspace, as the caller: the workspace's
     /// policy decides, exactly as on a device that governs it here.
     fn apply_governance_grant_command(
         &mut self,
@@ -245,10 +248,10 @@ impl StatePeer {
     }
 }
 impl PeerWorkspace<'_> {
-    /// Check that this admitted device may grant in the room now.
+    /// Check that this admitted device may grant in the workspace now.
     ///
     /// # Errors
-    /// Refuses stale membership or a person not granted the room's grant action.
+    /// Refuses stale membership or a person not granted the workspace's grant action.
     pub fn check_workspace_administration(
         self,
         device: [u8; 32],
@@ -256,7 +259,7 @@ impl PeerWorkspace<'_> {
     ) -> Result<(), String> {
         let member = self.peer.membership(device, now)?;
         if !member.allows(
-            &roles::governance_action(&self.peer.core.room, roles::governance::GRANT),
+            &roles::governance_action(&self.peer.core.workspace, roles::governance::GRANT),
             roles::GOVERNANCE_KIND,
             now,
         ) {
@@ -338,7 +341,7 @@ impl PeerWorkspaceMut<'_> {
 }
 
 impl StatePeer {
-    /// Apply a command only the room's administrators may give: letting a
+    /// Apply a command only the workspace's administrators may give: letting a
     /// person author apps, or adding or removing an agent.
     fn apply_administered_command(
         &mut self,
@@ -351,14 +354,15 @@ impl StatePeer {
             .check_workspace_administration(caller.device_public_key, now)?;
         let member = self.membership(caller.device_public_key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            let grant = roles::app_authorship(&self.core.room, app, Subject::Person(member.person));
+            let grant =
+                roles::app_authorship(&self.core.workspace, app, Subject::Person(member.person));
             if self.require_governance_writer(key, now).is_ok() {
                 return self
                     .governance_mut()
                     .put_governed_grants(&[grant], key, now);
             }
             // Anyone else gives it as a grant of their own, as every
-            // receiver admits it from them (`room::membership`).
+            // receiver admits it from them (`workspace::membership`).
             if member.policy.grants.iter().any(|held| held.id == grant.id) {
                 return Ok(false);
             }
@@ -370,7 +374,7 @@ impl StatePeer {
             );
         }
         let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
-        let room = member.policy.node();
+        let workspace = member.policy.node();
         let removals = member
             .policy
             .grants
@@ -378,7 +382,7 @@ impl StatePeer {
             .filter(|grant| {
                 grant.subject == subject
                     && (matches!(command, WorkspaceMembershipCommand::RemoveAgent { .. })
-                        || grant.node.is_within(&room))
+                        || grant.node.is_within(&workspace))
             })
             .map(|grant| grant.id.clone())
             .collect::<Vec<GrantId>>();
@@ -390,7 +394,8 @@ impl StatePeer {
             .remove_governed_grants(&removals, key, now)?;
         let added = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
-                let grants = preset.grants(&self.core.room, agent, &Subject::Person(member.person));
+                let grants =
+                    preset.grants(&self.core.workspace, agent, &Subject::Person(member.person));
                 candidate
                     .governance_mut()
                     .put_governed_grants(&grants, key, now)?

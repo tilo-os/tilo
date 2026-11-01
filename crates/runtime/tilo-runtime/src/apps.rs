@@ -7,7 +7,7 @@
 //! Sandbox or Seatbelt through `launcher-macos` on macOS. Without one the
 //! launch is refused; nothing here starts an app unconfined.
 //!
-//! Only a process this runtime launched, for exactly that app and room and
+//! Only a process this runtime launched, for exactly that app and workspace and
 //! still the same process, is attested to the broker.
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
@@ -45,7 +45,7 @@ pub struct Apps {
     /// The stores the profile reads; `None` when no app store can be
     /// located, which is a catalogue with nothing in it.
     catalog: Option<package_store::Catalog>,
-    room: String,
+    workspace: String,
     root: PathBuf,
     /// Where app containers live on macOS, beside the runtime profile.
     #[cfg(target_os = "macos")]
@@ -61,15 +61,15 @@ pub struct Apps {
 }
 
 impl Apps {
-    /// The apps of the profile at `profile`, serving `room`, from the stores
+    /// The apps of the profile at `profile`, serving `workspace`, from the stores
     /// the environment names.
     #[must_use]
-    pub fn from_env(profile: &Path, room: &str) -> Self {
+    pub fn from_env(profile: &Path, workspace: &str) -> Self {
         let home = tilo_paths::home();
         Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
-            room,
+            workspace,
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         )
@@ -80,7 +80,7 @@ impl Apps {
     pub fn new(
         catalog: Option<package_store::Catalog>,
         profile: &Path,
-        room: &str,
+        workspace: &str,
         data_home: PathBuf,
         launcher_candidates: Vec<PathBuf>,
     ) -> Self {
@@ -91,7 +91,7 @@ impl Apps {
         drop(launcher_candidates);
         Self {
             catalog,
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             root: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
@@ -175,7 +175,7 @@ impl Apps {
     }
 
     /// Run the package `app` with the surface its signed package ships, so
-    /// the records of the person's it declares there are kept in their room
+    /// the records of the person's it declares there are kept in their workspace
     /// as a built-in app's are. A package whose surface no longer matches its
     /// signature declares none.
     fn run_with_signed_surface(&self, app: &InstalledApp) {
@@ -208,17 +208,19 @@ impl Apps {
         Ok(app)
     }
 
-    /// Launch `app_id` into this profile's room through the platform
+    /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
     ///
     /// # Errors
     ///
-    /// Refuses an app that is not installed or has no window, a room this
+    /// Refuses an app that is not installed or has no window, a workspace this
     /// profile does not serve, and a platform with no launcher or a payload
     /// it cannot verify; returns spawn errors.
-    pub fn start(&self, app_id: &str, room: &str) -> Result<Launch, String> {
-        if room != self.room {
-            return Err(format!("workspace {room} is not served by this runtime"));
+    pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
+        if workspace != self.workspace {
+            return Err(format!(
+                "workspace {workspace} is not served by this runtime"
+            ));
         }
         let app = self.launchable(app_id)?;
         self.run_with_signed_surface(&app);
@@ -244,7 +246,7 @@ impl Apps {
         let creation = None;
         if !self
             .launched
-            .record(launch.pid, &app.package_id, room, creation)
+            .record(launch.pid, &app.package_id, workspace, creation)
         {
             launch.kill();
             return Err(format!(
@@ -339,21 +341,21 @@ impl LauncherServices for Apps {
             }))
     }
 
-    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        self.launched.attest(pid, app, room)
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.launched.attest(pid, app, workspace)
     }
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         _window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
-        if !self.launched.attest(pid, app, room) {
+        if !self.launched.attest(pid, app, workspace) {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
-            creation: self.launched.creation(pid, app, room),
+            creation: self.launched.creation(pid, app, workspace),
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
             windowless: false,
@@ -363,9 +365,9 @@ impl LauncherServices for Apps {
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
     ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
-        Ok(self.launched.creation(pid, app, room))
+        Ok(self.launched.creation(pid, app, workspace))
     }
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
@@ -373,14 +375,14 @@ impl LauncherServices for Apps {
         launcher_pid: u32,
         peer: &launcher::services::ExecutingPeer,
         app: &str,
-        room: &str,
+        workspace: &str,
     ) -> bool {
         let Some(start) = process_start_time(launcher_pid) else {
             return false;
         };
-        self.launched.attest(launcher_pid, app, room)
+        self.launched.attest(launcher_pid, app, workspace)
             && peer.belongs_to(launcher_pid, start)
-            && self.launched.attest(launcher_pid, app, room)
+            && self.launched.attest(launcher_pid, app, workspace)
     }
 }
 
@@ -458,7 +460,7 @@ struct Launched(Mutex<HashMap<u32, LaunchRecord>>, AtomicU64);
 struct LaunchRecord {
     start_time: u64,
     app: String,
-    room: String,
+    workspace: String,
     creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
     /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
     /// for the broker to tie the process's connection back to it.
@@ -466,13 +468,13 @@ struct LaunchRecord {
 }
 
 impl Launched {
-    /// Record `pid` as `app` in `room`; `false` when its start time cannot
+    /// Record `pid` as `app` in `workspace`; `false` when its start time cannot
     /// be read.
     fn record(
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
         creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
     ) -> bool {
         let Some(start_time) = process_start_time(pid) else {
@@ -484,7 +486,7 @@ impl Launched {
             LaunchRecord {
                 start_time,
                 app: app.to_owned(),
-                room: room.to_owned(),
+                workspace: workspace.to_owned(),
                 creation,
                 ticket,
             },
@@ -498,13 +500,16 @@ impl Launched {
     }
 
     /// Whether `pid` is still the process recorded for exactly `app` and
-    /// `room`.
-    fn attest(&self, pid: u32, app: &str, room: &str) -> bool {
+    /// `workspace`.
+    fn attest(&self, pid: u32, app: &str, workspace: &str) -> bool {
         let launches = self.0.lock_recover();
         let Some(record) = launches.get(&pid) else {
             return false;
         };
-        let (recorded, same) = (record.start_time, record.app == app && record.room == room);
+        let (recorded, same) = (
+            record.start_time,
+            record.app == app && record.workspace == workspace,
+        );
         drop(launches);
         same && process_start_time(pid) == Some(recorded)
     }
@@ -515,14 +520,15 @@ impl Launched {
         &self,
         pid: u32,
         app: &str,
-        room: &str,
+        workspace: &str,
     ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
         let start = process_start_time(pid)?;
         let launches = self.0.lock_recover();
         let record = launches.get(&pid)?;
-        let creation = (record.start_time == start && record.app == app && record.room == room)
-            .then(|| record.creation.clone())
-            .flatten();
+        let creation =
+            (record.start_time == start && record.app == app && record.workspace == workspace)
+                .then(|| record.creation.clone())
+                .flatten();
         drop(launches);
         (process_start_time(pid) == Some(start))
             .then_some(creation)

@@ -35,7 +35,6 @@ enum Tier {
     Field(Reader),
     Wifi,
     Bt,
-    Firmware,
     WifiJoin,
 }
 
@@ -166,13 +165,6 @@ impl QsRefresh {
         }
     }
 
-    pub(crate) fn kick_firmware(&mut self) {
-        let reads = Arc::clone(&self.reads);
-        self.spawn(Tier::Firmware, move || {
-            QsReading::Firmware(reads.firmware_updates())
-        });
-    }
-
     /// Read the networks `NetworkManager` already knows, and the profiles it
     /// keeps. Never waits for a radio scan, which takes over ten seconds on
     /// some adapters: the tile's "connected to" must not depend on one.
@@ -291,7 +283,6 @@ impl QsRefresh {
                 QsReading::Field(field) => Tier::Field(field.reader()),
                 QsReading::WifiNetworks(_) => Tier::Wifi,
                 QsReading::BtDevices(_) => Tier::Bt,
-                QsReading::Firmware(_) => Tier::Firmware,
                 QsReading::WifiJoin(_) => Tier::WifiJoin,
                 QsReading::Wrote(_) => {
                     out.push(reading);
@@ -355,7 +346,6 @@ pub(crate) mod tests {
     use os_actions as qs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
-    use tilo_power_mgmt::BatterySnapshot;
 
     /// A machine with nothing to read.
     pub(crate) struct NoReads;
@@ -373,17 +363,8 @@ pub(crate) mod tests {
         fn wired(&self) -> Option<qs::WiredInfo> {
             None
         }
-        fn battery(&self) -> BatterySnapshot {
-            BatterySnapshot::absent()
-        }
-        fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
-            None
-        }
         fn radios(&self) -> Option<qs::RadioState> {
             None
-        }
-        fn privacy(&self) -> qs::PrivacyStatus {
-            qs::PrivacyStatus::default()
         }
         fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>> {
             None
@@ -398,9 +379,6 @@ pub(crate) mod tests {
             Ok(())
         }
         fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
-            None
-        }
-        fn firmware_updates(&self) -> Option<usize> {
             None
         }
         fn availability(&self) -> QsActionAvailability {
@@ -653,14 +631,6 @@ pub(crate) mod tests {
             self.hit("wired");
             None
         }
-        fn battery(&self) -> BatterySnapshot {
-            self.hit("battery");
-            BatterySnapshot::absent()
-        }
-        fn battery_time(&self) -> Option<tilo_power_mgmt::BatteryTime> {
-            self.hit("battery_time");
-            None
-        }
         fn radios(&self) -> Option<qs::RadioState> {
             self.hit("radios");
             Some(qs::RadioState {
@@ -668,10 +638,6 @@ pub(crate) mod tests {
                 wifi_enabled: true,
                 ..qs::RadioState::default()
             })
-        }
-        fn privacy(&self) -> qs::PrivacyStatus {
-            self.hit("privacy");
-            qs::PrivacyStatus::default()
         }
         fn vpns(&self) -> Option<Vec<qs::VpnConnectionInfo>> {
             self.hit("vpns");
@@ -691,10 +657,6 @@ pub(crate) mod tests {
         }
         fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             self.hit("bt_devices");
-            None
-        }
-        fn firmware_updates(&self) -> Option<usize> {
-            self.hit("firmware_updates");
             None
         }
         fn availability(&self) -> QsActionAvailability {

@@ -40,7 +40,7 @@ use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::{RosterDevice, WorkspaceId, room_topic_id};
+use tilo_network_actor::{RosterDevice, WorkspaceId, workspace_topic_id};
 
 use crate::engine::Engine;
 use crate::sync::Outgoing;
@@ -107,7 +107,7 @@ impl Channels {
         // carries a room's window streams between the devices it admits from
         // the moment it runs, not only from the room's next change.
         for room in engine.rooms() {
-            link.room_changed(room);
+            link.workspace_changed(room);
         }
         engine.attach_link(link);
         Ok(Self { _pump: pump })
@@ -118,8 +118,8 @@ impl Channels {
 /// session's collaboration plane hears and says, reached from the thread that
 /// settles the groups.
 ///
-/// It is also how the plane learns that a room's state moved
-/// ([`Self::room_changed`]) and which devices the room admits
+/// It is also how the plane learns that a workspace's state moved
+/// ([`Self::workspace_changed`]) and which devices the workspace admits
 /// ([`Self::tell_roster`]), so a change the host published is acted on in the
 /// pass after it was taken in.
 pub struct ChannelLink {
@@ -195,10 +195,10 @@ impl ChannelLink {
         true
     }
 
-    /// Room `room`'s state moved here: the devices it admits and the channels
-    /// its records are may differ from what was last read.
-    pub(crate) fn room_changed(&self, room: RoomId) {
-        self.changed.lock_recover().insert(room);
+    /// Workspace `workspace`'s state moved here: the devices it admits and
+    /// the channels its records are may differ from what was last read.
+    pub(crate) fn workspace_changed(&self, workspace: RoomId) {
+        self.changed.lock_recover().insert(workspace);
         self.park.poke();
     }
 
@@ -221,7 +221,7 @@ impl ChannelLink {
     /// head): its history then arrives as the room's other documents do, and
     /// later reads ask nobody.
     pub(crate) fn ask_record(&self, room: RoomId, channel: [u8; 32]) {
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let outgoing = self.outgoing.lock_recover().clone();
         let Some(outgoing) = outgoing else {
             return;
@@ -243,7 +243,7 @@ impl ChannelLink {
     pub(crate) fn ask_replay(&self, room: RoomId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::Replay(room_topic_id(room)));
+            let _ = outgoing.send(Outgoing::Replay(workspace_topic_id(room)));
         }
     }
 
@@ -259,8 +259,12 @@ impl ChannelLink {
 impl GovernanceTransport for ChannelLink {
     fn publish(&self, message: NeighbourMsg) -> bool {
         let room = match &message {
-            NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
+            NeighbourMsg::MlsGovernance {
+                workspace: room, ..
+            }
+            | NeighbourMsg::MlsAccessRequest {
+                workspace: room, ..
+            }
             | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
             _ => None,
         };
@@ -271,7 +275,7 @@ impl GovernanceTransport for ChannelLink {
         outgoing.is_some_and(|outgoing| {
             outgoing
                 .send(Outgoing::Publish {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     msg: Box::new(message),
                 })
                 .is_ok()
@@ -311,7 +315,7 @@ impl Rosters {
             if !engine.holds(room) {
                 // The room is gone here, and what the plane held of it went
                 // with the leave.
-                self.told.remove(&room_topic_id(room));
+                self.told.remove(&workspace_topic_id(room));
                 continue;
             }
             if let Ok(roster) = roster_of(engine, room) {
@@ -328,7 +332,7 @@ impl Rosters {
     /// Tell the plane `room`'s `roster`, and remember it as told only when
     /// the plane took it: one it did not take is read again on a later pass.
     fn tell(&mut self, link: &ChannelLink, room: RoomId, roster: Roster) {
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         if !self.moved(ws, &roster) {
             return;
         }
@@ -350,7 +354,7 @@ impl ChannelDirectory for Directory {
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
         self.engine
             .owner()
-            .with_current(room, |view| Ok(view.room_host().device_public_key))
+            .with_current(room, |view| Ok(view.workspace_host().device_public_key))
             .ok()
             .map(Ed25519PublicKey::from_bytes)
     }
@@ -402,12 +406,12 @@ impl ChannelDirectory for Directory {
             .engine
             .owner()
             .with_current(room, |view| {
-                let document = view.peer().admitted_room().ok_or("no admitted room")?;
-                let governance = tilo_peer_state::room::governance_of(Some(document));
+                let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
+                let governance = tilo_peer_state::workspace::governance_of(Some(document));
                 let certificates = governance
                     .identities
                     .values()
-                    .filter_map(|bytes| tilo_peer_state::room::identity_row(bytes).ok())
+                    .filter_map(|bytes| tilo_peer_state::workspace::identity_row(bytes).ok())
                     .filter_map(|row| row.device_cert.expires_at_ns)
                     .map(second);
                 let capabilities = governance
@@ -529,18 +533,18 @@ fn spawn_pump(
     Ok(Pump { park, stop })
 }
 
-/// The devices a room admits, by the publisher each of their sessions is
-/// known by, and when the certificate the room holds of them expires (Unix
-/// nanoseconds).
+/// The devices a workspace admits, by the publisher each of their sessions
+/// is known by, and when the certificate the workspace holds of them expires
+/// (Unix nanoseconds).
 pub(crate) type Roster = Vec<RosterDevice>;
 
-/// The roster of `room`: the devices its governance admits now, which are the
-/// ones its window streams carry between. A device the room removed, or whose
-/// certificate ran out, is not on it, and what it sent or would receive is
-/// refused from then on.
-pub(crate) fn roster_of(engine: &Engine, room: RoomId) -> Result<Roster, String> {
+/// The roster of `workspace`: the devices its governance admits now, which
+/// are the ones its window streams carry between. A device the workspace
+/// removed, or whose certificate ran out, is not on it, and what it sent or
+/// would receive is refused from then on.
+pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, String> {
     let now = SystemTime::now();
-    engine.owner().with_current(room, |view| {
+    engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
             .peer()
             .governance()
@@ -548,13 +552,13 @@ pub(crate) fn roster_of(engine: &Engine, room: RoomId) -> Result<Roster, String>
             .member_devices
             .into_iter()
             .collect();
-        let document = view.peer().admitted_room().ok_or("no admitted room")?;
+        let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
         let mut roster = BTreeMap::new();
-        for bytes in tilo_peer_state::room::governance_of(Some(document))
+        for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
             .values()
         {
-            let Ok(row) = tilo_peer_state::room::identity_row(bytes) else {
+            let Ok(row) = tilo_peer_state::workspace::identity_row(bytes) else {
                 continue;
             };
             let device = row.device_cert.device_public_key;
@@ -593,7 +597,7 @@ mod tests {
         );
         let room = RoomId::new();
         link.heard(&NeighbourMsg::MlsGovernance {
-            room: room.to_string(),
+            workspace: room.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
                 channel: ChannelId::new(),
@@ -617,7 +621,7 @@ mod tests {
     /// its devices changing is told nothing.
     #[test]
     fn a_roster_moves_only_when_its_devices_do() {
-        let room = room_topic_id(RoomId::new());
+        let room = workspace_topic_id(RoomId::new());
         let device = iroh::SecretKey::from_bytes(&[7; 32]).public();
         let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
         let mut rosters = Rosters::default();

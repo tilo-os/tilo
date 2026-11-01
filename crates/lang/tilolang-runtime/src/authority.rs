@@ -46,7 +46,7 @@ struct Trust {
 /// chain is trusted, the action's own module counting as trusted for its own actions, and asks
 /// when not.
 ///
-/// What a person may do, the denials and grants of a room and the answers a person gave their
+/// What a person may do, the denials and grants of a workspace and the answers a person gave their
 /// agents are not the runtime's: a platform decides them in its one policy, with the code's
 /// authorship as one more input (`tilolang_tilo::authority::TiloAuthority`).
 ///

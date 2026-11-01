@@ -396,24 +396,7 @@ impl HistoryOwner {
             OwnerKind::Component(binding) => binding.broker_route(),
             OwnerKind::Record {
                 store, checkout, ..
-            } => {
-                let (_, package, workspace) = store.history_namespace(&checkout.id).ok()?;
-                if package.is_empty() {
-                    return None;
-                }
-                if checkout.id.is_package_primary() {
-                    Some(crate::collaboration::RouteSpec::app(
-                        package,
-                        uuid::Uuid::parse_str(&workspace).ok()?,
-                    ))
-                } else {
-                    Some(crate::collaboration::RouteSpec::record(
-                        package,
-                        uuid::Uuid::parse_str(&workspace).ok()?,
-                        checkout.id.as_str(),
-                    ))
-                }
-            }
+            } => store.route(checkout).ok(),
         }
     }
     pub(crate) fn merge_remote(

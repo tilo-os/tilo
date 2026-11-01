@@ -9,14 +9,14 @@ description = "A member device's side of a workspace store: keeps what it publis
 # The engine and its transport live in `tilo-peer-state`; the store's
 # protocol and retained frames in `tilo-store-node`. This crate only joins
 # the two, so a member keeps and catches up its whole history without a
-# long-lived room host.
+# long-lived host.
 
 [dependencies]
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-store-node = { path = "../../hosting/tilo-store-node" }
-# A room is named by its workspace id.
+# A workspace is named to the store by one id.
 tilo-desktop-model = { path = "../../session/desktop-model" }
-# The relay workspace a room's store holds.
+# The relay's name for the workspace a store holds.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # A frame's routing key names the channel its cursor follows.
 collab-types = { path = "../collab-types" }

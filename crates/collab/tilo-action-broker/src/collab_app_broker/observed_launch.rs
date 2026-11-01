@@ -129,15 +129,15 @@ impl JoinedChannel {
         let grant_check = check.clone();
         let state = std::sync::Arc::downgrade(&self.state);
         let workspace_id = self.route().cluster_id;
-        let grant_room = workspace_id.clone();
+        let grant_workspace = workspace_id.clone();
         let grant_app = app.to_owned();
         let grant = std::sync::Arc::new(move |certificate: &tilo_user_identity::DeviceCert| {
             if grant_check()? != *certificate {
                 return Err("original launch certificate changed".into());
             }
             let state = state.upgrade().ok_or("application launch broker stopped")?;
-            grant_original.launch_administrator_certificate(&state, &grant_room)?;
-            let result = state.invoke_workspace_membership(&grant_room,
+            grant_original.launch_administrator_certificate(&state, &grant_workspace)?;
+            let result = state.invoke_workspace_membership(&grant_workspace,
                     &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
                         app: grant_app.clone(),
                     }, certificate);
@@ -265,7 +265,7 @@ impl JoinedChannel {
                 &caller,
                 Some(&origin),
                 HostActionAdmission {
-                    room: &self.route().cluster_id,
+                    workspace: &self.route().cluster_id,
                     app_id: app,
                     descriptor: &descriptor,
                     request: &request,
@@ -288,7 +288,7 @@ impl JoinedChannel {
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let now = self.state.policy_now_ns()? / 1_000_000_000;
         membership
-            .decide_in_room(&self.route().cluster_id, |workspace| {
+            .decide_in_workspace(&self.route().cluster_id, |workspace| {
                 let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
                 if !actor.may_in(
                     workspace,
@@ -316,7 +316,7 @@ impl JoinedChannel {
                 .map_err(LaunchReadinessError::Failed)?;
             if let Some(window) = &adoption
                 && (window.package_id != app
-                    || window.room != self.route().cluster_id
+                    || window.workspace != self.route().cluster_id
                     || window.surface_id == 0
                     || window.adoption_id.is_nil())
             {
@@ -384,12 +384,12 @@ fn launch_descriptor(app: &str) -> tilo_actions::ActionDescriptor {
     }
 }
 
-/// The one running invocation `parent` in `room` that may launch an
+/// The one running invocation `parent` in `workspace` that may launch an
 /// application: the peer it runs for and what it was invoked with.
 fn launching_invocation(
     pending: &std::collections::HashMap<u64, super::PendingInvocation>,
     parent: InvocationId,
-    room: &str,
+    workspace: &str,
 ) -> Result<(u64, std::sync::Arc<super::OriginalInvocationData>), String> {
     let matches = pending
         .values()
@@ -399,7 +399,7 @@ fn launching_invocation(
     let [entry] = matches.as_slice() else {
         return Err("the invocation the open is for is not running".into());
     };
-    if entry.cluster_id != room
+    if entry.cluster_id != workspace
         || entry.update.is_terminal()
         || entry.cancellation_requested_at.is_some()
     {
@@ -408,7 +408,7 @@ fn launching_invocation(
     let original = entry
         .original
         .clone()
-        .filter(|original| original.permits_launch_in(room))
+        .filter(|original| original.permits_launch_in(workspace))
         .ok_or("the invocation the open is for may not launch an application")?;
     Ok((entry.peer_id, original))
 }
@@ -448,9 +448,9 @@ pub enum AppOpen {
 }
 
 impl super::AppBrokerState {
-    /// Admit app `caller_app`'s request, made in `room` through the shell's
+    /// Admit app `caller_app`'s request, made in `workspace` through the shell's
     /// tools service, to open `target` for `parent`: an invocation the
-    /// broker delivered to one of `caller_app`'s connections in `room` that
+    /// broker delivered to one of `caller_app`'s connections in `workspace` that
     /// is still running and may launch there, whose caller (an agent, say)
     /// may still open `target` in that workspace. An invocation the app made
     /// of itself through its own connection is no one else's: an open for it
@@ -461,13 +461,13 @@ impl super::AppBrokerState {
     /// # Errors
     ///
     /// Why the open is not `parent`'s to make: no such running invocation,
-    /// another app's or another room's, a caller no longer
+    /// another app's or another workspace's, a caller no longer
     /// admitted or not allowed to open `target`, or a journal that could not
     /// record it.
     pub fn admit_app_open(
         &self,
         caller_app: &str,
-        room: &str,
+        workspace: &str,
         parent: InvocationId,
         target: &str,
     ) -> Result<AppOpen, String> {
@@ -475,10 +475,10 @@ impl super::AppBrokerState {
             .pending_invocations
             .lock()
             .map_err(|_| "invocation registry unavailable")?;
-        let launching = launching_invocation(&pending, parent, room);
+        let launching = launching_invocation(&pending, parent, workspace);
         drop(pending);
         let (peer_id, original) = launching?;
-        if !original.delivered_to(caller_app, room) {
+        if !original.delivered_to(caller_app, workspace) {
             return Err("the invocation the open is for is another app's".into());
         }
         if original.through_app_door() {
@@ -487,14 +487,14 @@ impl super::AppBrokerState {
         let caller = self
             .continuing_caller(peer_id, parent)
             .ok_or("the invocation's caller is no longer admitted")?;
-        let actor = self.caller_actor(&caller, room);
+        let actor = self.caller_actor(&caller, workspace);
         let membership = self
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let now = self.policy_now_ns()? / 1_000_000_000;
         membership
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let workspace = workspace.ok_or("the workspace is no longer hosted")?;
                 if !actor.may_in(
                     workspace,
@@ -515,7 +515,7 @@ impl super::AppBrokerState {
                 &caller,
                 Some(&original.launch_child_caller(invocation)),
                 HostActionAdmission {
-                    room,
+                    workspace,
                     app_id: target,
                     descriptor: &descriptor,
                     request: &request,

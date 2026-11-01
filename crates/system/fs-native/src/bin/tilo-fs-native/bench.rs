@@ -487,7 +487,7 @@ fn entries(ops: &[(JournalOp, String, bool)]) -> JournalBatch {
 }
 
 fn bench_capture(dir: &Path, quick: bool) -> io::Result<()> {
-    let live = dir.join("room");
+    let live = dir.join("workspace");
     btrfs::create_subvolume(&live)?;
     let epochs = dir.join("epochs");
     fs::create_dir(&epochs)?;

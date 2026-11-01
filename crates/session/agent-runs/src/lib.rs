@@ -346,7 +346,7 @@ pub struct RoomFacts {
     /// The agents it admits now, by their bare id.
     pub agents: Vec<String>,
     /// Its grants: a run's child actions are admitted by these.
-    pub policy: Option<tilo_action_policy::RoomPolicy>,
+    pub policy: Option<tilo_action_policy::WorkspacePolicy>,
 }
 
 impl RoomFacts {
@@ -355,7 +355,7 @@ impl RoomFacts {
     pub fn new(
         room: &str,
         agents: Vec<String>,
-        policy: Option<tilo_action_policy::RoomPolicy>,
+        policy: Option<tilo_action_policy::WorkspacePolicy>,
     ) -> Self {
         Self {
             room: room.to_owned(),
@@ -803,7 +803,7 @@ impl AgentRuns {
     /// `room`'s grants, as the desk holds them: what a run's child actions are
     /// decided by, and nothing when its workspace is not open.
     #[must_use]
-    pub fn room_policy(&self, room: &str) -> Option<tilo_action_policy::RoomPolicy> {
+    pub fn room_policy(&self, room: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         self.held
             .lock_recover()
             .room(room)

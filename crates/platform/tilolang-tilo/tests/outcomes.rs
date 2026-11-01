@@ -19,7 +19,7 @@ const APP: &str = "so.tilo.lang.tasks";
 
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item's
 /// resource id.
-fn room() -> (Replica, Replica, Meta, String) {
+fn workspace() -> (Replica, Replica, Meta, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, TODO_IDS)]);
     let meta = packages[0].meta.clone();
     let root = ada.host.root_of(APP).unwrap();
@@ -81,7 +81,7 @@ fn done(replica: &Replica, meta: &Meta, item: &str) -> Value {
 
 #[test]
 fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
-    let (mut ada, mut grace, meta, item) = room();
+    let (mut ada, mut grace, meta, item) = workspace();
     let by_ada = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
     let by_grace = plan(&grace, &meta, ("Task", &item), "check", json!({}), None);
     assert_eq!(
@@ -116,7 +116,7 @@ fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
 
 #[test]
 fn an_agent_passing_done_explicitly_wins() {
-    let (mut ada, _, meta, item) = room();
+    let (mut ada, _, meta, item) = workspace();
     let agent = Caller {
         actor: "task-1".to_owned(),
         agent: true,
@@ -165,7 +165,7 @@ fn an_agent_passing_done_explicitly_wins() {
 
 #[test]
 fn the_recorded_invocation_and_history_carry_the_argument() {
-    let (mut ada, _, meta, item) = room();
+    let (mut ada, _, meta, item) = workspace();
     let check = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
     ada.apply(&check);
     let uncheck = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
@@ -196,7 +196,7 @@ fn the_recorded_invocation_and_history_carry_the_argument() {
 
 #[test]
 fn the_published_action_offers_done_as_optional_and_describes_its_default() {
-    let (ada, _, meta, _) = room();
+    let (ada, _, meta, _) = workspace();
     let check = meta.actions.iter().find(|a| a.name == "check").unwrap();
     let done = check.params.iter().find(|p| p.name == "done").unwrap();
     assert_eq!(

@@ -1,10 +1,10 @@
-/// A room no one governs (the person room) whose directory names its
+/// A workspace no one governs (the person room) whose directory names its
 /// channels' readers: this device founds the channel's group and is
 /// answered its keys, a second device of the same identity is admitted,
 /// and a device outside the identity is not.
 #[test]
-fn an_ungoverned_room_whose_readers_are_named_opens_and_admits_only_them() {
-    /// A directory for a room no one governs: its channels' readers are
+fn an_ungoverned_workspace_whose_readers_are_named_opens_and_admits_only_them() {
+    /// A directory for a workspace no one governs: its channels' readers are
     /// the devices it names, and it knows no governor.
     struct Ungoverned(Policy);
     impl ChannelDirectory for Ungoverned {
@@ -35,8 +35,8 @@ fn an_ungoverned_room_whose_readers_are_named_opens_and_admits_only_them() {
         }
     }
 
-    let room = Arc::new(Room::default());
-    let room_id = RoomId::new();
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = RoomId::new();
     let channel = ChannelId::new();
     // The identity's two devices, not the outsider's.
     let policy = Policy::default();
@@ -55,7 +55,7 @@ fn an_ungoverned_room_whose_readers_are_named_opens_and_admits_only_them() {
         )
         .unwrap(),
         broker: Arc::new(Mutex::new(BrokerChannels::default())),
-        endpoint: Endpoint::join(&room, room_id, id),
+        endpoint: Endpoint::join(&workspace, workspace_id, id),
     };
     let mut first = open(1, 0, &dirs[0]);
     let mut second = open(2, 1, &dirs[1]);
@@ -74,28 +74,33 @@ fn an_ungoverned_room_whose_readers_are_named_opens_and_admits_only_them() {
     let mut now = Instant::now();
     assert!(
         matches!(
-            first.service.access(room_id, channel, now),
+            first.service.access(workspace_id, channel, now),
             ChannelAccess::Waiting
         ),
-        "a room with no governor is taken up when its readers are named"
+        "a workspace with no governor is taken up when its readers are named"
     );
     assert!(matches!(
-        outsider.access(room_id, channel, now),
+        outsider.access(workspace_id, channel, now),
         ChannelAccess::Unavailable
     ));
 
     // The first device founds the group after its while and is answered
     // its keys; the second is admitted once it asks.
-    let access = create(&mut first, room_id, channel, now);
+    let access = create(&mut first, workspace_id, channel, now);
     assert!(
         ready_epoch(&access).is_some(),
         "the founding device is handed the channel's keys: {access:?}"
     );
-    second.service.access(room_id, channel, now);
+    second.service.access(workspace_id, channel, now);
     run(&mut [&mut first, &mut second], &mut now, 5);
-    assert!(second.service.existing_keys(room_id, channel).is_some());
     assert!(
-        outsider.existing_keys(room_id, channel).is_none(),
+        second
+            .service
+            .existing_keys(workspace_id, channel)
+            .is_some()
+    );
+    assert!(
+        outsider.existing_keys(workspace_id, channel).is_none(),
         "a device outside the identity never gets the keys"
     );
     assert!(outsider.peers.is_empty());

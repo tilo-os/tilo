@@ -3,24 +3,24 @@ use super::facades::PeerWorkspaceMut;
 use ed25519_dalek::SigningKey;
 use tilo_automation::ShortcutChange;
 
-/// The most shortcuts one room holds.
+/// The most shortcuts one workspace holds.
 const MAX_SHORTCUTS: usize = 512;
 
 impl PeerWorkspaceMut<'_> {
-    /// Save or remove one shortcut of the room as the admitted member whose
+    /// Save or remove one shortcut of the workspace as the admitted member whose
     /// device `caller` is, signed by `key`, that device's own: written into
-    /// the room and admitted the way every receiver admits it.
+    /// the workspace and admitted the way every receiver admits it.
     ///
     /// A saved shortcut names as who saved it nobody or the caller's person,
-    /// by the proof of a device of theirs signed in this room
-    /// ([`crate::room::proven_saver`]): the same rule admission holds every
-    /// writer to. Answers whether the room changed.
+    /// by the proof of a device of theirs signed in this workspace
+    /// ([`crate::workspace::proven_saver`]): the same rule admission holds every
+    /// writer to. Answers whether the workspace changed.
     ///
     /// # Errors
     ///
     /// A caller that is not current admitted evidence or may not change the
-    /// room, a key that is not the caller's, a saver without proof, a full
-    /// room, or removing a shortcut the room does not hold.
+    /// workspace, a key that is not the caller's, a saver without proof, a full
+    /// workspace, or removing a shortcut the workspace does not hold.
     pub fn apply_shortcut_change(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -43,7 +43,7 @@ impl PeerWorkspaceMut<'_> {
         }
         let member = self.peer.membership(caller.device_public_key, now)?;
         if !member.allows(
-            &tilo_action_policy::TreePath::room(&self.peer.core.room),
+            &tilo_action_policy::TreePath::room(&self.peer.core.workspace),
             tilo_action_policy::ActionKind::Undoable,
             now,
         ) {
@@ -55,13 +55,13 @@ impl PeerWorkspaceMut<'_> {
                 .as_nanos(),
         )
         .map_err(|_| "shortcut clock overflows")?;
-        let room = self
+        let workspace = self
             .peer
             .core
-            .room_doc
+            .workspace_doc
             .as_deref()
-            .ok_or("shortcut room is absent")?;
-        let mut candidate = room.clone();
+            .ok_or("shortcut workspace is absent")?;
+        let mut candidate = workspace.clone();
         let before = candidate.get_heads();
         candidate.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
         let map = match candidate
@@ -69,16 +69,16 @@ impl PeerWorkspaceMut<'_> {
             .map_err(|e| e.to_string())?
         {
             Some((Value::Object(ObjType::Map), map)) => Some(map),
-            Some(_) => return Err("the room's shortcuts are malformed".into()),
+            Some(_) => return Err("the workspace's shortcuts are malformed".into()),
             None => None,
         };
         let changed = match change {
             ShortcutChange::Save(shortcut) => {
                 if let Some(saver) = &shortcut.saved_by {
-                    let proven = crate::room::proven_saver(
-                        &self.peer.core.room,
+                    let proven = crate::workspace::proven_saver(
+                        &self.peer.core.workspace,
                         shortcut,
-                        &crate::room::room_revocations(room),
+                        &crate::workspace::workspace_revocations(workspace),
                         now_ns,
                     );
                     if proven.as_ref() != Some(saver)
@@ -117,8 +117,8 @@ impl PeerWorkspaceMut<'_> {
     }
 }
 
-/// Put `blob` as shortcut `id` into the room's shortcuts `map`, made if the
-/// room has none yet. Answers whether the room changed.
+/// Put `blob` as shortcut `id` into the workspace's shortcuts `map`, made if the
+/// workspace has none yet. Answers whether the workspace changed.
 fn put_shortcut(
     candidate: &mut impl automerge::transaction::Transactable,
     map: Option<automerge::ObjId>,

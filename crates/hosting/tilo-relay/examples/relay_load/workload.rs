@@ -22,7 +22,7 @@ use iroh::endpoint::{Endpoint, presets};
 use tokio::task::JoinHandle;
 
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
@@ -401,7 +401,7 @@ impl Room {
         document.commit();
         seed.install_seed(
             SeedState {
-                room_changes: seed_room(&uuid, &authority.cert, &certificates)
+                workspace_changes: seed_workspace(&uuid, &authority.cert, &certificates)
                     .map_err(|error| anyhow!("{error}"))?,
                 documents: vec![SeedDocument {
                     app_id: APP.into(),

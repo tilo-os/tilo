@@ -4,7 +4,7 @@
 
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Change, Context, Grant, KindSet, Lifetime, Refusal, Role,
-    RoomPolicy, Subject, TreePath,
+    Subject, TreePath, WorkspacePolicy,
     roles::{self, governance},
 };
 
@@ -19,8 +19,8 @@ fn cx() -> Context<'static> {
 
 /// Room `r` owned by [`OWNER`] with `members`, and `administrator` made its
 /// administrator by the owner.
-fn room(members: &[(&str, Role)], administrator: &str) -> RoomPolicy {
-    let mut room = RoomPolicy::new("r", OWNER);
+fn room(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
+    let mut room = WorkspacePolicy::new("r", OWNER);
     for (person, role) in members {
         room.members.insert((*person).to_owned(), *role);
     }
@@ -188,7 +188,7 @@ fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
 
 #[test]
 fn an_administrator_grant_on_the_rooms_resource_is_outranked_by_the_editor_rule() {
-    let mut room = RoomPolicy::new("r", OWNER);
+    let mut room = WorkspacePolicy::new("r", OWNER);
     room.members.insert(CAROL.into(), Role::Editor);
     let legacy = Grant::new(
         roles::administrator_grant_id(CAROL).as_str(),

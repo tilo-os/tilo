@@ -1,6 +1,6 @@
 //! How an app worker confines itself before it reads a request.
 //!
-//! An app worker runs an app's own code over a room's records: everything
+//! An app worker runs an app's own code over a workspace's records: everything
 //! it needs is CPU, memory and the socket it was started with. So once it
 //! has prepared what it cannot load later, it:
 //!

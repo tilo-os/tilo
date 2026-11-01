@@ -270,7 +270,7 @@ fn a_commenter_reacts_in_a_room_saved_before_reactions() {
     let mut tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
 
     let ws = &mut tree.desktop.workspaces[0];
-    let room = ws.policy.room.clone();
+    let room = ws.policy.workspace.clone();
     ws.policy
         .members
         .insert("commenter".into(), Role::Commenter);

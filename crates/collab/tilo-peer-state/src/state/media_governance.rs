@@ -2,16 +2,16 @@
 use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
     BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Role, Route,
-    SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, room,
+    SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, workspace,
 };
-use room::media::{self, RoomMediaV1};
+use workspace::media::{self, WorkspaceMediaV1};
 
 impl StatePeer {
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.require_governance_writer(key, now)?;
         let member = self.membership(key.verifying_key().to_bytes(), now)?;
         if member.role != Role::Owner
-            || room::governance_of(self.core.room_doc.as_deref())
+            || workspace::governance_of(self.core.workspace_doc.as_deref())
                 .owner
                 .as_deref()
                 != Some(&hex::encode(self.core.owner))
@@ -20,24 +20,28 @@ impl StatePeer {
         }
         if !member.allows(
             &tilo_action_policy::roles::governance_action(
-                &self.core.room,
+                &self.core.workspace,
                 tilo_action_policy::roles::governance::SETTINGS,
             ),
             tilo_action_policy::roles::GOVERNANCE_KIND,
             now,
         ) {
-            return Err("media governor lacks exact room administration".into());
+            return Err("media governor lacks exact workspace administration".into());
         }
         Ok(())
     }
 }
 impl PeerMediaGovernance<'_> {
-    /// Data publication allows room-first missing Chat; media readiness does not.
+    /// Data publication allows workspace-first missing Chat; media readiness does not.
     pub fn validate_media_governance_for_publication(self) -> Result<(), String> {
         if let Some(policy) = self.peer.validate_present_media_policy()? {
             self.peer.validate_media_bindings(&policy, false)?;
             let basis = media::security_basis(
-                self.peer.core.room_doc.as_deref().ok_or("missing room")?,
+                self.peer
+                    .core
+                    .workspace_doc
+                    .as_deref()
+                    .ok_or("missing workspace")?,
                 &self.peer.revocations(),
             )
             .map_err(err)?;
@@ -49,14 +53,14 @@ impl PeerMediaGovernance<'_> {
         }
         Ok(())
     }
-    /// The committed call policy as a governor taking part in the room's
+    /// The committed call policy as a governor taking part in the workspace's
     /// channels reads it:
     /// [`StatePeer::validated_media_policy`], except that a call bound to a
     /// Chat its members write sealed counts as bound. This replica keeps
     /// such a Chat as ciphertext and cannot check the channel itself; the
     /// governor resolved the binding through the channel's keys when it
     /// opened the call, and only a governor that holds them may vouch so.
-    pub fn keyed_media_policy(self) -> Result<Option<RoomMediaV1>, String> {
+    pub fn keyed_media_policy(self) -> Result<Option<WorkspaceMediaV1>, String> {
         let peer = self.peer;
         let policy = peer.validate_present_media_policy()?;
         if let Some(policy) = &policy {
@@ -70,7 +74,10 @@ impl PeerMediaGovernance<'_> {
                 },
                 || {
                     media::security_basis(
-                        peer.core.room_doc.as_deref().ok_or("missing room")?,
+                        peer.core
+                            .workspace_doc
+                            .as_deref()
+                            .ok_or("missing workspace")?,
                         &peer.revocations(),
                     )
                     .map_err(err)
@@ -116,7 +123,7 @@ impl PeerMediaGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         let policy = self.peer.validate_present_media_policy()?;
-        let Some(original) = self.peer.core.room_doc.as_deref() else {
+        let Some(original) = self.peer.core.workspace_doc.as_deref() else {
             return Ok(false);
         };
         // Disabled media adds no new prerequisites to legacy data publication.
@@ -140,14 +147,19 @@ impl PeerMediaGovernanceMut<'_> {
             return Ok(false);
         }
         self.peer.require_media_governor(key, now)?;
-        let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("missing workspace")?;
         let before = doc.get_heads();
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
             .ok_or("missing identities")?
             .1;
-        let mut rows = room::governance_of(Some(&doc))
+        let mut rows = workspace::governance_of(Some(&doc))
             .identities
             .into_iter()
             .map(|(id, bytes)| {
@@ -179,7 +191,7 @@ impl PeerMediaGovernanceMut<'_> {
             row.revocations
                 .sort_by_key(|revocation| revocation.revoked_device_public_key);
         }
-        doc.set_actor(self.peer.room_actor_of(key));
+        doc.set_actor(self.peer.workspace_actor_of(key));
         for (id, (old, row)) in rows {
             let bytes = serde_json::to_vec(&row).map_err(err)?;
             if bytes != old {
@@ -199,7 +211,7 @@ impl PeerMediaGovernanceMut<'_> {
     }
     pub fn author_media_policy(
         self,
-        policy: &RoomMediaV1,
+        policy: &WorkspaceMediaV1,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
@@ -207,9 +219,14 @@ impl PeerMediaGovernanceMut<'_> {
         self.peer
             .media()
             .validate_media_governance_for_publication()?;
-        let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("missing workspace")?;
         let before = doc.get_heads();
-        doc.set_actor(self.peer.room_actor_of(key));
+        doc.set_actor(self.peer.workspace_actor_of(key));
         doc.put(
             ROOT,
             media::FIELD,
@@ -218,7 +235,7 @@ impl PeerMediaGovernanceMut<'_> {
         .map_err(err)?;
         doc.commit();
         media::validate_transition(
-            self.peer.core.room_doc.as_deref(),
+            self.peer.core.workspace_doc.as_deref(),
             &doc,
             media::TransitionMode::Authoring,
         )
@@ -231,7 +248,7 @@ impl PeerMediaGovernanceMut<'_> {
         self.peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
-                room: self.peer.core.room.clone(),
+                room: self.peer.core.workspace.clone(),
                 changes,
             },
             now,

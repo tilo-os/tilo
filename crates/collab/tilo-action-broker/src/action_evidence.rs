@@ -4,7 +4,7 @@
 //! host-private execution journal. Publish only [`AdmissionReceipt`].
 //! An opening permits offline guesses of the
 //! intent and must be disclosed only through original-owner observation.
-//! Certificate root trust, room/host authority, revocation, certificate time
+//! Certificate root trust, workspace/host authority, revocation, certificate time
 //! policy and live caller authentication remain the caller's responsibility.
 //! Verification alone neither authorizes dispatch nor deduplicates invocations.
 
@@ -77,7 +77,10 @@ const OMITTED_AGENT: &str = "\u{0}omitted-agent";
 #[serde(deny_unknown_fields)]
 pub struct AdmissionFacts {
     pub host: Uuid,
-    pub room: String,
+    /// Signed and stored as `room`: these facts' field names are part of the
+    /// admission receipt's signing bytes, so the wire spelling stays.
+    #[serde(rename = "room")]
+    pub workspace: String,
     pub invocation: InvocationId,
     pub actor: VerifiedActor,
     /// Host-verified effective actor, including a delegated agent's identity.
@@ -192,8 +195,10 @@ pub(crate) fn mint_terminal(
     category: TerminalCategory,
 ) -> Result<TerminalReceipt, String> {
     let digest = admission_digest(admission)?;
-    let (certificate, signature) =
-        crate::evidence_signer::sign(&admission.facts.room, &terminal_bytes(&digest, category)?)?;
+    let (certificate, signature) = crate::evidence_signer::sign(
+        &admission.facts.workspace,
+        &terminal_bytes(&digest, category)?,
+    )?;
     Ok(TerminalReceipt {
         admission_digest: digest,
         category,
@@ -243,7 +248,7 @@ pub(crate) fn mint_local_report(
 ) -> Result<AdmissionEvidence, String> {
     let mut seed = b"tilo-local-report-private-salt-v1\0".to_vec();
     seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)?)?);
-    let (_, signature) = crate::evidence_signer::sign(&facts.room, &seed)?;
+    let (_, signature) = crate::evidence_signer::sign(&facts.workspace, &seed)?;
     mint_with_nonce(
         facts,
         exact_intent,
@@ -283,7 +288,7 @@ fn mint_with_nonce(
     };
     let intent_commitment = opening.commitment();
     let bytes = signing_bytes(&facts, &intent_commitment)?;
-    let (certificate, signature) = signer(&facts.room, &bytes)?;
+    let (certificate, signature) = signer(&facts.workspace, &bytes)?;
     let evidence = AdmissionEvidence {
         receipt: AdmissionReceipt {
             facts,
@@ -302,7 +307,7 @@ fn mint_with_nonce(
 ///
 /// This deliberately uses `verify_device_cert`, not a wall-clock check: durable
 /// historical admissions outlive certificates. Callers must separately decide
-/// which root/device is trusted for this host and room, including revocation
+/// which root/device is trusted for this host and workspace, including revocation
 /// and certificate validity policy. Supply expected facts from trusted state,
 /// not by copying them from an untrusted receipt. Replays with identical facts
 /// still verify: the durable journal owns execution uniqueness and dispatch.
@@ -484,7 +489,7 @@ mod tests {
     fn facts() -> AdmissionFacts {
         AdmissionFacts {
             host: Uuid::from_u128(1),
-            room: "room".into(),
+            workspace: "workspace".into(),
             invocation: InvocationId(Uuid::from_u128(2)),
             actor: VerifiedActor::AuthenticatedLocal {
                 root: [3; 32],
@@ -525,8 +530,8 @@ mod tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut certificate, &root).unwrap();
-        mint_with_signer(facts(), intent, |room, bytes| {
-            assert_eq!(room, "room");
+        mint_with_signer(facts(), intent, |workspace, bytes| {
+            assert_eq!(workspace, "workspace");
             assert!(bytes.starts_with(SIGN_DOMAIN));
             Ok((certificate, device.sign(bytes).to_bytes()))
         })

@@ -37,12 +37,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
-use crate::chrome::ChromeIntent;
+use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::desk_widgets::music::MusicAction;
 use crate::desktop_actions::{
     DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
 };
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
+use crate::fullscreen_hint::FullscreenHint;
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
@@ -51,7 +52,7 @@ use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
 use crate::switcher_windows::{SwitcherPictures, SwitcherWindows};
-use crate::topbar::{BarSpace, Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher};
 use crate::workspace_menu::{
@@ -287,6 +288,15 @@ fn close_tab(handle: &DesktopHandle, tab: TabId) {
 }
 
 impl DeskLayer {
+    /// Take when the bar shows over the window covering its display from
+    /// `reveals`, which the chrome reads too: the strip above the area takes
+    /// the bar's room only while it is docked in the column.
+    #[must_use]
+    pub fn with_reveals(mut self, reveals: Rc<RefCell<Reveals>>) -> Self {
+        self.band = BarSpace::new(Rc::new(move || reveals.borrow().presence(None, false)));
+        self
+    }
+
     /// The desk over `surface` (whose host side is `handle`), with
     /// `launchpad` on a desk with no windows and `beneath` (a host's own
     /// layers) under both.
@@ -300,15 +310,17 @@ impl DeskLayer {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
         let workspace = handle.read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
         // The room the bar takes above the strips, at the same height it
-        // takes itself. The bar docks in this desktop's column, so its workspace
-        // is there until a window covers its display and the bar steps
-        // aside.
+        // takes itself. The bar docks in this desktop's column, so its room
+        // is there until a window covers its display; a desk that follows the
+        // reveal (see [`Self::with_reveals`]) replaces this with whether the
+        // bar shows, hidden or docked.
         let desk = handle.clone();
         let band = BarSpace::new(Rc::new(move || {
-            (
-                desk.read(|tree| tree.fullscreen_group().is_some()),
-                crate::chrome::TopBarPresence::Docked,
-            )
+            if desk.read(|tree| tree.fullscreen_group().is_some()) {
+                TopBarPresence::Hidden
+            } else {
+                TopBarPresence::Docked
+            }
         }));
         let mut area = Stack::new();
         for layer in beneath {
@@ -697,6 +709,11 @@ pub struct DesktopChrome {
     /// put it there; cleared as soon as no surface the chrome draws holds the
     /// keyboard, which the stack says.
     focused: bool,
+    /// When each display's bar shows over the window covering it: shared
+    /// with the desk's band, so the bar's room and the bars it is in agree.
+    reveals: Rc<RefCell<Reveals>>,
+    /// The way out of the window that filled a display, said once over it.
+    fullscreen_hint: FullscreenHint,
 }
 
 /// The overlays the chrome paints itself, as opposed to the retained widgets
@@ -710,11 +727,13 @@ enum PaintedOverlay {
     Windows,
     /// The emoji card.
     Emoji,
+    /// The way out of the window that filled a display.
+    Hint,
 }
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 3] = [Self::StripLabels, Self::Windows, Self::Emoji];
+    const ALL: [Self; 4] = [Self::StripLabels, Self::Windows, Self::Emoji, Self::Hint];
 
     /// The key its node keeps in the chrome's tree, so the id survives the
     /// other overlays opening and closing.
@@ -723,6 +742,7 @@ impl PaintedOverlay {
             Self::StripLabels => "chrome-strip-labels",
             Self::Windows => "chrome-window-switcher",
             Self::Emoji => "chrome-emoji-card",
+            Self::Hint => "chrome-fullscreen-way-out",
         })
     }
 
@@ -732,6 +752,7 @@ impl PaintedOverlay {
             Self::StripLabels => chrome.navigator.is_open(),
             Self::Windows => chrome.switcher.is_active(),
             Self::Emoji => chrome.emoji.is_open(),
+            Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
         }
     }
 }
@@ -781,7 +802,17 @@ impl DesktopChrome {
             intents: Rc::default(),
             overlays: Overlays::new(),
             focused: false,
+            reveals: Rc::default(),
+            fullscreen_hint: FullscreenHint::default(),
         }
+    }
+
+    /// Follow the bars' reveal with `reveals`, which the desk's band reads
+    /// too: when each bar shows over the window covering its display.
+    #[must_use]
+    pub fn with_reveals(mut self, reveals: Rc<RefCell<Reveals>>) -> Self {
+        self.reveals = reveals;
+        self
     }
 
     /// The surfaces the chrome draws, as the session's stack holds them.
@@ -920,6 +951,7 @@ impl DesktopChrome {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
             PaintedOverlay::Windows => self.switcher.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
+            PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
         }
     }
 
@@ -1997,6 +2029,7 @@ impl DesktopChrome {
             || self.emoji.needs_redraw()
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
+            || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.children().iter().any(|child| child.needs_redraw())
     }
 }
@@ -2051,13 +2084,90 @@ impl DesktopChrome {
                     .with_chrome(Rc::clone(&chrome))
             };
             bar.set_placement(Some(place.rect));
-            // A fullscreen window on this display has the room by itself.
-            bar.set_aside(placement.fullscreen.contains(&place.display));
             bars.push(bar);
         }
         self.compact = bars;
         self.placement = placement;
         true
+    }
+
+    /// Bring the bars' reveal up to date at `now`: where each display's bar
+    /// stands, which displays a window covers, whether the person hides the
+    /// bar (`hide`), and what of the chrome holds it open (`held_extra`).
+    /// Returns whether any bar's presence may have changed.
+    ///
+    /// A bar shows over the window covering its display for the idle time
+    /// after a window enters full screen there, and while the person reaches
+    /// for it, uses it or keeps one of its menus open; else it is hidden.
+    /// The person's own "hide the top bar" is the same machinery without a
+    /// fullscreen window.
+    pub fn follow_reveals(&mut self, hide: bool, held_extra: bool, now: ui::time::Instant) -> bool {
+        let mut changed = self.follow_bars();
+        let height = self.bar.bar_rect().height();
+        let height = if height > 0.0 {
+            height
+        } else {
+            f64::from(TOPBAR_HEIGHT_PX)
+        };
+        let full = self.placement.bars.iter().find(|place| place.full);
+        // The display in use is the one the full bar stands on; a desk that
+        // needs no placing is one display, which the window covers or not.
+        let in_use_fullscreen = full.map_or(!self.placement.fullscreen.is_empty(), |place| {
+            self.placement.fullscreen.contains(&Some(place.display))
+        });
+        let mut places = Vec::with_capacity(self.compact.len().saturating_add(1));
+        places.push((
+            None,
+            full.map_or(self.rect, |place| place.rect),
+            in_use_fullscreen,
+        ));
+        for place in self.placement.bars.iter().filter(|place| !place.full) {
+            places.push((
+                Some(place.display),
+                place.rect,
+                self.placement.fullscreen.contains(&Some(place.display)),
+            ));
+        }
+        let held = held_extra || self.holds_bar_open();
+        let mut reveals = self.reveals.borrow_mut();
+        reveals.set_height(height);
+        reveals.set_hide(hide);
+        reveals.follow(&places, now);
+        changed |= reveals.settle(now, |_| held);
+        let full_presence = reveals.presence(None, held);
+        let compact: Vec<(Option<u32>, TopBarPresence)> = self
+            .compact
+            .iter()
+            .map(|bar| (bar.display(), reveals.presence(bar.display(), held)))
+            .collect();
+        drop(reveals);
+        if self.bar.presence() != full_presence {
+            self.bar.set_presence(full_presence);
+            changed = true;
+        }
+        for (bar, (_, presence)) in self.compact.iter_mut().zip(compact) {
+            if bar.presence() != presence {
+                bar.set_presence(presence);
+                changed = true;
+            }
+        }
+        // A window that just filled a display says how to leave it, once;
+        // leaving full screen takes the words away with it.
+        self.fullscreen_hint.follow(self.reveals.borrow().entered());
+        changed
+    }
+
+    /// Whether something of the chrome holds the bars shown: one of the
+    /// bar's menus or cards, an overlay it opened, or the keyboard in it.
+    fn holds_bar_open(&self) -> bool {
+        self.tilo_menu.is_menu_open()
+            || self.workspace_menu.is_open()
+            || self.navigator.is_open()
+            || self.switcher.is_active()
+            || self.emoji.is_open()
+            || self.bar.card_open()
+            || self.bar.holds_itself_shown()
+            || self.compact.iter().any(TopBarChrome::holds_itself_shown)
     }
 
     /// Carry out a chrome action; false for one of the desk's.
@@ -2066,6 +2176,10 @@ impl DesktopChrome {
             return done;
         }
         let intent = match action {
+            DesktopAction::RevealTopBar => {
+                self.reveals.borrow_mut().reveal_by_key(ui::time::now());
+                return true;
+            }
             DesktopAction::ToggleOverview => ChromeIntent::ToggleOverview,
             DesktopAction::ToggleQuickSettings => ChromeIntent::ToggleQuickSettings,
             DesktopAction::ToggleTiloMenu => ChromeIntent::ToggleTiloMenu,
@@ -2378,7 +2492,7 @@ impl Widget for DesktopChrome {
         );
         self.overview.draw(scene, transform, text, theme, presence);
         for bar in &mut self.compact {
-            if !bar.steps_aside() {
+            if bar.presence() != TopBarPresence::Hidden {
                 bar.draw(scene, transform, text, theme, presence);
             }
         }
@@ -2406,6 +2520,10 @@ impl Widget for DesktopChrome {
                 .draw(scene, transform, text, theme, presence, self.emoji_viewport);
             self.emoji.mark_drawn();
         }
+        // Above everything: the window that filled the display hides the
+        // chrome that would leave it, so the words saying how are the only
+        // way out the person can see.
+        self.fullscreen_hint.draw(scene, transform, text, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -2504,11 +2622,10 @@ impl Widget for DesktopChrome {
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *bar));
         }
         // The other displays' bars take what is theirs on their own
-        // display; one stepped aside for a fullscreen window takes
-        // nothing.
+        // display; a hidden one takes nothing.
         if !*ctx.handled {
             for (bar, node) in self.compact.iter_mut().zip(compact) {
-                if bar.steps_aside() {
+                if bar.presence() == TopBarPresence::Hidden {
                     continue;
                 }
                 bar.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
@@ -2651,6 +2768,7 @@ impl Widget for DesktopChrome {
     fn needs_animation_frame(&self) -> bool {
         self.switcher.needs_frame(ui::time::now())
             || self.emoji.needs_animation_frame()
+            || self.fullscreen_hint.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
             || self
                 .children()
@@ -2669,6 +2787,8 @@ impl Widget for DesktopChrome {
                 self.navigator
                     .next_wake_deadline(&self.navigator_frame, ui::time::now()),
             )
+            .chain(self.reveals.borrow().deadline())
+            .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
             .min()
     }
 

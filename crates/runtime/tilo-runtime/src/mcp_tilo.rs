@@ -37,12 +37,12 @@ use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
 /// Where a door starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
 pub trait TaskHosts: Send + Sync {
-    /// Start the host of the task `task` (the agent run) in `room`: the door's end of the task's
+    /// Start the host of the task `task` (the agent run) in `workspace`: the door's end of the task's
     /// program connection.
     ///
     /// # Errors
     /// The host could not be started.
-    fn start(&self, room: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd>;
+    fn start(&self, workspace: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd>;
 }
 
 /// The program connection to a task's host, one JSON object per line.
@@ -437,17 +437,17 @@ pub struct TaskProgram {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// One task of agent `agent_id` in `room`, acting for `person` who started it (the Tasks
+    /// One task of agent `agent_id` in `workspace`, acting for `person` who started it (the Tasks
     /// agent's run of an issue): it may do what both the agent and that person may, as the
     /// agent's own calls of the run do. Each session is its own fresh execution.
     #[must_use]
-    pub fn for_task(host: H, room: String, agent_id: &str, person: Option<&str>) -> Self {
+    pub fn for_task(host: H, workspace: String, agent_id: &str, person: Option<&str>) -> Self {
         let mut caller = tilo_actions::remote::Caller::local_agent(agent_id);
         if let Some(person) = person {
             caller = caller.acting_for(person);
         }
-        let caller = caller.in_room(room.clone()).in_new_execution();
-        Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
+        let caller = caller.in_room(workspace.clone()).in_new_execution();
+        Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
             .with_surface(crate::mcp::Surface::Agent)
     }
 
@@ -650,8 +650,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .agent_run()
             .map(|run| run.id)
             .ok_or("this door's agent works in no run, which a task's programs are")?;
-        let room = self.room.clone();
-        let fd = tokio::task::spawn_blocking(move || hosts.start(&room, &task))
+        let workspace = self.workspace.clone();
+        let fd = tokio::task::spawn_blocking(move || hosts.start(&workspace, &task))
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| format!("the task's host did not start: {error}"))?;

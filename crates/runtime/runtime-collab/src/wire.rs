@@ -22,8 +22,8 @@ use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionDirectoryQuery, DisplayOrigin, PublishedInvocationObservation, RoomStatus,
-    WorkspaceControlEvent, WorkspaceControlInput,
+    ActionDirectoryQuery, DisplayOrigin, PublishedInvocationObservation, WorkspaceControlEvent,
+    WorkspaceControlInput, WorkspaceStatus,
 };
 
 #[cfg(feature = "client")]
@@ -47,14 +47,14 @@ pub struct Call {
 /// What an endpoint asks the host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operation {
-    /// Join a channel, answered with [`Reply::Opened`] once the room is
+    /// Join a channel, answered with [`Reply::Opened`] once the workspace is
     /// ready for apps to open documents in.
     Join(Join),
-    /// Where the room a channel key names stands, answered as
-    /// [`Reply::Room`]: now, or once it is no longer `seen`.
-    Room {
+    /// Where the workspace a channel key names stands, answered as
+    /// [`Reply::Workspace`]: now, or once it is no longer `seen`.
+    Workspace {
         channel: String,
-        seen: Option<RoomStatus>,
+        seen: Option<WorkspaceStatus>,
     },
     /// Publish into a channel this connection holds.
     Publish {
@@ -474,7 +474,7 @@ pub enum Reply {
     Subscribed,
     /// What the call opened.
     Opened(Handle),
-    Room(RoomStatus),
+    Workspace(WorkspaceStatus),
     /// Whether an invocation's cancellation was asked.
     Cancelled(bool),
     /// Whether a task run was cancelled, and the control it shows now as

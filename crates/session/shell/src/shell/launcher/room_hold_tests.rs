@@ -254,7 +254,10 @@ fn an_opening_asked_for_before_the_enrollment_commits_goes_on_once_it_does() {
     let (_directory, owner, room, commit) =
         crate::shell::native_workspace_owner::test_owner_before_enrollment();
     let tree = crate::shell::native_workspace_owner::tree_of(&owner);
-    assert!(!owner.rooms().contains(&room), "nothing is committed yet");
+    assert!(
+        !owner.workspaces().contains(&room),
+        "nothing is committed yet"
+    );
     let session = LaunchSession::current();
     let (opened, opened_now) = std::sync::mpsc::channel();
     let waiting = std::thread::spawn(move || {

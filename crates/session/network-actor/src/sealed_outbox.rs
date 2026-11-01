@@ -1,23 +1,23 @@
-//! This device's sealed writes to a room whose records are sealed channels,
-//! held until a host of the room keeps them.
+//! This device's sealed writes to a workspace whose records are sealed channels,
+//! held until a host of the workspace keeps them.
 //!
-//! The room's governor cannot open a sealed write and never admits it, so
+//! The workspace's governor cannot open a sealed write and never admits it, so
 //! the owner's outgoing custody, which the governor's admission retires,
 //! does not carry it. A host retains it for the record's channel members
 //! instead, and says when it did: the write goes to the host as a commit
 //! ([`RelayCoeditSession::commit`]), the host answers once it is durable,
-//! and only that answer lets the write go here. Every session of the room
+//! and only that answer lets the write go here. Every session of the workspace
 //! that starts sends what is still held, so a write sent into a session that
 //! ended before its host kept it, one that died unnoticed included, reaches
-//! the room's next host. A write's commit id is the hash of its bytes: a
+//! the workspace's next host. A write's commit id is the hash of its bytes: a
 //! host keeps a write it is sent twice once, and says so both times.
 //!
-//! Each write is held on disk as well, in a log of the room's own
+//! Each write is held on disk as well, in a log of the workspace's own
 //! ([`super::held_log`]): a write the device shut down with is held again
-//! when the room's route is set up ([`SealedOutbox::restore`]), and sent
-//! with the rest. Nothing bounds what a room holds: a write is never let go
+//! when the workspace's route is set up ([`SealedOutbox::restore`]), and sent
+//! with the rest. Nothing bounds what a workspace holds: a write is never let go
 //! before a host keeps it. While the disk cannot take a write, it is held
-//! in memory, the room says this device cannot keep its writes, and the log
+//! in memory, the workspace says this device cannot keep its writes, and the log
 //! takes it as soon as it can ([`RecordKeeper`]).
 //!
 //! [`RelayCoeditSession::commit`]: tilo_relay_session::RelayCoeditSession::commit
@@ -52,7 +52,7 @@ impl Held {
     }
 }
 
-/// One room's sealed writes no host has said it keeps yet, oldest first.
+/// One workspace's sealed writes no host has said it keeps yet, oldest first.
 #[derive(Default)]
 pub(super) struct SealedOutbox {
     held: VecDeque<Held>,
@@ -61,7 +61,7 @@ pub(super) struct SealedOutbox {
 impl SealedOutbox {
     /// Hold `bytes`, a sealed write retained on `channel` as `retention`,
     /// until a host keeps it, and answer its commit: what to send a session
-    /// up now, and the write as the room's log holds it when it was not
+    /// up now, and the write as the workspace's log holds it when it was not
     /// held yet. A write already held is not held twice.
     pub(super) fn hold(
         &mut self,
@@ -89,8 +89,8 @@ impl SealedOutbox {
         (op, payload, Some(record))
     }
 
-    /// Hold again `writes`, which the room's log held when the device
-    /// started: the next session of the room sends them.
+    /// Hold again `writes`, which the workspace's log held when the device
+    /// started: the next session of the workspace sends them.
     pub(super) fn restore(&mut self, writes: Vec<HeldWrite>) {
         for write in writes {
             if self.held.iter().any(|held| held.op == write.op) {
@@ -133,7 +133,7 @@ impl SealedOutbox {
     }
 
     /// How many held writes are not yet synced: all of them while no
-    /// session of the room carries them (`carried` false), else those its
+    /// session of the workspace carries them (`carried` false), else those its
     /// host did not keep. A write sent on a session up now is on its way.
     pub(super) fn unsynced(&self, carried: bool) -> usize {
         if carried {
@@ -164,13 +164,13 @@ impl SealedOutbox {
     }
 }
 
-/// Keeps held sealed writes in their rooms' logs ([`HeldLog`]), and lets
+/// Keeps held sealed writes in their workspaces' logs ([`HeldLog`]), and lets
 /// kept ones out, on a thread of its own and in the order they happened:
 /// each entry is made durable, which the network's turn does not wait for.
-/// Kept writes of one room that come together are one entry.
+/// Kept writes of one workspace that come together are one entry.
 ///
 /// An entry the disk does not take (it is full, say) waits, with every
-/// later one, and the room says this device cannot keep its writes now
+/// later one, and the workspace says this device cannot keep its writes now
 /// ([`crate::workspace_sync::cannot_keep`]); the writes stay held in
 /// memory meanwhile. The log takes them, in order, at the next entry or the
 /// next heartbeat's [`Self::retry`].
@@ -182,15 +182,17 @@ pub(super) struct RecordKeeper {
 enum Keep {
     Hold(u64, RoomId, HeldWrite),
     /// Hosts kept these writes; with nothing held any more (`true`), the
-    /// room's log goes.
+    /// workspace's log goes.
     Kept(u64, RoomId, Vec<[u8; 16]>, bool),
     Retry,
 }
 
 impl Keep {
-    fn room(&self) -> Option<(u64, RoomId)> {
+    fn workspace(&self) -> Option<(u64, RoomId)> {
         match self {
-            Self::Hold(ws, room, _) | Self::Kept(ws, room, _, _) => Some((*ws, *room)),
+            Self::Hold(ws, workspace, _) | Self::Kept(ws, workspace, _, _) => {
+                Some((*ws, *workspace))
+            }
             Self::Retry => None,
         }
     }
@@ -233,21 +235,21 @@ impl RecordKeeper {
         }
     }
 
-    /// Wake the frame loop with `wake` when a room's word on keeping its
+    /// Wake the frame loop with `wake` when a workspace's word on keeping its
     /// writes changes.
     pub(super) fn set_wake(&self, wake: crate::Wake) {
         *self.wake.lock_recover() = Some(wake);
     }
 
-    /// Hold `write` in the log of `room`, on topic `ws`.
-    pub(super) fn hold(&self, ws: u64, room: RoomId, write: HeldWrite) {
-        self.send(Keep::Hold(ws, room, write));
+    /// Hold `write` in the log of `workspace`, on topic `ws`.
+    pub(super) fn hold(&self, ws: u64, workspace: RoomId, write: HeldWrite) {
+        self.send(Keep::Hold(ws, workspace, write));
     }
 
-    /// A host keeps `op`: let it out of `room`'s log; `empty` when nothing
-    /// is held for the room any more.
-    pub(super) fn kept(&self, ws: u64, room: RoomId, op: [u8; 16], empty: bool) {
-        self.send(Keep::Kept(ws, room, vec![op], empty));
+    /// A host keeps `op`: let it out of `workspace`'s log; `empty` when nothing
+    /// is held for the workspace any more.
+    pub(super) fn kept(&self, ws: u64, workspace: RoomId, op: [u8; 16], empty: bool) {
+        self.send(Keep::Kept(ws, workspace, vec![op], empty));
     }
 
     /// Try again what the disk did not take.
@@ -264,13 +266,13 @@ impl RecordKeeper {
     }
 }
 
-/// Entries not durable yet, in order, and the rooms whose writes the disk
+/// Entries not durable yet, in order, and the workspaces whose writes the disk
 /// does not take now.
 #[derive(Default)]
 struct Waiting {
     entries: VecDeque<Keep>,
     stalled: HashSet<u64>,
-    /// Rooms whose log was repaired since the keeper started.
+    /// Workspaces whose log was repaired since the keeper started.
     repaired: HashSet<RoomId>,
 }
 
@@ -278,53 +280,54 @@ impl Waiting {
     fn add(&mut self, keep: Keep) {
         match keep {
             Keep::Retry => {}
-            Keep::Kept(ws, room, ops, empty) => {
-                // Joined with the kept writes of the same room just before.
-                if let Some(Keep::Kept(last_ws, last_room, last_ops, last_empty)) =
+            Keep::Kept(ws, workspace, ops, empty) => {
+                // Joined with the kept writes of the same workspace just before.
+                if let Some(Keep::Kept(last_ws, last_workspace, last_ops, last_empty)) =
                     self.entries.back_mut()
-                    && (*last_ws, *last_room) == (ws, room)
+                    && (*last_ws, *last_workspace) == (ws, workspace)
                 {
                     last_ops.extend(ops);
                     *last_empty = empty;
                     return;
                 }
-                self.entries.push_back(Keep::Kept(ws, room, ops, empty));
+                self.entries
+                    .push_back(Keep::Kept(ws, workspace, ops, empty));
             }
             keep @ Keep::Hold(..) => self.entries.push_back(keep),
         }
     }
 
     /// Make the waiting entries durable in order, up to the first the disk
-    /// does not take. Whether a room's word on keeping its writes changed.
+    /// does not take. Whether a workspace's word on keeping its writes changed.
     fn keep(&mut self, log: &HeldLog) -> bool {
         let before = self.stalled.clone();
         self.stalled.clear();
         while let Some(next) = self.entries.front() {
-            let Some((_, room)) = next.room() else {
+            let Some((_, workspace)) = next.workspace() else {
                 self.entries.pop_front();
                 continue;
             };
-            let repaired = if self.repaired.contains(&room) {
+            let repaired = if self.repaired.contains(&workspace) {
                 Ok(())
             } else {
-                log.repair(room)
+                log.repair(workspace)
             };
             let kept = repaired.and_then(|()| match next {
-                Keep::Hold(_, _, write) => log.hold(room, write),
-                Keep::Kept(_, _, ops, empty) => log.kept(room, ops.clone(), *empty),
+                Keep::Hold(_, _, write) => log.hold(workspace, write),
+                Keep::Kept(_, _, ops, empty) => log.kept(workspace, ops.clone(), *empty),
                 Keep::Retry => Ok(()),
             });
             if let Err(error) = kept {
-                tracing::warn!(%room, %error, "this device cannot keep its writes to the room on disk now");
-                // Every room still waiting cannot keep its writes.
+                tracing::warn!(%workspace, %error, "this device cannot keep its writes to the workspace on disk now");
+                // Every workspace still waiting cannot keep its writes.
                 self.stalled.extend(
                     self.entries
                         .iter()
-                        .filter_map(|keep| keep.room().map(|(ws, _)| ws)),
+                        .filter_map(|keep| keep.workspace().map(|(ws, _)| ws)),
                 );
                 break;
             }
-            self.repaired.insert(room);
+            self.repaired.insert(workspace);
             self.entries.pop_front();
         }
         let mut changed = false;
@@ -451,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_room_holds_every_write_no_host_kept_however_many() {
+    fn a_workspace_holds_every_write_no_host_kept_however_many() {
         let mut outbox = SealedOutbox::default();
         let ops: Vec<_> = (0_u32..5000)
             .map(|index| {
@@ -464,14 +467,14 @@ mod tests {
     }
 
     #[test]
-    fn a_write_the_disk_does_not_take_waits_and_the_room_says_so_until_it_does() {
+    fn a_write_the_disk_does_not_take_waits_and_the_workspace_says_so_until_it_does() {
         const WS: u64 = 0x5eed_0b0b;
         let dir = tempfile::tempdir().unwrap();
         let logs = dir.path().join("held");
         // Where the logs go is taken: the disk takes nothing.
         std::fs::write(&logs, b"in the way").unwrap();
         let log = HeldLog::new(logs.clone());
-        let room = RoomId::new();
+        let workspace = RoomId::new();
         let write = |index: u8| HeldWrite {
             op: [index; 16],
             channel: [2; 32],
@@ -479,9 +482,9 @@ mod tests {
             bytes: vec![index; 32],
         };
         let mut waiting = Waiting::default();
-        waiting.add(Keep::Hold(WS, room, write(1)));
-        waiting.add(Keep::Hold(WS, room, write(2)));
-        assert!(waiting.keep(&log), "the room's word changed");
+        waiting.add(Keep::Hold(WS, workspace, write(1)));
+        waiting.add(Keep::Hold(WS, workspace, write(2)));
+        assert!(waiting.keep(&log), "the workspace's word changed");
         assert!(crate::workspace_sync::cannot_keep_writes(WS));
         assert_eq!(waiting.entries.len(), 2, "both wait, in order");
         // The disk takes writes again: the next try keeps both.
@@ -490,6 +493,6 @@ mod tests {
         assert!(waiting.keep(&log));
         assert!(!crate::workspace_sync::cannot_keep_writes(WS));
         assert!(waiting.entries.is_empty());
-        assert_eq!(log.read(room).unwrap(), [write(1), write(2)]);
+        assert_eq!(log.read(workspace).unwrap(), [write(1), write(2)]);
     }
 }

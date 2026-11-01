@@ -209,6 +209,27 @@ pub fn watch_output_levels(
     )
 }
 
+/// Like [`watch`], and also tells `capture` how many capture streams
+/// ([`is_capture_class`]) are running: once with the baseline, then
+/// [`DEBOUNCE`] after the first change of a burst that moved the number of
+/// running streams.
+///
+/// # Errors
+///
+/// As [`watch`].
+pub fn watch_and_capture(
+    notify: impl Fn(GraphWatchEvent) + Send + 'static,
+    capture: impl Fn(usize) + Send + 'static,
+) -> Result<AudioGraphWatch, String> {
+    spawn(
+        notify,
+        Follow {
+            output_levels: false,
+            capture: Some(Box::new(capture)),
+        },
+    )
+}
+
 /// Like [`watch_output_levels`], and also tells `capture` how many capture
 /// streams ([`is_capture_class`]) are running: once with the baseline, then
 /// [`DEBOUNCE`] after the first change of a burst that moved the number of

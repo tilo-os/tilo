@@ -113,7 +113,7 @@ pub(super) struct Running {
     /// The pictures its steps and its plans' reads rendered (a canvas
     /// look), by content address, oldest first, at most [`MOST_LOOKED`].
     pub(super) looked: Vec<String>,
-    /// The room's pictures its steps read as content since its last plan
+    /// The workspace's pictures its steps read as content since its last plan
     /// ([`crate::vision::read_picture`]), oldest first: shown to the next.
     pub(super) read_pictures: Vec<String>,
     /// Apps an import of the task was refused in for what the record held:
@@ -642,7 +642,7 @@ impl Running {
     /// What a plan of the task is shown of its pictures: on a re-plan
     /// (`replan`), the newest its steps looked at; and every picture its
     /// apps rendered or made, which the plan may look at whatever the
-    /// agent may do with the room's own.
+    /// agent may do with the workspace's own.
     pub(super) fn pictures(&self, replan: bool) -> (Vec<String>, Vec<String>) {
         let newest = if replan {
             self.looked.last().cloned().into_iter().collect()
@@ -654,7 +654,7 @@ impl Running {
     }
 
     /// Whether the picture at `address` was rendered or made for the task
-    /// (a look, an export), rather than being one of the room's own.
+    /// (a look, an export), rather than being one of the workspace's own.
     pub(super) fn rendered(&self, address: &str) -> bool {
         self.looked
             .iter()
@@ -724,7 +724,7 @@ impl Running {
         }
         self.looked_at(rendered_picture(&output));
         // A picture read as content: one the task rendered is looked at
-        // again; one of the room's own is shown to the next plan alone.
+        // again; one of the workspace's own is shown to the next plan alone.
         if let Some(picture) = output.value.as_ref().and_then(crate::vision::read_picture) {
             if self.rendered(&picture) {
                 self.looked_at([picture]);
@@ -741,7 +741,7 @@ impl Running {
 
 /// Whether every piece of content `output` names is content `step` was
 /// given by address: an import answers with what it imported, which the
-/// room kept already.
+/// workspace kept already.
 pub(super) fn hands_on(step: &Step, output: &ActionOutput) -> bool {
     let StepAction::Invoke { arguments, .. } = &step.action else {
         return false;
@@ -811,7 +811,7 @@ pub(super) const CHECK_LEFT: &str = "Plan what the request still asks for that t
      steps and say so in `reply`.";
 
 /// The apps of `granted` that `task` names and of which no record is
-/// `held` (open or offered in the room).
+/// `held` (open or offered in the workspace).
 pub(super) fn named_without_documents(task: &str, granted: &[&str], held: &[&str]) -> Vec<String> {
     granted
         .iter()

@@ -5,14 +5,14 @@
 //! writes its own shares into the room; a page, which holds no copy of the
 //! room, asks this host through its `/rooms` requests (`super::pages`), and
 //! the host writes the same grants as the room's governor, decided as every
-//! receiver decides a device's share ([`tilo_peer_state::room::share`]): it
+//! receiver decides a device's share ([`tilo_peer_state::workspace::share`]): it
 //! gives only what the sharer holds on that node, and only they (or whoever
 //! may govern `revoke`) end it.
 
 use tilo_action_policy::share::ShareAccess;
 use tilo_action_policy::{Context, TreePath};
 use tilo_peer_state::join_ledger::request_digest;
-use tilo_peer_state::room::share;
+use tilo_peer_state::workspace::share;
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Rooms, system_time};
@@ -55,7 +55,7 @@ impl Rooms {
         let bound = tilo_action_policy::roles::foreign_device_bound();
         let device_key = hex::encode(device.device_public_key);
         let grants = share::share_grants(
-            (governed.peer().admitted_room(), &member.policy),
+            (governed.peer().admitted_workspace(), &member.policy),
             (&member.person, &device_key, &member.authority(&bound), &cx),
             share,
             node,

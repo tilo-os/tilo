@@ -160,7 +160,7 @@ fn document(bytes: &[u8]) -> Result<AutoCommit, ProofError> {
     Ok(doc)
 }
 /// A room frame's framing: each entry exactly one change chunk. Nothing is
-/// decoded here; `tilo_peer_state::room::candidate` decodes them in the isolate.
+/// decoded here; `tilo_peer_state::workspace::candidate` decodes them in the isolate.
 fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     if changes.is_empty() {
         return Err(ProofError::Unknown);
@@ -175,7 +175,7 @@ fn room_framing(changes: &[Vec<u8>]) -> Result<(), ProofError> {
     }
     Ok(())
 }
-/// The changes of a room frame that `tilo_peer_state::room::candidate` has already
+/// The changes of a room frame that `tilo_peer_state::workspace::candidate` has already
 /// accepted, parsed in this process only now: the isolate's worker decoded
 /// each of these chunks the same way first.
 ///
@@ -198,7 +198,7 @@ fn admitted_changes(changes: &[Vec<u8>]) -> Result<Vec<automerge::Change>, Proof
         .collect()
 }
 fn valid_coverage(authority: &RetentionAuthority, key: &str, coverage: &Coverage) -> bool {
-    coverage.room == authority.room()
+    coverage.workspace == authority.room()
         && key == tilo_peer_state::coverage::route_key(&coverage.app, &coverage.record)
         && coverage.author == authority.governor().device_public_key
         && coverage.sequence > 0
@@ -257,12 +257,12 @@ fn identities(
     doc: &AutoCommit,
 ) -> Result<(), ProofError> {
     let parse = |doc| {
-        tilo_peer_state::room::governance_of(doc)
+        tilo_peer_state::workspace::governance_of(doc)
             .identities
             .into_iter()
             .map(|(id, bytes)| {
-                let identity =
-                    tilo_peer_state::room::identity_row(&bytes).map_err(|_| ProofError::Unknown)?;
+                let identity = tilo_peer_state::workspace::identity_row(&bytes)
+                    .map_err(|_| ProofError::Unknown)?;
                 if id != hex::encode(identity.device_cert.device_public_key) {
                     return Err(ProofError::Unknown);
                 }
@@ -340,7 +340,8 @@ pub fn verify_room(
         RoomInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
     };
     // The isolate decodes the changes first; only then are they parsed here.
-    let doc = tilo_peer_state::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
+    let doc =
+        tilo_peer_state::workspace::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
     admitted_changes(&changes)?;
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(ProofError::Unknown);
@@ -356,13 +357,13 @@ pub fn verify_room(
     // The governor wrote it, so this is the room admission every receiver
     // runs, from one of the owner's devices: room, layout, receipts,
     // coverage, durability and media.
-    tilo_peer_state::room::check_candidate(
-        &tilo_peer_state::room::RoomAdmission {
+    tilo_peer_state::workspace::check_candidate(
+        &tilo_peer_state::workspace::WorkspaceAdmission {
             before,
-            room: authority.room(),
-            source: tilo_peer_state::room::Writer {
+            workspace: authority.room(),
+            source: tilo_peer_state::workspace::Writer {
                 key: &pinned,
-                standing: tilo_peer_state::room::Standing::Member {
+                standing: tilo_peer_state::workspace::Standing::Member {
                     person: owner,
                     foreign: false,
                 },
@@ -474,9 +475,9 @@ pub fn verify_snapshot(
     };
     let mut doc = document(&bytes)?;
     if let Some(policy) =
-        tilo_peer_state::room::media::parse(&room.doc).map_err(|_| ProofError::Unknown)?
+        tilo_peer_state::workspace::media::parse(&room.doc).map_err(|_| ProofError::Unknown)?
     {
-        tilo_peer_state::room::media::validate_bound_chat_change(&policy, &app, &record, &doc)
+        tilo_peer_state::workspace::media::validate_bound_chat_change(&policy, &app, &record, &doc)
             .map_err(|_| ProofError::Unknown)?;
     }
     let key = tilo_peer_state::coverage::route_key(&app, &record);
@@ -548,7 +549,7 @@ impl VerifiedRoom {
             return CoverageDecision::Unknown;
         }
         // Decode the frame in the isolate, on its own, before parsing it here.
-        if tilo_peer_state::room::candidate(None, &changes).is_err() {
+        if tilo_peer_state::workspace::candidate(None, &changes).is_err() {
             return CoverageDecision::Unknown;
         }
         let Ok(changes) = admitted_changes(&changes) else {

@@ -15,6 +15,8 @@ use std::time::Duration;
 /// The same three outcomes cover the lid switch, the power key, and the
 /// critical-battery threshold — each configurable independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "service", serde(rename_all = "lowercase"))]
 pub enum PowerAction {
     /// Suspend the machine (`logind.Manager.Suspend`).
     Suspend,

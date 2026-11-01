@@ -130,9 +130,12 @@ impl State {
             .collect()
     }
 
-    /// Every known output: its connector, whether it is on and, while it
-    /// is, its logical rectangle.
-    pub(crate) fn output_infos(&self) -> Vec<crate::output::OutputInfo> {
+    /// Every known output: its connector, whether it is on, its logical
+    /// rectangle while it is, and the colour `colour` says it shows.
+    pub(crate) fn output_infos(
+        &self,
+        colour: impl Fn(&Output) -> tilo_color_pipeline::hdr_display::DisplayCapabilities,
+    ) -> Vec<crate::output::OutputInfo> {
         self.space
             .outputs()
             .map(|output| crate::output::OutputInfo {
@@ -145,6 +148,7 @@ impl State {
                     .output_geometry(output)
                     .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)),
                 description: Some(output.description()),
+                colour: colour(output),
             })
             .chain(
                 self.disabled_outputs
@@ -156,6 +160,7 @@ impl State {
                         enabled: false,
                         rect: None,
                         description: Some(output.description()),
+                        colour: colour(output),
                     }),
             )
             .collect()

@@ -1,12 +1,12 @@
 //! This device's side of every encrypted channel the profile takes part in.
 //!
-//! In the profile's own room, which the room host this runtime runs hosts,
+//! In the profile's own workspace, which the workspace host this runtime runs hosts,
 //! the host takes part in the channels as this device's one peer and asks
 //! this service for their keys ([`DeviceChannelKeys`]), so its apps get
-//! their route keys without any network. In a room
-//! hosted elsewhere it is one participant among the room's member devices:
-//! it asks them for access over the room's relay session, follows and
-//! checks their commits against the room's governance, and commits itself
+//! their route keys without any network. In a workspace
+//! hosted elsewhere it is one participant among the workspace's member devices:
+//! it asks them for access over the workspace's relay session, follows and
+//! checks their commits against the workspace's governance, and commits itself
 //! when the group falls behind the membership. While nobody who can admit
 //! it is online, channels this device already reads keep their keys and a
 //! new request waits, sent again until a participant answers.
@@ -120,12 +120,12 @@ fn spawn_pump(
     Ok(Pump { wake, stop })
 }
 
-/// Open this device's channel state in `profile`, whose room `profile_room`
-/// names the state's key, and run its governance over the joined rooms'
+/// Open this device's channel state in `profile`, whose workspace `profile_workspace`
+/// names the state's key, and run its governance over the joined workspaces'
 /// sessions.
 pub(super) fn open(
     profile: &Path,
-    profile_room: RoomId,
+    profile_workspace: RoomId,
     storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
     joined: Arc<Joined>,
@@ -134,7 +134,7 @@ pub(super) fn open(
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: profile.join(CHANNEL_STATE),
-            vault: vault_key(profile, profile_room, storage)?,
+            vault: vault_key(profile, profile_workspace, storage)?,
             device_key,
         },
         Box::new(Directory {
@@ -156,25 +156,25 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
-        self.joined.governor_of(room)
+    fn governor_of(&self, workspace: RoomId) -> Option<Ed25519PublicKey> {
+        self.joined.governor_of(workspace)
     }
 
-    /// The member devices the room's governance lets read the channel's
+    /// The member devices the workspace's governance lets read the channel's
     /// record.
     fn allowed_devices(
         &self,
-        room: RoomId,
+        workspace: RoomId,
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.joined.channel_readers(room, channel, route, now)
+        self.joined.channel_readers(workspace, channel, route, now)
     }
 }
 
-/// The room host this runtime runs holds no channel keys of its own: it
-/// takes part in a room's channels as this device's one peer, asking this
+/// The workspace host this runtime runs holds no channel keys of its own: it
+/// takes part in a workspace's channels as this device's one peer, asking this
 /// device's channel service for them ([`tilo_room_host::rooms::ChannelKeys`]),
 /// so the host and the device never found two groups under one leaf.
 pub(super) struct DeviceChannelKeys {
@@ -190,7 +190,7 @@ impl DeviceChannelKeys {
 impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
     fn channel_keys<'a>(
         &'a self,
-        room: &'a str,
+        workspace: &'a str,
         route: &'a collab_types::ChannelRoute,
         create: bool,
     ) -> std::pin::Pin<
@@ -202,7 +202,7 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
         >,
     > {
         let keys = self.keys.clone();
-        let (room, route) = (room.to_owned(), route.clone());
+        let (workspace, route) = (workspace.to_owned(), route.clone());
         Box::pin(async move {
             // Asked off the caller's task: the service takes its lock and
             // reads its state on that thread, never on the host's.
@@ -210,9 +210,9 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
                 let Some(access) = keys.get() else {
                     return Some(Err("this device's channel service is not running".into()));
                 };
-                let room = RoomId::parse(&room)?;
+                let workspace = RoomId::parse(&workspace)?;
                 if create {
-                    match access.access_record(room, &route).0 {
+                    match access.access_record(workspace, &route).0 {
                         ChannelAccess::Ready(keys) => Some(Ok(keys)),
                         ChannelAccess::Waiting | ChannelAccess::Removed => {
                             Some(Err("the channel's keys are not ready".into()))
@@ -220,7 +220,7 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
                         ChannelAccess::Unavailable | ChannelAccess::NoSecretStore => None,
                     }
                 } else {
-                    access.record_keys(room, &route)
+                    access.record_keys(workspace, &route)
                 }
             })
             .await;
@@ -229,15 +229,15 @@ impl tilo_room_host::rooms::ChannelKeys for DeviceChannelKeys {
     }
 }
 
-/// The key sealing `room`'s channel state in `profile`, created once: in the
+/// The key sealing `workspace`'s channel state in `profile`, created once: in the
 /// login Keychain on macOS, else in an owner-only file.
-fn vault_key(profile: &Path, room: RoomId, storage: IdentityStorage) -> io::Result<VaultKey> {
+fn vault_key(profile: &Path, workspace: RoomId, storage: IdentityStorage) -> io::Result<VaultKey> {
     let file = profile.join(CHANNEL_STATE_KEY);
     #[cfg(target_os = "macos")]
     if storage == IdentityStorage::Platform {
-        return keychain::vault_key(&file, room).map(VaultKey::new);
+        return keychain::vault_key(&file, workspace).map(VaultKey::new);
     }
-    let _ = (room, storage);
+    let _ = (workspace, storage);
     if let Some(key) = read_key_file(&file)? {
         return Ok(VaultKey::new(key));
     }
@@ -278,9 +278,9 @@ mod keychain {
 
     const SECRETS_APP: &str = "so.tilo.runtime";
 
-    pub(super) fn vault_key(file: &Path, room: RoomId) -> io::Result<[u8; 32]> {
+    pub(super) fn vault_key(file: &Path, workspace: RoomId) -> io::Result<[u8; 32]> {
         let store = SecretStore::for_app(SECRETS_APP);
-        let name = format!("channel-state-v1.{room}");
+        let name = format!("channel-state-v1.{workspace}");
         let stored = get(&store, &name)?;
         let legacy = read_key_file(file)?;
         let key = match (stored, legacy) {

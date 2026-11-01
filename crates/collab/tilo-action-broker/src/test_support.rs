@@ -4,10 +4,10 @@ use std::sync::Arc;
 pub use tilo_action_policy::{Answer, GrantId, KindSet, Level, Role, Subject, TreePath};
 pub use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
 
-/// The grants fixtures give, in the room's own terms.
+/// The grants fixtures give, in the workspace's own terms.
 pub trait Grants {
     /// Let `subject` take actions of `kinds` at `relative` (a path below the
-    /// room). Returns the grant's id.
+    /// workspace). Returns the grant's id.
     fn allow(&mut self, subject: Subject, relative: &TreePath, kinds: KindSet) -> GrantId {
         self.answer(subject, relative, kinds, Answer::Allow)
     }
@@ -23,9 +23,9 @@ pub trait Grants {
         kinds: KindSet,
         answer: Answer,
     ) -> GrantId;
-    /// Let `subject` take actions of `kinds` in another room, `room`.
-    fn allow_in_room(&mut self, subject: Subject, room: &str, kinds: KindSet) -> GrantId;
-    /// Admit the agent `agent` to the room for actions of `kinds`.
+    /// Let `subject` take actions of `kinds` at the workspace `workspace`.
+    fn allow_in_workspace(&mut self, subject: Subject, workspace: &str, kinds: KindSet) -> GrantId;
+    /// Admit the agent `agent` to the workspace for actions of `kinds`.
     fn admit_agent(&mut self, agent: &str, kinds: KindSet) -> GrantId {
         self.allow(Subject::agent(agent), &TreePath::root(), kinds)
     }
@@ -54,12 +54,12 @@ impl Grants for Workspace {
         ))
     }
 
-    fn allow_in_room(&mut self, subject: Subject, room: &str, kinds: KindSet) -> GrantId {
+    fn allow_in_workspace(&mut self, subject: Subject, workspace: &str, kinds: KindSet) -> GrantId {
         let owner = self.owner().cloned().unwrap_or_default();
         self.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
-            TreePath::room(room),
+            TreePath::room(workspace),
             kinds,
             Answer::Allow,
             Subject::Person(owner),
@@ -107,10 +107,10 @@ impl WorkspaceTreeHandle {
     }
 }
 impl WorkspaceAuthority for WorkspaceTreeHandle {
-    /// A test tree holds no room documents: none of its rooms revokes a
+    /// A test tree holds no workspace documents: none of its workspaces revokes a
     /// device.
-    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
-        crate::services::room_in(&self.read().desktop, room)
+    fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
+        crate::services::workspace_in(&self.read().desktop, workspace)
             .map(|_| tilo_user_identity::RevocationList::new())
     }
     fn with_tree(
@@ -131,7 +131,7 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
 impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
     fn record_effect(
         &self,
-        room: &str,
+        workspace: &str,
         invocation: tilo_actions::InvocationId,
         actor: &str,
         context: tilo_actions::ActionContext,
@@ -141,8 +141,8 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|w| w.room().to_string() == room)
-            .ok_or("room missing")?;
+            .find(|w| w.room().to_string() == workspace)
+            .ok_or("workspace missing")?;
         if !workspace
             .effect_receipts
             .iter()

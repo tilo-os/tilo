@@ -35,7 +35,7 @@ impl PresenceSession {
         }
     }
 
-    /// Widened to room scope — presence is room-wide, only document
+    /// Widened to workspace scope — presence is workspace-wide, only document
     /// payloads are confined to a record.
     fn route(&self) -> CrdtRoute {
         self.full_route().to_cluster_scope()
@@ -127,7 +127,7 @@ impl PresenceSession {
         Ok(update)
     }
 
-    /// Everyone else's presence in this room from now on.
+    /// Everyone else's presence in this workspace from now on.
     pub(in crate::collab_app_broker) fn subscribe(&self) -> Result<Feed<PresenceEnvelope>, String> {
         self.revalidate()?;
         Ok(Feed::new(

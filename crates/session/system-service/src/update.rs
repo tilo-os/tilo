@@ -50,6 +50,8 @@ pub struct Update {
     pub updating: bool,
     pub pending: Vec<String>,
     pub problem: Option<String>,
+    /// Firmware updates `fwupd` offers; `None` where it is not installed.
+    pub firmware: Option<usize>,
 }
 
 impl Update {

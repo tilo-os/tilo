@@ -13,8 +13,8 @@
 //!
 //! - its [`ContentShelf`]: the device content store, read and written
 //!   through the scope a record's content lives under ([`ContentScope`]);
-//! - its [`ContentPeers`]: the record's route on the network — the room's
-//!   topic for a room record, the person's own devices for a person record.
+//! - its [`ContentPeers`]: the record's route on the network — the workspace's
+//!   topic for a workspace record, the person's own devices for a person record.
 //!
 //! The rules:
 //!
@@ -64,13 +64,13 @@ pub const PIECE_BYTES: usize = 192 * 1024;
 /// Requests this device keeps open at once; past it, the oldest go.
 const MAX_OPEN_WANTS: usize = 256;
 
-/// Where a record's content lives on a device: the room the record is
+/// Where a record's content lives on a device: the workspace the record is
 /// kept in, and the app whose record it is. A person record's content
-/// lives under the person's own room, whichever room the window showing it
+/// lives under the person's own room, whichever workspace the window showing it
 /// is in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContentScope {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
 }
 
@@ -78,7 +78,7 @@ impl ContentScope {
     /// The scope of the record `route` carries.
     pub fn of(route: &CrdtRoute) -> Self {
         Self {
-            room: route.cluster_id.clone(),
+            workspace: route.cluster_id.clone(),
             app: route.app_id.clone(),
         }
     }

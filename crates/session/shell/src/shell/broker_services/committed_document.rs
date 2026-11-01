@@ -119,8 +119,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         context.revalidate()?;
         Ok(committed)
     }
-    fn requires_room(&self, room: &str) -> bool {
-        super::super::state::RoomId::parse(room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        super::super::state::RoomId::parse(workspace)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn seals_records(&self, room: &str) -> bool {
@@ -538,7 +538,7 @@ impl NativeOwnerCommitService {
                 view.peer()
                     .document(&route.app_id, &route.record_id)
                     .is_none(),
-                view.room_host().capabilities.can_act_as_host,
+                view.workspace_host().capabilities.can_act_as_host,
             ))
         }) else {
             return;

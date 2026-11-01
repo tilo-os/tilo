@@ -1,4 +1,4 @@
-//! The rows a room's governance keeps per device: its certificate and how
+//! The rows a workspace's governance keeps per device: its certificate and how
 //! it was admitted.
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
@@ -43,7 +43,7 @@ pub(crate) struct RedemptionReceipt {
     /// The signed invitation redeemed, in its text form
     /// ([`crate::join::encode_invitation_text`]): what lets every receiver
     /// check the admission itself, whoever wrote it. Kept once, in the
-    /// room's per-invite ledger; an identity row's copy leaves it out.
+    /// workspace's per-invite ledger; an identity row's copy leaves it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) invitation: Option<String>,
 }

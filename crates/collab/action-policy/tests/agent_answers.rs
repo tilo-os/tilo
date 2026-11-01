@@ -1,7 +1,7 @@
 //! A person's Allow, Ask first and Deny for one of their agents.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, RoomPolicy, Subject, TreePath,
+    ActionKind, Answer, Authority, Change, Context, Grant, Subject, TreePath, WorkspacePolicy,
     agent_answers::{self, AnswerScope},
     roles::AgentPreset,
 };
@@ -22,8 +22,8 @@ fn grants(extra: Vec<Grant>) -> Vec<Grant> {
 }
 
 fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential: bool) -> Answer {
-    let policy = RoomPolicy {
-        room: ROOM.into(),
+    let policy = WorkspacePolicy {
+        workspace: ROOM.into(),
         owner: Some(PERSON.into()),
         members: std::collections::BTreeMap::default(),
         joined: std::collections::BTreeMap::default(),

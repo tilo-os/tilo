@@ -1,5 +1,5 @@
 //! Tests the actual receipt/context gate; durable owner publication is tested
-//! separately against signed empty-room enrollment in `tilo_peer_state::owner`.
+//! separately against signed empty-workspace enrollment in `tilo_peer_state::owner`.
 use super::{
     CreationReceipt, CreationWorkspace, Initialization, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, Reply, Slot,
@@ -15,7 +15,7 @@ struct Service {
     refuse: AtomicBool,
 }
 impl NativeDocumentReads for Service {
-    fn requires_room(&self, _: &str) -> bool {
+    fn requires_workspace(&self, _: &str) -> bool {
         true
     }
     fn prepare_application(
@@ -53,7 +53,7 @@ impl NativeDocumentReads for Service {
 fn workspace() -> CreationWorkspace {
     CreationWorkspace {
         id: "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af".into(),
-        name: "Verified room".into(),
+        name: "Verified workspace".into(),
     }
 }
 fn fixture() -> (Initialization, Arc<Service>, Arc<AtomicBool>) {
@@ -249,11 +249,16 @@ fn first_capture_only_carries_source_scoped_creation_not_existing_empty() {
             )
             .is_err()
     );
-    let mut wrong_room = workspace();
-    wrong_room.id = "9a317772-6945-4ec7-aac0-6d1e7b3287cd".into();
+    let mut wrong_workspace = workspace();
+    wrong_workspace.id = "9a317772-6945-4ec7-aac0-6d1e7b3287cd".into();
     assert!(
         existing
-            .creation_reply(chunk(), Some(wrong_room), &initialization.context, &service)
+            .creation_reply(
+                chunk(),
+                Some(wrong_workspace),
+                &initialization.context,
+                &service
+            )
             .is_err()
     );
     assert!(existing.initialization.is_none());

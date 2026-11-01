@@ -5,8 +5,8 @@
 //! settings sections) syncs them the same way through a
 //! [`RecordRouteParticipant`]: each record joins its route on the broker, its
 //! changes go out as the window's do, and what the person's other devices
-//! (or any other holder) send is merged in. Signing, encryption and the
-//! person room's admission stay the SDK's, as for a window.
+//! (or any other holder) send is merged in. Signing, encryption and a
+//! route's admission stay the SDK's, as for a window.
 
 use crate::collaboration::{CollabEvent, CollaborationManager, HostSessionConnector, RouteSpec};
 use crate::history_mode::HistoryOwner;
@@ -533,9 +533,10 @@ mod tests {
 
     const APP: &str = "so.tilo.test-person";
     const ROOT_KEY: [u8; 32] = [42; 32];
+    const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000a5";
 
-    /// One device's copy of the person's watched list, held by a host
-    /// without a window.
+    /// One device's copy of the member's watched list in the workspace, held
+    /// by a host without a window.
     fn device() -> StoredRecord {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         PersonRecords::open(
@@ -543,6 +544,8 @@ mod tests {
             APP,
             crate::permissions::UserId(hex::encode(ROOT_KEY)),
         )
+        .unwrap()
+        .in_workspace(WORKSPACE)
         .unwrap()
         .open_record(RecordKind::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -636,7 +639,7 @@ mod tests {
         )
     }
 
-    /// Two hosts holding the person's record without a window publish it on
+    /// Two hosts holding the member's record without a window publish it on
     /// its route and converge on what each other sent.
     #[test]
     fn records_held_without_a_window_converge_over_their_route() {

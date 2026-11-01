@@ -1,11 +1,11 @@
-//! Answering the workspace-join exchange for a room this device holds.
+//! Answering the workspace-join exchange for a workspace this device holds.
 //!
-//! What differs between holders is only where a room lives and how a change
-//! to it becomes durable and reaches its members: a [`JoinRooms`].
+//! What differs between holders is only where a workspace lives and how a change
+//! to it becomes durable and reaches its members: a [`JoinWorkspaces`].
 //! Everything decided (which invitation a device redeems, what a challenge
 //! binds, who is admitted, which certificate a member holds) is decided
-//! here, against the room's [`JoinLedger`] and its committed governance, so
-//! a room is joined the same way whichever device answers.
+//! here, against the workspace's [`JoinLedger`] and its committed governance, so
+//! a workspace is joined the same way whichever device answers.
 
 use crate::StatePeer;
 use crate::join::{
@@ -14,28 +14,28 @@ use crate::join::{
     MembershipCompleteRequest,
 };
 use crate::join_ledger::{
-    Governed, JoinError, JoinLedger, Redeeming, invitation_room, request_digest,
+    Governed, JoinError, JoinLedger, Redeeming, invitation_workspace, request_digest,
 };
 use ed25519_dalek::SigningKey;
 use std::future::Future;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
 
-/// One room as its holder keeps it while it decides: locked, so nothing
+/// One workspace as its holder keeps it while it decides: locked, so nothing
 /// else changes it meanwhile.
-pub trait RoomTxn {
-    /// The room's id.
-    fn room(&self) -> &str;
-    /// The room as committed now, as its join ledger reads it.
+pub trait WorkspaceTxn {
+    /// The workspace's id.
+    fn workspace(&self) -> &str;
+    /// The workspace as committed now, as its join ledger reads it.
     fn governed(&self) -> Governed<'_>;
-    /// The room's join ledger as it stands, staged changes included.
+    /// The workspace's join ledger as it stands, staged changes included.
     fn ledger(&self) -> &JoinLedger;
-    /// Stage `ledger` as the room's join ledger. The store makes it durable
+    /// Stage `ledger` as the workspace's join ledger. The store makes it durable
     /// before the answer it belongs to is given.
     fn stage_ledger(&mut self, ledger: JoinLedger);
-    /// Commit `peer` as the room's next governance, signed at `now`, and,
-    /// against the room as then committed, `ledger`'s answer as its join
-    /// ledger: durable when this returns, and sent to the room's members
+    /// Commit `peer` as the workspace's next governance, signed at `now`, and,
+    /// against the workspace as then committed, `ledger`'s answer as its join
+    /// ledger: durable when this returns, and sent to the workspace's members
     /// before the answer it belongs to is given. Nothing changes when
     /// `ledger` refuses.
     ///
@@ -51,7 +51,7 @@ pub trait RoomTxn {
     /// [`Self::commit_governance`] of a change that only admits people
     /// through their invitations ([`admit`]), each perhaps named as they
     /// chose, and changes nothing else. A store may publish it as an
-    /// addition to earlier admissions rather than starting the room over;
+    /// addition to earlier admissions rather than starting the workspace over;
     /// by default it is committed like any other change.
     ///
     /// # Errors
@@ -66,9 +66,9 @@ pub trait RoomTxn {
     }
 }
 
-/// Where the rooms a join is answered for live.
-pub trait JoinRooms: Send + Sync {
-    /// The key this device signs the rooms' governance with.
+/// Where the workspaces a join is answered for live.
+pub trait JoinWorkspaces: Send + Sync {
+    /// The key this device signs the workspaces' governance with.
     fn key(&self) -> &SigningKey;
 
     /// Fresh randomness for a challenge.
@@ -77,21 +77,21 @@ pub trait JoinRooms: Send + Sync {
     /// There is no randomness to give.
     fn nonce(&self) -> Result<[u8; 32], JoinError>;
 
-    /// Run `decide` on `room`, locked, then make what it staged durable
+    /// Run `decide` on `workspace`, locked, then make what it staged durable
     /// and send what it committed, and only then answer what `decide`
     /// answered.
     ///
     /// # Errors
-    /// The room is not governed here, `decide` refuses, or its change
+    /// The workspace is not governed here, `decide` refuses, or its change
     /// cannot be made durable.
-    fn with_room<T: Send>(
+    fn with_workspace<T: Send>(
         &self,
-        room: &str,
-        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, JoinError> + Send,
+        workspace: &str,
+        decide: impl FnOnce(&mut dyn WorkspaceTxn) -> Result<T, JoinError> + Send,
     ) -> impl Future<Output = Result<T, JoinError>> + Send;
 }
 
-/// The workspace-join exchange answered for the rooms in `S`.
+/// The workspace-join exchange answered for the workspaces in `S`.
 #[derive(Clone, Debug)]
 pub struct JoinAnswer<S>(pub S);
 
@@ -102,18 +102,18 @@ fn at(now: u64) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// The room a join request is about, read without trusting it: the
-/// ledger then verifies it against what that room issued.
+/// The workspace a join request is about, read without trusting it: the
+/// ledger then verifies it against what that workspace issued.
 ///
 /// # Errors
-/// The request carries an invitation that names no room.
-pub fn requested_room(request: &JoinTransportRequest, now: u64) -> Result<String, JoinError> {
+/// The request carries an invitation that names no workspace.
+pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<String, JoinError> {
     Ok(match request {
         JoinTransportRequest::Inspect { signed_invitation } => {
-            invitation_room(signed_invitation, now)?
+            invitation_workspace(signed_invitation, now)?
         }
         JoinTransportRequest::Challenge(request) => {
-            invitation_room(&request.signed_invitation, now)?
+            invitation_workspace(&request.signed_invitation, now)?
         }
         JoinTransportRequest::Complete(request) => request.proof.challenge.room.clone(),
         JoinTransportRequest::MembershipChallenge(request) => request.room.clone(),
@@ -121,25 +121,25 @@ pub fn requested_room(request: &JoinTransportRequest, now: u64) -> Result<String
     })
 }
 
-/// Admit the verified `joins` to `room` in one governance change signed
+/// Admit the verified `joins` to `workspace` in one governance change signed
 /// with `key`. Each is checked on its own and refused alone; everyone
-/// admitted is then committed, recorded in the room's ledger and sent,
+/// admitted is then committed, recorded in the workspace's ledger and sent,
 /// together. Answers each join in order.
 ///
 /// # Errors
 /// The change cannot be committed or sent.
 pub fn admit(
-    room: &mut dyn RoomTxn,
+    workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
     key: &SigningKey,
     now: u64,
 ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
-    let mut candidate = room.governed().peer.clone();
-    let refusals = room.ledger().admit(&mut candidate, joins, key, now);
+    let mut candidate = workspace.governed().peer.clone();
+    let refusals = workspace.ledger().admit(&mut candidate, joins, key, now);
     for (join, refused) in joins.iter().zip(&refusals) {
         if let Some(error) = refused {
             tracing::warn!(
-                room = %room.room(),
+                workspace = %workspace.workspace(),
                 invite_id = %hex::encode(join.redemption.join().invite_id()),
                 person = %hex::encode(join.redemption.certificate().user_public_key),
                 outcome = "replay_rejected",
@@ -152,15 +152,15 @@ pub fn admit(
         return Ok(refusals.into_iter().flatten().map(Err).collect());
     }
     let mut delivered = Vec::new();
-    let ledger = room.ledger().clone();
-    room.commit_admission(candidate, now, &mut |governed| {
+    let ledger = workspace.ledger().clone();
+    workspace.commit_admission(candidate, now, &mut |governed| {
         let mut completed = ledger.clone();
         delivered = completed.complete(governed, joins, &refusals)?;
         Ok(completed)
     })?;
     for bootstrap in delivered.iter().flatten() {
         tracing::info!(
-            room = %bootstrap.room,
+            workspace = %bootstrap.room,
             invite_id = %hex::encode(bootstrap.invite_id),
             person = %hex::encode(bootstrap.device_cert.user_public_key),
             device = %hex::encode(bootstrap.device_cert.device_public_key),
@@ -172,7 +172,7 @@ pub fn admit(
     Ok(delivered)
 }
 
-impl<S: JoinRooms> JoinAnswer<S> {
+impl<S: JoinWorkspaces> JoinAnswer<S> {
     /// Answer one workspace-join request from the device at
     /// `remote_endpoint`, its authenticated transport key.
     pub async fn answer(
@@ -200,15 +200,17 @@ impl<S: JoinRooms> JoinAnswer<S> {
         request: JoinTransportRequest,
         now: u64,
     ) -> Result<JoinTransportResponse, JoinError> {
-        let room = requested_room(&request, now)?;
+        let workspace = requested_workspace(&request, now)?;
         let store = &self.0;
         Ok(match request {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 store
-                    .with_room(&room, |room| {
-                        let join =
-                            room.ledger()
-                                .inspect(&room.governed(), &signed_invitation, now)?;
+                    .with_workspace(&workspace, |workspace| {
+                        let join = workspace.ledger().inspect(
+                            &workspace.governed(),
+                            &signed_invitation,
+                            now,
+                        )?;
                         Ok(JoinTransportResponse::Inspection(JoinInspection {
                             invite_id: join.invite_id(),
                             grant: join.grant().clone(),
@@ -219,16 +221,16 @@ impl<S: JoinRooms> JoinAnswer<S> {
             JoinTransportRequest::Challenge(request) => {
                 let nonce = store.nonce()?;
                 store
-                    .with_room(&room, |room| {
-                        let mut ledger = room.ledger().clone();
+                    .with_workspace(&workspace, |workspace| {
+                        let mut ledger = workspace.ledger().clone();
                         let challenge = ledger.challenge(
-                            &room.governed(),
+                            &workspace.governed(),
                             remote_endpoint,
                             request,
                             nonce,
                             now,
                         )?;
-                        room.stage_ledger(ledger);
+                        workspace.stage_ledger(ledger);
                         Ok(JoinTransportResponse::Challenge(JoinChallengeResponse {
                             challenge,
                         }))
@@ -238,8 +240,8 @@ impl<S: JoinRooms> JoinAnswer<S> {
             JoinTransportRequest::Complete(request) => {
                 let key = store.key().clone();
                 store
-                    .with_room(&room, |room| {
-                        complete(room, remote_endpoint, &request, &key, now)
+                    .with_workspace(&workspace, |workspace| {
+                        complete(workspace, remote_endpoint, &request, &key, now)
                             .map(JoinTransportResponse::Complete)
                     })
                     .await?
@@ -247,16 +249,16 @@ impl<S: JoinRooms> JoinAnswer<S> {
             JoinTransportRequest::MembershipChallenge(request) => {
                 let nonce = store.nonce()?;
                 store
-                    .with_room(&room, |room| {
-                        let mut ledger = room.ledger().clone();
+                    .with_workspace(&workspace, |workspace| {
+                        let mut ledger = workspace.ledger().clone();
                         let challenge = ledger.membership_challenge(
-                            &room.governed(),
+                            &workspace.governed(),
                             remote_endpoint,
                             request,
                             nonce,
                             now,
                         )?;
-                        room.stage_ledger(ledger);
+                        workspace.stage_ledger(ledger);
                         Ok(JoinTransportResponse::MembershipChallenge(
                             MembershipChallengeResponse { challenge },
                         ))
@@ -266,8 +268,8 @@ impl<S: JoinRooms> JoinAnswer<S> {
             JoinTransportRequest::MembershipComplete(request) => {
                 let key = store.key().clone();
                 store
-                    .with_room(&room, |room| {
-                        membership_complete(room, remote_endpoint, &request, &key, now)
+                    .with_workspace(&workspace, |workspace| {
+                        membership_complete(workspace, remote_endpoint, &request, &key, now)
                             .map(JoinTransportResponse::MembershipComplete)
                     })
                     .await?
@@ -279,7 +281,7 @@ impl<S: JoinRooms> JoinAnswer<S> {
 /// Admit the device at `remote_endpoint` that proved `request`, or answer
 /// again what its earlier, identical request was answered.
 fn complete(
-    room: &mut dyn RoomTxn,
+    workspace: &mut dyn WorkspaceTxn,
     remote_endpoint: [u8; 32],
     request: &JoinCompleteRequest,
     key: &SigningKey,
@@ -287,8 +289,8 @@ fn complete(
 ) -> Result<JoinBootstrap, JoinError> {
     let request_id = request.proof.challenge.request_id;
     let proof_digest = request_digest(&request.proof)?;
-    if let Some(prior) = room.ledger().completed(
-        &room.governed(),
+    if let Some(prior) = workspace.ledger().completed(
+        &workspace.governed(),
         remote_endpoint,
         request_id,
         proof_digest,
@@ -297,8 +299,9 @@ fn complete(
         return Ok(prior);
     }
     let redemption =
-        room.ledger()
-            .redeem(&room.governed(), remote_endpoint, &request.proof, now)?;
+        workspace
+            .ledger()
+            .redeem(&workspace.governed(), remote_endpoint, &request.proof, now)?;
     let joins = [Redeeming {
         remote_endpoint,
         request_id,
@@ -306,47 +309,51 @@ fn complete(
         redemption: &redemption,
         name: None,
     }];
-    admit(room, &joins, key, now)?
+    admit(workspace, &joins, key, now)?
         .pop()
         .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))
 }
 
-/// The room's current state for a member that proved its membership. A
-/// member proving with its renewed certificate first has the room hold
+/// The workspace's current state for a member that proved its membership. A
+/// member proving with its renewed certificate first has the workspace hold
 /// that certificate in place of the one it replaces, committed and sent
 /// before the answer.
 fn membership_complete(
-    room: &mut dyn RoomTxn,
+    workspace: &mut dyn WorkspaceTxn,
     remote_endpoint: [u8; 32],
     request: &MembershipCompleteRequest,
     key: &SigningKey,
     now: u64,
 ) -> Result<JoinBootstrap, JoinError> {
-    let renewal =
-        room.ledger()
-            .membership_renewal(&room.governed(), remote_endpoint, request, now)?;
+    let renewal = workspace.ledger().membership_renewal(
+        &workspace.governed(),
+        remote_endpoint,
+        request,
+        now,
+    )?;
     if let Some(renewed) = renewal {
-        let mut candidate = room.governed().peer.clone();
+        let mut candidate = workspace.governed().peer.clone();
         candidate
             .governance_mut()
             .renew_member_certificate(&renewed, key, at(now))?;
-        let ledger = room.ledger().clone();
-        room.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
+        let ledger = workspace.ledger().clone();
+        workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
         tracing::info!(
-            room = %room.room(),
+            workspace = %workspace.workspace(),
             person = %hex::encode(renewed.user_public_key),
             device = %hex::encode(renewed.device_public_key),
             outcome = "renewed",
             "member device certificate renewed"
         );
     }
-    room.ledger()
-        .membership_complete(&room.governed(), remote_endpoint, request, now)
+    workspace
+        .ledger()
+        .membership_complete(&workspace.governed(), remote_endpoint, request, now)
 }
 
 impl<S> WorkspaceJoinService for JoinAnswer<S>
 where
-    S: JoinRooms + Clone + std::fmt::Debug + 'static,
+    S: JoinWorkspaces + Clone + std::fmt::Debug + 'static,
 {
     async fn handle(
         &self,

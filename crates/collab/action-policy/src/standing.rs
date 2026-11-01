@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, Party, RoomPolicy, Subject, TreePath, Verdict,
-    roles,
+    ActionKind, Answer, Authority, Context, Grant, Party, Subject, TreePath, Verdict,
+    WorkspacePolicy, roles,
 };
 
 /// A delegation bounding a person: its subject and the grants it carries
@@ -61,7 +61,7 @@ fn subject_key(subject: &Subject) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Standing {
     pub person: String,
-    pub policy: RoomPolicy,
+    pub policy: WorkspacePolicy,
     #[serde(default)]
     pub bounds: Vec<Bound>,
 }
@@ -69,7 +69,7 @@ pub struct Standing {
 impl Standing {
     /// A person acting as themselves.
     #[must_use]
-    pub fn person(policy: RoomPolicy, person: impl Into<String>) -> Self {
+    pub fn person(policy: WorkspacePolicy, person: impl Into<String>) -> Self {
         Self {
             person: person.into(),
             policy,
@@ -105,7 +105,7 @@ impl Standing {
 
     #[must_use]
     pub fn room(&self) -> &str {
-        &self.policy.room
+        &self.policy.workspace
     }
 
     /// `relative` (a path below the room) as a node of this room.

@@ -3,8 +3,8 @@ use super::{
     AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, RedemptionReceipt, RevocationList,
     SystemTime, VerifiedCertificate, now_ns,
 };
-use crate::room::read::{
-    self, GovernanceEntry, LegacyRead, ReadError, RoomRead, RoomValue, Selection,
+use crate::workspace::read::{
+    self, GovernanceEntry, LegacyRead, ReadError, Selection, WorkspaceRead, WorkspaceValue,
 };
 use tilo_user_identity::{DeviceCertError, RevocationError};
 
@@ -54,13 +54,13 @@ fn read_error(error: ReadError<ImportError>) -> ImportError {
 }
 struct Inputs {
     identities: BTreeMap<String, GovernedIdentity>,
-    /// The room's members, by person key.
+    /// The workspace's members, by person key.
     members: std::collections::BTreeSet<String>,
 }
-fn inputs<R: RoomRead>(room: &R, work: &mut Work) -> Result<Inputs, ImportError> {
+fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, ImportError> {
     let mut identities = BTreeMap::new();
     let mut members = std::collections::BTreeSet::new();
-    read::visit_governance_entries(room, |entry| {
+    read::visit_governance_entries(workspace, |entry| {
         match entry {
             GovernanceEntry::Identity { key, bytes } => {
                 // Exact historical winner/ignore traversal. Decode every
@@ -84,65 +84,69 @@ fn inputs<R: RoomRead>(room: &R, work: &mut Work) -> Result<Inputs, ImportError>
     .map_err(read_error)?;
     // The old invitation_receipts helper checks ALL root container shapes
     // before examining rows, then all row shapes before decoding any JSON.
-    room.visit_property(
-        &room.root(),
-        "invitation_receipts_v1",
-        Selection::All,
-        |value| {
-            if !matches!(
-                value,
-                RoomValue::Object {
-                    kind: automerge::ObjType::Map,
-                    ..
-                }
-            ) {
-                return Err(ImportError::LedgerShape);
-            }
-            Ok(())
-        },
-    )
-    .map_err(read_error)?;
-    let mut receipts = BTreeMap::<String, Vec<Vec<u8>>>::new();
-    room.visit_property(
-        &room.root(),
-        "invitation_receipts_v1",
-        Selection::All,
-        |value| {
-            let RoomValue::Object {
-                kind: automerge::ObjType::Map,
-                object,
-            } = value
-            else {
-                return Err(ImportError::LedgerShape);
-            };
-            room.visit_keys(&object, |key| {
-                // Keep all raw values in the same sorted-key/ledger order as the
-                // original collector.
-                let mut values = Vec::new();
-                room.visit_property(&object, key, Selection::All, |value| {
-                    let RoomValue::Bytes(bytes) = value else {
-                        return Err(ImportError::ReceiptShape);
-                    };
-                    work.debit(Some(bytes.len()))?;
-                    work.push(&mut values, bytes.to_vec())
-                })
-                .map_err(read_error)?;
-                if !receipts.contains_key(key) {
-                    let key = work.text(key)?;
-                    work.tree::<String, Vec<Vec<u8>>>()?;
-                    receipts.insert(key, Vec::new());
-                }
-                let destination = receipts.get_mut(key).ok_or(ImportError::Read)?;
-                for value in values {
-                    work.push(destination, value)?;
+    workspace
+        .visit_property(
+            &workspace.root(),
+            "invitation_receipts_v1",
+            Selection::All,
+            |value| {
+                if !matches!(
+                    value,
+                    WorkspaceValue::Object {
+                        kind: automerge::ObjType::Map,
+                        ..
+                    }
+                ) {
+                    return Err(ImportError::LedgerShape);
                 }
                 Ok(())
-            })
-            .map_err(read_error)?;
-            Ok(())
-        },
-    )
-    .map_err(read_error)?;
+            },
+        )
+        .map_err(read_error)?;
+    let mut receipts = BTreeMap::<String, Vec<Vec<u8>>>::new();
+    workspace
+        .visit_property(
+            &workspace.root(),
+            "invitation_receipts_v1",
+            Selection::All,
+            |value| {
+                let WorkspaceValue::Object {
+                    kind: automerge::ObjType::Map,
+                    object,
+                } = value
+                else {
+                    return Err(ImportError::LedgerShape);
+                };
+                workspace
+                    .visit_keys(&object, |key| {
+                        // Keep all raw values in the same sorted-key/ledger order as the
+                        // original collector.
+                        let mut values = Vec::new();
+                        workspace
+                            .visit_property(&object, key, Selection::All, |value| {
+                                let WorkspaceValue::Bytes(bytes) = value else {
+                                    return Err(ImportError::ReceiptShape);
+                                };
+                                work.debit(Some(bytes.len()))?;
+                                work.push(&mut values, bytes.to_vec())
+                            })
+                            .map_err(read_error)?;
+                        if !receipts.contains_key(key) {
+                            let key = work.text(key)?;
+                            work.tree::<String, Vec<Vec<u8>>>()?;
+                            receipts.insert(key, Vec::new());
+                        }
+                        let destination = receipts.get_mut(key).ok_or(ImportError::Read)?;
+                        for value in values {
+                            work.push(destination, value)?;
+                        }
+                        Ok(())
+                    })
+                    .map_err(read_error)?;
+                Ok(())
+            },
+        )
+        .map_err(read_error)?;
     // Two participants may admit through one invitation at once, each
     // before it holds the other's receipt: both receipts stay, as every
     // receiver holds them alike.
@@ -187,7 +191,7 @@ fn apply(
             Some(known) if crate::state::certificate_renewal::renews(cert, known.as_ref()) => {
                 cert_work.certificate(cert, Some(now_ns(now)))?
             }
-            // An older state of the room, from before the renewal it holds:
+            // An older state of the workspace, from before the renewal it holds:
             // the renewal stays.
             Some(known) if crate::state::certificate_renewal::renews(known.as_ref(), cert) => {
                 known.clone()
@@ -231,14 +235,14 @@ type LegacyImport = (
     bool,
 );
 pub(in crate::state) fn legacy(
-    room: &AutoCommit,
+    workspace: &AutoCommit,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &RevocationList,
     owner: &[u8; 32],
     now: SystemTime,
 ) -> Result<LegacyImport, ImportError> {
     let mut work = Work::unlimited();
-    let inputs = inputs(&LegacyRead(room), &mut work)?;
+    let inputs = inputs(&LegacyRead(workspace), &mut work)?;
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(

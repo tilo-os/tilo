@@ -25,7 +25,7 @@ impl ShortcutLibraryServices for Library {
 
 struct Person {
     certificate: tilo_user_identity::DeviceCert,
-    time: crate::peer_actions::PolicyTime,
+    time: crate::policy_clock::PolicyTime,
 }
 
 impl LocalPersonServices for Person {
@@ -39,8 +39,8 @@ impl LocalPersonServices for Person {
     }
 }
 
-impl crate::peer_actions::CertificateAuthority for Person {
-    fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
+impl crate::certificate_authority::CertificateAuthority for Person {
+    fn policy_time(&self) -> Result<Option<crate::policy_clock::PolicyTime>, String> {
         Ok(Some(self.time.clone()))
     }
     fn authorize(
@@ -62,7 +62,7 @@ struct Fixture {
     origin: InvocationCaller,
     request: InvokeRequest,
     key: InvocationKey,
-    _clock_origin: crate::peer_actions::PolicyOrigin,
+    _clock_origin: crate::policy_clock::PolicyOrigin,
     _root: tempfile::TempDir,
     _environment: tilo_test_env::ScopedEnv,
 }
@@ -98,7 +98,7 @@ impl Fixture {
         let owner =
             crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
         let certificate = owner.device();
-        let (clock, _control) = crate::peer_actions::OwnerPolicyClock::for_test(
+        let (clock, _control) = crate::policy_clock::OwnerPolicyClock::for_test(
             certificate.issued_at_ns.saturating_add(1_000_000_000),
         );
         let clock_origin = clock.new_origin();
@@ -111,7 +111,7 @@ impl Fixture {
             crate::collab_app_broker::principal_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceId(9), "Shortcuts");
         workspace.set_owner(principal.clone());
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
             "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
             "saved_by": principal,
@@ -163,8 +163,8 @@ impl Fixture {
         // Saved by the person, proven by this device.
         for saved in &mut workspace.shortcuts {
             let mut shortcut = saved.decode().unwrap();
-            tilo_peer_state::room::sign_saved_shortcut(
-                &room,
+            tilo_peer_state::workspace::sign_saved_shortcut(
+                &workspace_id,
                 &mut shortcut,
                 &certificate,
                 owner.signing_key(),
@@ -191,7 +191,7 @@ impl Fixture {
         let journal = InvocationJournal::open(&scratch.path().join("journal")).unwrap();
         let invocation = tilo_actions::InvocationId::new();
         let key = InvocationKey {
-            room: room.clone(),
+            workspace: workspace_id.clone(),
             host: journal.host(),
             invocation,
             owner: InvocationOwner::AuthenticatedLocal {
@@ -201,17 +201,17 @@ impl Fixture {
             },
         };
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(principal).in_room(&room);
+        let caller = Caller::local_person(principal).in_room(&workspace_id);
         let origin = InvocationCaller::NativePerson {
             invocation,
-            room: room.clone(),
+            workspace: workspace_id.clone(),
             certificate,
             time,
         };
         let request = InvokeRequest {
             invocation,
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: workspace_provider(&room),
+                provider: workspace_provider(&workspace_id),
                 address: ActionAddress::new("shortcuts.shortcut:echo", "run"),
             },
             argument: tilo_actions::remote::InvokeArgument::None,
@@ -267,11 +267,11 @@ fn start_direct(
     fixture: &Fixture,
     trigger: Option<&tilo_automation::TriggerSpec>,
 ) -> Result<u64, ActionHostError> {
-    let room = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.room().unwrap();
     if let Some(trigger) = trigger {
         fixture.state.start_triggered_shortcut_run(
             &fixture.caller,
-            room,
+            workspace,
             "echo",
             trigger,
             tilo_automation::RunId(fixture.request.invocation.0),
@@ -280,7 +280,7 @@ fn start_direct(
     } else {
         fixture.state.start_interactive_shortcut_run(
             &fixture.caller,
-            room,
+            workspace,
             "echo",
             serde_json::Map::new(),
         )
@@ -411,8 +411,8 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
-    let room = fixture.caller.room().unwrap().to_string();
-    fixture.caller = Caller::local_person("another-person").in_room(room);
+    let workspace = fixture.caller.room().unwrap().to_string();
+    fixture.caller = Caller::local_person("another-person").in_room(workspace);
     assert!(start_direct(&fixture, None).is_err());
     tokio::task::yield_now().await;
     assert!(!fixture.state.has_finished_shortcut_runs());
@@ -696,20 +696,25 @@ async fn wait_for_finished(fixture: &Fixture) {
 #[tokio::test(flavor = "current_thread")]
 async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
     let fixture = Fixture::with_extra(waiting_shortcut());
-    let room = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.room().unwrap();
     fixture
         .state
-        .start_interactive_shortcut_run(&fixture.caller, room, "waiting", serde_json::Map::new())
+        .start_interactive_shortcut_run(
+            &fixture.caller,
+            workspace,
+            "waiting",
+            serde_json::Map::new(),
+        )
         .unwrap();
     // "waiting" goes as soon as it is started; the child it runs joins it.
     tilo_test_env::within("the run starts", async {
-        while fixture.state.running_shortcut_runs(room).is_empty() {
+        while fixture.state.running_shortcut_runs(workspace).is_empty() {
             tokio::task::yield_now().await;
         }
     })
     .await;
     let stopped = fixture.state.stop_shortcut_runs(
-        room,
+        workspace,
         &automation::StopRequest::Shortcut("waiting".into()),
         "asked",
     );
@@ -727,7 +732,7 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
         fixture
             .state
             .stop_shortcut_runs(
-                room,
+                workspace,
                 &automation::StopRequest::Shortcut("waiting".into()),
                 "asked"
             )
@@ -761,7 +766,7 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
         reported.report
     );
     assert!(
-        fixture.state.running_shortcut_runs(room).is_empty(),
+        fixture.state.running_shortcut_runs(workspace).is_empty(),
         "a stopped run is no longer going"
     );
 }
@@ -773,9 +778,9 @@ async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
 #[tokio::test(flavor = "current_thread")]
 async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error() {
     let fixture = Fixture::new();
-    let room = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.room().unwrap();
     let stopped = fixture.state.stop_shortcut_runs(
-        room,
+        workspace,
         &automation::StopRequest::Shortcut("echo".into()),
         "asked",
     );
@@ -787,11 +792,11 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
     fixture.finish().await;
     wait_for_finished(&fixture).await;
     let _ = fixture.state.take_finished_shortcut_runs();
-    let room = fixture.caller.room().unwrap();
+    let workspace = fixture.caller.room().unwrap();
     assert!(
         fixture
             .state
-            .stop_shortcut_runs(room, &automation::StopRequest::All, "asked")
+            .stop_shortcut_runs(workspace, &automation::StopRequest::All, "asked")
             .is_empty()
     );
 }
@@ -899,10 +904,15 @@ async fn finished_run(fixture: &Fixture) -> automation::FinishedShortcutRun {
 #[tokio::test(flavor = "current_thread")]
 async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from() {
     let fixture = Fixture::with_extra(several_steps(4));
-    let room = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.room().unwrap().to_owned();
     let origin = fixture
         .state
-        .start_interactive_shortcut_run(&fixture.caller, &room, "several", serde_json::Map::new())
+        .start_interactive_shortcut_run(
+            &fixture.caller,
+            &workspace,
+            "several",
+            serde_json::Map::new(),
+        )
         .expect("the shortcut starts");
     let first = finished_run(&fixture).await;
     assert_eq!(first.report.outcome, tilo_automation::RunOutcome::Completed);
@@ -914,7 +924,7 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
         .state
         .start_interactive_shortcut_run_continuing(
             &fixture.caller,
-            &room,
+            &workspace,
             "several",
             serde_json::Map::new(),
             Some(tilo_automation::Continuation {
@@ -968,10 +978,10 @@ async fn a_continued_run_does_not_run_the_steps_before_the_one_it_goes_on_from()
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothing() {
     let fixture = Fixture::with_extra(several_steps(1));
-    let room = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.room().unwrap().to_owned();
     let refused = fixture.state.start_interactive_shortcut_run_continuing(
         &fixture.caller,
-        &room,
+        &workspace,
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {
@@ -984,7 +994,7 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
         "a run the broker has no record of is refused: {refused:?}"
     );
     assert!(
-        fixture.state.running_shortcut_runs(&room).is_empty(),
+        fixture.state.running_shortcut_runs(&workspace).is_empty(),
         "and nothing starts"
     );
     assert!(!fixture.state.has_finished_shortcut_runs(), "nor finishes");
@@ -997,10 +1007,10 @@ async fn continuing_a_run_the_broker_did_not_record_is_refused_and_starts_nothin
 #[tokio::test(flavor = "current_thread")]
 async fn continuing_a_run_from_the_run_itself_is_refused() {
     let fixture = Fixture::with_extra(several_steps(1));
-    let room = fixture.caller.room().unwrap().to_owned();
+    let workspace = fixture.caller.room().unwrap().to_owned();
     let refused = fixture.state.start_interactive_shortcut_run_continuing(
         &fixture.caller,
-        &room,
+        &workspace,
         "several",
         serde_json::Map::new(),
         Some(tilo_automation::Continuation {

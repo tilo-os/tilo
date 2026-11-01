@@ -2,10 +2,10 @@
 //!
 //! An issue assigned to an agent is that agent's task, and a person's
 //! `approve-run` on it starts a run (`apps/tasks`). The broker delivers the
-//! run to its agent as it delivers a room task's, under the same native lease
+//! run to its agent as it delivers a workspace task's, under the same native lease
 //! and binding, and reads everything else about it from the tracker:
 //!
-//! - **Delivery**: every going run whose agent is subscribed in the room.
+//! - **Delivery**: every going run whose agent is subscribed in the workspace.
 //! - **Steering**: the issue's messages to the run, in thread order; the
 //!   revision an agent reached is how many of them it took in.
 //! - **Stopping**: a run the tracker no longer holds as going is cancelled.
@@ -238,11 +238,11 @@ fn awaiting(draft: &tilo_actions::Draft) -> String {
 }
 
 impl AppBrokerState {
-    pub(super) fn tracker_runs(&self, room: &str) -> Option<&Arc<dyn TrackerRuns>> {
+    pub(super) fn tracker_runs(&self, workspace: &str) -> Option<&Arc<dyn TrackerRuns>> {
         self.services
             .tracker_runs
             .as_ref()
-            .filter(|service| service.requires_room(room))
+            .filter(|service| service.requires_workspace(workspace))
     }
 
     /// The tracker's current record of `run`, a run of one of its issues.
@@ -260,36 +260,36 @@ impl AppBrokerState {
             .ok_or_else(|| "the issue's run was replaced or the issue deleted".into())
     }
 
-    /// Deliver every going run of the subscribed rooms' trackers to its
+    /// Deliver every going run of the subscribed workspaces' trackers to its
     /// agent, and tell its person what it asks.
     pub(super) fn refresh_tracker_runs(
         self: &Arc<Self>,
-        rooms: &std::collections::BTreeSet<String>,
+        workspaces: &std::collections::BTreeSet<String>,
     ) {
-        for room in rooms {
-            let Some(service) = self.tracker_runs(room) else {
+        for workspace in workspaces {
+            let Some(service) = self.tracker_runs(workspace) else {
                 continue;
             };
-            let Ok(runs) = service.runs(room) else {
+            let Ok(runs) = service.runs(workspace) else {
                 continue;
             };
-            self.notify_run_questions(room, &runs);
+            self.notify_run_questions(workspace, &runs);
             for run in runs.iter().filter(|run| run.active) {
-                if let Err(error) = self.dispatch_tracker_run(room, run) {
+                if let Err(error) = self.dispatch_tracker_run(workspace, run) {
                     tracing::debug!(%error, issue = %run.issue, "approved issue run not delivered");
                 }
             }
         }
     }
 
-    fn dispatch_tracker_run(&self, room: &str, run: &TrackerRun) -> Result<u64, String> {
+    fn dispatch_tracker_run(&self, workspace: &str, run: &TrackerRun) -> Result<u64, String> {
         let subscriber = self
             .task_subscribers
             .lock()
             .map_err(|_| "task subscribers unavailable")?
             .iter()
             .filter(|(_, subscriber)| {
-                subscriber.cluster_id == room
+                subscriber.cluster_id == workspace
                     && subscriber.agent_id == run.agent
                     && !subscriber.tx.is_closed()
             })
@@ -297,7 +297,7 @@ impl AppBrokerState {
             .map(|(peer, subscriber)| (*peer, subscriber.tx.clone()))
             .ok_or("assigned agent is offline")?;
         let digest = blake3::hash(
-            format!("tracker-run-v1\0{room}\0{}\0{}", run.issue, run.epoch).as_bytes(),
+            format!("tracker-run-v1\0{workspace}\0{}\0{}", run.issue, run.epoch).as_bytes(),
         );
         let run_id = u64::from_le_bytes(
             *digest
@@ -318,7 +318,7 @@ impl AppBrokerState {
                 tilo_actions::context::TASK_RUN_GROUP,
             );
         self.offer_native_run(
-            room,
+            workspace,
             NativeTaskBinding {
                 task_id: run.issue.clone(),
                 agent_id: run.agent.clone(),
@@ -437,7 +437,7 @@ impl AppBrokerState {
         let ended = self.tracker_run_of(run).ok();
         let group = run.action_context.group.as_ref();
         self.ended_runs.tasks.push(crate::task_runs::EndedTaskRun {
-            room: run.cluster_id.clone(),
+            workspace: run.cluster_id.clone(),
             group: group.map_or_else(|| run.task_id.clone(), |group| group.id.clone()),
             title: group.map_or_else(|| run.task_id.clone(), |group| group.label.clone()),
             agent: format!("agent:{}", run.agent_id),
@@ -484,7 +484,7 @@ impl AppBrokerState {
 
     /// The person's answer to a child of `run` that asks first, as
     /// [`native_confirmation_for`](Self::native_confirmation_for) decides it
-    /// for a room task.
+    /// for a workspace task.
     ///
     /// # Errors
     /// The child waits for the person (ask on the issue), the person
@@ -601,16 +601,16 @@ impl AppBrokerState {
         Ok(self.tracker_run_of(run)?.applied_revision())
     }
 
-    /// Whether the room's tracker serves runs here: a task agent may
+    /// Whether the workspace's tracker serves runs here: a task agent may
     /// subscribe to its runs and its retained surfaces are offered.
-    pub(super) fn task_admitted_room(&self, room: &str) -> bool {
-        self.tracker_runs(room).is_some()
+    pub(super) fn task_admitted_workspace(&self, workspace: &str) -> bool {
+        self.tracker_runs(workspace).is_some()
     }
 
-    /// Whether agents in `room` act only through their runs' admission
+    /// Whether agents in `workspace` act only through their runs' admission
     /// ([`crate::services::TrackerRuns::confines_agents_to_tasks`]).
-    pub(super) fn confines_agents_to_tasks(&self, room: &str) -> bool {
-        self.tracker_runs(room)
-            .is_some_and(|runs| runs.confines_agents_to_tasks(room))
+    pub(super) fn confines_agents_to_tasks(&self, workspace: &str) -> bool {
+        self.tracker_runs(workspace)
+            .is_some_and(|runs| runs.confines_agents_to_tasks(workspace))
     }
 }

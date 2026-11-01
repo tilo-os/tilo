@@ -1,7 +1,7 @@
-//! Capture epochs: an atomic snapshot of a room, compared against the
+//! Capture epochs: an atomic snapshot of a workspace, compared against the
 //! previous epoch's snapshot, producing one ordered changeset.
 //!
-//! Writers are never paused. The snapshot is the crash image of the room at
+//! Writers are never paused. The snapshot is the crash image of the workspace at
 //! one instant, and every byte
 //! that is hashed is read from it, never from the live file. Only records the
 //! journal names are examined, and within a changed file only the extents
@@ -198,7 +198,7 @@ pub struct CaptureState {
 
 #[derive(Clone, Debug)]
 pub struct CaptureConfig {
-    /// The room subvolume.
+    /// The workspace subvolume.
     pub live: PathBuf,
     /// Where epoch snapshots are created; same filesystem as `live`.
     pub epochs: PathBuf,
@@ -232,7 +232,7 @@ struct EpochState {
     nodes: BTreeMap<PathBuf, Node>,
 }
 
-/// Cuts epochs of one room.
+/// Cuts epochs of one workspace.
 pub struct EpochCapture {
     cfg: CaptureConfig,
     prev: Option<EpochState>,
@@ -242,7 +242,7 @@ pub struct EpochCapture {
     dirty: HashSet<PathBuf>,
     /// Snapshots of earlier epochs kept alive by `defer_release`.
     retired: Vec<PathBuf>,
-    /// Compare the whole room in the next epoch.
+    /// Compare the whole workspace in the next epoch.
     rescan_next: bool,
 }
 
@@ -276,7 +276,7 @@ impl EpochCapture {
     }
 
     /// Continues from a persisted epoch. The next capture compares the
-    /// whole room against `state.snapshot`, which finds everything that
+    /// whole workspace against `state.snapshot`, which finds everything that
     /// changed while nothing was journaling (a crash, a stopped daemon) by
     /// its metadata; only files whose inode, size, mtime or ctime moved are
     /// read.
@@ -347,7 +347,7 @@ impl EpochCapture {
     /// change or removal of the path is then diffed against it.
     pub fn track(&mut self, rel: &Path) -> io::Result<()> {
         let Some(prev) = self.prev.as_mut() else {
-            // The first epoch compares the whole room anyway.
+            // The first epoch compares the whole workspace anyway.
             return Ok(());
         };
         let abs = self.cfg.live.join(rel);
@@ -448,7 +448,7 @@ impl EpochCapture {
     }
 
     /// Cuts one epoch. Without a previous epoch, or when `batch` asks for a
-    /// rescan, the whole room is compared; otherwise only what the journal
+    /// rescan, the whole workspace is compared; otherwise only what the journal
     /// names.
     ///
     /// `batch` must name every change that completed before the snapshot is

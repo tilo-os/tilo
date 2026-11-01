@@ -1,12 +1,12 @@
 //! Person-only native host capability. No request supplies a caller or a role.
 use std::sync::Arc;
 
-/// The host must read and commit through its actual joined-room owner.
+/// The host must read and commit through its actual joined-workspace owner.
 pub trait PersonChatServices: Send + Sync {
     /// Freshly authorize the pair and return its private, body-free change lane.
     fn subscribe(
         &self,
-        _room: &str,
+        _workspace: &str,
         _caller: &tilo_user_identity::DeviceCert,
         _peer: &str,
     ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
@@ -16,7 +16,7 @@ pub trait PersonChatServices: Send + Sync {
     /// Execute a closed person-chat command with transport-certified authority.
     fn command(
         &self,
-        room: &str,
+        workspace: &str,
         caller: &tilo_user_identity::DeviceCert,
         command: &[u8],
     ) -> Result<Vec<u8>, String>;

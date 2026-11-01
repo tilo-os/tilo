@@ -1,11 +1,11 @@
 //! The content put door: a session client uploads bytes, chunk by chunk,
-//! into its room's content store and gets back `tilo.content:<hash>`.
+//! into its workspace's content store and gets back `tilo.content:<hash>`.
 //!
 //! Actions carry intent and references; bytes travel by session transport
 //! into the content store.
 //!
-//! A put is decided at its own node, `tilo.content/…/put` in the room
-//! ([`put_node`]): room rules reach it as they reach any node, an app's
+//! A put is decided at its own node, `tilo.content/…/put` in the workspace
+//! ([`put_node`]): workspace rules reach it as they reach any node, an app's
 //! rules do not. Puts are invisible to everyone until an action at its own
 //! node references them; this node governs storage and tagging only, and a
 //! successful put is never authority over any document.
@@ -22,10 +22,9 @@ use super::AppBrokerState;
 use super::invocation_journal::ContentPutRecord;
 use crate::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
 
-/// What a caller the room does not let add content is told: what it may
+/// What a caller the workspace does not let add content is told: what it may
 /// not do, and the one rule that would let it.
-pub const CONTENT_PUT_REFUSED: &str =
-    "not allowed to add content to this room: allow content uploads in this room to let it";
+pub const CONTENT_PUT_REFUSED: &str = "not allowed to add content to this workspace: allow content uploads in this workspace to let it";
 
 /// The node a put into `workspace` is decided at.
 fn put_node(workspace: &Workspace) -> TreePath {
@@ -49,12 +48,12 @@ impl AppBrokerState {
         }))
     }
 
-    /// Whether `caller` may add content to `room` now, with the policy
+    /// Whether `caller` may add content to `workspace` now, with the policy
     /// time it was decided at. An answer that would ask first refuses: a
     /// put asks nobody and spends no once-grant.
-    fn may_put_content(&self, caller: &Caller, room: &str) -> Result<u64, ActionHostError> {
+    fn may_put_content(&self, caller: &Caller, workspace: &str) -> Result<u64, ActionHostError> {
         super::action_host::check_execution(caller)?;
-        match self.decide_for(caller, room, |workspace, actor, now| {
+        match self.decide_for(caller, workspace, |workspace, actor, now| {
             actor
                 .may_in(workspace, &put_node(workspace), ActionKind::Undoable, now)
                 .then_some(now)
@@ -67,17 +66,17 @@ impl AppBrokerState {
         }
     }
 
-    /// Note who put `hash` into `room`, durably, before answering its
+    /// Note who put `hash` into `workspace`, durably, before answering its
     /// reference. Attribution only: it is never read for access.
     fn attribute_content_put(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         at: u64,
         (hash, len): (&str, u64),
     ) -> Result<(), ActionHostError> {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
-        let actor = self.caller_actor(caller, room).id;
+        let actor = self.caller_actor(caller, workspace).id;
         let store = self.services.content_store.clone();
         let durable = {
             let mut journal = self
@@ -95,7 +94,7 @@ impl AppBrokerState {
                             &ContentPutRecord {
                                 at,
                                 actor,
-                                room: room.to_owned(),
+                                workspace: workspace.to_owned(),
                                 hash: hash.to_owned(),
                                 len,
                             },
@@ -113,13 +112,13 @@ impl AppBrokerState {
     }
 }
 
-/// The device content store, asked whether a room still holds what a put
+/// The device content store, asked whether a workspace still holds what a put
 /// left there when the attributions are compacted.
 struct StoredContent<'a>(Option<&'a dyn ContentStoreServices>);
 
 impl super::invocation_journal::ContentHolds for StoredContent<'_> {
-    fn holds(&mut self, room: &str, hash: &str) -> bool {
-        self.0.is_none_or(|store| store.holds(room, hash))
+    fn holds(&mut self, workspace: &str, hash: &str) -> bool {
+        self.0.is_none_or(|store| store.holds(workspace, hash))
     }
 }
 
@@ -145,10 +144,10 @@ struct BrokerContentPuts {
 
 impl ContentPuts for BrokerContentPuts {
     fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
-        let room = caller
+        let workspace = caller
             .room()
             .ok_or_else(|| ActionHostError::InvalidRequest {
-                reason: "content goes to a room, and this session is in none".into(),
+                reason: "content goes to a workspace, and this session is in none".into(),
             })?
             .to_owned();
         let max = self.store.max_bytes();
@@ -157,15 +156,15 @@ impl ContentPuts for BrokerContentPuts {
                 reason: format!("an upload is 1 to {max} bytes, not {size}"),
             });
         }
-        broker(&self.state)?.may_put_content(caller, &room)?;
+        broker(&self.state)?.may_put_content(caller, &workspace)?;
         let sink = self
             .store
-            .begin(&room)
+            .begin(&workspace)
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
         Ok(Box::new(BrokerContentPut {
             state: Weak::clone(&self.state),
             caller: caller.clone(),
-            room,
+            workspace,
             size,
             written: 0,
             hasher: blake3::Hasher::new(),
@@ -178,11 +177,11 @@ impl ContentPuts for BrokerContentPuts {
 struct BrokerContentPut {
     state: Weak<AppBrokerState>,
     caller: Caller,
-    room: String,
+    workspace: String,
     size: u64,
     written: u64,
     /// The digest of what was appended, known before the store keeps it, so
-    /// the put is recorded before the room references the content.
+    /// the put is recorded before the workspace references the content.
     hasher: blake3::Hasher,
     /// `None` once the store refused a chunk: the upload is over.
     sink: Option<Box<dyn ContentSink>>,
@@ -242,12 +241,12 @@ impl ContentPut for BrokerContentPut {
         // nothing.
         let hash = self.hasher.finalize().to_hex().to_string();
         let broker = broker(&self.state)?;
-        let at = broker.may_put_content(&self.caller, &self.room)?;
+        let at = broker.may_put_content(&self.caller, &self.workspace)?;
         // Recorded before the store keeps the bytes and tags them for the
-        // room: content the room references is never unrecorded. A record
-        // whose store then fails names content the room never got, which is
+        // workspace: content the workspace references is never unrecorded. A record
+        // whose store then fails names content the workspace never got, which is
         // invisible; a failed record drops the upload, which keeps nothing.
-        broker.attribute_content_put(&self.caller, &self.room, at, (&hash, self.size))?;
+        broker.attribute_content_put(&self.caller, &self.workspace, at, (&hash, self.size))?;
         drop(broker);
         let (stored, len) = sink
             .finish()

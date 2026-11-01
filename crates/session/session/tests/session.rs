@@ -511,8 +511,9 @@ fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i
     });
 }
 
-/// A window taken across the display covers it, the bar's room included,
-/// and the bar draws again once the window gives the display back.
+/// A window taken across the display covers it, the bar's room included:
+/// the bar shows over it for a moment, then goes, and draws again once the
+/// window gives the display back.
 #[test]
 fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     const APP: &str = "org.example.Cinema";
@@ -547,11 +548,10 @@ fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
         Some((id, (0, 0, WIDTH, HEIGHT))),
         "the display from its top edge to its bottom"
     );
-    assert_eq!(
-        band_colour(&mut session),
-        RED,
-        "the bar stepped aside: its band is the window"
-    );
+    until(&mut session, &mut client, |session| {
+        (band_colour(session) == RED).then_some(())
+    })
+    .expect("left alone, the bar goes and the window has its band");
 
     assert!(
         session

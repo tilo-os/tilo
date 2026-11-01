@@ -26,7 +26,7 @@ pub(super) struct ReadLineage {
     pub(super) binding: FileBindingV1,
     pub(super) version: FileVersionId,
     pub(super) person: [u8; 32],
-    pub(super) room: String,
+    pub(super) workspace: String,
 }
 pub(super) struct ReadDescriptors {
     pub(super) sealed: File,
@@ -273,7 +273,7 @@ impl ExternalHistoryReadHandle {
                         let a = source.admission.try_borrow().map_err(|_| refused())?;
                         if lineage.observation == source.observation
                             && lineage.person == a.context.verifier.person
-                            && lineage.room == a.context.verifier.personal_room
+                            && lineage.workspace == a.context.verifier.personal_room
                         {
                             if matched.is_some() {
                                 return Err(refused());

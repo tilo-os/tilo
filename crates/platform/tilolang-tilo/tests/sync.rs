@@ -1,4 +1,4 @@
-//! The store follows the room record by its changes: a peer's edit of one item reaches the
+//! The store follows the workspace record by its changes: a peer's edit of one item reaches the
 //! runtime as exactly that item's field, and the mirror is never copied.
 
 use std::cell::RefCell;
@@ -17,8 +17,8 @@ use crate::fixtures::{Replica, TODO, field_id};
 
 const APP: &str = "so.tilo.todo";
 
-/// Ada's room with three items, and Grace's fork of it.
-fn room() -> (Replica, Replica, tilolang_runtime::Meta, String) {
+/// Ada's workspace with three items, and Grace's fork of it.
+fn workspace() -> (Replica, Replica, tilolang_runtime::Meta, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
     let todo = packages[0].clone();
     let root = ada.host.root_of(APP).unwrap();
@@ -95,7 +95,7 @@ fn retype(grace: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: 
 
 #[test]
 fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
-    let (mut ada, mut grace, meta, root) = room();
+    let (mut ada, mut grace, meta, root) = workspace();
     let ids = item_ids(&ada, &meta, &root);
     let heard = listen(&ada, &root);
     retype(&mut grace, &meta, &root, &ids[1], "oat milk");
@@ -114,7 +114,7 @@ fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
 
 #[test]
 fn an_item_added_by_a_peer_changes_the_collection_only() {
-    let (mut ada, mut grace, meta, root) = room();
+    let (mut ada, mut grace, meta, root) = workspace();
     let heard = listen(&ada, &root);
     add(&mut grace, &meta, &root, "tea");
     ada.sync_with(&mut grace);
@@ -136,7 +136,7 @@ fn an_item_added_by_a_peer_changes_the_collection_only() {
 
 #[test]
 fn the_mirror_follows_the_record_without_copying_it() {
-    let (mut ada, mut grace, meta, root) = room();
+    let (mut ada, mut grace, meta, root) = workspace();
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut grace, &meta, &root, &ids[0], "almond milk");
     ada.sync_with(&mut grace);
@@ -156,7 +156,7 @@ fn the_mirror_follows_the_record_without_copying_it() {
 
 #[test]
 fn a_trial_run_takes_back_only_its_own_writes() {
-    let (mut ada, _grace, meta, root) = room();
+    let (mut ada, _grace, meta, root) = workspace();
     // A press the executor has not committed yet: the runtime sees it, the record does not.
     let view = ada.view(APP);
     let title = crate::fixtures::field_id(&meta, "TodoList", "title");
@@ -192,7 +192,7 @@ fn a_trial_run_takes_back_only_its_own_writes() {
 
 #[test]
 fn what_the_runtime_read_follows_every_change_after() {
-    let (mut ada, mut grace, meta, root) = room();
+    let (mut ada, mut grace, meta, root) = workspace();
     let ids = item_ids(&ada, &meta, &root);
     let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
     let first = list.item(&ids[0], type_id(&meta, "Item"));

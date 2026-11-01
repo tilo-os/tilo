@@ -1,5 +1,5 @@
 //! The values a step's arguments quote or compute (`{{…}}`,
-//! [`crate::values`]), filled in from the room's records just before the
+//! [`crate::values`]), filled in from the workspace's records just before the
 //! step runs.
 
 use tilo_actions::door::{ActionAddress, ActionDescriptor};

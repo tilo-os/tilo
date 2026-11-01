@@ -4095,7 +4095,7 @@ mod tests {
             let (app_end, host_end) = std::os::unix::net::UnixDatagram::pair().unwrap();
             let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
                 grants,
-                room: "r".into(),
+                workspace: "r".into(),
                 app: "so.tilo.camera".into(),
                 declared: vec![tilo_capture::DeviceKind::Camera],
                 consent: move |_| {

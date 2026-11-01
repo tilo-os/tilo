@@ -21,7 +21,7 @@ fn fixture() -> Fixture {
     let (mut governor, governor_key, key, cert, now) = crate::admission_tests::seeded();
     governor.select_admission_v5().unwrap();
     let mut member = StatePeer::new(
-        governor.room(),
+        governor.workspace_id(),
         governor.owner_certificates()[0].clone(),
         vec![cert.clone()],
         RevocationList::new(),
@@ -60,7 +60,7 @@ fn origin(key: &SigningKey) -> TransportOrigin {
 fn metadata(peer: &StatePeer, epoch: u64) -> EncryptionMetadata {
     EncryptionMetadata::content_key(
         epoch,
-        collab_types::document_channel_id(APP, peer.room(), RECORD),
+        collab_types::document_channel_id(APP, peer.workspace_id(), RECORD),
         collab_types::ContentRetention::Delta,
     )
 }
@@ -69,9 +69,9 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
     let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = SignedOp::new_unsigned_with_encryption(
         ciphertext.to_vec(),
-        collab_types::document_artifact_id(APP, peer.room(), RECORD),
+        collab_types::document_artifact_id(APP, peer.workspace_id(), RECORD),
         author,
-        collab_types::document_attestation_id(APP, peer.room(), RECORD),
+        collab_types::document_attestation_id(APP, peer.workspace_id(), RECORD),
         OpKind::Change,
         at,
         1,
@@ -81,7 +81,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
     NeighbourMsg::AppDocument {
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
-        cluster_id: peer.room().into(),
+        cluster_id: peer.workspace_id().into(),
         record_id: RECORD.into(),
         envelope: Box::new(envelope),
     }
@@ -138,7 +138,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
     let sequence = watermarks[&hex::encode(authority)].checked_add(1).unwrap();
     watermarks.insert(hex::encode(authority), sequence);
     let coverage = crate::coverage::Coverage {
-        room: governor.room().into(),
+        workspace: governor.workspace_id().into(),
         app: APP.into(),
         record: RECORD.into(),
         payload_hash: *blake3::hash(&payload).as_bytes(),
@@ -152,8 +152,8 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
         sequence,
         watermarks,
     };
-    let room = governor.core.room_doc.as_deref_mut().unwrap();
-    let generation = crate::durability::entries(room)
+    let workspace = governor.core.workspace_doc.as_deref_mut().unwrap();
+    let generation = crate::durability::entries(workspace)
         .unwrap()
         .values()
         .map(|receipt| receipt.generation)
@@ -161,7 +161,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
         .unwrap_or(0)
         .checked_add(1)
         .unwrap();
-    crate::coverage::put_all_with_receipts(room, vec![coverage], |rows| {
+    crate::coverage::put_all_with_receipts(workspace, vec![coverage], |rows| {
         rows.iter()
             .map(|(route, row)| {
                 Ok((
@@ -172,7 +172,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
             .collect()
     })
     .unwrap();
-    let governance = governor.room_message();
+    let governance = governor.workspace_message();
     fixture
         .member
         .receive_from(origin(&fixture.governor_key), governance, at)
@@ -401,7 +401,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
         .unwrap();
     let mut restored = StatePeer::restore(
         &fixture.member.durable().unwrap(),
-        fixture.member.room(),
+        fixture.member.workspace_id(),
         fixture.member.owner_certificates()[0].clone(),
         vec![fixture.cert.clone()],
         RevocationList::new(),

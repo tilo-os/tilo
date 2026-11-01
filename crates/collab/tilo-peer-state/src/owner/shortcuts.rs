@@ -1,5 +1,5 @@
-//! A shortcut saved or removed by a member's own device, as a signed room
-//! write. The room document is where shortcuts live; every receiver admits
+//! A shortcut saved or removed by a member's own device, as a signed workspace
+//! write. The workspace document is where shortcuts live; every receiver admits
 //! the write by the rule that proves who saved it.
 use crate::owner::{NativeWorkspaceOwner, RoomId};
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
@@ -9,13 +9,13 @@ use web_time::SystemTime;
 impl NativeWorkspaceOwner {
     /// Commit this device's own shortcut change, signed by `key`, its key:
     /// the rule admission holds every writer to
-    /// ([`crate::room::proven_saver`]), then the room change every
-    /// receiver admits. A change the room already reflects commits nothing
+    /// ([`crate::workspace::proven_saver`]), then the workspace change every
+    /// receiver admits. A change the workspace already reflects commits nothing
     /// and answers the current generation.
     ///
     /// # Errors
     /// Refuses another family, a caller or key that is not this device's, a
-    /// caller the room does not admit to change it, a saver without proof,
+    /// caller the workspace does not admit to change it, a saver without proof,
     /// or failed publication.
     pub fn commit_shortcut_change(
         &self,
@@ -24,21 +24,22 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native shortcut room")?;
+        let workspace =
+            RoomId::parse(&request.workspace).ok_or("invalid native shortcut workspace")?;
         let CommitOperation::ShortcutChange { caller, change, .. } = &request.operation else {
             return Err("unsupported native shortcut owner commit family".into());
         };
         let change: tilo_automation::ShortcutChange =
             serde_json::from_slice(change).map_err(|error| error.to_string())?;
         let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         if candidate.device() != caller
             || key.verifying_key().to_bytes() != caller.device_public_key
         {
             return Err("a shortcut change is signed by this device's own key".into());
         }
         let governs = candidate.hosted_here();
-        let before = candidate.peer.room_heads().unwrap_or_default();
+        let before = candidate.peer.workspace_heads().unwrap_or_default();
         let mut peer = candidate.peer.clone();
         if !peer
             .workspace_mut()
@@ -63,7 +64,7 @@ impl NativeWorkspaceOwner {
             )?;
             Vec::new()
         } else {
-            peer.room_changes_since(&before)
+            peer.workspace_changes_since(&before)
         };
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
@@ -88,7 +89,7 @@ impl NativeWorkspaceOwner {
                 now,
             )?;
         }
-        self.publish_room(room, candidate, None)?;
+        self.publish_workspace(workspace, candidate, None)?;
         Ok(receipt)
     }
 }

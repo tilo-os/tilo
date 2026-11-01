@@ -515,7 +515,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     );
     ada.commit();
 
-    // The same room, opened by the Chat of channels.
+    // The same workspace, opened by the Chat of channels.
     let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(CHAT, CHAT_IDS)]);
     later.host.sync_from(&later.doc);
     let sidebar = later.view(APP);
@@ -945,7 +945,7 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
 #[test]
 fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
     // A room with Ben in it: everyone the workspace has, from its own membership.
-    let mut policy = tilo_action_policy::RoomPolicy::new("room-dm", "ada");
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("room-dm", "ada");
     policy
         .members
         .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
@@ -1148,7 +1148,7 @@ fn an_empty_workspace_offers_one_new_channel_button() {
 /// (`workspace.me`) is the person the window is open for, each replica its own.
 #[test]
 fn a_places_person_is_a_row_of_them_and_your_own_conversation_is_your_notes() {
-    let mut policy = tilo_action_policy::RoomPolicy::new("room-dm", "ada");
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("room-dm", "ada");
     policy
         .members
         .insert("ben".to_owned(), tilo_action_policy::Role::Editor);

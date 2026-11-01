@@ -510,7 +510,7 @@ impl Drop for Door {
         if std::thread::panicking() {
             eprintln!(
                 "what became of requests to rooms' hosts:{}",
-                tilo_network_actor::room_governance::trace::said()
+                tilo_network_actor::workspace_governance::trace::said()
             );
         }
     }
@@ -518,7 +518,7 @@ impl Drop for Door {
 
 impl Door {
     fn open() -> Self {
-        tilo_network_actor::room_governance::trace::capture_warnings();
+        tilo_network_actor::workspace_governance::trace::capture_warnings();
         let dir = tempfile::tempdir().expect("socket directory");
         // The broker binds only inside an owner-only directory.
         std::fs::set_permissions(
@@ -994,7 +994,7 @@ fn assert_held_as_saved_by_the_owner(door: &Door, shortcut: Shortcut) {
     );
     assert_eq!(held.len(), 1, "the workspace holds the saved shortcut");
     assert_eq!(
-        tilo_peer_state::room::proven_saver(
+        tilo_peer_state::workspace::proven_saver(
             &door.room.to_string(),
             &held[0],
             &tilo_user_identity::RevocationList::new(),

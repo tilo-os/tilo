@@ -69,14 +69,14 @@ use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
 };
 
-use support::{Device, ROOM, enrol, ready, start_peer, workspace};
+use support::{Device, ROOM as WORKSPACE, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
 const CANVAS: &str = "so.tilo.canvas";
 const WRITER: &str = "so.tilo.word-processor";
 
-/// The task an agent is spawned with to join the room before the work
+/// The task an agent is spawned with to join the workspace before the work
 /// begins: written steps, none of them, so no model is asked.
 const JOIN: &str = "[]";
 
@@ -215,14 +215,14 @@ fn approve_agents(
     })
 }
 
-/// A browser session driving the host's agent supervisor, and the room's
-/// records through the host's room actions as the room's owner.
+/// A browser session driving the host's agent supervisor, and the workspace's
+/// records through the host's workspace actions as the workspace's owner.
 struct Browser {
     peer: PeerHandle,
     events: PeerEvents,
     host_key: [u8; 32],
     /// How many changes the page has received of each record: an owner's
-    /// change is heard in the room before the agents act on it.
+    /// change is heard in the workspace before the agents act on it.
     heard: std::sync::Mutex<BTreeMap<DocumentRoute, usize>>,
 }
 
@@ -239,7 +239,7 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join_placed(ROOM, "Workspace").unwrap();
+        peer.join_placed(WORKSPACE, "Workspace").unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
@@ -299,7 +299,7 @@ impl Browser {
     }
 
     /// One remote action to the host: to `provider` (the agent supervisor,
-    /// a record of the room, the room itself).
+    /// a record of the workspace, the workspace itself).
     async fn invoke(
         &self,
         provider: &str,
@@ -350,13 +350,13 @@ impl Browser {
         .map(|output| output.value.unwrap_or_default())
     }
 
-    /// The host's catalogue of the room's records and their actions.
+    /// The host's catalogue of the workspace's records and their actions.
     async fn catalogue(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
         static CORRELATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let correlation = CORRELATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.exchange(
             RemoteActionMessage::CatalogueRequest { correlation, query },
-            "the room's catalogue",
+            "the workspace's catalogue",
             |message| match message {
                 RemoteActionMessage::CatalogueResponse {
                     correlation: got,
@@ -413,7 +413,7 @@ impl Browser {
 }
 
 /// A benchmark workload, as `bench/campaign/SCENARIOS.md` (in the benchmark
-/// harness) describes it: the agents and their grants, room content, steps as
+/// harness) describes it: the agents and their grants, workspace content, steps as
 /// a dependency graph, the outputs kept and harness-side faults and events.
 struct Scenario {
     id: String,
@@ -425,7 +425,7 @@ struct Scenario {
     events: Vec<Event>,
 }
 
-/// Something that happens in the room while agents work: `agent` is given
+/// Something that happens in the workspace while agents work: `agent` is given
 /// `text` (usually written steps, so no model is asked) `at` after the clock
 /// starts — an email arriving, a chat message, a correction.
 struct Event {
@@ -451,7 +451,7 @@ struct Stage {
     tasks: Vec<Task>,
 }
 
-/// One task of a step: `text` for `agent`, or written steps the room's owner
+/// One task of a step: `text` for `agent`, or written steps the workspace's owner
 /// carries out (`"as": "owner"` on the task or on its step).
 struct Task {
     agent: String,
@@ -464,8 +464,8 @@ struct Task {
 enum Actor {
     /// The agent it names, as its grant allows.
     Agent,
-    /// The room's owner, through the host's room actions: setup an agent's
-    /// grant does not reach (making a Chat channel is the room's moderation,
+    /// The workspace's owner, through the host's workspace actions: setup an agent's
+    /// grant does not reach (making a Chat channel is the workspace's moderation,
     /// and an agent acts as an Editor at most). The agent the task names is
     /// whom the scenario has it stand for; it is not asked.
     Owner,
@@ -693,7 +693,7 @@ async fn grant_for(browser: &Browser, role: &Role) -> String {
             SUPERVISOR_RESOURCE,
             REQUEST_GRANT_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"label": role.name, "rooms": [ROOM], "apps": role.apps,
+                serde_json::json!({"label": role.name, "rooms": [WORKSPACE], "apps": role.apps,
                                    "expiresInSecs": 86_400})
                 .as_object()
                 .unwrap()
@@ -714,14 +714,14 @@ async fn grant_for(browser: &Browser, role: &Role) -> String {
     grant
 }
 
-/// Spawn the agent of `grant` in the room with nothing to do.
+/// Spawn the agent of `grant` in the workspace with nothing to do.
 async fn spawn(browser: &Browser, grant: &str) {
     browser
         .call(
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"grant": grant, "task": JOIN, "room": ROOM})
+                serde_json::json!({"grant": grant, "task": JOIN, "room": WORKSPACE})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -839,11 +839,11 @@ fn produced(log: &[serde_json::Value], step: &str, agent: &str) -> Option<String
         .next_back()
 }
 
-/// Who the action log and `tasks.json` name for what the room's owner did.
+/// Who the action log and `tasks.json` name for what the workspace's owner did.
 const OWNER: &str = "owner";
 
-/// What the room's owner did for one task: each of its written steps through
-/// the host's room actions, in order, until one failed.
+/// What the workspace's owner did for one task: each of its written steps through
+/// the host's workspace actions, in order, until one failed.
 #[derive(Default)]
 struct OwnerRun {
     actions: Vec<String>,
@@ -877,10 +877,10 @@ impl OwnerRun {
     }
 }
 
-/// Carry out the written steps `text` as the room's owner: each through the
-/// host's room actions on the room's record of its app (opened first when
-/// the room has none), as a person acting on a record nobody has open. Then
-/// wait until the room has heard every change, so agents act on them.
+/// Carry out the written steps `text` as the workspace's owner: each through the
+/// host's workspace actions on the workspace's record of its app (opened first when
+/// the workspace has none), as a person acting on a record nobody has open. Then
+/// wait until the workspace has heard every change, so agents act on them.
 async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
     let steps: Vec<serde_json::Value> = serde_json::from_str(text)
         .unwrap_or_else(|error| panic!("an owner's task is written steps: {error}"));
@@ -938,13 +938,13 @@ async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
             );
         }
     }
-    // The agents hear the room as the page does, over the same host.
+    // The agents hear the workspace as the page does, over the same host.
     tokio::time::sleep(Duration::from_millis(250)).await;
     run
 }
 
-/// The room's record of `app` an owner's written step acts on: the one the
-/// room holds, else one the host opens for the owner.
+/// The workspace's record of `app` an owner's written step acts on: the one the
+/// workspace holds, else one the host opens for the owner.
 async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, String> {
     let page = browser.catalogue(CatalogueQuery::default()).await?;
     let held: Vec<DocumentRoute> = page
@@ -957,14 +957,14 @@ async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, Str
         })
         .map(|provider| DocumentRoute {
             app_id: app.to_owned(),
-            cluster_id: ROOM.to_owned(),
+            cluster_id: WORKSPACE.to_owned(),
             record: provider.record_id.clone(),
         })
         .collect();
     match held.as_slice() {
         [one] => Ok(one.clone()),
         [] => {
-            let open = application_open_target(ROOM, app);
+            let open = application_open_target(WORKSPACE, app);
             let opened = browser
                 .invoke(&open.provider, open.address, InvokeArgument::None)
                 .await?;
@@ -975,12 +975,12 @@ async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, Str
                 .ok_or_else(|| format!("the host opened no record of {app}"))?;
             Ok(DocumentRoute {
                 app_id: app.to_owned(),
-                cluster_id: ROOM.to_owned(),
+                cluster_id: WORKSPACE.to_owned(),
                 record: record.to_owned(),
             })
         }
         many => Err(format!(
-            "the room holds {} records of {app}; an owner's written step names none",
+            "the workspace holds {} records of {app}; an owner's written step names none",
             many.len()
         )),
     }
@@ -1114,14 +1114,14 @@ async fn campaign_bench() {
                 .flatten(),
         );
     }
-    // The team joins the room before the work begins, as people are in it
-    // before anyone hands out tasks: each agent holds the room's keys when
+    // The team joins the workspace before the work begins, as people are in it
+    // before anyone hands out tasks: each agent holds the workspace's keys when
     // the records it will work on are made. The clock starts after.
     for grant in grants.values() {
         spawn(&browser, grant).await;
     }
     browser
-        .until("every agent to join the room", |status| {
+        .until("every agent to join the workspace", |status| {
             grants.values().all(|grant| idle(status, grant))
         })
         .await;
@@ -1130,7 +1130,7 @@ async fn campaign_bench() {
     for (name, file) in &scenario.content {
         let address = hosted
             .agents
-            .put_content(ROOM, &std::fs::read(file).unwrap())
+            .put_content(WORKSPACE, &std::fs::read(file).unwrap())
             .unwrap();
         addresses.insert(format!("{{content:{name}}}"), address);
     }
@@ -1167,7 +1167,7 @@ async fn campaign_bench() {
                 continue;
             }
             // The owner's tasks first, carried out here and heard in the
-            // room before the step's agents are asked to act on what they
+            // workspace before the step's agents are asked to act on what they
             // made.
             let mut rows = Vec::new();
             for task in stage.tasks.iter().filter(|task| task.actor == Actor::Owner) {
@@ -1214,7 +1214,7 @@ async fn campaign_bench() {
             launched.insert(index, (Instant::now(), issued));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
-        // Events that are due happen in the room now.
+        // Events that are due happen in the workspace now.
         for (number, event) in scenario.events.iter().enumerate() {
             if events_done[number] || run_started.elapsed() < event.at {
                 continue;
@@ -1310,8 +1310,8 @@ async fn campaign_bench() {
     let finished = std::time::SystemTime::now();
     let mut missing = Vec::new();
     for (step, agent, file) in &scenario.outputs {
-        if let Some(bytes) =
-            produced(&log, step, agent).and_then(|address| hosted.agents.content(ROOM, &address))
+        if let Some(bytes) = produced(&log, step, agent)
+            .and_then(|address| hosted.agents.content(WORKSPACE, &address))
         {
             std::fs::write(out.join(file), bytes).unwrap();
         } else {
@@ -1328,7 +1328,7 @@ async fn campaign_bench() {
         .flatten()
         .filter_map(serde_json::Value::as_str)
     {
-        if let Some(bytes) = hosted.agents.content(ROOM, address) {
+        if let Some(bytes) = hosted.agents.content(WORKSPACE, address) {
             let name = address.rsplit(':').next().unwrap_or(address);
             std::fs::write(content_dir.join(name), bytes).unwrap();
         }

@@ -2,7 +2,7 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use tilo_network_actor::{HostIdentity, native_ingress};
-use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture};
+use tilo_peer_state::owner::testing::{APP, WORKSPACE, raw_fixture};
 
 #[test]
 fn native_replay_yields_between_signed_admissions_without_reordering_control() {
@@ -12,7 +12,7 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
+    let room = RoomId::parse(WORKSPACE).unwrap();
     let certificate = owner
         .with_current(room, |view| {
             assert!(view.peer().document(APP, "").is_none());

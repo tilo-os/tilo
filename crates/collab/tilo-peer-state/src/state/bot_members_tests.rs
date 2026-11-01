@@ -62,7 +62,7 @@ pub(super) fn bot_delegation(
     installer: &SigningKey,
     device: [u8; 32],
     installation: &str,
-    room: &str,
+    workspace: &str,
     now: SystemTime,
 ) -> Delegation {
     Delegation::sign(
@@ -74,7 +74,7 @@ pub(super) fn bot_delegation(
         "Discord Bridge",
         [88, 101, 242],
         DelegateScope {
-            rooms: vec![room.into()],
+            rooms: vec![workspace.into()],
             apps: vec![],
         },
         ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
@@ -103,20 +103,20 @@ pub(super) fn installation(program: &str, installed_by: &str) -> Installation {
 #[test]
 fn a_bot_row_acts_only_with_its_own_live_installation() {
     let (_, _, _, _, now) = crate::admission_tests::seeded();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let installer = person();
     let (_, cert) = bot_device(&installer, 8);
     let row = GovernedDelegateRow {
-        delegation: bot_delegation(&installer, cert.device_public_key, BOT, room, now),
+        delegation: bot_delegation(&installer, cert.device_public_key, BOT, workspace, now),
         withdrawn_at_ns: None,
         installation: Some(installation(&"a".repeat(64), &person_hex())),
     };
-    assert_eq!(row.acting(&cert, room, ns(now)), Ok(()));
+    assert_eq!(row.acting(&cert, workspace, ns(now)), Ok(()));
 
     let mut missing = row.clone();
     missing.installation = None;
     assert_eq!(
-        missing.acting(&cert, room, ns(now)),
+        missing.acting(&cert, workspace, ns(now)),
         Err(super::delegates::DelegateInactive::Mismatch)
     );
 
@@ -125,18 +125,18 @@ fn a_bot_row_acts_only_with_its_own_live_installation() {
         &installer,
         cert.device_public_key,
         "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
-        room,
+        workspace,
         now,
     );
     assert_eq!(
-        other.acting(&cert, room, ns(now)),
+        other.acting(&cert, workspace, ns(now)),
         Err(super::delegates::DelegateInactive::Mismatch)
     );
 
     let mut adopted_elsewhere = row;
     adopted_elsewhere.installation = Some(installation(&"a".repeat(64), &"f".repeat(64)));
     assert_eq!(
-        adopted_elsewhere.acting(&cert, room, ns(now)),
+        adopted_elsewhere.acting(&cert, workspace, ns(now)),
         Err(super::delegates::DelegateInactive::InstallerMismatch)
     );
 }
@@ -201,7 +201,13 @@ fn install_command(
         installation: installation(&hash, &person_hex()),
         program: program_text.into(),
         device: Some(BotDevice {
-            delegation: bot_delegation(&installer, cert.device_public_key, BOT, peer.room(), now),
+            delegation: bot_delegation(
+                &installer,
+                cert.device_public_key,
+                BOT,
+                peer.workspace_id(),
+                now,
+            ),
             cert: cert.clone(),
         }),
     });
@@ -220,7 +226,7 @@ fn update_command(text: &str) -> Command {
 }
 
 fn post_in(peer: &StatePeer) -> TreePath {
-    TreePath::room(peer.room())
+    TreePath::room(peer.workspace_id())
         .app("so.tilo.chat")
         .kind("chat.workspace")
         .resource("chat:1")
@@ -232,7 +238,7 @@ fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_pol
     tilo_action_policy::Grant::new(
         id,
         tilo_action_policy::Subject::person(person_hex()),
-        tilo_action_policy::roles::governance_action(peer.room(), action),
+        tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
         KindSet::OUTSIDE,
         Answer::Allow,
         tilo_action_policy::Subject::person("another-person"),
@@ -273,34 +279,40 @@ fn the_owner_installs_a_bot_in_one_governed_change() {
     );
     let member = governor.permissions(cert.device_public_key, now).unwrap();
     assert!(member.allows(&post_in(&governor), ActionKind::Undoable, now));
-    let notes = TreePath::room(governor.room())
+    let notes = TreePath::room(governor.workspace_id())
         .app("so.tilo.notes")
         .action("append");
     assert!(!member.allows(&notes, ActionKind::Undoable, now));
     let grant = tilo_action_policy::roles::governance_action(
-        governor.room(),
+        governor.workspace_id(),
         tilo_action_policy::roles::governance::GRANT,
     );
     assert!(!member.allows(&grant, tilo_action_policy::roles::GOVERNANCE_KIND, now));
 }
 
 #[test]
-fn install_refuses_a_delegation_for_another_installation_or_room() {
+fn install_refuses_a_delegation_for_another_installation_or_workspace() {
     let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
     let text = program(vec![post_rule()]);
     let (mut install, cert) = install_command(&governor, &text, 8, now);
     let installer = person();
-    let other_room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let other_workspace = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     for delegation in [
         bot_delegation(
             &installer,
             cert.device_public_key,
             "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
-            governor.room(),
+            governor.workspace_id(),
             now,
         ),
-        bot_delegation(&installer, cert.device_public_key, BOT, other_room, now),
-        bot_delegation(&installer, [42; 32], BOT, governor.room(), now),
+        bot_delegation(
+            &installer,
+            cert.device_public_key,
+            BOT,
+            other_workspace,
+            now,
+        ),
+        bot_delegation(&installer, [42; 32], BOT, governor.workspace_id(), now),
     ] {
         install.device.as_mut().unwrap().delegation = delegation;
         let command = Command::InstallBot(install.clone());
@@ -491,7 +503,7 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
     let deny = tilo_action_policy::Grant::new(
         "no-post",
         tilo_action_policy::Subject::person(person_hex()),
-        TreePath::room(governor.room()).app("so.tilo.chat"),
+        TreePath::room(governor.workspace_id()).app("so.tilo.chat"),
         KindSet::UNDOABLE,
         Answer::Deny,
         tilo_action_policy::Subject::person(person_hex()),
@@ -516,12 +528,18 @@ fn renewing_replaces_the_delegation_and_moving_withdraws_the_old_device() {
         .apply_workspace_membership_command(&owner_device, &command, &authority, now)
         .unwrap();
     let later = now.checked_add(Duration::from_secs(60)).unwrap();
-    let room = governor.room().to_owned();
+    let workspace = governor.workspace_id().to_owned();
     let renewal = |device: &DeviceCert| {
         Command::RenewBot(Box::new(BotRenewal {
             installation: InstallationId::parse(BOT).unwrap(),
             device: BotDevice {
-                delegation: bot_delegation(&person(), device.device_public_key, BOT, &room, later),
+                delegation: bot_delegation(
+                    &person(),
+                    device.device_public_key,
+                    BOT,
+                    &workspace,
+                    later,
+                ),
                 cert: device.clone(),
             },
         }))
@@ -572,7 +590,13 @@ pub(crate) fn installed_bot(
         installation: row,
         program: program_text.into(),
         device: Some(BotDevice {
-            delegation: bot_delegation(&installer, cert.device_public_key, BOT, peer.room(), now),
+            delegation: bot_delegation(
+                &installer,
+                cert.device_public_key,
+                BOT,
+                peer.workspace_id(),
+                now,
+            ),
             cert: cert.clone(),
         }),
     }));
@@ -745,7 +769,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
                 &adopter,
                 device.device_public_key,
                 BOT,
-                governor.room(),
+                governor.workspace_id(),
                 now,
             ),
             cert: device.clone(),
@@ -762,7 +786,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
         "adopt:editor",
         tilo_action_policy::Subject::person(hex::encode(editor_root)),
         tilo_action_policy::roles::governance_action(
-            governor.room(),
+            governor.workspace_id(),
             tilo_action_policy::roles::governance::ADOPT_BOT,
         ),
         KindSet::OUTSIDE,
@@ -895,7 +919,7 @@ fn an_editor_cannot_ask_for_a_bot_by_default() {
 }
 
 #[test]
-fn the_rooms_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
+fn the_workspaces_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
     let (_, _, _, _, now) = crate::admission_tests::seeded();
     let (mut governor, authority, owner_device, cert) = installed(now);
     governor
@@ -907,8 +931,12 @@ fn the_rooms_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
             now,
         )
         .unwrap();
-    let doc = governor.core.room_doc.as_ref().expect("room governance");
-    let bots = crate::room::room_bots_of(doc);
+    let doc = governor
+        .core
+        .workspace_doc
+        .as_ref()
+        .expect("workspace governance");
+    let bots = crate::workspace::workspace_bots_of(doc);
     assert_eq!(bots.len(), 2, "{bots:?}");
     let bridge = bots
         .iter()
@@ -932,7 +960,7 @@ fn the_rooms_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
     assert_eq!(asked.version.as_deref(), Some("1.2.0"));
     assert!(asked.installation.is_none() && asked.device.is_none());
 
-    // Uninstalled, the bot leaves the list; its row stays in the room's
+    // Uninstalled, the bot leaves the list; its row stays in the workspace's
     // history only.
     governor
         .workspace_mut()
@@ -943,8 +971,12 @@ fn the_rooms_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
             now,
         )
         .unwrap();
-    let doc = governor.core.room_doc.as_ref().expect("room governance");
-    let bots = crate::room::room_bots_of(doc);
+    let doc = governor
+        .core
+        .workspace_doc
+        .as_ref()
+        .expect("workspace governance");
+    let bots = crate::workspace::workspace_bots_of(doc);
     assert_eq!(
         bots.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(),
         ["so.tilo.bots.standup"]

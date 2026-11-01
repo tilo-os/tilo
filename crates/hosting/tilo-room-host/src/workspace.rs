@@ -130,7 +130,6 @@ pub struct WorkspaceRuntime {
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub outbound_leases: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
-    pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
     /// Device pubkeys of the hosts this workspace is attached to: the hosts
     /// of its person that serve it, recorded as each announces what it
     /// carries (its hello). A change one of them sent is not carried on to
@@ -418,7 +417,6 @@ impl WorkspaceRuntime {
             attached_hosts: HashSet::new(),
             attach_sessions: HashMap::new(),
             extensions: Extensions::default(),
-            action_targets: HashMap::new(),
             state_sessions: HashMap::new(),
             outbound_leases: HashMap::new(),
             checkpoint_served: HashMap::new(),
@@ -619,7 +617,6 @@ impl WorkspaceRuntime {
             .get(&sub.device_public_key)
             .is_some_and(|current| current.tx.same_channel(&sub.tx))
         {
-            self.action_targets.remove(&sub.device_public_key);
             self.presence_mailboxes.remove(&sub.device_public_key);
             if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
                 session
@@ -763,7 +760,6 @@ impl WorkspaceRuntime {
             // access audit.
             crate::authority_epoch::bump();
         }
-        self.action_targets.remove(device);
         self.presence_mailboxes.remove(device);
         if let Some(session) = self.state_sessions.remove(device) {
             session

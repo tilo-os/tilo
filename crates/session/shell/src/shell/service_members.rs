@@ -190,7 +190,7 @@ mod tests {
     )]
     #[test]
     fn a_temporary_service_member_reads_until_its_grant_expires() {
-        use crate::shell::channel_encryption::testing::{Endpoint, Room, key, public};
+        use crate::shell::channel_encryption::testing::{Endpoint, Workspace, key, public};
         use crate::shell::channel_encryption::{
             ChannelAccess, ChannelEncryption, ChannelEncryptionConfig,
         };
@@ -217,7 +217,7 @@ mod tests {
         let route = collab_types::ChannelRoute::new("so.tilo.writer", "brief");
         let artifact = collab_types::ArtifactId::new();
 
-        let transport = Arc::new(Room::default());
+        let transport = Arc::new(Workspace::default());
         let (owner_dir, service_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let open =
             |seed: u8,

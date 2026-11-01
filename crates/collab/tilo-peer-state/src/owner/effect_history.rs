@@ -1,4 +1,4 @@
-//! Immutable owner receipt facts; a signed room root authenticates bounded UUID lookup.
+//! Immutable owner receipt facts; a signed workspace root authenticates bounded UUID lookup.
 //! Public receipts remain in genuine signed governance history. Blocks are retained
 //! before installing the new root, and are never collected from an incomplete root set.
 use crate::owner::Store;
@@ -203,9 +203,9 @@ fn insert_at(
     )
 }
 
-pub(crate) fn request(room: &str, fact: &Fact) -> OwnerCommitRequest {
+pub(crate) fn request(workspace: &str, fact: &Fact) -> OwnerCommitRequest {
     OwnerCommitRequest {
-        room: room.into(),
+        workspace: workspace.into(),
         operation: crate::owner_commit::CommitOperation::EffectReceipt {
             invocation: fact.invocation,
             redacted: fact.redacted.clone(),

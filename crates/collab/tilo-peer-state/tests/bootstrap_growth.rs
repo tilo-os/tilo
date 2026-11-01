@@ -14,39 +14,39 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
-const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "bootstrap.growth";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RoomStats {
+struct WorkspaceStats {
     changes: usize,
     bytes: usize,
 }
 
-fn room_stats(message: &NeighbourMsg) -> RoomStats {
+fn workspace_stats(message: &NeighbourMsg) -> WorkspaceStats {
     let NeighbourMsg::SyncResp { changes, .. } = message else {
-        panic!("expected room SyncResp")
+        panic!("expected workspace SyncResp")
     };
-    RoomStats {
+    WorkspaceStats {
         changes: changes.len(),
         bytes: changes.iter().map(Vec::len).sum(),
     }
 }
 
-fn room_delta(after: RoomStats, before: RoomStats) -> RoomStats {
-    RoomStats {
+fn workspace_delta(after: WorkspaceStats, before: WorkspaceStats) -> WorkspaceStats {
+    WorkspaceStats {
         changes: after
             .changes
             .checked_sub(before.changes)
-            .expect("room history must not shrink"),
+            .expect("workspace history must not shrink"),
         bytes: after
             .bytes
             .checked_sub(before.bytes)
-            .expect("room history bytes must not shrink"),
+            .expect("workspace history bytes must not shrink"),
     }
 }
 
@@ -67,7 +67,8 @@ fn fixture_with_documents_and_expiry(
     };
     sign_device_cert(&mut cert, &root).unwrap();
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
-    let mut peer = StatePeer::new(ROOM, cert.clone(), vec![], RevocationList::new(), now).unwrap();
+    let mut peer =
+        StatePeer::new(WORKSPACE, cert.clone(), vec![], RevocationList::new(), now).unwrap();
     let documents = (0..count)
         .map(|index| {
             let mut document = AutoCommit::new().with_actor(automerge::ActorId::from(
@@ -87,7 +88,7 @@ fn fixture_with_documents_and_expiry(
         .collect::<Vec<_>>();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &cert, &[cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
             documents,
         },
         &key,
@@ -101,24 +102,24 @@ fn fixture_with_documents(count: usize) -> (SigningKey, StatePeer, SystemTime) {
     fixture_with_documents_and_expiry(count, None)
 }
 
-fn room_document(message: &NeighbourMsg) -> AutoCommit {
+fn workspace_document(message: &NeighbourMsg) -> AutoCommit {
     let NeighbourMsg::SyncResp { changes, .. } = message else {
-        panic!("expected room SyncResp")
+        panic!("expected workspace SyncResp")
     };
-    tilo_peer_state::room::candidate(None, changes).unwrap()
+    tilo_peer_state::workspace::candidate(None, changes).unwrap()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Measurement {
     documents: usize,
-    baseline: RoomStats,
-    first: RoomStats,
-    repeated: RoomStats,
+    baseline: WorkspaceStats,
+    first: WorkspaceStats,
+    repeated: WorkspaceStats,
 }
 
 fn measure(count: usize) -> Measurement {
     let (key, mut peer, now) = fixture_with_documents(count);
-    let baseline = room_stats(&peer.room_message());
+    let baseline = workspace_stats(&peer.workspace_message());
     let first_batch = peer
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
@@ -133,7 +134,7 @@ fn measure(count: usize) -> Measurement {
             .count(),
         count
     );
-    let first_full = room_stats(&first_batch[0]);
+    let first_full = workspace_stats(&first_batch[0]);
 
     let repeated_batch = peer
         .publication_mut()
@@ -141,18 +142,18 @@ fn measure(count: usize) -> Measurement {
         .unwrap();
     assert_eq!(repeated_batch.len(), count + 1);
     assert!(matches!(repeated_batch[0], NeighbourMsg::SyncResp { .. }));
-    let repeated_full = room_stats(&repeated_batch[0]);
+    let repeated_full = workspace_stats(&repeated_batch[0]);
 
     Measurement {
         documents: count,
         baseline,
-        first: room_delta(first_full, baseline),
-        repeated: room_delta(repeated_full, first_full),
+        first: workspace_delta(first_full, baseline),
+        repeated: workspace_delta(repeated_full, first_full),
     }
 }
 
 #[test]
-fn durable_bootstrap_room_history_growth_is_measured_for_one_eight_thirty_two_documents() {
+fn durable_bootstrap_workspace_history_growth_is_measured_for_one_eight_thirty_two_documents() {
     let measurements = [1, 8, 32].map(measure);
     let replay = [1, 8, 32].map(measure);
     assert_eq!(
@@ -213,8 +214,8 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
                 .unwrap(),
         );
     }
-    let serial_room = room_document(&serial.room_message());
-    let expected_coverage = tilo_peer_state::coverage::entries(&serial_room).unwrap();
+    let serial_workspace = workspace_document(&serial.workspace_message());
+    let expected_coverage = tilo_peer_state::coverage::entries(&serial_workspace).unwrap();
     let expected_receipts = expected_coverage
         .iter()
         .map(|(route, coverage)| {
@@ -231,13 +232,13 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
         .durable_bootstrap_messages(&key, now, 7)
         .unwrap();
     assert_eq!(&messages[1..], expected_messages);
-    let batched_room = room_document(&messages[0]);
+    let batched_workspace = workspace_document(&messages[0]);
     assert_eq!(
-        tilo_peer_state::coverage::entries(&batched_room).unwrap(),
+        tilo_peer_state::coverage::entries(&batched_workspace).unwrap(),
         expected_coverage
     );
     assert_eq!(
-        tilo_peer_state::durability::entries(&batched_room).unwrap(),
+        tilo_peer_state::durability::entries(&batched_workspace).unwrap(),
         expected_receipts
     );
     assert_eq!(batched.rows(), serial.rows());
@@ -245,7 +246,7 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
 
     let authority = batched.owner_certificates()[0].clone();
     let mut fresh = StatePeer::new(
-        ROOM,
+        WORKSPACE,
         authority.clone(),
         batched.certificates(),
         RevocationList::new(),
@@ -273,7 +274,7 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
     }
     let restored = StatePeer::restore(
         &fresh.durable().unwrap(),
-        ROOM,
+        WORKSPACE,
         authority,
         fresh.certificates(),
         RevocationList::new(),
@@ -310,16 +311,19 @@ fn empty_durable_bootstrap_writes_empty_receipts_once() {
 #[test]
 fn nondurable_bootstrap_batches_coverage_into_one_change() {
     let (key, mut peer, now) = fixture_with_documents(8);
-    let before = room_stats(&peer.room_message());
+    let before = workspace_stats(&peer.workspace_message());
     let messages = peer
         .publication_mut()
         .bootstrap_messages(&key, now)
         .unwrap();
     assert_eq!(messages.len(), 9);
-    assert_eq!(room_delta(room_stats(&messages[0]), before).changes, 1);
+    assert_eq!(
+        workspace_delta(workspace_stats(&messages[0]), before).changes,
+        1
+    );
 }
 
-/// Room governance growth per durable generation: one document
+/// Workspace governance growth per durable generation: one document
 /// edited per generation among `documents`, each published through
 /// `durable_mutation_messages` exactly as the Cloud owner commits it. A
 /// whole-map layout (the coverage and receipt maps rewritten as one scalar
@@ -330,7 +334,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
     peer.publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let start = room_stats(&peer.room_message());
+    let start = workspace_stats(&peer.workspace_message());
     let mut whole_map = AutoCommit::new();
     let mut whole_map_bytes = 0usize;
     let mut actors = (0..documents)
@@ -363,9 +367,9 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
             .durable_mutation_messages(&before, &key, now, generation)
             .unwrap();
         // The whole-map layout: both maps rewritten as one scalar each.
-        let room = peer.admitted_room().unwrap();
-        let coverage = tilo_peer_state::coverage::entries(room).unwrap();
-        let receipts = tilo_peer_state::durability::entries(room).unwrap();
+        let workspace = peer.admitted_workspace().unwrap();
+        let coverage = tilo_peer_state::coverage::entries(workspace).unwrap();
+        let receipts = tilo_peer_state::durability::entries(workspace).unwrap();
         let heads = whole_map.get_heads();
         whole_map
             .put(
@@ -389,14 +393,14 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
             .map(|change| change.raw_bytes().len())
             .sum::<usize>();
     }
-    let end = room_stats(&peer.room_message());
-    let saved = room_document(&peer.room_message()).save().len();
+    let end = workspace_stats(&peer.workspace_message());
+    let saved = workspace_document(&peer.workspace_message()).save().len();
     eprintln!(
-        "documents={documents}: {} room changes over {generations} generations",
+        "documents={documents}: {} workspace changes over {generations} generations",
         end.changes - start.changes
     );
-    let mut room = room_document(&peer.room_message());
-    let mut changes = room
+    let mut workspace = workspace_document(&peer.workspace_message());
+    let mut changes = workspace
         .get_changes(&[])
         .into_iter()
         .rev()
@@ -409,7 +413,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
 }
 
 #[test]
-fn durable_generation_room_growth_is_small_per_generation() {
+fn durable_generation_workspace_growth_is_small_per_generation() {
     let generations = 200u64;
     let mut report = Vec::new();
     for documents in [2usize, 8] {
@@ -417,7 +421,7 @@ fn durable_generation_room_growth_is_small_per_generation() {
         let per = bytes / usize::try_from(generations).unwrap();
         let whole_map_per = whole_map / usize::try_from(generations).unwrap();
         report.push(format!(
-            "documents={documents} generations={generations} room_bytes_per_generation={per} whole_map_bytes_per_generation={whole_map_per} room_history_bytes={bytes} saved_room_bytes={saved}"
+            "documents={documents} generations={generations} workspace_bytes_per_generation={per} whole_map_bytes_per_generation={whole_map_per} workspace_history_bytes={bytes} saved_workspace_bytes={saved}"
         ));
         // Only the edited route is rewritten, with compact values: well
         // below the whole-map rewrite, and flat in the route count.

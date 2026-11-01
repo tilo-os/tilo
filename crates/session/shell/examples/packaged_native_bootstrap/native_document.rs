@@ -15,7 +15,7 @@ impl Store for ReadOnlyStore {
         false
     }
 
-    fn slot_room(&self, _slot: WorkspaceId) -> Option<RoomId> {
+    fn slot_workspace(&self, _slot: WorkspaceId) -> Option<RoomId> {
         None
     }
 
@@ -167,7 +167,7 @@ fn inspection_route() -> Result<InspectionRoute, Box<dyn std::error::Error>> {
 
 /// Whether the proof agent is admitted to the room, able to change it, by a
 /// live grant on the room itself.
-fn exact_agent_membership(policy: &tilo_action_policy::RoomPolicy, now: u64) -> bool {
+fn exact_agent_membership(policy: &tilo_action_policy::WorkspacePolicy, now: u64) -> bool {
     use tilo_action_policy::{ActionKind, Answer, Authority, Subject};
     let agent = Subject::agent("bootstrap-proof");
     let cx = tilo_desktop_model::context_at(now);
@@ -198,7 +198,8 @@ fn check_agent_membership(
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "owner policy clock is unavailable")?
             .as_secs();
-        if member.policy.room != room_text || !exact_agent_membership(&member.policy, seconds) {
+        if member.policy.workspace != room_text || !exact_agent_membership(&member.policy, seconds)
+        {
             return Err("exact agent membership was not durably admitted".into());
         }
         Ok(view.generation())
@@ -296,8 +297,8 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
     }
     let generation = owner.with_outgoing(room, now, |view, outgoing| {
         if enrollment {
-            if view.peer().room() != room_text
-                || view.peer().admitted_room().is_none()
+            if view.peer().workspace_id() != room_text
+                || view.peer().admitted_workspace().is_none()
                 || !view.hosted_here()
             {
                 return Err("exact current-device native owner is not admitted".into());
@@ -350,16 +351,18 @@ mod tests {
     #[test]
     fn membership_requires_live_exact_room_subject_and_restriction() {
         use tilo_action_policy::roles::AgentPreset;
-        use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, RoomPolicy, Subject};
+        use tilo_action_policy::{
+            Answer, Grant, KindSet, Lifetime, Role, Subject, WorkspacePolicy,
+        };
         let owner = Subject::Role(Role::Owner);
         let room = |agent: &str, preset: AgentPreset| {
-            let mut policy = RoomPolicy::unowned("room", &owner);
+            let mut policy = WorkspacePolicy::unowned("room", &owner);
             policy.grants.extend(preset.grants("room", agent, &owner));
             policy
         };
         let member = room("bootstrap-proof", AgentPreset::Operator);
         assert!(exact_agent_membership(&member, 10));
-        let mut elsewhere = RoomPolicy::unowned("room", &owner);
+        let mut elsewhere = WorkspacePolicy::unowned("room", &owner);
         elsewhere.grants.extend(AgentPreset::Operator.grants(
             "other-room",
             "bootstrap-proof",
@@ -379,7 +382,7 @@ mod tests {
             !exact_agent_membership(&room("bootstrap-proof", AgentPreset::Observer), 10),
             "reading the room is not the membership the proof needs"
         );
-        let mut app_only = RoomPolicy::unowned("room", &owner);
+        let mut app_only = WorkspacePolicy::unowned("room", &owner);
         app_only.grants.push(Grant::new(
             "app-only",
             Subject::agent("bootstrap-proof"),

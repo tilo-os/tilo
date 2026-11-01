@@ -14,7 +14,7 @@ use tilolang::source::{compile_dirs, dependency_order, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
-/// The record kind of every tilolang app's room record.
+/// The record kind of every tilolang app's workspace record.
 pub const RECORD_KIND: &str = "tilolang.room";
 /// The binary of the tilolang runtime bundle, relative to the bundle.
 pub const RUNTIME_BIN: &str = "bin/tilolang-app";
@@ -168,7 +168,7 @@ landlock = "strict"
 collab = "optional@{services}"
 tilo-fs = "optional@{services}"
 # The shell's side of the window: where it is shown (the workspace's appearance), and whether
-# its room has synced, which every empty state says until it has.
+# its workspace has synced, which every empty state says until it has.
 shell-ui = "optional@{shell_ui}"
 
 [entrypoint]

@@ -36,25 +36,27 @@ fn an_unreadable_registry_is_refused_rather_than_read_as_empty() {
 }
 
 #[test]
-fn a_session_without_rooms_has_no_start_route() {
+fn a_session_without_workspaces_has_no_start_route() {
     let dir = tempfile::tempdir().unwrap();
     let placements = RegistryPlacements::new(
         dir.path().join("home-peers.json"),
-        Box::new(|_: &str| -> io::Result<RoomIdentity> { panic!("no room, no identity read") }),
+        Box::new(|_: &str| -> io::Result<RoomIdentity> {
+            panic!("no workspace, no identity read")
+        }),
     );
     assert!(configured(&[], &placements).unwrap().is_none());
 }
 
-/// A room the session created after it started.
-const LATER_ROOM: &str = "5d1f6c0a-2b7e-4c8f-9a3d-8e2b1c4f6a77";
+/// A workspace the session created after it started.
+const LATER_WORKSPACE: &str = "5d1f6c0a-2b7e-4c8f-9a3d-8e2b1c4f6a77";
 /// This device's key.
 const LAPTOP: [u8; 32] = [3; 32];
 /// The person's home relay.
 const RELAY: [u8; 32] = [9; 32];
 
-/// The person's home relay at `RELAY`, registered as retaining `rooms`, as
+/// The person's home relay at `RELAY`, registered as retaining `workspaces`, as
 /// enrollment writes the registry at `path`.
-fn register(path: &Path, user: [u8; 32], rooms: &[&str]) {
+fn register(path: &Path, user: [u8; 32], workspaces: &[&str]) {
     let registration = HomePeerRegistration {
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id: hex::encode(RELAY),
@@ -65,20 +67,20 @@ fn register(path: &Path, user: [u8; 32], rooms: &[&str]) {
         label: "home".into(),
         user_public_key: hex::encode(user),
         device_cert: None,
-        relay_workspace_ids: rooms
+        relay_workspace_ids: workspaces
             .iter()
-            .map(|room| tilo_relay_protocol::room_workspace_id(room).unwrap())
+            .map(|workspace| tilo_relay_protocol::room_workspace_id(workspace).unwrap())
             .collect(),
         environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     std::fs::write(path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
 }
 
-/// Photos' make-thumbnails, invoked in the room the session got after it
+/// Photos' make-thumbnails, invoked in the workspace the session got after it
 /// started.
-fn later_room_thumbnails() -> tilo_actions::offload::OffloadRequest {
+fn later_workspace_thumbnails() -> tilo_actions::offload::OffloadRequest {
     tilo_actions::offload::OffloadRequest {
-        room: LATER_ROOM.into(),
+        room: LATER_WORKSPACE.into(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {
@@ -94,8 +96,8 @@ fn later_room_thumbnails() -> tilo_actions::offload::OffloadRequest {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_room_created_after_start_is_routed_once_its_relay_is_registered_and_never_once_revoked()
-{
+async fn a_workspace_created_after_start_is_routed_once_its_relay_is_registered_and_never_once_revoked()
+ {
     let dir = tempfile::tempdir().unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let user = root.verifying_key().to_bytes();
@@ -107,7 +109,7 @@ async fn a_room_created_after_start_is_routed_once_its_relay_is_registered_and_n
         let (identities, identity) = (identities.clone(), identity.clone());
         Arc::new(RegistryPlacements::new(
             registry.clone(),
-            Box::new(move |_room: &str| -> io::Result<RoomIdentity> {
+            Box::new(move |_workspace: &str| -> io::Result<RoomIdentity> {
                 Ok(RoomIdentity {
                     device_signing_key: ed25519_dalek::SigningKey::from_bytes(&LAPTOP),
                     device_cert: tilo_user_identity::DeviceCert {
@@ -146,7 +148,7 @@ async fn a_room_created_after_start_is_routed_once_its_relay_is_registered_and_n
             tokio::runtime::Handle::current(),
         )
     };
-    let request = later_room_thumbnails();
+    let request = later_workspace_thumbnails();
     let run_here = |answer: tilo_actions::offload::Offloaded| match answer {
         tilo_actions::offload::Offloaded::RunHere { reason } => reason,
         ran @ tilo_actions::offload::Offloaded::Ran { .. } => {
@@ -154,15 +156,15 @@ async fn a_room_created_after_start_is_routed_once_its_relay_is_registered_and_n
         }
     };
 
-    // The session started with no relay for the room: it runs here, and the
+    // The session started with no relay for the workspace: it runs here, and the
     // door is told why.
     let reason = run_here(offload.offload(request.clone()).await);
     assert_eq!(reason, "no home relay of this device retains the room");
     assert!(started.lock_recover().is_empty());
 
-    // The person registers their home relay as retaining the room: the next
-    // invocation starts the room's route to it, without a new session.
-    register(&registry, user, &[LATER_ROOM]);
+    // The person registers their home relay as retaining the workspace: the next
+    // invocation starts the workspace's route to it, without a new session.
+    register(&registry, user, &[LATER_WORKSPACE]);
     let reason = run_here(offload.offload(request.clone()).await);
     assert!(reason.contains("the test relay is not dialled"), "{reason}");
     {
@@ -172,13 +174,13 @@ async fn a_room_created_after_start_is_routed_once_its_relay_is_registered_and_n
         assert_eq!(
             started[0].rooms,
             HashMap::from([(
-                LATER_ROOM.to_owned(),
-                tilo_relay_protocol::room_workspace_id(LATER_ROOM).unwrap()
+                LATER_WORKSPACE.to_owned(),
+                tilo_relay_protocol::room_workspace_id(LATER_WORKSPACE).unwrap()
             )])
         );
     }
 
-    // The person revokes the relay in their device fleet: the room's
+    // The person revokes the relay in their device fleet: the workspace's
     // actions run here again, with why, and nothing more is started.
     let mut fleet = DeviceFleet::new(identity.clone());
     fleet.revocations = vec![revocation(&root, RELAY)];
@@ -212,7 +214,7 @@ fn the_registry_is_read_again_when_it_changes() {
         placements.registrations().unwrap().is_empty(),
         "no registry"
     );
-    register(&path, [7; 32], &[LATER_ROOM]);
+    register(&path, [7; 32], &[LATER_WORKSPACE]);
     assert_eq!(placements.registrations().unwrap().len(), 1);
     let read = placements.registrations().unwrap();
     assert!(

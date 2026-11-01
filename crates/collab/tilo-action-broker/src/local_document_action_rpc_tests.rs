@@ -15,7 +15,7 @@ fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
 
 struct LocalReportGrants(WorkspaceTreeHandle);
 impl crate::services::AppActionGrants for LocalReportGrants {
-    fn may_grant(&self, _room: &str, _person: &str) -> bool {
+    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
         false
     }
     fn record(
@@ -26,12 +26,12 @@ impl crate::services::AppActionGrants for LocalReportGrants {
     ) -> crate::services::GrantRecording {
         Box::pin(std::future::ready(Err("nothing is granted here".into())))
     }
-    fn revoke(&self, room: &str, grant: &str) {
+    fn revoke(&self, workspace_id: &str, grant: &str) {
         let mut tree = self.0.write();
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|workspace| workspace.room().to_string() == workspace_id)
             .unwrap();
         assert!(workspace.revoke_grant(&tilo_action_policy::GrantId::new(grant)));
     }
@@ -328,7 +328,7 @@ async fn local_report_admission(
                 let journal = rig.state.journal.lock().unwrap();
                 let journal = journal.as_ref().unwrap().as_ref().unwrap();
                 let key = InvocationKey {
-                    room: env.route.cluster_id.clone(),
+                    workspace: env.route.cluster_id.clone(),
                     host: journal.host(),
                     invocation: tilo_actions::InvocationId(invocation),
                     owner: InvocationOwner::AuthenticatedLocal {

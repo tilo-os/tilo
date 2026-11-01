@@ -1455,7 +1455,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// whole, wherever they fall among its other rows (governance, shortcuts),
     /// so a workspace with many of those still lists every app.
     async fn installed(&self) -> Result<Vec<InstalledApp>, String> {
-        let provider = tilo_actions::remote::workspace_provider(&self.room);
+        let provider = tilo_actions::remote::workspace_provider(&self.workspace);
         let mut apps: Vec<InstalledApp> = Vec::new();
         let mut cursor = Vec::new();
         let mut revision = None;
@@ -2528,7 +2528,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
-                provider: tilo_actions::remote::workspace_provider(&self.room),
+                provider: tilo_actions::remote::workspace_provider(&self.workspace),
                 app_id: None,
             },
             workspace: true,

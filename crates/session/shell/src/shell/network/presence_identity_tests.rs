@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use ui::presence::{PresenceCtx, PresenceKey};
 
-use super::{NeighbourMsg, ShellNetwork, room_topic_id, shell_network_for_test};
+use super::{NeighbourMsg, ShellNetwork, shell_network_for_test, workspace_topic_id};
 use crate::shell::peer_presence::PeerPresence;
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_network_actor::MembershipEpoch;
@@ -108,7 +108,7 @@ fn a_member_who_claims_anothers_identity_is_still_only_themselves() {
     let (mut net, _commands) = shell_network_for_test(tree.clone(), 0xC);
     net.require_peer_identity = true;
     let net = Arc::new(net);
-    let topic = room_topic_id(room);
+    let topic = workspace_topic_id(room);
     let epoch = MembershipEpoch::for_test(1);
     says_hello(&net, &mallory_root, &mallory_device, epoch, topic);
 

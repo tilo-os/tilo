@@ -15,7 +15,7 @@ const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
 /// The longest a route waiting for keys goes unasked while nothing changes,
 /// when nothing tells it about a change: an identity service that refused or
 /// could not take its question, or a removal whose rejoin it asks for.
-/// Admission, a channel service starting after the app and a room's
+/// Admission, a channel service starting after the app and a workspace's
 /// governance this device learns of later are all pushed (see `KeySchedule`).
 const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
 

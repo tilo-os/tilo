@@ -1,6 +1,6 @@
 //! Calls in the rooms this relay governs.
 //!
-//! A call is room governance: [`RoomMediaV1`] in the room document, which the
+//! A call is room governance: [`WorkspaceMediaV1`] in the room document, which the
 //! governor authors and every member verifies. Any member opens a voice
 //! channel's call to join it ([`CallOperation::Open`]): the relay, as the
 //! governor, starts the channel's call when it has none, and restarts it
@@ -68,7 +68,7 @@ use ed25519_dalek::SigningKey;
 use tilo_moq::relay::{
     AuthorizationStatus, Denied, Direction, RelayAuthority, SessionAuthorization,
 };
-use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1};
+use tilo_peer_state::workspace::media::{self, CallPhaseV1, DirectionsV1, WorkspaceMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
     self as protocol, Bridged, CallOperation, CallState, CallSummary, Directions,
@@ -133,7 +133,7 @@ struct State {
     /// The calls of each room this relay carries but does not govern, by
     /// [`carried_call_room`]: the policy it would otherwise read from the
     /// room's governance.
-    carried: HashMap<String, RoomMediaV1>,
+    carried: HashMap<String, WorkspaceMediaV1>,
 }
 
 /// The name a room this relay carries, but does not govern, has among the
@@ -518,7 +518,7 @@ fn parse_namespace(call: &[u8; 32], namespace: &str) -> Option<[u8; 32]> {
 /// The room's committed call policy and who it admits, read once per
 /// observation.
 struct Policy {
-    calls: Option<RoomMediaV1>,
+    calls: Option<WorkspaceMediaV1>,
     access: GovernedAccess,
     /// The room's window carrier ([`protocol::windows_call`]).
     windows: [u8; 32],
@@ -565,7 +565,7 @@ impl Policy {
             calls,
             access: peer.governance().governed_access(now)?,
             windows: protocol::windows_call(room.room()),
-            shares_layout: !peer.governance().room_layout().is_personal(),
+            shares_layout: !peer.governance().workspace_layout().is_personal(),
             bridges,
             carried: false,
         })
@@ -573,7 +573,7 @@ impl Policy {
 
     /// The policy of `room`, one this relay carries: the calls it holds
     /// for it, and no windows or bridges.
-    fn carried(room: &str, calls: Option<RoomMediaV1>) -> Self {
+    fn carried(room: &str, calls: Option<WorkspaceMediaV1>) -> Self {
         Self {
             calls,
             access: GovernedAccess::default(),
@@ -811,18 +811,18 @@ fn transition(
     binding: Option<media::ChatCallBindingV1>,
     now: SystemTime,
 ) -> Result<[u8; 32], String> {
-    let current = media::parse(candidate.admitted_room().ok_or("missing room")?)
+    let current = media::parse(candidate.admitted_workspace().ok_or("missing room")?)
         .map_err(|error| error.to_string())?;
     let mut policy = match current.clone() {
         Some(policy) => policy,
-        None => RoomMediaV1 {
+        None => WorkspaceMediaV1 {
             version: 1,
-            room: *uuid::Uuid::parse_str(candidate.room())
+            workspace: *uuid::Uuid::parse_str(candidate.workspace_id())
                 .map_err(|error| error.to_string())?
                 .as_bytes(),
             authorization_revision: 1,
             authorization_basis: media::security_basis(
-                candidate.admitted_room().ok_or("missing room")?,
+                candidate.admitted_workspace().ok_or("missing room")?,
                 &candidate.revocations(),
             )
             .map_err(|error| error.to_string())?,
@@ -858,7 +858,10 @@ fn transition(
 /// The call of `binding`'s channel in `policy`, active: its active call as
 /// it is, its ended call restarted, or a new call where participants publish
 /// and subscribe.
-fn open(policy: &mut RoomMediaV1, binding: media::ChatCallBindingV1) -> Result<[u8; 32], String> {
+fn open(
+    policy: &mut WorkspaceMediaV1,
+    binding: media::ChatCallBindingV1,
+) -> Result<[u8; 32], String> {
     let existing = policy
         .calls
         .iter_mut()
@@ -884,7 +887,7 @@ fn open(policy: &mut RoomMediaV1, binding: media::ChatCallBindingV1) -> Result<[
 
 /// Add an active call on `binding` to `policy`.
 fn start(
-    policy: &mut RoomMediaV1,
+    policy: &mut WorkspaceMediaV1,
     binding: media::ChatCallBindingV1,
     allowed: Directions,
 ) -> Result<[u8; 32], String> {
@@ -920,7 +923,7 @@ fn start(
 /// Apply moderation `operation` to `call` in `policy`, if the caller saw its
 /// current `epoch`. A change advances the epoch.
 fn moderate(
-    policy: &mut RoomMediaV1,
+    policy: &mut WorkspaceMediaV1,
     operation: &CallOperation,
     binding: Option<media::ChatCallBindingV1>,
     call: &[u8; 32],
@@ -1175,9 +1178,9 @@ impl Rooms {
         let policy = state
             .carried
             .entry(room.to_owned())
-            .or_insert_with(|| RoomMediaV1 {
+            .or_insert_with(|| WorkspaceMediaV1 {
                 version: 1,
-                room: [0; 16],
+                workspace: [0; 16],
                 authorization_revision: 0,
                 authorization_basis: [0; 32],
                 calls: BTreeMap::default(),
@@ -1262,7 +1265,7 @@ impl Rooms {
             } => Some(room.call_binding(app_id, record_id, channel_id).await?),
             // A restarted call keeps its channel, which must still be one.
             CallOperation::Restart { call, .. } => {
-                let bound = media::parse(room.peer().admitted_room().ok_or("missing room")?)
+                let bound = media::parse(room.peer().admitted_workspace().ok_or("missing room")?)
                     .map_err(|error| error.to_string())?
                     .and_then(|policy| policy.calls.get(call).map(|call| call.binding.clone()));
                 match bound {
@@ -1289,7 +1292,7 @@ impl Rooms {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut room).await?;
-        let policy = media::parse(room.peer().admitted_room().ok_or("missing room")?)
+        let policy = media::parse(room.peer().admitted_workspace().ok_or("missing room")?)
             .map_err(|error| error.to_string())?
             .ok_or("the room has no calls")?;
         let entry = policy.calls.get(&call).ok_or("the call vanished")?;
@@ -2066,9 +2069,9 @@ mod tests {
             },
         );
         Policy {
-            calls: Some(RoomMediaV1 {
+            calls: Some(WorkspaceMediaV1 {
                 version: 1,
-                room: [0; 16],
+                workspace: [0; 16],
                 authorization_revision: 1,
                 authorization_basis: [0; 32],
                 calls,

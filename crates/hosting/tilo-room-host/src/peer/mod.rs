@@ -45,13 +45,11 @@ use delivery::{
 use fanout::{LiveFanout, LiveFrame, PublicationFrames, PublicationScope, live_budget};
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
-    finish_replay_write, resume_record, send_private_reply, write_private,
+    finish_replay_write, resume_record,
 };
-#[cfg(test)]
-use replay::{authorize_replay, replay_direct_wait};
 use session::inbound_bytes;
 #[cfg(test)]
-use session::{finish_peer_outcome, private_may_overtake, run_peer_stream};
+use session::{finish_peer_outcome, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
@@ -64,21 +62,15 @@ pub(crate) use state::{StateDelivery, StateSession, tell_governor};
 use test_hooks::test_point;
 
 use access::{
-    action_peer_admitted, audit_subscriber_access, current_action_peer, current_session,
-    lost_session, session_peer_authorized, unavailable_target,
+    action_peer_admitted, audit_subscriber_access, current_session, lost_session,
+    session_peer_authorized, unavailable_target,
 };
-pub(crate) use actions::{ActionTarget, PrivateOutbound};
-#[cfg(test)]
-use actions::{PrivateDelivery, authorize_delivery, route_private_signed};
-use actions::{
-    RemoteActionRoute, enable_actions, enable_broker_client, handle_host_action,
-    handle_remote_action, register_broker, route_signed_directed, write_private_delivery,
-};
+use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
-use dispatch::{handle_envelope, handle_private};
+use dispatch::{handle_envelope, unserved_private};
 use hello::handle_host_hello;
 use live::{
     handle_live, handle_live_join, handle_live_leave, handle_presence, handle_voice,
@@ -106,12 +98,8 @@ use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
-use tilo_delivery_protocol::peer_actions::{
-    ActionMessage, DirectedAction, SignedDirectedAction, UnavailableReason,
-};
-use tilo_delivery_protocol::transport_v2::{
-    ActionCapability, EnvelopeV2, SessionReader, UNSIGNED_DELIVERY_REFUSAL,
-};
+use tilo_delivery_protocol::refusal::UnavailableReason;
+use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -194,9 +182,6 @@ pub struct PeerContext {
     /// This relay's own device key: the address remote-action frames use to
     /// reach the app-serving plane.
     pub own_device_public_key: [u8; 32],
-    /// The private half of [`Self::own_device_public_key`], so an answer the
-    /// host serves as its own device carries that device's signature.
-    pub own_device_signing_key: ed25519_dalek::SigningKey,
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
@@ -257,15 +242,11 @@ struct SessionCtx<'a> {
     /// The certificate of the device running this relay, so a session can
     /// recognise its own host's local self-connection.
     own_device_cert: &'a tilo_user_identity::DeviceCert,
-    /// This relay's own device key, when the host has one: an answer served
-    /// as this device is signed with it.
-    own_device_signing_key: Option<&'a ed25519_dalek::SigningKey>,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
-    private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,
     agents: &'a AgentRegistry,

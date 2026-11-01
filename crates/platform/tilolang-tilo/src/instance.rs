@@ -1,6 +1,6 @@
 //! An app instance: one window of a tilolang app as its app host runs it, without the toolkit.
 //!
-//! The instance holds what the window shows and does, as data: the host over the room record
+//! The instance holds what the window shows and does, as data: the host over the workspace record
 //! (or its indexes, before the record), the window's two views (the root, and the view of the
 //! resource `open(r)` or a row went to), the rows of their virtual lists, what bound controls
 //! show, and the commits waiting for the door. It sends its window component patches and hears
@@ -10,7 +10,7 @@
 //!
 //! Each frame the instance
 //!
-//! 1. brings the runtime's mirror of the room record up to date with the record,
+//! 1. brings the runtime's mirror of the workspace record up to date with the record,
 //! 2. takes what the person did and runs it in the runtime, which plans the change,
 //! 3. re-runs a view if what it read changed, and sends the window the patches that bring its
 //!    copy of the view's tree up to date, and
@@ -22,8 +22,8 @@
 //! primary action a person runs shows what it made.
 
 pub mod form;
-#[cfg(feature = "room")]
-pub mod room;
+#[cfg(feature = "record")]
+pub mod record;
 pub mod rows;
 pub mod wire;
 
@@ -83,7 +83,7 @@ pub struct Update {
     pub bundle: Arc<Bundle>,
 }
 
-/// What the instance publishes on the door while it lives: the room's records with their
+/// What the instance publishes on the door while it lives: the workspace's records with their
 /// actions, kept up to date change by change.
 pub trait Publication {
     /// Bring what is published up to date with the record.
@@ -148,11 +148,11 @@ pub struct Config {
     /// The participant at the window.
     pub me: String,
     pub mode: Mode,
-    /// The device that carries out the outside effects the room queues.
+    /// The device that carries out the outside effects the workspace queues.
     pub device: Option<String>,
-    /// Where the indexes of the room are kept; `None` keeps them in memory.
+    /// Where the indexes of the workspace are kept; `None` keeps them in memory.
     pub index_dir: Option<std::path::PathBuf>,
-    /// Reads the room record when the instance opens over the indexes before it: a write, or a
+    /// Reads the workspace record when the instance opens over the indexes before it: a write, or a
     /// field no index holds, waits for it.
     pub record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where outside effects go; the development log when `None`.
@@ -188,7 +188,7 @@ pub fn queue_commits(
     tickets
 }
 
-/// The names of the room, as the runtime asks for them.
+/// The names of the workspace, as the runtime asks for them.
 #[derive(Clone)]
 struct SharedNames(Rc<dyn NameHost>);
 
@@ -251,9 +251,9 @@ pub struct Instance {
     device: Option<String>,
     index_dir: Option<std::path::PathBuf>,
     record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
-    /// Where the host reads the person's standing in the room, once its embedder has one.
+    /// Where the host reads the person's standing in the workspace, once its embedder has one.
     standing: Rc<RefCell<Option<Rc<crate::authority::StandingSource>>>>,
-    /// Whether the instance shows the room before its record, over its indexes.
+    /// Whether the instance shows the workspace before its record, over its indexes.
     opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
@@ -273,10 +273,10 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Principal, bool, bool)>>,
     lenses_changed: bool,
-    /// The person and the room's policy the runtime's members were last read from.
+    /// The person and the workspace's policy the runtime's members were last read from.
     members_from: Option<(
         String,
-        tilo_action_policy::RoomPolicy,
+        tilo_action_policy::WorkspacePolicy,
         crate::members::People,
     )>,
     /// How the policy's people are the runtime's principals, as presence pairs them.
@@ -302,11 +302,14 @@ pub struct Instance {
     /// capture of a half-run scenario is no picture of it.
     stage_failed: Option<String>,
     started: bool,
+    /// The package has no root of its own to open: everything it shows is opened by its
+    /// embedder ([`Instance::without_root`]).
+    rootless: bool,
     loading: bool,
     moved: bool,
-    /// Whether the package's migrations ran over the room record since the window opened.
+    /// Whether the package's migrations ran over the workspace record since the window opened.
     migrated: bool,
-    /// Whether this replica is the room's origin, the one place the package's migrations run
+    /// Whether this replica is the workspace's origin, the one place the package's migrations run
     /// ([`Self::set_origin`]).
     origin: bool,
     /// The later build this instance runs, 0 for the installed one.
@@ -382,6 +385,7 @@ impl Instance {
             staged: None,
             stage_failed: None,
             started: false,
+            rootless: false,
             loading: false,
             moved: false,
             migrated: false,
@@ -399,25 +403,32 @@ impl Instance {
     }
 
     /// This instance on the device `device`: the one that carries out the outside effects its
-    /// room queues. Before the host starts.
+    /// workspace queues. Before the host starts.
     pub fn set_device(&mut self, device: Option<String>) {
         self.device = device;
     }
 
-    /// Keep the room's indexes in `dir` (`None` keeps them in memory). Before the host starts.
+    /// Keep the workspace's indexes in `dir` (`None` keeps them in memory). Before the host starts.
     pub fn set_index_dir(&mut self, dir: Option<std::path::PathBuf>) {
         self.index_dir = dir;
     }
 
-    /// Open over the room's indexes before its record, which `loader` reads: a write, or a
+    /// Run a package that has no root view of its own: what it shows is opened in a lane by its
+    /// embedder ([`Self::open_with`]), as a view of another app's state is. Before the host
+    /// starts.
+    pub fn without_root(&mut self) {
+        self.rootless = true;
+    }
+
+    /// Open over the workspace's indexes before its record, which `loader` reads: a write, or a
     /// field no index holds, waits for it. Before the host starts.
     pub fn set_record_loader(&mut self, loader: Box<dyn Fn() -> Option<tilo_resource::Doc>>) {
         self.opening = true;
         self.record_loader = Some(loader);
     }
 
-    /// Read the person's standing in the room from `source`: what the runtime invokes is decided
-    /// by the room's policy with it. May come after the host started (a window shown before its
+    /// Read the person's standing in the workspace from `source`: what the runtime invokes is decided
+    /// by the workspace's policy with it. May come after the host started (a window shown before its
     /// host gave it one).
     pub fn set_standing(&self, source: Rc<crate::authority::StandingSource>) {
         *self.standing.borrow_mut() = Some(source);
@@ -628,18 +639,18 @@ impl Instance {
         self.stage_failed.take()
     }
 
-    /// The room record moved: what the views read may have changed, and outside effects may
+    /// The workspace record moved: what the views read may have changed, and outside effects may
     /// wait.
     pub fn moved(&mut self) {
         self.moved = true;
     }
 
-    /// The names of the room changed: views showing names show them again.
+    /// The names of the workspace changed: views showing names show them again.
     pub fn names_changed(&mut self) {
         self.names_changed = true;
     }
 
-    /// Say whether this replica is the room's origin (the device that governs the room). Only
+    /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
     /// the origin runs the package's migrations on what an earlier version wrote, so a migration
     /// runs once, where every change is ordered, and never as a reader elsewhere.
     pub fn set_origin(&mut self, origin: bool) {
@@ -662,8 +673,8 @@ impl Instance {
 
     // ----- the host ------------------------------------------------------------------------
 
-    /// The host over the room record `doc`, built with the package the first time; without the
-    /// record (while it is read off the frame), over the room's indexes.
+    /// The host over the workspace record `doc`, built with the package the first time; without the
+    /// record (while it is read off the frame), over the workspace's indexes.
     fn host_for(&mut self, doc: Option<&tilo_resource::Doc>) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             // An index built off the frame changes what every view reads, as a change does.
@@ -734,7 +745,7 @@ impl Instance {
             self.platform.follow_updates();
         }
         if self.mode != Mode::Past {
-            // What is published and found of the room is read off the frame the first time;
+            // What is published and found of the workspace is read off the frame the first time;
             // the instance takes it in when it is ready.
             host.set_index_waker(self.platform.waker());
             self.publication = self.platform.publish(&host, self.platform.waker());
@@ -763,7 +774,7 @@ impl Instance {
 
     /// Take over the latest later build of the package, when this instance runs an older one:
     /// in place when it reads the state the old one wrote, and otherwise by starting over on
-    /// the room record `doc` with it, as the app's next start would. The host the instance runs
+    /// the workspace record `doc` with it, as the app's next start would. The host the instance runs
     /// on afterwards.
     fn follow_updates(&mut self, doc: &tilo_resource::Doc, host: Host) -> Host {
         let Some(update) = self
@@ -837,7 +848,7 @@ impl Instance {
         self.commit_planned();
     }
 
-    /// Start over on the room record `doc`: a new runtime that loads the latest build and reads
+    /// Start over on the workspace record `doc`: a new runtime that loads the latest build and reads
     /// the record afresh, as a start of the app does. View state and the open detail start
     /// over; the record, and so every resource, is the one the instance had.
     fn start_over(&mut self, doc: &tilo_resource::Doc) -> Option<Host> {
@@ -1283,7 +1294,7 @@ impl Instance {
 
     // ----- staging -------------------------------------------------------------------------
 
-    /// Run the scenario a capture stages: its hidden action fills the room.
+    /// Run the scenario a capture stages: its hidden action fills the workspace.
     fn run_staged(&mut self, host: &Host) {
         let Some(name) = self.staged.take() else {
             return;
@@ -1360,7 +1371,7 @@ impl Instance {
         });
     }
 
-    /// The record's changes stay on this device, for `why` (the room refused them for good):
+    /// The record's changes stay on this device, for `why` (the workspace refused them for good):
     /// the window says so.
     pub fn unshared(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
@@ -1368,7 +1379,7 @@ impl Instance {
     }
 
     /// The undo or redo the person asked for failed, for `why` (an inverse could not be applied,
-    /// or the room refused the change for good): the window says so. Somebody else having changed
+    /// or the workspace refused the change for good): the window says so. Somebody else having changed
     /// the record since is never a failure: undo leaves their newer value and takes back the rest.
     pub fn history_failed(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
@@ -1447,7 +1458,7 @@ impl Instance {
                     self.commit_planned();
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "a search hit named nothing in the room");
+                    tracing::warn!(%error, "a search hit named nothing in the workspace");
                     self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
                 }
             }
@@ -2136,8 +2147,8 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
-    /// The first half of a frame: bring the runtime up to date with the room record `record`
-    /// (`None` while the instance opens over the room's indexes), open the root once the
+    /// The first half of a frame: bring the runtime up to date with the workspace record `record`
+    /// (`None` while the instance opens over the workspace's indexes), open the root once the
     /// indexes are read, stage a scenario, and send the window what changed.
     pub fn sync(&mut self, record: Option<&tilo_resource::Doc>) {
         let Some(host) = self.host_for(record) else {
@@ -2153,7 +2164,9 @@ impl Instance {
             if host.index_ready() {
                 self.started = true;
                 self.loading = false;
-                self.open_root(&host);
+                if !self.rootless {
+                    self.open_root(&host);
+                }
             } else if !self.loading {
                 self.loading = true;
                 self.out.push(ToUi::Loading);
@@ -2230,7 +2243,7 @@ impl Instance {
         changed
     }
 
-    /// Give the runtime the workspace's members as the room's policy has them now, when it
+    /// Give the runtime the workspace's members as the workspace's policy has them now, when it
     /// changed: who is in it, their roles, and who reads what. Whether it did.
     fn follow_members(&mut self) -> bool {
         let Some(host) = self.host() else {
@@ -2287,7 +2300,7 @@ impl Instance {
     }
 
     /// Which person each participant presence reports is a device of, `(participant,
-    /// person)`, where the room's host paired them: the policy's people are the runtime's
+    /// person)`, where the workspace's host paired them: the policy's people are the runtime's
     /// principals by it.
     pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
         self.people = crate::members::People::new(&self.me, pairs);
@@ -2336,7 +2349,7 @@ impl Instance {
 }
 
 impl Drop for Instance {
-    /// What the indexes hold reaches the disk as the instance ends: the next window of the room
+    /// What the indexes hold reaches the disk as the instance ends: the next window of the workspace
     /// opens over them before its record.
     fn drop(&mut self) {
         if let Some(host) = self.host() {
@@ -2409,7 +2422,7 @@ fn referenced_resource(
     ResourceRef::parse_id(id, String::new())
 }
 
-/// How a reference in rich text reads for the viewer: a person by what the room calls them; a
+/// How a reference in rich text reads for the viewer: a person by what the workspace calls them; a
 /// resource of a package here by its title now, when the viewer holds it, and as only existing
 /// when they do not (a reference never grants a read); a resource of another app as its run.
 #[must_use]
@@ -2720,7 +2733,7 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
     sorted
 }
 
-/// The other packages of the room whose records the package `app` holds references to.
+/// The other packages of the workspace whose records the package `app` holds references to.
 fn used_packages(host: &Host, app: &str) -> Vec<Package> {
     let Some(own) = host.package(app) else {
         return Vec::new();

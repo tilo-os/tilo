@@ -115,7 +115,7 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
         assert_eq!(ws.room(), tree.workspaces[0].room());
         assert_eq!(ws.owner().map(String::as_str), Some("ada"));
         assert_eq!(ws.sandbox, tree.workspaces[0].sandbox);
-        let sorted = |policy: &tilo_action_policy::RoomPolicy| {
+        let sorted = |policy: &tilo_action_policy::WorkspacePolicy| {
             let mut policy = policy.clone();
             policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
             policy

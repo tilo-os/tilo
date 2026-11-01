@@ -39,7 +39,7 @@ pub struct VerifiedNativeEnrollmentIntent {
 impl std::fmt::Debug for VerifiedNativeEnrollmentIntent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifiedNativeEnrollmentIntent")
-            .field("room", &self.room())
+            .field("workspace", &self.workspace())
             .finish_non_exhaustive()
     }
 }
@@ -62,13 +62,13 @@ impl VerifiedNativeEnrollmentIntent {
     }
     #[allow(
         clippy::expect_used,
-        reason = "`validate` rejects a noncanonical grant room before an intent exists"
+        reason = "`validate` rejects a noncanonical grant workspace before an intent exists"
     )]
     /// # Panics
-    /// Never: `validate` rejects a noncanonical grant room.
+    /// Never: `validate` rejects a noncanonical grant workspace.
     #[must_use]
-    pub fn room(&self) -> RoomId {
-        RoomId::parse(&self.join.grant().room).expect("checked canonical room")
+    pub fn workspace(&self) -> RoomId {
+        RoomId::parse(&self.join.grant().room).expect("checked canonical workspace")
     }
     #[must_use]
     pub fn complete_bytes(&self) -> &[u8] {
@@ -296,7 +296,7 @@ impl VerifiedNativeEnrollment {
         bootstrap: JoinBootstrap,
     ) -> Result<Self, String> {
         let grant = intent.verified_join().grant();
-        if pending_id.room() != intent.room()
+        if pending_id.workspace() != intent.workspace()
             || pending_id.digest() != intent.proof_digest()
             || pending_id.generation() == 0
             || bootstrap.version != 1
@@ -320,7 +320,7 @@ impl VerifiedNativeEnrollment {
         }
         // Actual StatePeer validation checks certificate/revocation and authority input.
         // A alone admits the signed governance and publishes the durable peer.
-        // The roster is the room's admitted evidence: a guest whose
+        // The roster is the workspace's admitted evidence: a guest whose
         // certificate expired since is still in it.
         crate::StatePeer::from_join(
             &bootstrap.room,

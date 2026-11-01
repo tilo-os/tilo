@@ -133,7 +133,7 @@ impl ScriptedModel {
         let descriptor = &offer.descriptor;
         // An open's label says how it opens ("a new, empty document"),
         // words a task uses for what it wants done: it is matched by what it
-        // opens alone, and the room's own document comes before a new one.
+        // opens alone, and the workspace's own document comes before a new one.
         let opens = tilo_agent::tools::opened_app(offer).is_some();
         let own: std::collections::BTreeSet<String> = words(&if opens {
             descriptor.resource_label.clone()

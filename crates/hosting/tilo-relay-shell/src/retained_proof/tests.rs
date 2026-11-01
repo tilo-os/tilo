@@ -4,7 +4,7 @@ use collab_types::CommitNamed as _;
 use collab_types::{DocumentMutation, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, peer_handle, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, peer_handle, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
@@ -33,7 +33,7 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
     let bytes = doc.save();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &cert, &[cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace(ROOM, &cert, &[cert.clone()]).unwrap(),
             documents: vec![
                 SeedDocument {
                     app_id: APP.into(),
@@ -306,7 +306,7 @@ fn room_document(msg: &NeighbourMsg) -> AutoCommit {
     let NeighbourMsg::SyncResp { changes, .. } = msg else {
         panic!()
     };
-    tilo_peer_state::room::candidate(None, changes).unwrap()
+    tilo_peer_state::workspace::candidate(None, changes).unwrap()
 }
 fn room_message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
@@ -539,7 +539,7 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
                 coverage.watermarks.clear();
             }
             4 => {
-                coverage.room = "wrong".into();
+                coverage.workspace = "wrong".into();
             }
             5 => {
                 coverage.author = [99; 32];

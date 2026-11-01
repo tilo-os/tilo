@@ -1,12 +1,12 @@
-//! One app instance in a tilolang host: the app's runtime over its room record, on the broker
+//! One app instance in a tilolang host: the app's runtime over its workspace record, on the broker
 //! connection the session opened for that app's launch, driving its window with component
 //! patches.
 //!
 //! What the window's own process did before (the framework's root) is the instance's here:
 //!
-//! - **The record:** a [`RoomRecord`] holds it with its undo log and save state, on the instance's
+//! - **The record:** a [`InstanceRecord`] holds it with its undo log and save state, on the instance's
 //!   connection. Each change the runtime plans is committed to it as a step of the person at the
-//!   window and sent on the route; changes from the room come back into it.
+//!   window and sent on the route; changes from the workspace come back into it.
 //! - **Actions:** the instance publishes the app's resources and actions on its connection, as
 //!   the toolkit publishes an app's ([`tilo_actions::door::survey`], deltas through
 //!   [`SurfacePublication`]), and runs what the broker delivers: an action the broker admitted for
@@ -39,7 +39,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::room::{RoomError, RoomRecord};
+use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
@@ -66,12 +66,12 @@ pub fn caller_of(invoker: &ActionInvoker) -> Caller {
     }
 }
 
-/// What one instance is: the app, the room, the window and who is at it, as the session named
+/// What one instance is: the app, the workspace, the window and who is at it, as the session named
 /// them for the app's launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spec {
     pub app: String,
-    pub room: String,
+    pub workspace: String,
     /// The window's instance.
     pub instance: u64,
     /// The participant at the window.
@@ -82,7 +82,7 @@ pub struct Spec {
 /// loaded packages.
 type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>);
 
-/// What the instance publishes on its connection: the room's records with their actions, kept up
+/// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
 struct Surface {
     /// The instance's app: its resource carries what every app publishes.
@@ -135,7 +135,7 @@ impl Surface {
         )
     }
 
-    /// Every resource the room's packages hold, each with its actions; the host's own resource;
+    /// Every resource the workspace's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record, the instance's own app's with what every
     /// app publishes. Built now, so an invocation resolves against what the record holds now.
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -236,7 +236,7 @@ impl Platform for HostPlatform {
     }
 }
 
-/// Where an instance keeps what it keeps: its room record's on-disk copy and its indexes, under
+/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes, under
 /// its package's directory in the host's storage.
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
@@ -251,7 +251,7 @@ pub struct Hosted {
     /// The app's resource, by its id and kind: where its history verbs are published.
     resource: (String, String),
     instance: Instance,
-    record: RoomRecord,
+    record: InstanceRecord,
     surface: SurfaceSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
     published: Option<(Vec<ActionDescriptor>, SurfacePublication)>,
@@ -283,11 +283,11 @@ pub struct Hosted {
 }
 
 impl Hosted {
-    /// The instance `spec` of `bundle`, over the room record its connection `manager` joined,
+    /// The instance `spec` of `bundle`, over the workspace record its connection `manager` joined,
     /// kept in `kept`, sending its window patches over `window`.
     ///
     /// # Errors
-    /// The room record could not be opened on the connection.
+    /// The workspace record could not be opened on the connection.
     pub fn open(
         spec: Spec,
         manager: collaboration::CollaborationManager,
@@ -296,8 +296,8 @@ impl Hosted {
         window: Box<dyn Transport>,
         phrases: Rc<Phrases>,
         wake: Waker,
-    ) -> Result<Self, RoomError> {
-        let record = RoomRecord::open(manager, &kept.documents, spec.person.clone())?;
+    ) -> Result<Self, RecordError> {
+        let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
         Ok(Self::with_record(
             spec, record, bundle, kept, window, phrases, wake,
         ))
@@ -307,7 +307,7 @@ impl Hosted {
     #[must_use]
     pub fn with_record(
         spec: Spec,
-        record: RoomRecord,
+        record: InstanceRecord,
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
@@ -335,7 +335,7 @@ impl Hosted {
                 index_dir: kept.indexes.as_ref().map(|indexes| {
                     tilolang_tilo::index::record_dir(
                         indexes,
-                        &spec.room,
+                        &spec.workspace,
                         record.route().record.as_deref(),
                     )
                 }),
@@ -348,10 +348,10 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
-        // The device that governs the room is its records' origin: the package's migrations
+        // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
+        let registry = ActionRegistry::with(tilolang_tilo::instance::record::register);
         Self {
             spec,
             bundle,
@@ -399,9 +399,9 @@ impl Hosted {
         &self.instance
     }
 
-    /// The room record the instance holds.
+    /// The workspace record the instance holds.
     #[must_use]
-    pub fn record(&self) -> &RoomRecord {
+    pub fn record(&self) -> &InstanceRecord {
         &self.record
     }
 
@@ -422,7 +422,7 @@ impl Hosted {
         self.instance.stage(Some(scenario));
     }
 
-    /// One frame: what the room sent taken in, the runtime brought up to date with the record,
+    /// One frame: what the workspace sent taken in, the runtime brought up to date with the record,
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
     pub fn turn(&mut self) -> bool {
@@ -466,7 +466,7 @@ impl Hosted {
         match self.record.commit(&mut self.instance) {
             Ok(committed) => !committed.is_empty(),
             Err(error) => {
-                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
+                tracing::warn!(app = self.spec.app, %error, "a change did not reach the workspace");
                 false
             }
         }
@@ -540,7 +540,7 @@ impl Hosted {
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
     /// answer from the instance is answered: an invocation with its outcome, a handoff step with
     /// what the host does of it. The rest says something the instance does not keep (presence,
-    /// cursors, the room's context, results of requests it never makes).
+    /// cursors, the workspace's context, results of requests it never makes).
     fn delivered(&mut self, event: CollabEvent) -> bool {
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {
@@ -1047,7 +1047,7 @@ enum Applying {
     Awaiting(Vec<u8>),
     /// It arrived; it runs once what the record publishes is built.
     Arrived(Box<runtime_portal::tilolang_host::Change>),
-    /// It ran: its answer, sent once the room was handed what it wrote.
+    /// It ran: its answer, sent once the workspace was handed what it wrote.
     Ran(serde_json::Value),
     /// The answer was sent.
     Answered,
@@ -1059,10 +1059,10 @@ enum Applying {
 /// instance's does, and the app's package in a runtime of its own. The action's code runs
 /// against the record as it is when the change is applied, so its requirements are decided on
 /// what others wrote since the task read it; what it wrote is applied as the invoker's step
-/// and handed to the room, and the answer says how it differed from the task's preview.
+/// and handed to the workspace, and the answer says how it differed from the task's preview.
 pub struct Applier {
     spec: Spec,
-    record: RoomRecord,
+    record: InstanceRecord,
     host: Host,
     surface: Rc<Surface>,
     /// The app's resource, by its id and kind: where its history verbs are published.
@@ -1081,7 +1081,7 @@ impl Applier {
     /// The runtime cannot be set up, the package does not load, or the connection is unusable.
     pub fn open(
         spec: Spec,
-        record: RoomRecord,
+        record: InstanceRecord,
         bundle: &Bundle,
         phrases: &Phrases,
         wake: Waker,
@@ -1128,7 +1128,7 @@ impl Applier {
 
     /// The record it changes, as it holds it.
     #[must_use]
-    pub fn record(&self) -> &RoomRecord {
+    pub fn record(&self) -> &InstanceRecord {
         &self.record
     }
 
@@ -1144,10 +1144,10 @@ impl Applier {
         matches!(self.applying, Applying::Answered)
     }
 
-    /// One step: take in what the room sent and what came on the connection, run the change
-    /// once it can, and answer once the room was handed what it wrote. Whether anything changed.
+    /// One step: take in what the workspace sent and what came on the connection, run the change
+    /// once it can, and answer once the workspace was handed what it wrote. Whether anything changed.
     pub fn turn(&mut self) -> bool {
-        let mut changed = self.record.take_in_room();
+        let mut changed = self.record.take_in_record();
         if changed {
             self.host.sync_from(self.record.doc());
         }
@@ -1219,7 +1219,7 @@ impl Applier {
     }
 
     /// Make the app's root when `change` addresses it and the record does not hold it yet: the
-    /// one per-room resource of the package's root type is made the first time it is wanted,
+    /// one per-workspace resource of the package's root type is made the first time it is wanted,
     /// here as in a window that opens it, and a task reads it from the package whether or not
     /// any window ever made it. It is applied as the change's invoker's step, before the
     /// change. Whether it made it.
@@ -1290,7 +1290,7 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
             }
         };
-        // The record as the room holds it now: requirements are decided on what others wrote.
+        // The record as the workspace holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         let resources = self.surface.resources();
@@ -1366,7 +1366,7 @@ impl Applier {
         let differs = change.preview.as_ref().is_some_and(|preview| {
             serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)
         });
-        // What it wrote, for the task to read back at once: the room takes it in its own time.
+        // What it wrote, for the task to read back at once: the workspace takes it in its own time.
         let wrote = {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(&before))

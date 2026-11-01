@@ -44,7 +44,7 @@ pub struct AppActionConsentRequest {
     /// Names this one question; the sheet's handle.
     pub handle: String,
     /// The workspace the grant would be recorded in.
-    pub room: String,
+    pub workspace: String,
     /// Who admitted the asking application's connection, and would grant.
     pub person: String,
     /// The application asking.

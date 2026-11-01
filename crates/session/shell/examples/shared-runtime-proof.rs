@@ -187,7 +187,7 @@ fn main() -> Result<()> {
     );
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
-    let subscription = session.broker.subscribe_rooms(
+    let subscription = session.broker.subscribe_workspaces(
         vec![session.room.clone()],
         Box::new(move |event, route| {
             if route.app_id == WRITER

@@ -24,7 +24,7 @@ impl NativeTaskBinding {
     /// Who the run's actions are admitted as in the broker: the agent acting
     /// for its starter, carrying the delegation a person's device gives its
     /// agents, working on the issue. It may do what the starter may, held to
-    /// the answers the room keeps for the agent and the issue, never to the
+    /// the answers the workspace keeps for the agent and the issue, never to the
     /// preset it was admitted with, which bounds only what it does on its
     /// own. Effects stay attributed to the agent.
     ///
@@ -66,7 +66,7 @@ pub struct NativeTaskActionRequirement {
 }
 
 impl NativeTaskActionRequirement {
-    /// Apply the room's grants to `requirement` for a run of the Tasks app's
+    /// Apply the workspace's grants to `requirement` for a run of the Tasks app's
     /// tracker: the agent working on the issue, acting for the run's starter
     /// on the starter's live grants. Grants naming the issue decide for the
     /// run as the agent's own do, the most specific first. The tracker
@@ -75,26 +75,26 @@ impl NativeTaskActionRequirement {
     pub fn check_tracker(
         &self,
         peer: &tilo_peer_state::StatePeer,
-        room: &str,
+        workspace: &str,
         run: &TrackerRun,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
         let doc = peer
-            .admitted_room()
+            .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::room_policy_of(doc, room);
-        self.check_tracker_policy(&policy, room, run, now)
+        let policy = tilo_desktop_model::projection::room_policy_of(doc, workspace);
+        self.check_tracker_policy(&policy, workspace, run, now)
     }
 
-    /// [`Self::check_tracker`] for a room whose grants are already at hand,
+    /// [`Self::check_tracker`] for a workspace whose grants are already at hand,
     /// as the session hosting the run holds them.
     ///
     /// # Errors
-    /// The run's binding, its epoch or the room's grants refuse the action.
+    /// The run's binding, its epoch or the workspace's grants refuse the action.
     pub fn check_tracker_policy(
         &self,
-        policy: &tilo_action_policy::RoomPolicy,
-        room: &str,
+        policy: &tilo_action_policy::WorkspacePolicy,
+        workspace: &str,
         run: &TrackerRun,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
@@ -115,7 +115,7 @@ impl NativeTaskActionRequirement {
         if !run.active || binding.epoch != run.epoch {
             return Err("this run has ended or was replaced".into());
         }
-        let delegation = roles::agent_delegation(room, &run.agent, &run.starter);
+        let delegation = roles::agent_delegation(workspace, &run.agent, &run.starter);
         let verdict = Authority::person(
             delegation
                 .party(&policy.grants)
@@ -223,20 +223,20 @@ fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
 
 /// The resource prefix of an issue in the Tasks app's tracker. A run whose
 /// task id is an issue's address is that issue's run, kept in the Tasks
-/// app's record ([`TrackerRuns`]) rather than in the room's task records.
+/// app's record ([`TrackerRuns`]) rather than in the workspace's task records.
 pub const TRACKER_ISSUE_PREFIX: &str = "tasks.tracker/issues/";
 /// The application that keeps the tracker.
 pub const TRACKER_APP: &str = "so.tilo.tasks";
 /// The tracker's own resource, where its verbs are invoked with the issue
 /// they act on.
 pub const TRACKER_RESOURCE: &str = "tasks.tracker";
-/// The tracker's record: the app's one record of a room, its package primary.
+/// The tracker's record: the app's one record of a workspace, its package primary.
 pub const TRACKER_RECORD: &str = "";
 
 /// A write on `route` was admitted to this device's channels. Where it is a
-/// room's tracker, its readers (the broker's runs, the composer following
+/// workspace's tracker, its readers (the broker's runs, the composer following
 /// one) are told to read it again, as the owner's publication tells them in
-/// a room it commits: a sealed room's tracker changes only here.
+/// a workspace it commits: a sealed workspace's tracker changes only here.
 pub fn tracker_written(route: &crate::route::CrdtRoute) {
     if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
         tilo_identity_host::policy_change::announce();
@@ -422,59 +422,59 @@ impl TrackerRun {
 /// only through the tracker's own actions, invoked by the broker as the
 /// run's agent.
 pub trait TrackerRuns: Send + Sync {
-    fn requires_room(&self, room: &str) -> bool;
-    /// Whether an agent in `room` acts only through its run's admission,
-    /// never on a room grant alone. Every room whose tracker is kept here
-    /// unless the host says otherwise: the room's tracker serving runs
-    /// ([`Self::requires_room`]) and agents being confined to them are two
+    fn requires_workspace(&self, workspace: &str) -> bool;
+    /// Whether an agent in `workspace` acts only through its run's admission,
+    /// never on a workspace grant alone. Every workspace whose tracker is kept here
+    /// unless the host says otherwise: the workspace's tracker serving runs
+    /// ([`Self::requires_workspace`]) and agents being confined to them are two
     /// decisions.
-    fn confines_agents_to_tasks(&self, room: &str) -> bool {
-        self.requires_room(room)
+    fn confines_agents_to_tasks(&self, workspace: &str) -> bool {
+        self.requires_workspace(workspace)
     }
-    /// Every run the room's tracker holds, going or ended.
+    /// Every run the workspace's tracker holds, going or ended.
     ///
     /// # Errors
-    /// The room's tracker cannot be read now.
-    fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String>;
-    /// Whether `run`'s agent is still admitted to `room`, as the room's
+    /// The workspace's tracker cannot be read now.
+    fn runs(&self, workspace: &str) -> Result<Vec<TrackerRun>, String>;
+    /// Whether `run`'s agent is still admitted to `workspace`, as the workspace's
     /// owner holds it now: a collaborator by its membership, a task agent by
     /// its run's task delegation. A removed agent, or a task agent whose
     /// device was revoked, reads its run no more.
     ///
     /// # Errors
-    /// The agent is no longer admitted, or the room cannot be read.
-    fn check_agent(&self, room: &str, run: &TrackerRun) -> Result<(), String>;
-    /// Apply the room's grants for the run's agent, acting for the run's
+    /// The agent is no longer admitted, or the workspace cannot be read.
+    fn check_agent(&self, workspace: &str, run: &TrackerRun) -> Result<(), String>;
+    /// Apply the workspace's grants for the run's agent, acting for the run's
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]
-    /// does for a room task. Where any of them asks first, the error starts
+    /// does for a workspace task. Where any of them asks first, the error starts
     /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
     fn authorize_action(
         &self,
-        room: &str,
+        workspace: &str,
         run: &TrackerRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String>;
-    /// What run `epoch` of issue `issue` in `room` shows of its current
+    /// What run `epoch` of issue `issue` in `workspace` shows of its current
     /// model turn as it streams, a bounded snapshot replacing the last one;
     /// `None` once the run ended. Private to whoever follows the run on this
     /// device, never written to the tracker: the run's findings reach the
     /// issue through the tracker's own actions.
     fn presented(
         &self,
-        _room: &str,
+        _workspace: &str,
         _issue: &str,
         _epoch: u64,
         _presentation: Option<&runtime_collab::TaskPresentation>,
     ) {
     }
 
-    /// What run `epoch` of issue `issue` in `room` reported of itself: its
+    /// What run `epoch` of issue `issue` in `workspace` reported of itself: its
     /// agent took it up, took in the messages sent to it, is working, said
     /// something, ended. A tracker that keeps the run itself records it here;
     /// one that reads it from a record of its own has nothing to record.
     fn reported(
         &self,
-        _room: &str,
+        _workspace: &str,
         _issue: &str,
         _epoch: u64,
         _update: &runtime_collab::TaskRunUpdate,

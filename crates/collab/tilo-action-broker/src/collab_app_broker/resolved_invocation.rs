@@ -6,6 +6,12 @@ use super::{
 };
 
 enum ResolutionRevision<'a> {
+    /// Only the durable admission tests resolve from a live revision; the
+    /// action door resolves the directory without this retained-offer path.
+    #[allow(
+        dead_code,
+        reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"
+    )]
     Live(&'a str),
     RetainedLocal(&'a str),
 }
@@ -154,6 +160,7 @@ impl AppBrokerState {
         clippy::future_not_send,
         reason = "runs on the broker's single-threaded LocalSet"
     )]
+    #[cfg(test)]
     pub(super) async fn resolve_invocation_offer(
         &self,
         directories: &LocalActionDirectoryRegistry,

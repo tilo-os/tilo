@@ -53,8 +53,12 @@ pub const URI_LIST_MIME: &str = "text/uri-list";
 /// is left out.
 pub fn uri_list(paths: &[PathBuf]) -> String {
     let mut out = String::new();
-    for uri in paths.iter().filter_map(|p| file_uri(p)) {
-        out.push_str(uri.as_str());
+    for uri in paths
+        .iter()
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| media::source::path_to_file_uri(path).ok())
+    {
+        out.push_str(&uri);
         out.push_str("\r\n");
     }
     out
@@ -69,49 +73,6 @@ pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
     body.push_str("\r\n");
     body.push_str(&uri_list(paths));
     body
-}
-
-/// A path's `file://` URI, through [`url`]'s file conversions (see
-/// [`file_paths`]). `url` has none on a target without a file system
-/// (`wasm32-unknown-unknown`), where no path is a local file.
-fn file_uri(path: &Path) -> Option<url::Url> {
-    file_paths::uri(path)
-}
-
-/// The path a `file://` URI names, through the same conversions: a URI names
-/// no local file on a target without a file system, so nothing there is one.
-fn file_path(uri: &url::Url) -> Option<PathBuf> {
-    file_paths::path(uri)
-}
-
-/// `url` compiles its file-URI conversions (`from_file_path`,
-/// `to_file_path`) only on a target with a file system; both directions go
-/// through the one place that selects it.
-#[cfg(any(unix, windows, target_os = "wasi"))]
-mod file_paths {
-    use std::path::{Path, PathBuf};
-
-    pub(super) fn uri(path: &Path) -> Option<url::Url> {
-        url::Url::from_file_path(path).ok()
-    }
-
-    pub(super) fn path(uri: &url::Url) -> Option<PathBuf> {
-        uri.to_file_path().ok()
-    }
-}
-
-/// The same on a target with no file system: no path is a local file.
-#[cfg(not(any(unix, windows, target_os = "wasi")))]
-mod file_paths {
-    use std::path::{Path, PathBuf};
-
-    pub(super) fn uri(_: &Path) -> Option<url::Url> {
-        None
-    }
-
-    pub(super) fn path(_: &url::Url) -> Option<PathBuf> {
-        None
-    }
 }
 
 /// The mime type a file manager's copy of files travels as when it also says
@@ -156,7 +117,7 @@ pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|line| file_path(&url::Url::parse(line).ok()?))
+            .filter_map(|line| media::source::file_uri_to_path(line).ok())
             .collect(),
         cut,
     }

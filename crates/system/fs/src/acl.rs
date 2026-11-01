@@ -194,7 +194,7 @@ fn namespace_capabilities(caps: &[CapOverride]) -> Vec<CapOverride> {
 
 /// The actor a **remote** identity is evaluated as: its own person
 /// principal and nothing else. The principals a mount proves for itself
-/// (rooms, app identity, bearer tokens) are statements about this
+/// (workspaces, app identity, bearer tokens) are statements about this
 /// machine — lending them to a dialer would let any peer inherit the
 /// mount's authority, so a peer is only ever the key it authenticated with.
 fn peer_actor(peer: &IdentityKey) -> Actor {
@@ -253,7 +253,7 @@ impl WorkspaceAcl {
     /// included. `now` is seconds since epoch: `None` uses the live clock,
     /// `Some(t)` pins every check.
     ///
-    /// A room role never authorises a path: even an owner reaches the
+    /// A workspace role never authorises a path: even an owner reaches the
     /// filesystem only through an explicit sandbox capability.
     pub fn from_capabilities(
         identity: IdentityKey,
@@ -377,7 +377,7 @@ impl WorkspaceAcl {
     /// Whether anyone but the mount itself may be named here: a direct
     /// entry for an identity no binding answers for, or a capability whose
     /// subject is not the bound actor (another person, a role, a token, a
-    /// room the mount does not prove). The shipped list, which grants the
+    /// workspace the mount does not prove). The shipped list, which grants the
     /// mount's own principal, names nobody else: then only the mount's own
     /// identity (the person's other devices) can be admitted, never another
     /// party (#4224, [`crate::reachability`]).
@@ -831,13 +831,13 @@ mod tests {
             );
         }
         // Phase `a_presented_principal_is_a_subject`.
-        // A room or app principal the mount presents is a subject like any
+        // A workspace or app principal the mount presents is a subject like any
         // other — the mount need not be named by signing key to hold a cap.
         {
             use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
             let cap = CapOverride::new(
-                Subject::room("team"),
+                Subject::workspace("team"),
                 Scope::FsPath("/w/team".into()),
                 Effect::Grant,
                 CapAccess::Write,
@@ -845,7 +845,7 @@ mod tests {
             let member = WorkspaceAcl::from_capabilities(
                 ALICE,
                 std::slice::from_ref(&cap),
-                &[Principal::Room("team".into())],
+                &[Principal::Workspace("team".into())],
                 Some(0),
             );
             let outsider =
@@ -1054,20 +1054,21 @@ mod tests {
             assert!(!handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
         }
         // Phase `a_peer_does_not_inherit_the_mounts_principals`.
-        // A capability granted to a room the mount is in belongs to the
+        // A capability granted to a workspace the mount is in belongs to the
         // mount. Lending it to a dialer would hand every caller the host's
         // authority, so a peer carries only its own key.
         {
             use collab_types::{Access as CapAccess, Effect, Scope, Subject};
 
-            let room = Principal::Room("6b3f9a10-0000-4000-8000-00000000000a".to_string());
+            let workspace =
+                Principal::Workspace("6b3f9a10-0000-4000-8000-00000000000a".to_string());
             let cap = CapOverride::new(
-                Subject::Principal(room.clone()),
+                Subject::Principal(workspace.clone()),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
                 CapAccess::Read,
             );
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[room], Some(0));
+            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[workspace], Some(0));
             assert!(
                 acl.permits(&ALICE, "/x", Access::Read),
                 "the mount holds it"

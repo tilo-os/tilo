@@ -46,7 +46,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -358,7 +358,7 @@ fn seeded_room(author: &TestDevice, reader: &TestDevice) -> (StatePeer, AutoComm
     owner
         .install_seed(
             SeedState {
-                room_changes: seed_room(ROOM, &author.cert, &certificates).unwrap(),
+                workspace_changes: seed_workspace(ROOM, &author.cert, &certificates).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
                     record_id: RECORD.into(),

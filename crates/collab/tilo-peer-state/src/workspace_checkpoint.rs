@@ -13,7 +13,7 @@ impl CheckpointRoute {
     pub fn validate(&self) -> Result<(), String> {
         if self.app == "so.tilo.desktop" {
             return Err(
-                "checkpoint coverage excludes room governance and authority records".into(),
+                "checkpoint coverage excludes workspace governance and authority records".into(),
             );
         }
         if self.app.is_empty()
@@ -112,7 +112,7 @@ fn validate_id(id: uuid::Uuid) -> Result<(), String> {
 
 #[derive(Clone, Debug)]
 pub struct CheckpointRequest {
-    pub room: String,
+    pub workspace: String,
     pub invocation: uuid::Uuid,
     pub caller: tilo_user_identity::DeviceCert,
     pub command: CheckpointCommand,
@@ -120,20 +120,24 @@ pub struct CheckpointRequest {
 impl CheckpointRequest {
     /// Stable binding of the original command and authenticated device/person evidence.
     /// # Errors
-    /// Rejects invalid room, invocation, command or encoding.
+    /// Rejects invalid workspace, invocation, command or encoding.
     pub fn digest(&self) -> Result<[u8; 32], String> {
         if self.invocation.is_nil()
-            || uuid::Uuid::parse_str(&self.room)
+            || uuid::Uuid::parse_str(&self.workspace)
                 .map_err(|e| e.to_string())?
                 .to_string()
-                != self.room
+                != self.workspace
         {
             return Err("invalid checkpoint invocation binding".into());
         }
         self.command.validate()?;
-        let bytes =
-            postcard::to_allocvec(&(&self.room, self.invocation, &self.caller, &self.command))
-                .map_err(|e| e.to_string())?;
+        let bytes = postcard::to_allocvec(&(
+            &self.workspace,
+            self.invocation,
+            &self.caller,
+            &self.command,
+        ))
+        .map_err(|e| e.to_string())?;
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 }

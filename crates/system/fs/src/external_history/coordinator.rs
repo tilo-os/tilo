@@ -197,7 +197,7 @@ impl AcknowledgedReplacement {
                 binding: participant.proposed_binding.clone(),
                 version: participant.proposed_version.id,
                 person: admission.context.verifier.person,
-                room: admission.context.verifier.personal_room.clone(),
+                workspace: admission.context.verifier.personal_room.clone(),
             })
         })
     }

@@ -1,8 +1,8 @@
-//! The agent in the room: a certified participant beside browsers and
+//! The agent in the workspace: a certified participant beside browsers and
 //! native devices.
 //!
 //! [`AgentParticipant`] holds a certified relay session under the agent's own
-//! device key and joins the room's durable and live planes. It holds the
+//! device key and joins the workspace's durable and live planes. It holds the
 //! records it works in as replicas of their resources, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts
 //! only through the operations they publish, and commits each resulting
@@ -52,10 +52,10 @@ mod parts;
 mod planning;
 mod records;
 mod repairs;
-mod room_content;
 mod running;
 pub(crate) mod unopened;
 mod waits;
+mod workspace_content;
 
 pub(crate) use unopened::{SharedDesktop, desktop_route};
 
@@ -74,7 +74,7 @@ const PRESENCE_KEEPALIVE_MS: u64 = 1_000;
 /// session again.
 const STEP_SLICE: Duration = Duration::from_millis(5);
 
-/// The most records of the room a plan opens before the model is asked,
+/// The most records of the workspace a plan opens before the model is asked,
 /// because the task names them by their titles.
 const MOST_OPENED_BY_TITLE: usize = 2;
 
@@ -117,20 +117,20 @@ struct Finishing {
 /// How a plan says nothing offered does what it was asked.
 const NOTHING_LEFT: &str = "nothing offered fits";
 
-/// How long a newly joined agent waits for the room's records to stop
+/// How long a newly joined agent waits for the workspace's records to stop
 /// arriving before it plans its first task.
-const ROOM_SETTLE: Duration = Duration::from_millis(300);
+const WORKSPACE_SETTLE: Duration = Duration::from_millis(300);
 
 /// The longest a finished task waits for the host to acknowledge its
 /// changes before it is reported anyway. A record just made waits for its
-/// channel's keys first, which can take several seconds while the room's
+/// channel's keys first, which can take several seconds while the workspace's
 /// participants admit everyone who asked; reported earlier, the next task
 /// would not find it.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
 
 /// The longest a plan waits for the keys of a record it is about. Keys no
 /// participant sends (to a device none admits any more) must not hold the
-/// agent forever: the task is planned with what the room shows.
+/// agent forever: the task is planned with what the workspace shows.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 
 /// How many times a task plans again for news that arrived while it ran.
@@ -174,13 +174,13 @@ pub struct Pumped {
 
 /// Where the agent's session goes.
 pub struct ParticipantConfig {
-    /// The room's host.
+    /// The workspace's host.
     pub host: Host,
     /// The host's certificate.
     pub host_cert: DeviceCert,
-    /// The room uuid.
-    pub room: String,
-    /// The room's content store: content the agent's operations name is
+    /// The workspace uuid.
+    pub workspace: String,
+    /// The workspace's content store: content the agent's operations name is
     /// read from it, and content its apps store is kept in it.
     pub content: tilo_content::ContentStore,
 }
@@ -206,13 +206,13 @@ struct Asking {
 type WitnessAnswer =
     Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
 
-/// One agent in one room.
+/// One agent in one workspace.
 pub struct AgentParticipant {
     identity: AgentIdentity,
     control: Arc<AgentControl>,
     peer: PeerHandle,
     events: PeerEvents,
-    room: String,
+    workspace: String,
     workspace_id: u64,
     catalogue: AppCatalogue,
     /// The planner, on a thread of its own.
@@ -221,7 +221,7 @@ pub struct AgentParticipant {
     /// request once its steps ran (the planner's profile says).
     checks_work: bool,
     /// The task last planned again after "nothing offered fits" opened the
-    /// room's documents: once per task.
+    /// workspace's documents: once per task.
     reopened_for: Option<String>,
     /// When the plan the agent now carries out was ready, until its first
     /// step ran.
@@ -230,7 +230,7 @@ pub struct AgentParticipant {
     /// The parts of a chain (a chat's messages) held in an open record,
     /// by the part's route: the holder's ([`parts`]).
     beside: BTreeMap<DocumentRoute, DocumentRoute>,
-    /// The room's content store, lent to every record the agent holds.
+    /// The workspace's content store, lent to every record the agent holds.
     content: tilo_content::ContentStore,
     /// Records the agent has not mounted, each merged as it changes.
     unopened: unopened::Unopened,
@@ -258,7 +258,7 @@ pub struct AgentParticipant {
     /// The records the host opened new for the current task before its
     /// plan ran ([`Self::open_new`]), until its run takes them as made.
     task_made: Vec<DocumentRoute>,
-    /// The room's records another member changed (or made), as their
+    /// The workspace's records another member changed (or made), as their
     /// changes arrived: a written document among them is theirs
     /// ([`Self::others_document`]).
     others_wrote: BTreeSet<DocumentRoute>,
@@ -268,11 +268,11 @@ pub struct AgentParticipant {
     /// The exports whose answers stated the facts of what they exported,
     /// oldest first: what a later task's check compares the record with.
     exported: Vec<facts::Exported>,
-    /// The host admitted the room; everything it replayed has arrived.
+    /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
-    /// When the room last delivered a record the agent had not seen, since
-    /// it was admitted: a newly joined agent plans once the room's records
-    /// stop arriving ([`ROOM_SETTLE`]).
+    /// When the workspace last delivered a record the agent had not seen, since
+    /// it was admitted: a newly joined agent plans once the workspace's records
+    /// stop arriving ([`WORKSPACE_SETTLE`]).
     settling: Option<Instant>,
     /// A task whose steps are done, with its outcome, waiting until the
     /// host has its changes ([`COMMIT_WAIT`]): it ends when others can see
@@ -311,9 +311,9 @@ pub struct AgentParticipant {
     /// Remote-action frames waiting for an answer, with their senders.
     remote: Vec<([u8; 32], Vec<u8>)>,
     answered: actions::Answered,
-    /// Whether the agent may show the room's own pictures to its model
-    /// ([`PlanContext::room_pictures`]).
-    room_pictures: crate::vision::RoomPictures,
+    /// Whether the agent may show the workspace's own pictures to its model
+    /// ([`PlanContext::workspace_pictures`]).
+    workspace_pictures: crate::vision::WorkspacePictures,
     /// Whether its planner's model is shown pictures ([`Planner::sees`]).
     sight: crate::vision::Sight,
     /// How much of what its apps can do its plans are told
@@ -327,12 +327,12 @@ pub struct AgentParticipant {
 }
 
 impl AgentParticipant {
-    /// Connect as `identity` and join `config.room`'s durable and live
+    /// Connect as `identity` and join `config.workspace`'s durable and live
     /// planes.
     ///
     /// # Errors
     ///
-    /// Returns why the room is not one the delegation covers.
+    /// Returns why the workspace is not one the delegation covers.
     pub fn start(
         config: ParticipantConfig,
         identity: AgentIdentity,
@@ -353,11 +353,11 @@ impl AgentParticipant {
     /// [`Self::start`] with the session's state in `store`: an agent the
     /// host starts again on the same grant gets back its channel
     /// memberships and keys, as a device keeps them across a restart, and
-    /// opens what the room sealed while it was away.
+    /// opens what the workspace sealed while it was away.
     ///
     /// # Errors
     ///
-    /// Returns why the room is not one the delegation covers.
+    /// Returns why the workspace is not one the delegation covers.
     pub fn start_with_store(
         config: ParticipantConfig,
         identity: AgentIdentity,
@@ -366,10 +366,10 @@ impl AgentParticipant {
         planner: Box<dyn Planner>,
         store: Arc<dyn tilo_browser_peer::PeerStore>,
     ) -> Result<Self, String> {
-        let workspace_id = tilo_relay_protocol::room_workspace_id(&config.room)
-            .map_err(|_| "the room is not a uuid".to_string())?;
+        let workspace_id = tilo_relay_protocol::room_workspace_id(&config.workspace)
+            .map_err(|_| "the workspace is not a uuid".to_string())?;
         if !identity.delegation.permits_workspace(workspace_id) {
-            return Err("the agent is not delegated this room".into());
+            return Err("the agent is not delegated this workspace".into());
         }
         let checks_work = planner.checks_work();
         let sight = crate::vision::Sight::from(planner.sees());
@@ -400,23 +400,21 @@ impl AgentParticipant {
         peer.on_change(Arc::new(move || woken.wake()));
         peer.join(workspace_id)?;
         peer.live_join(workspace_id)?;
-        let unopened = unopened::Unopened::new(&config.room);
-        // The room's own pictures go to the model's provider only where the
+        let unopened = unopened::Unopened::new(&config.workspace);
+        // The workspace's own pictures go to the model's provider only where the
         // person running the agent said so.
-        let room_pictures =
-            crate::vision::RoomPictures::from(crate::vision::room_pictures_allowed(
+        let workspace_pictures =
+            crate::vision::WorkspacePictures::from(crate::vision::workspace_pictures_allowed(
                 crate::control::agent_id(&identity.delegation),
                 &identity.delegation.label,
-                std::env::var(crate::vision::ROOM_PICTURES_ENV)
-                    .ok()
-                    .as_deref(),
+                crate::vision::pictures_setting().as_deref(),
             ));
         Ok(Self {
             identity,
             control,
             peer,
             events,
-            room: config.room,
+            workspace: config.workspace,
             workspace_id,
             catalogue,
             planning,
@@ -457,7 +455,7 @@ impl AgentParticipant {
             generation: 0,
             remote: Vec::new(),
             answered: actions::Answered::default(),
-            room_pictures,
+            workspace_pictures,
             sight,
             catalog,
             mode: if itemised {
@@ -469,12 +467,12 @@ impl AgentParticipant {
         })
     }
 
-    /// Let this agent show the room's own pictures (scans, photos people
-    /// put in the room) to its model's provider, or not; off unless
-    /// [`crate::vision::ROOM_PICTURES_ENV`] turned it on. Pictures its apps
+    /// Let this agent show the workspace's own pictures (scans, photos people
+    /// put in the workspace) to its model's provider, or not; off unless
+    /// [`crate::vision::WORKSPACE_PICTURES_ENV`] turned it on. Pictures its apps
     /// render (a canvas look, a PDF page) are shown either way.
-    pub fn allow_room_pictures(&mut self, on: bool) {
-        self.room_pictures = on.into();
+    pub fn allow_workspace_pictures(&mut self, on: bool) {
+        self.workspace_pictures = on.into();
     }
 
     /// The certified session.
@@ -565,7 +563,7 @@ impl AgentParticipant {
         if work && !self.planning.busy() && self.ready && self.control.may_act() {
             if let Some(since) = self.settling {
                 return Next::Within(
-                    ROOM_SETTLE
+                    WORKSPACE_SETTLE
                         .saturating_sub(since.elapsed())
                         .max(Duration::from_millis(1)),
                 );
@@ -630,7 +628,7 @@ impl AgentParticipant {
             }
             PeerEvent::Document(document) => {
                 if document.author != self.identity.cert.device_public_key
-                    && document.route.cluster_id == self.room
+                    && document.route.cluster_id == self.workspace
                     && MESSAGE_APPS.contains(&document.route.app_id.as_str())
                     && self.identity.delegation.permits_app(&document.route.app_id)
                     && (self.running.is_some()
@@ -649,7 +647,7 @@ impl AgentParticipant {
                     // takes the news.
                     self.before_others_change(&document.route);
                 }
-                if document.route.cluster_id != self.room {
+                if document.route.cluster_id != self.workspace {
                     return;
                 }
                 if document.author != self.identity.cert.device_public_key {
@@ -722,20 +720,20 @@ impl AgentParticipant {
         }
     }
 
-    /// Whether a step may be taken: the room is admitted and settled, the
+    /// Whether a step may be taken: the workspace is admitted and settled, the
     /// agent may act, no record waits for keys and no finished task for
     /// its changes to be acknowledged.
     fn may_step(&mut self) -> bool {
         self.ready && self.control.may_act() && self.settled() && !self.finish_committed()
     }
 
-    /// Whether the room's records have stopped arriving since the agent
+    /// Whether the workspace's records have stopped arriving since the agent
     /// joined. Records another agent made just before this one joined can
     /// still be on their way after `Ready`: the first plan waits until none
-    /// has arrived for [`ROOM_SETTLE`], so it is offered what the room holds.
+    /// has arrived for [`WORKSPACE_SETTLE`], so it is offered what the workspace holds.
     fn settled(&mut self) -> bool {
         if let Some(since) = self.settling {
-            if since.elapsed() < ROOM_SETTLE {
+            if since.elapsed() < WORKSPACE_SETTLE {
                 return false;
             }
             self.settling = None;
@@ -747,9 +745,9 @@ impl AgentParticipant {
     /// (and planning it) when none runs. Returns whether another step that
     /// plans nothing is ready, so the pump may take it at once.
     fn step(&mut self) -> bool {
-        // The host answers `Ready` after replaying the room's records, and a
+        // The host answers `Ready` after replaying the workspace's records, and a
         // sealed record opens once the agent holds its keys, so a step never
-        // runs on a room the agent has only half seen.
+        // runs on a workspace the agent has only half seen.
         if !self.may_step() {
             return false;
         }
@@ -955,7 +953,7 @@ impl AgentParticipant {
     /// `outcome` of `step` as the task takes it where a picture is
     /// concerned. A read that answered content as a picture
     /// ([`crate::vision::read_picture`]) is refused where the model would not
-    /// be shown it: a model not shown pictures, or one of the room's own
+    /// be shown it: a model not shown pictures, or one of the workspace's own
     /// where the agent may not show them. An import that failed on content
     /// that is a picture says so, and how the picture is seen.
     fn picture_outcome(
@@ -971,9 +969,10 @@ impl AgentParticipant {
         let refusal = |address: &str| {
             if self.sight == crate::vision::Sight::Blind {
                 Some(crate::vision::NOT_SEEING)
-            } else if !rendered(address) && self.room_pictures != crate::vision::RoomPictures::Shown
+            } else if !rendered(address)
+                && self.workspace_pictures != crate::vision::WorkspacePictures::Shown
             {
-                Some(crate::vision::ROOM_WITHHELD)
+                Some(crate::vision::WORKSPACE_WITHHELD)
             } else {
                 None
             }
@@ -1019,7 +1018,7 @@ impl AgentParticipant {
         }
     }
 
-    /// Whether the room's content at `hash` is a picture, from its first
+    /// Whether the workspace's content at `hash` is a picture, from its first
     /// bytes.
     fn content_is_picture(&self, hash: &str) -> bool {
         use std::io::Read as _;
@@ -1032,7 +1031,7 @@ impl AgentParticipant {
 
     /// Start the next queued task and have it planned. A record of an app
     /// the task names that arrived sealed opens once the agent holds its
-    /// keys: the task is planned then, so it sees what the room holds.
+    /// keys: the task is planned then, so it sees what the workspace holds.
     /// Records of other apps do not hold it up.
     fn begin_task(&mut self) {
         let Some((id, text)) = self.starting.take().or_else(|| self.control.begin_next()) else {
@@ -1047,7 +1046,7 @@ impl AgentParticipant {
         self.task_read.clear();
         self.task_made.clear();
         self.task_retries = crate::planner::TurnRetries::default();
-        // What arrived before the task began is in the room it is planned on.
+        // What arrived before the task began is in the workspace it is planned on.
         self.news.clear();
         self.news_from.clear();
         self.news_before.clear();
@@ -1060,7 +1059,7 @@ impl AgentParticipant {
     /// when `request` (the task as it was given) comes beside it. Steps
     /// written out in the task are taken at once; anything else goes to the
     /// planner's thread, and the plan is taken when it wakes the loop.
-    /// After a first plan found nothing that fits `text`, open the room's
+    /// After a first plan found nothing that fits `text`, open the workspace's
     /// documents of the apps it may use (those the task names first) and
     /// plan it once more, so a model sees their operations rather than
     /// giving up on a document it never opened. Returns whether it did.
@@ -1084,7 +1083,7 @@ impl AgentParticipant {
         }
         routes.sort_by_key(|route| !crate::model::task_names_app(text, &route.app_id));
         routes.truncate(MOST_OPENED);
-        // An app the task names that has no document in the room yet: a
+        // An app the task names that has no document in the workspace yet: a
         // model that took "write it in the Word Processor" to need one
         // opened first is told its operations make the document.
         let offered = self.unopened.people_first();
@@ -1107,7 +1106,7 @@ impl AgentParticipant {
         self.reopened_for = Some(task.to_owned());
         for route in routes {
             if let Err(error) = self.open(&route.app_id, Some(&route.record)) {
-                tracing::debug!(%error, app = %route.app_id, "agent: a room document did not open");
+                tracing::debug!(%error, app = %route.app_id, "agent: a workspace document did not open");
             }
         }
         if fresh.is_empty() {
@@ -1182,7 +1181,7 @@ impl AgentParticipant {
     }
 
     /// Answer the reads the plan being made asks of the open records, and
-    /// the content it asks to show its model from the room's store.
+    /// the content it asks to show its model from the workspace's store.
     fn answer_reads(&mut self) {
         for ask in self.planning.asked_reads() {
             let answer = self.read_now(&ask.route, &ask.address, &ask.arguments);
@@ -1195,7 +1194,7 @@ impl AgentParticipant {
             let answer = self
                 .content
                 .open(&ask.hash)
-                .ok_or_else(|| format!("the room keeps no content tilo.content:{}", ask.hash))
+                .ok_or_else(|| format!("the workspace keeps no content tilo.content:{}", ask.hash))
                 .and_then(|reader| picture_head(reader, &ask.hash));
             let _ = ask.reply.send(answer);
         }
@@ -1474,7 +1473,7 @@ impl AgentParticipant {
     /// End task `id` with `outcome` once the host has acknowledged the
     /// changes it made: published now, it is reported when none is pending
     /// ([`Self::finish_committed`]), so whoever is told it is done finds
-    /// its changes in the room.
+    /// its changes in the workspace.
     fn finish_task(&mut self, id: String, outcome: Result<String, String>) {
         self.publish_changes();
         // An item of a coordinated task ended, not the task.
@@ -1595,13 +1594,13 @@ impl AgentParticipant {
         })
     }
 
-    /// Whether a record of the room the agent may work on has arrived sealed
-    /// and opens once the agent holds its channel keys: until then the room
+    /// Whether a record of the workspace the agent may work on has arrived sealed
+    /// and opens once the agent holds its channel keys: until then the workspace
     /// is only half seen.
     fn keys_pending_for(&self, task: &str) -> bool {
         self.peer.status().routes.iter().any(|(route, status)| {
             status.awaiting_keys > 0
-                && route.cluster_id == self.room
+                && route.cluster_id == self.workspace
                 && self.identity.delegation.permits_app(&route.app_id)
                 && crate::model::task_names_app(task, &route.app_id)
         })
@@ -1687,7 +1686,7 @@ impl AgentParticipant {
     /// The parameter `step` is given what the step before it produced
     /// under, if any. Content that step only handed on (an import answers
     /// with the source it imported) was made for no step after it: content
-    /// the room keeps that `step` names outright is what it means, as with
+    /// the workspace keeps that `step` names outright is what it means, as with
     /// nothing before it. Otherwise a PDF import planned after a DOCX
     /// import, in one plan or as the next item of a coordinated task, is
     /// given the DOCX.
@@ -1788,7 +1787,7 @@ impl AgentParticipant {
             self.identity.cert.user_public_key,
             self.identity.cert.device_public_key,
         )
-        .in_room(self.room.clone());
+        .in_room(self.workspace.clone());
         // The action as the record offers it: what the person is asked.
         let offered = self.apps.get(&route).and_then(|app| {
             app.survey()
@@ -1879,7 +1878,7 @@ impl AgentParticipant {
         }
     }
 
-    /// Records of the room the agent has seen but not opened.
+    /// Records of the workspace the agent has seen but not opened.
     #[must_use]
     pub fn known_records(&self) -> Vec<DocumentRoute> {
         self.unopened
@@ -1889,8 +1888,8 @@ impl AgentParticipant {
             .collect()
     }
 
-    /// Open `app_id` on `record` (a record the room already has), or on a
-    /// new record it publishes; an app that keeps one record per room opens
+    /// Open `app_id` on `record` (a record the workspace already has), or on a
+    /// new record it publishes; an app that keeps one record per workspace opens
     /// that one either way. Returns the record's route.
     ///
     /// # Errors
@@ -1902,13 +1901,13 @@ impl AgentParticipant {
         }
         let route = |record: &str| DocumentRoute {
             app_id: app_id.to_owned(),
-            cluster_id: self.room.clone(),
+            cluster_id: self.workspace.clone(),
             record: record.to_owned(),
         };
-        // An app that keeps one record per room (Chat) has one route, named
-        // empty: asked for a new record, the agent joins the room's own once
-        // the room has it, so every agent sees what the others wrote there.
-        let room_record = self
+        // An app that keeps one record per workspace (Chat) has one route, named
+        // empty: asked for a new record, the agent joins the workspace's own once
+        // the workspace has it, so every agent sees what the others wrote there.
+        let workspace_record = self
             .catalogue
             .get(app_id)
             .is_some_and(ui::application::ApplicationDefinition::keeps_room_record);
@@ -1916,7 +1915,7 @@ impl AgentParticipant {
         // for one, the agent opens the record that keeps it.
         let record = record
             .filter(|record| !parts::is_part(record))
-            .or_else(|| room_record.then_some(""));
+            .or_else(|| workspace_record.then_some(""));
         let (seed, seeded) = match record {
             Some(record) => {
                 let route = route(record);
@@ -1932,21 +1931,25 @@ impl AgentParticipant {
                         };
                         (seed, Some(route))
                     }
-                    // Nobody has written the room's record yet: its genesis
+                    // Nobody has written the workspace's record yet: its genesis
                     // is the same on every member, so this one converges
                     // with whoever makes it too.
-                    None if room_record && record.is_empty() => (Seed::New, None),
-                    None => return Err(format!("the room has no record {record} of {app_id} yet")),
+                    None if workspace_record && record.is_empty() => (Seed::New, None),
+                    None => {
+                        return Err(format!(
+                            "the workspace has no record {record} of {app_id} yet"
+                        ));
+                    }
                 }
             }
             None => (Seed::New, None),
         };
-        // Lent the room's content store, so an export keeps its content in
-        // the room and content an operation names reaches the worker.
+        // Lent the workspace's content store, so an export keeps its content in
+        // the workspace and content an operation names reaches the worker.
         let app = ConfinedReplica::open(
             &self.catalogue,
             app_id,
-            &self.room,
+            &self.workspace,
             crate::control::agent_id(&self.identity.delegation),
             &crate::ReplicaActor::Agent,
             seed,
@@ -2142,11 +2145,11 @@ impl AgentParticipant {
         }
     }
 
-    /// Put the view of the record at `route` on the room's shared desktop
+    /// Put the view of the record at `route` on the workspace's shared desktop
     /// when no tab shows it, beside the view the agent worked in last, so
     /// the people see where it acts ([`crate::desk`]).
     fn show_on_desk(&mut self, route: &DocumentRoute) {
-        let desktop = desktop_route(&self.room);
+        let desktop = desktop_route(&self.workspace);
         let Some(record) = self
             .apps
             .get(route)
@@ -2159,7 +2162,7 @@ impl AgentParticipant {
             .as_ref()
             .map(|focus| DocumentRoute {
                 app_id: focus.app.clone(),
-                cluster_id: self.room.clone(),
+                cluster_id: self.workspace.clone(),
                 record: focus.record.clone(),
             })
             .filter(|last| last != route)
@@ -2240,7 +2243,7 @@ impl AgentParticipant {
         self.left = true;
     }
 
-    /// Leave the room and end the session.
+    /// Leave the workspace and end the session.
     pub fn close(mut self) {
         if !self.left {
             self.leave();

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::RoomId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-/// A room's transport topic: the workspace id its hosts shard it by.
+/// A workspace's transport topic: the workspace id its hosts shard it by.
 pub type WorkspaceId = u64;
 
 /// The transport topic of `room`, as the desktop session's network routes it.

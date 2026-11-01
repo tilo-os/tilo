@@ -4329,7 +4329,7 @@ fn workspace_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json:
                 "workspace": workspace.name,
                 "room": workspace.room().to_string(),
                 "state": tilo_network_actor::workspace_sync::state(
-                    tilo_network_actor::room_topic_id(workspace.room()),
+                    tilo_network_actor::workspace_topic_id(workspace.room()),
                 ),
                 "app_authors": workspace.launch_grants(now).authors,
                 "grants": workspace.policy.grants.len(),
@@ -13009,7 +13009,7 @@ pub fn run() {
                         .collect(),
                 );
                 state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
-                    (*surface, tilo_network_actor::room_topic_id(*room))
+                    (*surface, tilo_network_actor::workspace_topic_id(*room))
                 }));
             }
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
