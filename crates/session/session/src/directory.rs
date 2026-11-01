@@ -329,12 +329,12 @@ pub(crate) fn own_person_name(chosen: Option<String>) -> String {
         .unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
 }
 
-/// A workspace this person was let into: the room its door's invitation
+/// A workspace this person was let into: the workspace its door's invitation
 /// granted, the name it was listed under, and the invitation itself, which
-/// this device enrolls into the room's state with.
+/// this device enrolls into the workspace's state with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Joined {
-    pub(crate) room: String,
+    pub(crate) workspace_id: String,
     pub(crate) name: String,
     pub(crate) invitation: String,
 }
@@ -580,7 +580,7 @@ impl Store {
                         Ok(granted) => {
                             self.failures.borrow_mut().remove(&key);
                             self.joined.borrow_mut().push(Joined {
-                                room: granted.room,
+                                workspace_id: granted.room,
                                 name,
                                 invitation: granted.invitation,
                             });
@@ -600,7 +600,7 @@ impl Store {
                     *self.joining.borrow_mut() = None;
                     match granted {
                         Ok(granted) => self.joined.borrow_mut().push(Joined {
-                            room: granted.room,
+                            workspace_id: granted.room,
                             name: if name.is_empty() {
                                 tilo_sheets::word("directory-joined-name")
                             } else {
