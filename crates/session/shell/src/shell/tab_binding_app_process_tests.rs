@@ -40,16 +40,20 @@ fn a_packaged_app_opens_as_a_window_waiting_to_be_launched() {
         .is_none(),
         "feedback is the shell's own surface",
     );
-    for borrowing in ["Messages", "Passwords"] {
+    // Nothing else is drawn by the session: Messages reaches the person's
+    // accounts through the messaging service, and Passwords keeps its vault
+    // under its own secrets capability. A tab the session would draw would
+    // never get a window.
+    for app in ["Messages", "Passwords"] {
         assert!(
             open_app_process(
                 &mut tree,
-                &AppKind::Other(borrowing.into()),
-                borrowing,
+                &AppKind::Other(app.into()),
+                app,
                 Placement::NewGroup,
             )
-            .is_none(),
-            "{borrowing} borrows what only the session holds",
+            .is_some(),
+            "{app} runs as its own process",
         );
     }
 }
