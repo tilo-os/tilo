@@ -181,12 +181,7 @@ fn typing_into_the_open_search_reaches_its_query() {
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    invoke(
-        &mut session,
-        DESK_RESOURCE,
-        "open-search",
-        serde_json::json!({}),
-    );
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
     });
