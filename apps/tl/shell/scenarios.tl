@@ -343,7 +343,8 @@ scenario "a reference lands beside its place" -> Arrangement {
 }
 
 /// Six places in two clusters on the framed canvas: one space per task, at three zoom levels as
-/// the person looks closer or further out.
+/// the person looks closer or further out. Each note is its app's editor composed in its frame;
+/// the terminal beside them is a window, shown in its well.
 scenario "a canvas of spaces" -> Arrangement {
     let v = viewing
     v.showing = .frames
@@ -360,25 +361,36 @@ scenario "a canvas of spaces" -> Arrangement {
     }
     let i = 0
     for n in notes.notes.take(6) {
-        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
         i += 1
     }
+    a.places.insert(ArrangementPlace(key: "c-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
     a
 }
 
 /// The spaces canvas: the same places with no frame around them, so a resource's view stands as
-/// content and nearness groups it.
+/// content and nearness groups it. Each note is its app's editor composed in place; the terminal
+/// beside them is a window, shown in its well.
 scenario "resources standing as content" -> Arrangement {
     let v = viewing
     v.showing = .spaces
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let s = a_strip(a, row, "Spaces", 667)
+    let strip = a.strips.find(st -> st.key == s)
+    if let held = strip {
+        held.canvas_x = 0
+        held.canvas_y = 0
+        held.canvas_width = 1100
+        held.canvas_height = 1200
+        held.placed = true
+    }
     let i = 0
     for n in notes.notes.take(4) {
-        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
         i += 1
     }
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
     a
 }
 

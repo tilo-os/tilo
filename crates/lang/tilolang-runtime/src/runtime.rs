@@ -233,6 +233,29 @@ impl Runtime {
             .map_err(RuntimeError::Package)
     }
 
+    /// Load another app's package with its module: its views run here, inline in the views
+    /// that call them (`mail.inbox(m)`, or `show(r)` by the resource's type), as that package's own code,
+    /// so what they create and invoke carries its module as the author, never the caller's.
+    /// Its records stay its app's: a view of it reads a resource from the reading its app
+    /// publishes ([`Runtime::set_reading`]), named by app and type (`mail#Inbox`), and its
+    /// actions are child invocations at that app's door ([`Runtime::set_invoker`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::load_package`].
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        let hash = self.core.engine.compile(wasm)?;
+        self.check_exports(&hash, &meta)?;
+        let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
+            .map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(hash)
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -259,16 +282,24 @@ impl Runtime {
             )));
         }
         let mut foreign = self.core.foreign.borrow_mut();
+        let first = foreign.generation(target) == 0;
         if !foreign.set_reading(target, json) {
             return Ok(false);
         }
         let generation = foreign.generation(target);
+        let known = foreign.known();
         drop(foreign);
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-        self.core
-            .view_states
-            .borrow_mut()
-            .set(crate::foreign::reading_key(target), Value::Int(seen));
+        let mut states = self.core.view_states.borrow_mut();
+        states.set(crate::foreign::reading_key(target), Value::Int(seen));
+        // A resource known here for the first time: views that looked it up by id
+        // (`resource(id)`) and found nothing run again.
+        if first {
+            states.set(
+                crate::foreign::known_key(),
+                Value::Int(i64::try_from(known).unwrap_or(i64::MAX)),
+            );
+        }
         Ok(true)
     }
 

@@ -23,6 +23,7 @@ mod foreign;
 mod history_views;
 mod incremental;
 mod index;
+mod inline_views;
 mod items;
 mod lanes;
 mod legacy;

@@ -16,7 +16,7 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
 
-const FILES: [&str; 21] = [
+const FILES: [&str; 22] = [
     include_str!("../../../../apps/tl/shell/app.tl"),
     include_str!("../../../../apps/tl/shell/arrangement.tl"),
     include_str!("../../../../apps/tl/shell/arranging.tl"),
@@ -38,6 +38,7 @@ const FILES: [&str; 21] = [
     include_str!("../../../../apps/tl/shell/strips.tl"),
     include_str!("../../../../apps/tl/shell/switcher.tl"),
     include_str!("../../../../apps/tl/shell/system.tl"),
+    include_str!("../../../../apps/tl/shell/traditional.tl"),
 ];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 const APP: &str = "so.tilo.shell";
@@ -484,4 +485,106 @@ fn undo(r: &mut Replica) {
     .expect("undo is never refused");
     r.doc.commit();
     r.host.sync_from(&r.doc);
+}
+
+/// Ada runs the scenario `name` of `app`, as a shot starts from it, and gets what it returns.
+fn scenario(r: &Replica, app: &str, name: &str) -> Value {
+    let meta = r.host.package(app).unwrap().meta;
+    let action = meta
+        .scenarios
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("{app} has no scenario {name:?}"))
+        .action
+        .clone();
+    let value = match r
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (action.as_str(), vec![]))
+        .unwrap()
+    {
+        InvokeOutcome::Done(value) => value,
+        other => panic!("{name}: {other:?}"),
+    };
+    value
+}
+
+#[test]
+fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_keeps_its_well() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
+    // in this host, as the session's reading would, and nothing of it goes to the room.
+    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // Each note's place is the notes app's own editor, drawn inline (its body's input, which
+    // only the editor has, once per note), and no well stands for it.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        6,
+        "the notes' editor is composed in each note's place: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(
+        wells.len(),
+        1,
+        "only the terminal's place keeps a well: {wells:#?}"
+    );
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("c-terminal".to_owned()))
+    );
+}
+
+#[test]
+fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+    let mut r = room();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "resources standing as content");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    let tree = format!("{:?}", view.tree());
+    // The scenario's strip stands on the canvas, so its places do: four notes as their editor,
+    // and the terminal in its well.
+    assert_eq!(
+        tree.matches("Write something").count(),
+        4,
+        "each note stands as its editor: {tree}"
+    );
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "{wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
+    );
 }

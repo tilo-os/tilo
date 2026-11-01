@@ -84,6 +84,20 @@ impl Foreign {
             .map_or(0, |(_, moved)| moved)
     }
 
+    /// The type of the resource of another app whose id is `id`, as its reading came in:
+    /// `None` until one did.
+    pub(crate) fn type_of(&self, id: &str) -> Option<String> {
+        let suffix = format!("@{id}");
+        self.readings
+            .keys()
+            .find_map(|key| key.strip_suffix(&suffix).map(str::to_owned))
+    }
+
+    /// How many resources of other apps have a reading here.
+    pub(crate) fn known(&self) -> usize {
+        self.readings.len()
+    }
+
     /// Take `json` as `target`'s reading. Whether it is not the one held.
     pub(crate) fn set_reading(&mut self, target: &ResourceRef, json: Json) -> bool {
         let key = Self::key(target);
@@ -222,6 +236,17 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
         window: crate::platform::LENS_WINDOW.to_owned(),
         principal: None,
         state: format!("$reading:{}", Foreign::key(target)),
+    }
+}
+
+/// The view state slot that moves when a resource of another app is first known here: a view
+/// that looked one up by id ([`Foreign::type_of`]) and found nothing runs again.
+#[must_use]
+pub fn known_key() -> StateKey {
+    StateKey {
+        window: crate::platform::LENS_WINDOW.to_owned(),
+        principal: None,
+        state: "$readings".to_owned(),
     }
 }
 

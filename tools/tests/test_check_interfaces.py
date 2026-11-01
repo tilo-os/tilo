@@ -110,6 +110,21 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(schema["Root.at"], "DateTime<Utc>")
 
+    def test_a_file_listed_twice_is_named_as_listed_twice(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "interface.toml"
+            path.write_text(textwrap.dedent('''
+                name = "test"
+                version = 1
+                version_const = "wire.rs:PROTOCOL"
+                sources = ["wire.rs", "other.rs", "wire.rs"]
+                roots = ["Message"]
+            '''))
+            with self.assertRaisesRegex(
+                interfaces.InterfaceError, r"`sources` lists wire\.rs more than once"
+            ):
+                interfaces.load_spec(path)
+
     def test_serde_renames_like_serde(self):
         self.assertEqual(interfaces.renamed("MediaPositionV1", "kebab-case", variant=True),
                          "media-position-v1")
