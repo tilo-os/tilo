@@ -51,7 +51,7 @@ pub struct TreeEntry {
 /// How a write lease was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseSource {
-    /// Taken or renewed here: no other device arbitrates this room, or this
+    /// Taken or renewed here: no other device arbitrates this workspace, or
     /// device does.
     Local,
     Granted,
@@ -826,7 +826,7 @@ impl QuickFS {
         )
     }
 
-    /// Makes `me` the room's lease authority, when it is not already.
+    /// Makes `me` the workspace's lease authority, when it is not already.
     pub fn claim_lease_authority(&self, me: [u8; 32]) {
         let delta = {
             let mut ns = self.ns();
@@ -838,14 +838,14 @@ impl QuickFS {
         self.publish(delta);
     }
 
-    /// The room's lease authority, if one claimed it.
+    /// The workspace's lease authority, if one claimed it.
     pub fn lease_authority(&self) -> Option<[u8; 32]> {
         self.ns().lease_authority()
     }
 
     /// Acquires the write lease of `rel` for `me`. A live lease `me` holds
     /// is renewed; another device's live lease is `Err(Some(lease))`. A
-    /// free lease comes from the room's lease authority when that is
+    /// free lease comes from the workspace's lease authority when that is
     /// another device: `me` asks and waits up to `wait` for its answer,
     /// and takes the lease optimistically when none comes.
     pub fn acquire_write_lease(
@@ -918,7 +918,7 @@ impl QuickFS {
         }
     }
 
-    /// Answers pending lease requests as the room's lease authority: each
+    /// Answers pending lease requests as the workspace's lease authority: each
     /// request for a lease nobody holds is granted with a new epoch, one at
     /// a time, so of two devices asking at once exactly one gets it.
     /// `answered` remembers requests already decided. Returns the grants.

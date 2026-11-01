@@ -19,13 +19,14 @@
 //! workspace references, without claiming historical ownership. That host-only
 //! authority is not exposed on the ordinary blob capability or socket.
 //!
-//! Reachability is per room, not per app, because apps in a room hand content
+//! Reachability is per workspace, not per app, because apps in one hand content
 //! to one another by hash (a typed action's content resource, a launch). Bytes
-//! that happen to be in the store for another reason (a file, another room)
-//! never satisfy a read: a room that lacks the reference must get the bytes
+//! that happen to be in the store for another reason (a file, another
+//! workspace) never satisfy a read: a workspace that lacks the reference must
+//! get the bytes
 //! from a device of the record that references them.
 //!
-//! The index is a family of iroh-blobs tags, `tilo/media/v1/<room>/<hash>`.
+//! The index is a family of iroh-blobs tags, `tilo/media/v1/<workspace>/<hash>`.
 //! A lookup is one exact key read, never a scan, and every reference is also a
 //! GC root, so referenced media survives eviction sweeps that release only the
 //! filesystem's own tags.
@@ -37,7 +38,7 @@
 //! record store replaces this index with the reverse index from content to
 //! the records whose retained history references it, which is also what lets
 //! an app be limited to its own record kinds plus explicit grants, and a peer
-//! be served by record rather than by room membership.
+//! be served by record rather than by workspace membership.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -69,7 +70,7 @@ fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
     format!("{TAG_PREFIX}{}/{}", scope.room(), hash.to_hex())
 }
 
-/// Does this device's index record `scope`'s room as referencing `hash`?
+/// Does this device's index record `scope`'s workspace as referencing `hash`?
 async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool {
     matches!(
         store.store().tags().get(reference_tag(scope, hash)).await,

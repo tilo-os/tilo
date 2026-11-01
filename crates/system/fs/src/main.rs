@@ -1321,7 +1321,7 @@ async fn open_workspace_store(
     }
 }
 
-/// `<store>/.content/<room>` when the native data plane may run on a
+/// `<store>/.content/<workspace>` when the native data plane may run on a
 /// dedicated store volume.
 #[cfg(target_os = "linux")]
 fn native_content_dir(data_plane: &DataPlaneArgs, workspace: uuid::Uuid) -> Option<PathBuf> {

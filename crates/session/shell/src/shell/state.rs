@@ -326,19 +326,19 @@ mod identity_fs_tests {
         let exported = read(&output);
         let members_of = |authority: &collab_types::FsAuthority, scope: &str| {
             authority
-                .room_members
+                .workspace_members
                 .get(scope)
                 .cloned()
                 .unwrap_or_default()
         };
-        assert!(
-            members_of(&exported, &primary_relay_scope).contains(&collab_types::RoomMember {
+        assert!(members_of(&exported, &primary_relay_scope).contains(
+            &collab_types::WorkspaceMember {
                 user: alice,
                 until: None,
-            })
-        );
+            }
+        ));
         assert!(members_of(&exported, &secondary_relay_scope).contains(
-            &collab_types::RoomMember {
+            &collab_types::WorkspaceMember {
                 user: bob,
                 until: Some(until_ms / 1000),
             }
@@ -2077,9 +2077,12 @@ impl WorkspaceTree {
     /// shard. The relay authenticates public keys, not display names: a
     /// person whose id is not a canonical hex key cannot be made a network
     /// principal and is omitted fail-closed.
-    fn relay_room_member(person: &str, until: Option<u64>) -> Option<collab_types::RoomMember> {
+    fn relay_room_member(
+        person: &str,
+        until: Option<u64>,
+    ) -> Option<collab_types::WorkspaceMember> {
         let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
-        Some(collab_types::RoomMember {
+        Some(collab_types::WorkspaceMember {
             user: collab_types::Ed25519PublicKey::from_bytes(bytes),
             until,
         })
@@ -2197,7 +2200,7 @@ impl WorkspaceTree {
         }
         let authority = collab_types::FsAuthority {
             capabilities: caps,
-            room_members,
+            workspace_members: room_members,
         };
         let Ok(json) = serde_json::to_vec_pretty(&authority) else {
             return;

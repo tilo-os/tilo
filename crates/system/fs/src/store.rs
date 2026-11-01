@@ -8,7 +8,7 @@
 //!   [`crate::content::FILE_BACKED_MIN`]: one sparse file per content id at
 //!   the file's own offsets, filled range by range, with a chunk index so a
 //!   chunk is served and deduplicated from where it lives. On a Tier 1
-//!   store volume the area sits next to the rooms, so publishing a file
+//!   store volume the area sits next to the workspaces, so publishing a file
 //!   clones its extents instead of copying bytes.
 //!
 //! The same area is the daemon's bounded cache: resident bytes of cached
@@ -370,7 +370,7 @@ impl ContentStore {
     }
 
     /// [`Self::open`] with the file-backed content under `files_dir`, for
-    /// example on the store volume next to the rooms.
+    /// example on the store volume next to the workspaces.
     ///
     /// # Errors
     ///

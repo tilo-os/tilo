@@ -370,7 +370,7 @@ fn an_agent_is_never_shown_the_decisions_on_its_own_admission() {
     let tree = state.tree();
     let workspace = tree.desktop.active_workspace().unwrap();
     let agent =
-        crate::shell::state::Actor::agent("claude-code").in_room(workspace.room().to_string());
+        crate::shell::state::Actor::agent("claude-code").in_workspace(workspace.room().to_string());
     let visibility = PolicyVisibility::new(workspace, agent);
     for decision in ["allow-once", "allow-session", "allow-always", "deny"] {
         assert!(!visibility.can_see(

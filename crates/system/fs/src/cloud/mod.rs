@@ -22,7 +22,7 @@
 //! - [`credential`]: the one-credential pipe between service and mount;
 //! - [`providers`]: which provider serves which account type.
 //!
-//! This module is separate from the room data plane on purpose: rooms
+//! This module is separate from the workspace data plane on purpose: workspaces
 //! replicate signed records between peers, while a cloud account mirrors a
 //! server that is the authority for its own tree. What they share is the
 //! conflict-copy convention ([`crate::conflict::conflict_name`]) and the
