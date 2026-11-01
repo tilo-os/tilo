@@ -136,6 +136,8 @@ mod strip_view_test;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "synthetic_key_event.rs"]
 mod synthetic_key_event;
+#[path = "tab_strip_test.rs"]
+mod tab_strip_test;
 #[path = "tabs_test.rs"]
 mod tabs_test;
 #[path = "text_scaled_once.rs"]

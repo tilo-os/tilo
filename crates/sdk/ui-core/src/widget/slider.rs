@@ -2,11 +2,14 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+#[path = "slider_component.rs"]
+mod component;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, ControlBindingMetadata};
 use crate::widget::{AppModel, ModelPath};
+pub use component::SliderProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -395,6 +398,18 @@ impl Slider {
         self.step = (step.is_finite() && step > 0.0).then_some(step);
         self.value = self.constrain(self.value);
         self
+    }
+
+    /// The values it spans.
+    #[must_use]
+    pub fn bounds(&self) -> (f64, f64) {
+        self.range
+    }
+
+    /// The step values snap to, when they do.
+    #[must_use]
+    pub fn step_size(&self) -> Option<f64> {
+        self.step
     }
 
     /// Say the value in the slider's own terms ("1.5 s", "Medium") to

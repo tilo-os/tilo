@@ -31,6 +31,7 @@ mod activity_provider;
 pub mod agent_door;
 mod app_icons;
 mod app_sheets;
+pub mod arrangement;
 mod automation;
 mod bars;
 mod call_devices;
@@ -79,12 +80,13 @@ pub mod mount;
 pub mod notices;
 mod notifications;
 mod options;
-mod overlays;
+pub mod overlays;
 mod owner_session;
 mod panels;
 mod people;
 mod plane;
 pub mod portal_link;
+mod press_outside;
 mod projection;
 mod projection_video;
 mod questions;
@@ -96,6 +98,7 @@ mod setup;
 mod sheets;
 pub mod shell;
 mod shortcut_guide;
+mod slot_binding;
 mod slot_views;
 mod status;
 pub mod surfaces;
@@ -316,8 +319,6 @@ struct Shared {
     tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     /// The pictures the desk shows, by workspace.
     wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
-    /// Whether the lock screen offers suspend, restart and shut down.
-    lock_power: bool,
     /// The keyboard layouts the person switches between, and which one is
     /// in use, as the lock screen shows them.
     lock_layouts: Vec<String>,
@@ -353,6 +354,19 @@ struct Shared {
     /// What the panel's Clipboard section was last fed, so what did not
     /// change is not fed again.
     clipboard_view: RefCell<Option<tilo_quick_settings::ClipboardView>>,
+    /// The person's arrangement, as their own record: what is open where,
+    /// with history and undo (shell.md §2). The desk places its windows
+    /// from it.
+    arrangement: Rc<RefCell<arrangement::Arrangement>>,
+    /// Whether the person is mid-gesture or typing, as the compositor last
+    /// said: what an arranging action that is not their own waits for.
+    underway: Rc<Cell<arrangement::Busy>>,
+    /// The heads of the arrangement the file holds, so a record that did not
+    /// move is not written again.
+    kept_arrangement: RefCell<Option<Vec<ui::automerge::ChangeHash>>>,
+    /// Where the arrangement is kept between sessions: this device's state
+    /// folder, or nowhere for a session that keeps nothing.
+    arrangement_state: Option<std::path::PathBuf>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -406,6 +420,20 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
 }
 
 impl Shared {
+    /// Keep the person's arrangement in step with their desk: what the desk
+    /// did on its own is taken in, and what waited for the person to finish
+    /// their gesture or their typing runs once they have.
+    fn follow_arrangement(&self, underway: arrangement::Busy) {
+        let mut arrangement = self.arrangement.borrow_mut();
+        arrangement.observe();
+        if !underway.holds() && arrangement.waiting() > 0 {
+            if let Err(why) = arrangement.release() {
+                tracing::warn!(why, "an arranging action that waited could not be made");
+            }
+            arrangement.observe();
+        }
+    }
+
     /// Carry out what the desktop asked since the last frame.
     fn follow_asks(&self) {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
@@ -668,6 +696,30 @@ impl Shared {
         if let Err(error) = self.ask_of_desk(action, args) {
             self.handle.acknowledge(error);
         }
+    }
+
+    /// Keep the person's arrangement as it stands: its own file, so the next
+    /// session places the same desk from it. Written when the record moved,
+    /// not every frame.
+    fn keep_arrangement(&self) {
+        let Some(state) = &self.arrangement_state else {
+            return;
+        };
+        let mut arrangement = self.arrangement.borrow_mut();
+        let heads = arrangement.heads();
+        if self
+            .kept_arrangement
+            .borrow()
+            .as_ref()
+            .is_some_and(|kept| *kept == heads)
+        {
+            return;
+        }
+        if let Err(error) = arrangement.save(state) {
+            tracing::debug!(%error, "the arrangement is not kept");
+            return;
+        }
+        *self.kept_arrangement.borrow_mut() = Some(heads);
     }
 
     /// Take up what the workspace's history wrote back and what the person
@@ -1140,6 +1192,52 @@ impl Session {
             }
             desk_doc::Kept::None => {}
         }
+        // The person's arrangement: today's desk, migrated into their own
+        // record, and from then on the record the desk places its windows
+        // from. It is kept beside the desk on this device, and is the
+        // person's own ([`arrangement::record_id`]) on every device theirs.
+        let mut record = ui::automerge::AutoCommit::new();
+        if let Some(text) = options.state.as_deref().and_then(arrangement::load_at) {
+            match ui::automerge::AutoCommit::load(&text) {
+                Ok(kept) => record = kept,
+                Err(error) => tracing::debug!(%error, "the kept arrangement is not this build's"),
+            }
+        }
+        let kept_desk = handle.read(Clone::clone);
+        let records = std::collections::BTreeMap::new();
+        let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
+            &options.person,
+            record,
+            handle.clone(),
+            &kept_desk,
+            &records,
+        )));
+        // Whether the person is mid-gesture or typing, as only the
+        // compositor knows: what an arranging action that is not their own
+        // reads before it moves anything.
+        let busy = Rc::new(Cell::new(arrangement::Busy::default()));
+        let underway = Rc::clone(&busy);
+        // The one search text typed on the canvas places through: the
+        // session search's own, the same `find` the palette and an agent's
+        // `tilo` tool run.
+        // The search is made further down, from what the session mounts in
+        // between; it is in place before the session runs any action.
+        let session_search: Rc<std::cell::OnceCell<Rc<SessionSearch>>> = Rc::default();
+        let find: arrangement::Find = {
+            let search = Rc::clone(&session_search);
+            Rc::new(move |needle: &str| {
+                search
+                    .get()
+                    .map(|search| search.find(needle))
+                    .unwrap_or_default()
+            })
+        };
+        doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
+            Rc::clone(&arrangement),
+            Rc::new(move || underway.get()),
+            find.clone(),
+        ))));
+        arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
@@ -1302,13 +1400,24 @@ impl Session {
 
         // The desk as the session publishes it, and the shell's bar over the
         // chrome, which reads it through the door.
+        let desk_overlays = Rc::new(overlays::Overlays::new());
+        // The runs people ask of this session's agents: the session keeps
+        // its own, or plays the run channel a test handed it. Its broker
+        // delivers them, it is one of the session's services, and the desk
+        // shows each run's conversation.
+        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
+        });
         let desk = || desk_resource::Desk {
+            runs: std::sync::Arc::clone(&agent_runs),
             handle: handle.clone(),
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             clock: Rc::clone(&clock),
             status_panel: options.quick_settings.is_some(),
             sync: sync.clone(),
+            notices: notices.clone(),
+            overlays: Rc::clone(&desk_overlays),
             tray: tray.clone(),
         };
         let desk_service = desk();
@@ -1420,12 +1529,6 @@ impl Session {
             .build()?;
         let (shortcut_library, saved_shortcuts) =
             plane::ShortcutLibrary::new(automation_runtime.handle().clone());
-        // The runs people ask of this session's agents: the session keeps
-        // its own, or plays the run channel a test handed it. Its broker
-        // delivers them, and it is one of the session's services.
-        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
-            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
-        });
         // What each of this device's rooms revokes, read from the rooms the
         // engine holds: the broker's decisions and the automation's arming
         // both refuse a device its room revoked.
@@ -1569,6 +1672,7 @@ impl Session {
             app_sheets::AppSheets::new(add_app, uninstall, Rc::clone(&services), notices.clone());
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        session_search.get_or_init(|| Rc::clone(&search));
         let asker = questions::Asker::new(
             questions,
             portal.clone(),
@@ -1626,7 +1730,6 @@ impl Session {
             clock,
             tray,
             wallpapers,
-            lock_power: options.lock_power,
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
@@ -1652,6 +1755,10 @@ impl Session {
             personal,
             clipboard: Rc::new(mount::clipboard::Clipboard::new()),
             clipboard_view: RefCell::new(None),
+            arrangement,
+            underway: busy,
+            kept_arrangement: RefCell::new(None),
+            arrangement_state: options.state.clone(),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
@@ -2033,6 +2140,48 @@ impl Session {
         self.shared.services.borrow_mut().settle();
     }
 
+    /// The person's arrangement, as their own record.
+    #[must_use]
+    pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
+        &self.shared.arrangement
+    }
+
+    /// Undo the person's last arranging step, through the published action
+    /// as any caller does.
+    ///
+    /// # Errors
+    /// The door's refusal: there is no step to take back.
+    pub fn undo_arrangement(&mut self) -> Result<(), DoorError> {
+        let address = ActionAddress::new(arrangement::RECORD_RESOURCE, "undo");
+        self.shared
+            .doors
+            .invoke(&address, &serde_json::Map::new())?;
+        Ok(())
+    }
+
+    /// Invoke a published action as `actor` (an agent, a script), beside
+    /// [`Self::invoke`].
+    ///
+    /// # Errors
+    /// The door's refusal: no such action, bad arguments, or one the caller
+    /// may not run.
+    pub fn invoke_with_actor(
+        &mut self,
+        actor: &str,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let empty = serde_json::Map::new();
+        let arguments = arguments.as_object().unwrap_or(&empty);
+        if let Ok(mut arrangement) = self.shared.arrangement.try_borrow_mut() {
+            let _ = &mut arrangement;
+        }
+        self.shared
+            .doors
+            .invoke_as(actor, &ActionAddress::new(resource, action), arguments)
+    }
+
     /// A window was at `place`: where search's Continue reopens it.
     pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
         self.shared.search.record_place(place);
@@ -2196,186 +2345,6 @@ impl Session {
     #[must_use]
     pub const fn input_config(&self) -> &tilo_compositor::InputConfig {
         &self.input
-    }
-
-    /// Put the view of the shell's window menu up while the reading says one
-    /// is up, and stop it when the reading says none is: the view the person
-    /// bound to the slot, or the one the session ships with. Many a machine
-    /// has no such view installed, or another one bound in its place: the
-    /// menu is a reading either way, and this only puts it on the screen.
-    ///
-    /// A binding whose app is a tilolang package runs here, over the reading
-    /// the session publishes for the slot; any other is a program of its own.
-    ///
-    /// Rebinding the slot while the menu is up starts the view bound to it
-    /// now, on the next pass, over the reading it already drew.
-    fn follow_window_menu(&mut self) {
-        use mount::slots::{Mount, View};
-
-        /// The view's surface name, whatever view draws it.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
-        /// The app whose view the session shows the menu through until the
-        /// person binds another.
-        const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
-        let reading = self.read(mount::shell::WINDOW_MENU);
-        let up = reading
-            .as_ref()
-            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
-        // A slot the person is not looking at is nobody's to draw: the
-        // binding is read while the part is up, and once more when it goes,
-        // rather than on every pass of a menu that is down.
-        if !up && self.slots.running(VIEW).is_none() {
-            return;
-        }
-        let settings = self.read(mount::slots::BINDINGS);
-        match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
-            Mount::Nothing => {}
-            Mount::Stop => self.stop_slot_view(VIEW),
-            Mount::Start { view, restart } => {
-                if restart {
-                    // The person bound another view: the one that drew the
-                    // slot goes before the new one takes it.
-                    self.stop_slot_view(VIEW);
-                }
-                match view {
-                    View::Program(program) => self.start_program_slot(VIEW, program, restart),
-                    View::Package { dir, app, view } => {
-                        self.start_package_slot(VIEW, dir, app, view, reading.as_ref());
-                    }
-                }
-            }
-        }
-        // What the view reads is what the session publishes for the slot now.
-        if let (Some(reading), true) = (reading.as_ref(), self.slot_views.running(VIEW)) {
-            self.slot_views.publish(VIEW, reading);
-        }
-    }
-
-    /// Start the program `program` that draws `slot`, over what lies under it.
-    fn start_program_slot(&mut self, slot: &str, program: std::path::PathBuf, restart: bool) {
-        if restart {
-            self.surfaces.stop(slot);
-        }
-        let surface = surfaces::Surface::new(slot, program)
-            .layer(surfaces::Layer::Overlay)
-            .anchor(
-                surfaces::Anchor::TOP
-                    | surfaces::Anchor::BOTTOM
-                    | surfaces::Anchor::LEFT
-                    | surfaces::Anchor::RIGHT,
-            )
-            .keyboard(surfaces::Keyboard::OnDemand);
-        if let Err(error) = self.start_surface(&surface) {
-            tracing::warn!(%error, "the window menu view did not start");
-            if let Some(tried) = self.slots.running(slot).cloned() {
-                self.slots.failed(slot, tried);
-            }
-        }
-    }
-
-    /// Run the view `view` of the tilolang package in `dir` for `slot`, over
-    /// the reading the session publishes for it now. A package that is no view
-    /// for the slot leaves it to the view the session ships with.
-    fn start_package_slot(
-        &mut self,
-        slot: &'static str,
-        dir: std::path::PathBuf,
-        app: String,
-        view: String,
-        reading: Option<&serde_json::Value>,
-    ) {
-        let (Some(state), Some(reading)) = (mount::slots::surface(slot), reading) else {
-            tracing::warn!(slot, "the slot has no state for a view of it to read");
-            return;
-        };
-        let spec = tilo_surface_host::slot_view::Spec {
-            app,
-            view,
-            dir,
-            surface: state,
-        };
-        let waker = std::sync::Arc::new({
-            let wake = self.compositor.waker();
-            move || wake.wake_by_ref()
-        });
-        let person = self.shared.person.clone();
-        let result = self.slot_views.start(
-            slot,
-            &spec,
-            &person,
-            &reading.to_string(),
-            waker,
-            &mut self.compositor,
-        );
-        match result {
-            Ok(()) => {
-                tracing::info!(slot, app = %spec.app, "a tilolang view draws the slot");
-            }
-            Err(why) => {
-                tracing::warn!(slot, app = %spec.app, %why, "the view bound to the slot did not start");
-                if let Some(tried) = self.slots.running(slot).cloned() {
-                    self.slots.failed(slot, tried);
-                }
-            }
-        }
-    }
-
-    /// Stop what draws `slot`, whichever kind of view it is.
-    fn stop_slot_view(&mut self, slot: &str) {
-        self.slot_views.stop(slot);
-        self.surfaces.stop(slot);
-    }
-
-    /// A press away from what a slot's tilolang view drew closes the slot, as
-    /// a press outside a menu does, and what else the view asked runs through
-    /// the session's door.
-    fn follow_slot_views(&mut self) -> Result<(), Error> {
-        /// The one slot a person can bind a view to today.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
-        let Some(state) = mount::slots::surface(VIEW) else {
-            return Ok(());
-        };
-        if self.slot_views.take_pressed_outside(VIEW) {
-            // The slot's own verb, through the same door the view's presses
-            // go through.
-            if let Err(error) = self.invoke(&state.id, "close", &serde_json::Map::new()) {
-                tracing::warn!(%error, "a press outside the slot's view did not close it");
-            }
-            return Ok(());
-        }
-        if !self.slot_views.has_asks(VIEW) {
-            return Ok(());
-        }
-        let doors = &self.shared.doors;
-        self.slot_views.serve(VIEW, |ask| {
-            let arguments: serde_json::Map<String, serde_json::Value> = ask
-                .arguments
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
-            doors
-                .invoke(&ActionAddress::new(&ask.resource, &ask.action), &arguments)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        });
-        // What the view asked may have asked the session in turn.
-        self.settle()?;
-        Ok(())
-    }
-
-    /// Where the control the slot's view shows as `name` stands, logical
-    /// `(x, y, w, h)`: what a test presses it by, and where the person's press
-    /// on it lands.
-    #[must_use]
-    pub fn slot_control(&self, slot: &str, name: &str) -> Option<(f64, f64, f64, f64)> {
-        self.slot_views.control(slot, name)
-    }
-
-    /// What the slot's view says, as assistive technology hears it: the
-    /// labels of what it draws.
-    #[must_use]
-    pub fn slot_labels(&self, slot: &str) -> Vec<String> {
-        self.slot_views.labels(slot)
     }
 
     /// Tell every open app window the temperature of the workspace it is in
@@ -2869,6 +2838,11 @@ impl Session {
             None => timeout,
         };
         self.compositor.dispatch(timeout)?;
+        // What the person is in the middle of, as the desk may not move
+        // under it (shell.md §1).
+        let underway = self.compositor.underway();
+        self.shared.underway.set(underway);
+        self.shared.follow_arrangement(underway);
         self.follow_controllers()?;
         self.follow_displays()?;
         self.follow_fullscreen();
@@ -2949,6 +2923,7 @@ impl Session {
         self.settle()?;
         self.shared.observe();
         self.shared.keep_desk();
+        self.shared.keep_arrangement();
         // The picture is the workspace in front's, which a change covering
         // one workspace lands on.
         self.shared
@@ -2978,5 +2953,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
+        // Its apps' display goes with it, and so do they: the apps outlive
+        // no session, whoever else still holds what started them.
+        if let Some(launch) = &self.shared.launch {
+            launch.end_running();
+        }
     }
 }

@@ -41,7 +41,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::scroll_region::ScrollRegion;
+#[path = "autocomplete_component.rs"]
+mod component;
 use crate::widget::{TextInput, TextInputKind, Widget};
+pub use component::{AutocompleteProps, SuggestionProps};
 
 /// One completion offered in the dropdown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1575,6 +1578,10 @@ pub struct Autocomplete {
     /// The person changed the text, typing or taking a suggestion, since
     /// [`Self::take_edited`] last ran.
     edited: bool,
+    /// What the field's text is reported to, as a described component's binding path does.
+    edits: Option<crate::component::Bound<String>>,
+    /// What taking a suggestion is reported to, as a described component's event.
+    accepted: Option<crate::component::Event>,
 }
 
 impl Autocomplete {
@@ -1596,6 +1603,8 @@ impl Autocomplete {
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
             edited: false,
+            edits: None,
+            accepted: None,
         }
     }
 
@@ -1765,6 +1774,20 @@ impl Autocomplete {
         self.list.set_arriving(None);
     }
 
+    /// Report what the person does to the field to the component's binding `edits` (each text
+    /// it holds after an edit) and event `accept` (a suggestion or the typed text taken), as a
+    /// described component does. The view's binding path keeps the text; this only says.
+    #[must_use]
+    pub fn on_edit(
+        mut self,
+        edits: crate::component::Bound<String>,
+        accept: crate::component::Event,
+    ) -> Self {
+        self.edits = Some(edits);
+        self.accepted = Some(accept);
+        self
+    }
+
     /// Rising-edge read of how the most recent interaction ended.
     pub fn take_outcome(&mut self) -> AutocompleteOutcome {
         std::mem::replace(&mut self.outcome, AutocompleteOutcome::None)
@@ -1924,8 +1947,34 @@ impl Autocomplete {
 impl Widget for Autocomplete {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.input.set_interaction_environment(environment);
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.input.sync(state, path);
+    }
+
+    /// A glide after a flick scrolls the list as the wheel does, and what the person typed or
+    /// took since the last frame is reported to the component's binding and event, if it has
+    /// them: a text set elsewhere (`set_text`) is not a person's edit.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let inner = crate::widget::Widget::update(&mut self.input, state, path);
+        if self.open {
+            self.list.advance();
+        }
+        if let Some(text) = self.take_edited() {
+            if let Some(edits) = &self.edits {
+                edits.edited(crate::component::Value::Text(text.clone()));
+            }
+            if let Some(accepted) = &self.accepted {
+                accepted.fire(Some(crate::component::Value::Text(text)));
+            }
+        }
+        inner
     }
 
     fn build_layout(
@@ -1934,8 +1983,13 @@ impl Widget for Autocomplete {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The field's own band: its control size, grown with its line.
-        let height = f32_of_f64(self.input.band_in(theme));
+        // The field's own band: its control size, grown with its line, and a finger's target
+        // where input is a finger's.
+        let height = f32_of_f64(
+            self.input
+                .band_in(theme)
+                .max(f64::from(self.input.interaction().minimum_target())),
+        );
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -1989,14 +2043,6 @@ impl Widget for Autocomplete {
 
     fn needs_animation_frame(&self) -> bool {
         self.open && self.list.needs_animation_frame()
-    }
-
-    /// A glide after a flick scrolls the list as the wheel does.
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        if self.open {
-            self.list.advance();
-        }
-        false
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {

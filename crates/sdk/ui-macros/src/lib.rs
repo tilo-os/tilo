@@ -28,7 +28,8 @@ use syn::{
 /// - `#[component(event)]`, `#[component(event(value = T))]`: an **event**, of type `Event`;
 ///   `event(value = T, at = i64)` also says where the value lands (a drop's place);
 /// - `#[component(bind)]`, `#[component(bind(merge = "splice"))]`: a **binding**, of type
-///   `Bound<T>`;
+///   `Bound<T>`; `bind(ty = Type)` describes it as another type the field holds differently (a
+///   moment a widget edits as its ISO text);
 /// - `#[component(state)]`: the widget's own **state** (lens state) to restore, a `PropType`;
 /// - `#[component(key)]`: the instance's stable key, a `String`, not described;
 /// - `#[component(skip)]`: Rust only, not described.
@@ -107,6 +108,8 @@ struct Head {
     presents: Option<String>,
     /// It draws nothing where it stands and attaches to the view it stands in.
     attaches: bool,
+    /// Why the gallery cannot show it, when it cannot: `#[component(not_in_gallery = "…")]`.
+    not_in_gallery: Option<String>,
 }
 
 /// What a field is.
@@ -124,6 +127,9 @@ enum Part {
     },
     Bind {
         merge: Tokens,
+        /// The type the binding is described as, when it is not the one the field is a
+        /// [`Bound`](crate::component::Bound) of: a moment the widget holds as its ISO text.
+        described: Option<Box<syn::Type>>,
     },
     State,
     /// The instance's key.
@@ -178,9 +184,15 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
                 head.presents = Some(value()?);
             } else if meta.path.is_ident("attaches") {
                 head.attaches = true;
+            } else if meta.path.is_ident("not_in_gallery") {
+                let reason = value()?;
+                if reason.trim().is_empty() {
+                    return Err(meta.error("say why the gallery cannot show it"));
+                }
+                head.not_in_gallery = Some(reason);
             } else {
                 return Err(meta.error(
-                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"`, `presents = \"..\"` and `attaches`",
+                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"`, `presents = \"..\"`, `attaches` and `not_in_gallery = \"..\"`",
                 ));
             }
             Ok(())
@@ -248,6 +260,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
                 let mut merge = quote!(Register);
+                let mut described = None;
                 if meta.input.peek(syn::token::Paren) {
                     meta.parse_nested_meta(|inner| {
                         if inner.path.is_ident("merge") {
@@ -264,12 +277,17 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                                 }
                             };
                             Ok(())
+                        } else if inner.path.is_ident("ty") {
+                            // A value the field holds another way (a moment as its ISO text):
+                            // the description says what it is, which is what tilolang binds.
+                            described = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                            Ok(())
                         } else {
-                            Err(inner.error("a binding takes `merge = \"splice\"`"))
+                            Err(inner.error("a binding takes `merge = \"splice\"` or `ty = Type`"))
                         }
                     })?;
                 }
-                set(&mut part, Part::Bind { merge }, span)?;
+                set(&mut part, Part::Bind { merge, described }, span)?;
             } else if meta.path.is_ident("state") {
                 set(&mut part, Part::State, span)?;
             } else if meta.path.is_ident("key") {
@@ -367,6 +385,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     let label = option_tokens(head.label.as_deref());
     let presents = option_tokens(head.presents.as_deref());
     let attaches = head.attaches;
+    let not_in_gallery = option_tokens(head.not_in_gallery.as_deref());
     // A component of no parts reads nothing into its props.
     let binding = if reads.is_empty() {
         quote!(let _ = source; let props)
@@ -392,6 +411,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
                         label: #label,
                         presents: #presents,
                         attaches: #attaches,
+                        not_in_gallery: #not_in_gallery,
                     },
                 }
             }
@@ -515,21 +535,16 @@ impl Generated {
                     props.#member = source.event(#key);
                 });
             }
-            Part::Bind { merge } => {
-                self.bindings.push(quote! {
-                    #k::BindingDescription {
-                        name: #key.into(),
-                        doc: #field_doc.into(),
-                        ty: <#ty as #k::BindType>::ty(),
-                        merge: #k::Merge::#merge,
-                    }
-                });
-                self.reads.push(quote! {
-                    if let Some(bound) = source.binding(#key) {
-                        props.#member = <#ty as #k::BindType>::from_bound(bound)
-                            .map_err(|message| #k::Error::value(#name, #key, message))?;
-                    }
-                });
+            Part::Bind { merge, described } => {
+                self.binding(
+                    k,
+                    name,
+                    field,
+                    &key,
+                    &field_doc,
+                    &merge,
+                    described.as_deref(),
+                );
             }
             Part::State => {
                 self.states.push(quote! {
@@ -563,6 +578,41 @@ impl Generated {
             }
             _ => false,
         }
+    }
+
+    /// A binding: what it is described as, and how an instance's binding reads into it.
+    fn binding(
+        &mut self,
+        k: &Tokens,
+        name: &str,
+        field: &syn::Field,
+        key: &str,
+        doc: &str,
+        merge: &Tokens,
+        described: Option<&syn::Type>,
+    ) {
+        let (member, ty) = match &field.ident {
+            Some(member) => (member, &field.ty),
+            None => return,
+        };
+        let described = described.map_or_else(
+            || quote!(<#ty as #k::BindType>::ty()),
+            |shown| quote!(<#shown as #k::PropType>::ty()),
+        );
+        self.bindings.push(quote! {
+            #k::BindingDescription {
+                name: #key.into(),
+                doc: #doc.into(),
+                ty: #described,
+                merge: #k::Merge::#merge,
+            }
+        });
+        self.reads.push(quote! {
+            if let Some(bound) = source.binding(#key) {
+                props.#member = <#ty as #k::BindType>::from_bound(bound)
+                    .map_err(|message| #k::Error::value(#name, #key, message))?;
+            }
+        });
     }
 
     fn prop(

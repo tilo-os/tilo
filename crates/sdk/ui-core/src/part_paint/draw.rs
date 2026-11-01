@@ -6,13 +6,13 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello::peniko::{
     BlendMode, Brush as VelloBrush, ColorStop, Extend, Fill, Gradient, ImageBrush, ImageData,
     ImageQuality,
 };
 
-use super::{Brush, Moment, Op, PainterSet, Part, PartScene, PartTokens};
+use super::{Brush, Moment, Op, PainterSet, Part, PartTokens};
 use crate::theme::Theme;
 use crate::tokens::SurfaceRole;
 
@@ -122,14 +122,14 @@ pub fn paint_part(
     let hit = painted.hit.as_ref().map(|hit| to_caller * hit.clone());
     let sampled = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar);
     if sampled && painted.scene.samples_backdrop() {
-        encode(scene, placed, (&painted.scene, true), theme, &tokens);
+        encode(scene, placed, (&painted.scene.ops, true), theme, &tokens);
         return Some(Painted { hit });
     }
     let mut drawn = Scene::new();
     encode(
         &mut drawn,
         Affine::IDENTITY,
-        (&painted.scene, false),
+        (&painted.scene.ops, false),
         theme,
         &tokens,
     );
@@ -184,6 +184,7 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         tokens.raised,
         tokens.accent,
         tokens.border,
+        tokens.light,
     ] {
         for channel in color.components {
             channel.to_bits().hash(&mut hasher);
@@ -196,26 +197,35 @@ fn tokens_hash(tokens: &PartTokens) -> u64 {
         tokens.dark,
         tokens.high_contrast,
         tokens.reduce_transparency,
+        tokens.backdrop,
     )
         .hash(&mut hasher);
-    for param in &tokens.params {
+    for param in tokens.params.iter() {
         param.name.hash(&mut hasher);
         param.value.to_bits().hash(&mut hasher);
     }
+    // A theme's surface shader draws the part: another program is another
+    // picture, whatever else is the same.
+    tokens.shader.hash(&mut hasher);
     hasher.finish()
 }
 
-/// Encode `part` into `out`, in the coordinates `transform` maps into its.
-/// `sampled`: whether a backdrop brush shows the backdrop or its fallback.
+/// Encode `ops` into `out`, in the coordinates `transform` maps into its.
+/// `sampled`: whether a backdrop brush may show the backdrop, or is its
+/// fallback.
+///
+/// A backdrop fill is the sample (or the fallback), the painter's glaze
+/// over it, and, over a sample, the material's band holding all of it:
+/// the band is the toolkit's, applied last.
 fn encode(
     out: &mut Scene,
     transform: Affine,
-    (part, sampled): (&PartScene, bool),
+    (ops, sampled): (&[Op], bool),
     theme: &Theme,
     tokens: &PartTokens,
 ) {
     let mut open = 0_usize;
-    for op in &part.ops {
+    for op in ops {
         match op {
             Op::Fill {
                 path,
@@ -224,16 +234,49 @@ fn encode(
                         blur,
                         lens,
                         fallback,
+                        glaze,
                     },
                 ..
-            } if sampled => crate::backdrop::fill_painted_backdrop(
-                out,
-                transform,
+            } => {
+                let shown = sampled
+                    && crate::backdrop::fill_backdrop_sample(
+                        out,
+                        transform,
+                        path,
+                        crate::backdrop::Sample {
+                            blur: *blur,
+                            lens: *lens,
+                            radius: f64::from(tokens.radius),
+                        },
+                        theme,
+                        tokens.fill,
+                    );
+                if !shown {
+                    out.fill(Fill::NonZero, transform, *fallback, None, path);
+                }
+                // A glaze shows no backdrop of its own.
+                encode(out, transform, (glaze, false), theme, tokens);
+                if shown {
+                    crate::backdrop::hold_in_band(out, transform, path, theme, tokens.fill);
+                }
+            }
+            Op::Fill {
                 path,
-                (*blur, lens.refraction, f64::from(tokens.radius)),
-                theme,
-                (tokens.fill, *fallback),
-            ),
+                brush: Brush::Shader { source, fallback },
+                brush_transform,
+            } => {
+                let image = super::shader::evaluate(source, path.bounding_box(), tokens, *fallback);
+                let brush = ImageBrush::new(image)
+                    .with_extend(Extend::Pad)
+                    .with_quality(ImageQuality::Medium);
+                out.fill(
+                    Fill::NonZero,
+                    transform,
+                    &brush,
+                    Some(*brush_transform),
+                    path,
+                );
+            }
             Op::Fill {
                 path,
                 brush,
@@ -334,7 +377,9 @@ fn vello_brush(brush: &Brush) -> (VelloBrush, Affine) {
                 Affine::scale(f64::from(scale.max(f32::MIN_POSITIVE))),
             )
         }
-        Brush::Backdrop { fallback, .. } => (VelloBrush::Solid(*fallback), Affine::IDENTITY),
+        Brush::Backdrop { fallback, .. } | Brush::Shader { fallback, .. } => {
+            (VelloBrush::Solid(*fallback), Affine::IDENTITY)
+        }
     }
 }
 

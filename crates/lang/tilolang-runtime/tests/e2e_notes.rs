@@ -7,6 +7,7 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
+    use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
         Value, ViewInstance,
@@ -210,8 +211,10 @@ mod cases {
         let n = Notes::new();
         let note = n.new_note();
         let editor = n.rt.open_resource(&me(), &note, None).unwrap();
-        let body = of_kind(editor.tree(), "ui.TextInput")[1].key.clone();
-        editor.edit(&body, &Value::text("Oat milk, eggs")).unwrap();
+        let body = of_kind(editor.tree(), "ui.RichInput")[0].key.clone();
+        editor
+            .edit(&body, &Value::Rich(RichValue::from_text("Oat milk, eggs")))
+            .unwrap();
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
@@ -290,24 +293,28 @@ mod cases {
             .unwrap()
         };
         let (view_a, view_b) = (editor(&rt_a), editor(&rt_b));
-        let body =
-            |v: &tilolang_runtime::ViewInstance| of_kind(v.tree(), "ui.TextInput")[1].key.clone();
-        view_a.edit(&body(&view_a), &Value::text("Hello")).unwrap();
+        // The body is the editor's rich input; it hands over the whole text it holds.
+        let body = |v: &tilolang_runtime::ViewInstance| {
+            let inputs = of_kind(v.tree(), "ui.RichInput");
+            let [input] = inputs.as_slice() else {
+                panic!("the editor draws one rich input, the body: {inputs:#?}");
+            };
+            input.key.clone()
+        };
+        let rich = |text: &str| Value::Rich(RichValue::from_text(text));
+        view_a.edit(&body(&view_a), &rich("Hello")).unwrap();
         store_a.sync_with(&mut store_b).unwrap();
 
-        view_a
-            .edit(&body(&view_a), &Value::text("Hello world"))
-            .unwrap();
-        view_b
-            .edit(&body(&view_b), &Value::text("Big Hello"))
-            .unwrap();
+        view_a.edit(&body(&view_a), &rich("Hello world")).unwrap();
+        view_b.edit(&body(&view_b), &rich("Big Hello")).unwrap();
         store_a.sync_with(&mut store_b).unwrap();
 
-        let (a, b) = (
-            rt_a.read(&note, "body").unwrap(),
-            rt_b.read(&note, "body").unwrap(),
-        );
-        assert_eq!(a, b);
-        assert_eq!(a, Value::text("Big Hello world"));
+        let written = |rt: &Runtime| match rt.read(&note, "body").unwrap() {
+            Value::Rich(body) => body.written_text(),
+            other => panic!("the body is rich text, not {other:?}"),
+        };
+        let (a, b) = (written(&rt_a), written(&rt_b));
+        assert_eq!(a, b, "both replicas hold the same body");
+        assert_eq!(a, "Big Hello world", "and it keeps both people's words");
     }
 }

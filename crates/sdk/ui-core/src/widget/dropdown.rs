@@ -43,8 +43,11 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[path = "dropdown_component.rs"]
+mod component;
 use crate::widget::TaffyTreeExt;
 use crate::widget::binding::{BoxedBinding, Pulled};
+pub use component::DropdownProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -529,6 +532,12 @@ impl Dropdown {
         }
         self.values.clone_from(&options);
         self.options = options;
+    }
+
+    /// What the list offers, in order.
+    #[must_use]
+    pub fn options(&self) -> &[String] {
+        &self.options
     }
 
     /// Set stable values with separate presentation labels. This keeps a

@@ -113,7 +113,7 @@ pub(crate) fn mount_controls(
     let triggered = PressedChords::default();
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
-    crate::overlays::mount(compositor, &overlays);
+    crate::press_outside::mount(compositor, &overlays);
     compositor.add_host(Box::new(SessionKeys::new(
         shortcuts,
         Presses {

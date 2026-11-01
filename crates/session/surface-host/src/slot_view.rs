@@ -445,6 +445,7 @@ impl SlotView {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
+                root: tilolang_tilo::host::RootView::default(),
             },
             Rc::new(SlotPlatform {
                 meta: meta.clone(),

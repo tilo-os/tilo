@@ -149,8 +149,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
 #[serial_test::serial(process_env)]
 fn configured_theme_file_change_rethemes_an_open_app() {
     let config = tempfile::tempdir().expect("isolated appearance store");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", config.path());
+    let _profile = settings_store::scoped_source(Some(settings_store::profile(config.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -200,8 +199,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     // is the one the compositor watches. A write that leaves this surface
     // on the old theme is the failure.
     let session = tempfile::tempdir().expect("session settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", session.path());
+    let _session = settings_store::scoped_source(Some(settings_store::profile(session.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -258,17 +256,9 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     // surface unless the session document wins.
     let session = tempfile::tempdir().expect("session settings");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.remove("XDG_CURRENT_DESKTOP")
-        .set("XDG_CONFIG_HOME", session.path());
+    env.remove("XDG_CURRENT_DESKTOP");
     // The session's settings, as the app's channel to the shell gives them.
-    struct RestoreSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-    impl Drop for RestoreSource {
-        fn drop(&mut self) {
-            settings_store::install_source(self.0.take());
-        }
-    }
-    let _restore = RestoreSource(settings_store::installed_source());
-    settings_store::install_source(Some(settings_store::profile(session.path())));
+    let _session = settings_store::scoped_source(Some(settings_store::profile(session.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -1161,13 +1151,6 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
 #[test]
 #[serial_test::serial(process_env)]
 fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
-    struct Restore(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            settings_store::install_source(self.0.take());
-        }
-    }
-    let _restore = Restore(settings_store::installed_source());
     let mut env = tilo_test_env::ScopedEnv::new();
     for name in [
         "TILO_A11Y_HIGH_CONTRAST",
@@ -1184,7 +1167,7 @@ fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
     else {
         unreachable!("a document is an object")
     };
-    settings_store::install_source(Some(std::sync::Arc::new(
+    let _document = settings_store::scoped_source(Some(std::sync::Arc::new(
         settings_store::HostDocument::new(initial, |_| Ok(())),
     )));
     let mut app = App::from_factory_with_inputs(

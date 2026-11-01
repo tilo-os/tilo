@@ -54,7 +54,9 @@ pub const PRIMS: &[Prim] = &[
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &[]),
-    prim_of("scroll", &[], &["axis"]),
+    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways (`axis: .both`,
+    // a 2D surface such as a desk of strips).
+    prim_of("scroll", &[], &["axis", "across", "both"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
     prim_of("text", &["value"], &["role"]),
@@ -76,6 +78,12 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
+    // A resource drawn through its type's default view, as its own package draws it, whatever
+    // its type: what a shell composes a place from when it knows the resource by id alone
+    // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
+    // (`meta(r).opens`). `view` (`Text`, a view's id or name, as an arrangement keeps it) draws
+    // it through another of its package's views that takes it alone; empty for the default.
+    prim_of("show", &["of"], &["view"]),
 ];
 
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it
@@ -147,7 +155,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "axis",
         name: "Axis",
-        variants: &["vertical", "horizontal"],
+        variants: &["vertical", "horizontal", "both"],
     },
     Choice {
         kind: "text_role",
@@ -207,10 +215,11 @@ pub const BUILTINS: &[&str] = &[
     "dated",
     "open",
     "set",
+    "resource",
 ];
 
 /// The fields of `workspace`.
-pub const WORKSPACE_FIELDS: &str = "members";
+pub const WORKSPACE_FIELDS: &str = "members, me";
 
 /// The fields of `space` (layout.md, "Responding to space").
 pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";

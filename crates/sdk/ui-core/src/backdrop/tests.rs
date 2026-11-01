@@ -414,6 +414,8 @@ fn cost_at_1080p() {
         image: placeholder((0, 0), texels(rect.width()), texels(rect.height()), ground),
         rect,
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
+        sampling: Sampling::Smooth,
+        cell_px: 0.0,
         below: stripes(target.0, target.1),
         ground,
     };
@@ -743,14 +745,8 @@ fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
 
 fn glass_theme(refraction: f32) -> Theme {
     let mut document = crate::theme::Preset::Glass.document();
-    document.material.floating = crate::tokens::Finish::Glass {
-        blur: 4.0,
-        tint: 0.2,
-        saturation: 1.0,
-        refraction,
-        edge_highlight: 0.5,
-        specular: 0.0,
-    };
+    document.material.floating =
+        crate::tokens::Finish::glass([4.0, 0.2, 1.0, refraction, 0.5, 0.0]);
     Theme::from_document(&document).unwrap()
 }
 
@@ -837,4 +833,84 @@ fn a_block_panel_is_flat_and_bordered() {
             1
         ));
     }
+}
+
+/// A glass body's refraction rings are clipped only to an outline that is
+/// not its body. A painter draws its body at the origin, and the body
+/// rebuilt from that path's bounds lands a hair off it (the arcs' ends sit
+/// at -4e-31): compared exactly, every glass body took a clip it did not
+/// need and had its edges antialiased twice.
+#[test]
+fn a_body_rebuilt_from_its_path_is_the_same_outline() {
+    let body = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 14.0);
+    let path = body.to_path(0.1);
+    let rebuilt = RoundedRect::from_rect(path.bounding_box(), 14.0).to_path(0.1);
+    assert!(rebuilt != path, "the premise: not bit-identical");
+    assert!(same_outline(&rebuilt, &path));
+    let mut triangle = vello::kurbo::BezPath::new();
+    triangle.move_to((0.0, 98.0));
+    triangle.line_to((199.75, 0.0));
+    triangle.line_to((399.5, 98.0));
+    triangle.close_path();
+    assert!(!same_outline(&rebuilt, &triangle));
+    let smaller = RoundedRect::new(0.0, 0.0, 399.5, 98.0, 13.0).to_path(0.1);
+    assert!(!same_outline(&rebuilt, &smaller));
+}
+
+/// Pixelated's floating panel shows what lies below it as cells: one colour
+/// across each cell, and the stripes still there from cell to cell, not
+/// blurred away and not the opaque placeholder. An unblurred finish still
+/// runs the backdrop pass.
+#[test]
+fn a_pixelated_panel_shows_what_lies_below_as_cells() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let seen = render_floating_over_stripes(&theme);
+    let cell = theme
+        .finish(crate::tokens::SurfaceRole::Floating)
+        .params()
+        .iter()
+        .find(|param| param.name == "cell")
+        .map(|param| param.value)
+        .expect("the pixelated floating finish states its cell");
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the shipped cell is a few whole pixels"
+    )]
+    let cell = cell as u32;
+    assert!(cell >= 2, "a cell of {cell} px shows no pixels");
+    // The panel's cells start at its top left (64, 48). Inside one cell,
+    // away from the rim, every pixel is the same colour.
+    let (x0, y0) = (64 + 6 * cell, 48 + 4 * cell);
+    for (dx, dy) in [(1, 0), (0, 1), (cell - 1, cell - 1)] {
+        assert!(
+            close(
+                pixel(&seen, width, x0, y0),
+                pixel(&seen, width, x0 + dx, y0 + dy),
+                2
+            ),
+            "one cell, two colours: {:?} vs {:?}",
+            pixel(&seen, width, x0, y0),
+            pixel(&seen, width, x0 + dx, y0 + dy)
+        );
+    }
+    // Across a row of cells the stripes below still read: what the pass
+    // sampled, not the placeholder's flat ground.
+    let row: Vec<u16> = (0..12)
+        .map(|i| brightness(pixel(&seen, width, 96 + i * cell + 1, y0)))
+        .collect();
+    // The cells are held in the material's band under the ground at
+    // `cover`, so the stripes read faintly but plainly, cell by cell.
+    let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
+    assert!(
+        spread >= 6,
+        "the cells show nothing of the stripes: {row:?}"
+    );
+    let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
+    assert!(
+        row.iter()
+            .any(|value| value.abs_diff(brightness(ground)) > 6),
+        "the cells are the placeholder's flat ground: {row:?}"
+    );
 }

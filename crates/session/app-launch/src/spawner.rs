@@ -17,12 +17,22 @@
 //! ([`launcher::memory_pressure::Cause`]). The report carries that with the
 //! status ([`End::memory`]), so the person is told the session closed the app
 //! rather than that it stopped working.
+//!
+//! The apps a session started end with it: dropping the [`Spawner`] asks each
+//! one still running to end (`SIGTERM`), through a pidfd taken while the
+//! child was still unreaped, so the signal can reach no later process that
+//! took its pid. Their display was the session's compositor, gone with it;
+//! and a test's session, dropped as the test ends or unwinds from a failed
+//! assertion, leaves no app behind.
 
+use std::collections::BTreeMap;
 use std::os::fd::AsFd as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+
+use tilo_lock::MutexRecover as _;
 
 use crate::doors::HeldDoor;
 use crate::plan::Planned;
@@ -147,6 +157,16 @@ pub struct Spawner {
     wake: Option<Wake>,
     events: (mpsc::Sender<Event>, Receiver<Event>),
     next: u64,
+    /// The apps still running, by launch id: each one's watcher removes it
+    /// once it has ended, and the drop ends the rest.
+    running: Running,
+}
+
+/// The apps a spawner started that have not ended yet.
+type Running = Arc<Mutex<BTreeMap<u64, App>>>;
+
+fn running(running: &Running) -> std::sync::MutexGuard<'_, BTreeMap<u64, App>> {
+    running.lock_recover()
 }
 
 impl Default for Spawner {
@@ -163,6 +183,7 @@ impl Spawner {
             wake,
             events: mpsc::channel(),
             next: 0,
+            running: Running::default(),
         }
     }
 
@@ -229,6 +250,9 @@ impl Spawner {
             id,
             pid: child.id(),
         };
+        // Taken before the watcher can reap the child, so it names this
+        // process and no later one with its pid.
+        running(&self.running).insert(id, App::of(started.pid));
         record(started.pid);
         if let Some(gate) = gate {
             // The launch is written down: the app may connect.
@@ -245,10 +269,12 @@ impl Spawner {
         let title = planned.title.clone();
         let events = self.events.0.clone();
         let wake = self.wake.clone();
+        let still_running = Arc::clone(&self.running);
         std::thread::Builder::new()
             .name(format!("app-{}", planned.app))
             .spawn(move || {
                 let end = ended(child);
+                running(&still_running).remove(&id);
                 // A session that has stopped listening is going away; its
                 // apps' endings are nobody's business then.
                 let _ = events.send(Event {
@@ -278,6 +304,82 @@ impl Spawner {
     #[cfg(feature = "test-support")]
     pub fn report(&self, event: Event) {
         let _ = self.events.0.send(event);
+    }
+}
+
+impl Spawner {
+    /// The session is going away, and its apps with it: ask each one still
+    /// running to end. Its watcher reaps it, and reports how it ended, as it
+    /// would any other.
+    pub fn end_running(&self) {
+        let apps = std::mem::take(&mut *running(&self.running));
+        for app in apps.into_values() {
+            app.end();
+        }
+    }
+}
+
+impl Drop for Spawner {
+    fn drop(&mut self) {
+        self.end_running();
+    }
+}
+
+/// A started app the spawner can still end: a pidfd of it, where the kernel
+/// has them.
+struct App {
+    #[cfg(target_os = "linux")]
+    pidfd: Option<std::os::fd::OwnedFd>,
+}
+
+impl App {
+    /// The app the child `pid` runs, which must not have been reaped yet.
+    #[cfg(target_os = "linux")]
+    fn of(pid: u32) -> Self {
+        use std::os::fd::FromRawFd as _;
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return Self { pidfd: None };
+        };
+        // SAFETY: pidfd_open takes a pid and flags and returns a new
+        // descriptor this process owns, or -1.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        let pidfd = match i32::try_from(fd) {
+            // SAFETY: the kernel just returned this descriptor, and nothing
+            // else owns it.
+            Ok(fd) if fd >= 0 => Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }),
+            _ => {
+                tracing::warn!(
+                    error = %std::io::Error::last_os_error(),
+                    "no pidfd for an app: it can outlive its session"
+                );
+                None
+            }
+        };
+        Self { pidfd }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn of(_pid: u32) -> Self {
+        Self {}
+    }
+
+    /// Ask the app to end; one that has ended already is left as it is.
+    fn end(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(pidfd) = &self.pidfd {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: the descriptor is a live pidfd this value owns, and
+            // the signal's info may be null.
+            let _ = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGTERM,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+        }
     }
 }
 
@@ -421,6 +523,24 @@ mod tests {
             events.iter().all(|event| event.end.memory().is_none()),
             "a launcher that keeps no app tree remembers nothing"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_still_running_ends_with_the_spawner_that_started_it() {
+        let mut spawner = Spawner::default();
+        let running = spawner
+            .start(&shell("exec sleep infinity", BTreeMap::new()))
+            .expect("starts");
+        let ended = spawner
+            .start(&shell("exit 0", BTreeMap::new()))
+            .expect("starts");
+        // The one that ended is reaped and forgotten: the drop signals only
+        // what is still running.
+        assert_eq!(events(&spawner, 1)[0].id, ended.id);
+
+        drop(spawner);
+        tilo_test_env::exited("the app its session no longer runs", running.pid);
     }
 
     #[test]

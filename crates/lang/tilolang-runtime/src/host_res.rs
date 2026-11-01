@@ -380,6 +380,7 @@ impl Core {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
+                    .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
             (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, author),
             (FieldKind::Counter, FieldValue::Counter(c)) => Ok(if field.ty == Ty::Float {
@@ -800,6 +801,9 @@ impl Core {
                 return trap(format!("`{}` has no field `{fid}`", ty.name));
             };
             let m = match (f.kind, v) {
+                // A register holding a record, a reference, a list or a set (`to_scalar`'s
+                // last arm) is one JSON value in the record: a place's resource, a note's
+                // tags. A register is one value, replaced whole.
                 (FieldKind::Register, v) => Mutation::SetRegister {
                     field: f.id.clone(),
                     value: to_scalar(v, &f.ty)?,
@@ -959,8 +963,56 @@ impl Core {
                 let r = self.ref_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(r.target.id_string()))
             }
+            // `resource(id)`: the resource the store keeps under `id`, read as its own type.
+            // A place names what it shows by the id alone (`ArrangementPlace.record`), so a
+            // shell reads the place's resource — its actions, its title — without knowing the
+            // type ahead; a view that reads it runs again when it changes.
+            Imp::ResourceRef => self.resource_by_id(a.h(0)?),
             _ => trap("not a resource import"),
         }
+    }
+
+    /// `resource(id)`: the resource the store keeps under `id`, read as its own type; `.none`
+    /// for text naming none this store holds. A place names what it shows by the id alone, so a
+    /// shell reads that resource — its actions, its title — without knowing the type ahead, and
+    /// a view that reads it runs again when it changes.
+    fn resource_by_id(&self, at: i32) -> HResult<Option<Wasm>> {
+        let id = self.text(at)?;
+        if id.is_empty() {
+            return self.ret_h(Value::none());
+        }
+        let mut target = ResourceRef::parse_id(&id, String::new())
+            .ok_or_else(|| crate::engine::HostFail::Trap(format!("`{id}` is no resource id")))?;
+        if target.ty.is_empty() {
+            target.ty = self.stored_type(&target);
+        }
+        // Another app's resource is known here by the reading its app published of it, which
+        // names its type.
+        if target.ty.is_empty()
+            && let Some(ty) = self.foreign.borrow().type_of(&id)
+        {
+            target.ty = ty;
+        }
+        if target.ty.is_empty() {
+            // Another app's resource whose reading has not come in yet: the view runs again
+            // when a new one does.
+            let key = crate::foreign::known_key();
+            let (generation, seen) = {
+                let states = self.view_states.borrow();
+                (
+                    states.generation(&key),
+                    states.get(&key).cloned().unwrap_or_else(Value::none),
+                )
+            };
+            self.note_state_read(key, generation, &seen)?;
+            // Gone, or not synced here yet: the place still stands, showing nothing.
+            return self.ret_h(Value::none());
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::some(Value::Ref(RefValue {
+            target: Rc::new(target),
+            author,
+        })))
     }
 
     /// `move(x, to: i, among: run)`: to the place `i` among the items of `run` other than `x`

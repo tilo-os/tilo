@@ -64,6 +64,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether the state it toggles is on for the resource, when it says.",
             ),
             (
+                "key",
+                "Option<Text>",
+                "The plain key that runs it while its window has the keyboard (and, on a row's \
+                 action, while that row is selected), when it declares one.",
+            ),
+            (
                 "params",
                 "List<Param>",
                 "What it takes besides the resource, each with its default.",
@@ -72,6 +78,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "run",
                 "Action",
                 "The action applied to the resource: what a control runs.",
+            ),
+            (
+                "group",
+                "Option<Text>",
+                "The run of the resource's actions it stands in, as the app names it \
+                 (`group: \"Reply\"`); empty for one in no run.",
+            ),
+            (
+                "frequent",
+                "Bool",
+                "Whether it is a command the person reaches for on most things of its type \
+                 (`frequent: true`): a surface showing the resource's actions draws it directly.",
             ),
         ],
     },
@@ -238,6 +256,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
         fields: &[
             ("who", "Principal", "Whose lens it is."),
+            (
+                "composing",
+                "Bool",
+                "Whether they are typing a message in it now: a draft under way, never what \
+                 it says (what a conversation shows as typing).",
+            ),
             (
                 "mine",
                 "Bool",

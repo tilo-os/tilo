@@ -84,6 +84,22 @@ impl QrWidget {
         self
     }
 
+    /// [`Self::with_secret`] after construction.
+    pub fn set_secret(&mut self, secret: bool) {
+        self.secret = secret;
+    }
+
+    /// Whether it marks private pairing material.
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
+        self.secret
+    }
+
+    /// [`Self::with_alt`] after construction.
+    pub fn set_alt(&mut self, alt: impl Into<String>) {
+        self.alt = alt.into();
+    }
+
     /// Give the generated image a stable address for accessibility,
     /// inspection, and headless scenarios.
     #[must_use]

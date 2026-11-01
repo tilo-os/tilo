@@ -44,8 +44,24 @@ use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 use crate::floating_surface::Material;
+use crate::part_paint::Lens;
+pub use crate::part_paint::Sampling;
 use crate::theme::Theme;
 use crate::tokens::{Finish, SurfaceRole};
+
+/// What a backdrop brush asks of the pass: how blurred, through what lens,
+/// at what corner radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sample {
+    /// Blur standard deviation, logical pixels; `0` shows what is below
+    /// straight.
+    pub blur: f32,
+    /// The lens: refraction at the rim, and whether the sample is shown as
+    /// cells.
+    pub lens: Lens,
+    /// The part's corner radius, which the lens rings follow.
+    pub radius: f64,
+}
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
@@ -80,20 +96,19 @@ pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
     matches!(material, Material::Floating) && samples(theme.finish(SurfaceRole::Floating))
 }
 
-/// Whether a surface of `finish` shows a blurred backdrop: a translucent or
-/// glass finish with a blur. Unblurred translucency is never drawn over a
+/// Whether a surface of `finish` shows a blurred backdrop: a translucent
+/// finish with a blur. Unblurred translucency is never drawn over a
 /// backdrop pass (`docs/design-language.md`, "Material and
 /// transparency"); such a finish is its tint over the ground it knows.
-fn samples(finish: Finish) -> bool {
+fn samples(finish: &Finish) -> bool {
     finish.translucent() && finish.blur() > 0.0
 }
 
-/// Fill `shape` as a surface of `role` stands: its finish
-/// ([`Theme::finish`]) over `ground`. A floating or bar surface under an
-/// active [`BackdropRecording`] shows what lies below it, held in the
-/// material's band, bent and lit as its painter set says; every other
-/// surface, and any without a backdrop pass, is its opaque ground with the
-/// light its finish catches.
+/// Fill `shape` as a surface of `role` stands: its finish's painter set
+/// ([`Theme::painter`]) draws it over `ground`. A floating or bar surface
+/// under an active [`BackdropRecording`] can show what lies below it, held
+/// in the material's band, bent and lit as its set says; every other
+/// surface, and any without a backdrop pass, is drawn opaque.
 pub fn fill_role(
     scene: &mut Scene,
     transform: Affine,
@@ -102,74 +117,95 @@ pub fn fill_role(
     theme: &Theme,
     ground: Color,
 ) {
-    let finish = theme.finish(role);
-    let sampled = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar);
-    fill_finish(scene, transform, shape, finish, sampled, theme, ground);
+    paint_body(
+        scene,
+        transform,
+        shape,
+        (theme.finish(role), role),
+        theme,
+        ground,
+    );
 }
 
-/// [`fill_role`] for a finish already resolved. `sampled`: whether this
-/// surface may take a blurred backdrop at all (the window ground and
-/// controls never do: what is below a window is the compositor's, and a
-/// control stands on a ground it knows).
-fn fill_finish(
+/// Paint `shape` as the body of a surface of `role` in `finish` over
+/// `ground`, through the finish's painter set; a set that leaves the part
+/// to the toolkit has it drawn by the Default set.
+///
+/// A set draws a part as its rect at a radius. A rounded rect, a rect and a
+/// circle are that; any other shape is drawn as its bounding box clipped to
+/// the shape.
+fn paint_body(
     scene: &mut Scene,
     transform: Affine,
     shape: &impl Shape,
-    finish: Finish,
-    sampled: bool,
+    (finish, role): (&Finish, SurfaceRole),
     theme: &Theme,
     ground: Color,
 ) {
-    let optics = finish.optics();
-    let body = shape.as_rounded_rect();
-    if sampled
-        && samples(finish)
-        && let Some((image, brush_transform)) =
-            record(scene, transform, shape, finish.blur(), ground)
-    {
-        let brush = ImageBrush::new(image)
-            .with_extend(Extend::Pad)
-            .with_quality(ImageQuality::Medium);
-        match body {
-            Some(body) if optics.refraction > 0.0 => {
-                refract(
-                    scene,
-                    transform,
-                    &body,
-                    &brush,
-                    brush_transform,
-                    optics.refraction,
-                );
-            }
-            _ => scene.fill(
-                Fill::NonZero,
-                transform,
-                &brush,
-                Some(brush_transform),
-                shape,
-            ),
-        }
-        if let Some(body) = body {
-            crate::surface::sheen(scene, transform, &body, optics);
-        }
-        settle(scene, transform, shape, theme, ground);
-        scene.fill(
-            Fill::NonZero,
+    use crate::part_paint::{Moment, Part, States, builtin, paint_part, part_tokens};
+    let (rect, radius, clip) = body_of(shape);
+    let part = match role {
+        SurfaceRole::Window => Part::WindowGround,
+        SurfaceRole::Control => Part::ControlFace,
+        SurfaceRole::Floating => Part::FloatingPanel,
+        SurfaceRole::Bar => Part::BarBody,
+    };
+    let mut tokens = part_tokens(
+        theme,
+        role,
+        (ground, theme.tokens.colors.text_primary, Color::TRANSPARENT),
+        ground,
+    );
+    tokens.radius = crate::num::f32_of_f64(radius);
+    tokens.params = finish.params().clone();
+    tokens.backdrop = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar)
+        && !(theme.reduce_transparency || theme.forced_colors)
+        && takes_backdrop(scene);
+    if let Some(clip) = &clip {
+        scene.push_clip_layer(Fill::NonZero, transform, clip);
+    }
+    let rest = Moment::settled(States::REST);
+    let painted = paint_part(
+        scene,
+        transform,
+        rect,
+        (finish.set(), part, role),
+        rest,
+        &tokens,
+        theme,
+    );
+    if painted.is_none() {
+        paint_part(
+            scene,
             transform,
-            ground.with_alpha(finish.tint()),
-            None,
-            shape,
+            rect,
+            (builtin::default_set(), part, role),
+            rest,
+            &tokens,
+            theme,
         );
-        if let Some(body) = body {
-            crate::surface::rim_light(scene, transform, &body, optics);
-        }
-        return;
     }
-    scene.fill(Fill::NonZero, transform, ground, None, shape);
-    if let Some(body) = body {
-        crate::surface::sheen(scene, transform, &body, optics);
-        crate::surface::rim_light(scene, transform, &body, optics);
+    if clip.is_some() {
+        scene.pop_layer();
     }
+}
+
+/// `shape` as a painter set draws a part: its rect, its corner radius, and
+/// the shape to clip to where it is neither a rounded rect with one radius,
+/// a rect nor a circle.
+fn body_of(shape: &impl Shape) -> (Rect, f64, Option<vello::kurbo::BezPath>) {
+    if let Some(body) = shape.as_rounded_rect()
+        && let Some(radius) = body.radii().as_single_radius()
+    {
+        return (body.rect(), radius, None);
+    }
+    if let Some(rect) = shape.as_rect() {
+        return (rect, 0.0, None);
+    }
+    if let Some(circle) = shape.as_circle() {
+        return (circle.bounding_box(), circle.radius, None);
+    }
+    (shape.bounding_box(), 0.0, Some(shape.to_path(0.1)))
 }
 
 /// Draw the blurred backdrop `brush` in `body` as a thick lens bends it:
@@ -220,43 +256,84 @@ fn refract(
     }
 }
 
+/// Whether a surface drawn into `scene` now would be recorded for the
+/// backdrop pass: a recording is active, `scene` is one of its layers and a
+/// region is left this frame.
+fn takes_backdrop(scene: &Scene) -> bool {
+    let address = std::ptr::from_ref(scene) as usize;
+    RECORDING.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|recording| {
+            (recording.layers.iter().any(|&(known, _)| known == address)
+                || recording.nested.contains(&address))
+                && recording.next_slot < MAX_BACKDROP_REGIONS
+        })
+    })
+}
+
 /// Fill `path` with what lies below it, for a painter's backdrop brush
-/// (`crate::part_paint`): under an active [`BackdropRecording`] the
-/// backdrop blurred by `blur` logical pixels, bent by `refraction` at the
-/// rim of the `radius`-rounded box around it, and held in the material's
-/// band around `tint` (the colour the painter lays over it), so ink keeps
-/// its contrast whatever the painter draws next. `fallback` where nothing
-/// may be translucent or nothing records.
-pub(crate) fn fill_painted_backdrop(
+/// (`crate::part_paint`): under an active [`BackdropRecording`], the
+/// backdrop blurred by `blur` logical pixels and bent by `refraction` at
+/// the rim of the `radius`-rounded box around the path. `tint` is the
+/// colour the painter lays over it, which the placeholder shows where no
+/// pass substitutes it. `false`, and nothing drawn, where nothing may be
+/// translucent or nothing records: the caller draws the brush's fallback.
+///
+/// The caller then draws the painter's glaze and holds the whole in the
+/// material's band with [`hold_in_band`], last.
+pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
     path: &vello::kurbo::BezPath,
-    (blur, refraction, radius): (f32, f32, f64),
+    sample: Sample,
     theme: &Theme,
-    (tint, fallback): (Color, Color),
-) {
-    let translucent = !(theme.reduce_transparency || theme.forced_colors) && blur > 0.0;
-    let recorded = translucent
-        .then(|| record(scene, transform, path, blur, tint))
-        .flatten();
+    tint: Color,
+) -> bool {
+    let Sample { blur, lens, radius } = sample;
+    // Unblurred, a cell-sampled backdrop is still a backdrop: the
+    // Pixelated set shows what lies below without smoothing it.
+    let blurring = if lens.sampling == Sampling::Blocky {
+        if theme.reduce_transparency || theme.forced_colors {
+            return false;
+        }
+        blur
+    } else if theme.reduce_transparency || theme.forced_colors || blur <= 0.0 {
+        return false;
+    } else {
+        blur
+    };
+    let recorded = record(scene, transform, path, blurring, lens, tint);
     let Some((image, brush_transform)) = recorded else {
-        scene.fill(Fill::NonZero, transform, fallback, None, path);
-        return;
+        return false;
+    };
+    // A cell-sampled backdrop is a few texels across, each one cell: drawn
+    // up at the cell grid, its texels are the cells, so it reads as pixels
+    // with no smoothing of its own.
+    let quality = match lens.sampling {
+        Sampling::Smooth => ImageQuality::Medium,
+        Sampling::Blocky => ImageQuality::Low,
     };
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
-        .with_quality(ImageQuality::Medium);
-    if refraction > 0.0 {
+        .with_quality(quality);
+    if lens.refraction > 0.0 {
         let body = RoundedRect::from_rect(path.bounding_box(), radius);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
+        // The rings fill the rounded box; a path that is not that box
+        // keeps them inside it.
+        let clipped = !same_outline(&body.to_path(0.1), path);
+        if clipped {
+            scene.push_clip_layer(Fill::NonZero, transform, path);
+        }
+        refract(
+            scene,
             transform,
-            path,
+            &body,
+            &brush,
+            brush_transform,
+            lens.refraction,
         );
-        refract(scene, transform, &body, &brush, brush_transform, refraction);
-        scene.pop_layer();
+        if clipped {
+            scene.pop_layer();
+        }
     } else {
         scene.fill(
             Fill::NonZero,
@@ -266,6 +343,47 @@ pub(crate) fn fill_painted_backdrop(
             path,
         );
     }
+    true
+}
+
+/// Whether `a` and `b` trace one outline: the same elements at points a
+/// float rounding apart. A body rebuilt from its own path's bounds is not
+/// bit-identical to that path, and an outline that is the body must not
+/// take a clip it does not need (its edge would be antialiased twice).
+fn same_outline(a: &vello::kurbo::BezPath, b: &vello::kurbo::BezPath) -> bool {
+    use vello::kurbo::{PathEl, Point};
+    /// Far below a device pixel's antialiasing step at any zoom.
+    const APART: f64 = 1e-6;
+    let near = |p: Point, q: Point| (p - q).hypot() <= APART;
+    a.elements().len() == b.elements().len()
+        && a.elements()
+            .iter()
+            .zip(b.elements())
+            .all(|pair| match pair {
+                (PathEl::MoveTo(p), PathEl::MoveTo(q)) | (PathEl::LineTo(p), PathEl::LineTo(q)) => {
+                    near(*p, *q)
+                }
+                (PathEl::QuadTo(p1, p2), PathEl::QuadTo(q1, q2)) => {
+                    near(*p1, *q1) && near(*p2, *q2)
+                }
+                (PathEl::CurveTo(p1, p2, p3), PathEl::CurveTo(q1, q2, q3)) => {
+                    near(*p1, *q1) && near(*p2, *q2) && near(*p3, *q3)
+                }
+                (PathEl::ClosePath, PathEl::ClosePath) => true,
+                _ => false,
+            })
+}
+
+/// Hold what was drawn in `path` over a backdrop inside the material's band
+/// around `tint` ([`material_band`]): the last step of a backdrop brush,
+/// after the painter's glaze, so nothing a painter draws there escapes it.
+pub(crate) fn hold_in_band(
+    scene: &mut Scene,
+    transform: Affine,
+    path: &vello::kurbo::BezPath,
+    theme: &Theme,
+    tint: Color,
+) {
     settle(scene, transform, path, theme, tint);
 }
 
@@ -312,6 +430,7 @@ pub(crate) fn fill_with_ground(
                 transform,
                 shape,
                 theme.tokens.colors.surfaces.material_blur_px,
+                Lens::default(),
                 ground,
             )
         {
@@ -329,11 +448,19 @@ pub(crate) fn fill_with_ground(
         scene.fill(Fill::NonZero, transform, tint, None, shape);
         return;
     }
+    let solid = Finish::solid();
     let finish = match material {
         Material::Floating => theme.finish(SurfaceRole::Floating),
-        Material::Opaque | Material::SeeThrough => Finish::Solid,
+        Material::Opaque | Material::SeeThrough => &solid,
     };
-    fill_finish(scene, transform, shape, finish, true, theme, ground);
+    paint_body(
+        scene,
+        transform,
+        shape,
+        (finish, SurfaceRole::Floating),
+        theme,
+        ground,
+    );
 }
 
 pub use crate::tokens::finish::MATERIAL_SPREAD;
@@ -390,6 +517,10 @@ pub struct RecordedBackdrop {
     pub bounds: Rect,
     /// Blur standard deviation in recording pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur.
+    pub sampling: crate::part_paint::Sampling,
+    /// The cell's side in recording pixels, for [`crate::part_paint::Sampling::Blocky`].
+    pub cell_px: f64,
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
@@ -401,12 +532,39 @@ pub struct RecordedBackdrop {
 }
 
 impl RecordedBackdrop {
+    /// This surface's backdrop as a region of a target that draws it at
+    /// `rect`, `scale` target pixels per recording pixel, over `below`
+    /// (handed what the recording saw below the surface). The one mapping
+    /// from a recording to a region, so a field the pass reads is never
+    /// left behind on the way.
+    #[must_use]
+    pub fn into_region(
+        self,
+        rect: Rect,
+        scale: f64,
+        below: impl FnOnce(Scene) -> Scene,
+    ) -> BackdropRegion {
+        BackdropRegion {
+            image: self.image,
+            rect,
+            blur_px: self.blur_px * scale,
+            sampling: self.sampling,
+            cell_px: self.cell_px * scale,
+            below: below(self.below),
+            ground: self.ground,
+        }
+    }
+
     /// How far outside its bounds the surface's blurred pixels depend on what is drawn: the
     /// kernel's reach, and what the halved passes' texels add to it (at most a quarter of the
     /// deviation, twice over, once a texel is that large).
     #[must_use]
     pub fn reach(&self) -> f64 {
-        (self.blur_px.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
+        let sigma = match self.sampling {
+            Sampling::Smooth => self.blur_px,
+            Sampling::Blocky => self.blur_px.max(self.cell_px * 0.5),
+        };
+        (sigma.max(0.0) * (KERNEL_REACH + 1.0)).ceil() + 4.0
     }
 }
 
@@ -638,6 +796,7 @@ fn record(
     transform: Affine,
     shape: &impl Shape,
     blur_px: f32,
+    lens: Lens,
     ground: Color,
 ) -> Option<(ImageData, Affine)> {
     RECORDING.with(|slot| {
@@ -663,7 +822,21 @@ fn record(
             return None;
         }
         recording.next_slot = slot_index.saturating_add(1);
-        let (width, height) = (texels(bounds.width()), texels(bounds.height()));
+        let device_scale = transform.determinant().abs().sqrt();
+        let (width, height) = match lens.sampling {
+            // One texel per cell, at most the placeholder's own edge: the
+            // image is the cells themselves.
+            crate::part_paint::Sampling::Blocky => {
+                let cell = f64::from(lens.cell.max(1.0));
+                (cells(bounds.width(), cell), cells(bounds.height(), cell))
+            }
+            crate::part_paint::Sampling::Smooth => {
+                (texels(bounds.width()), texels(bounds.height()))
+            }
+        };
+        // A cell's side in recording pixels: the lens states it in logical
+        // pixels at the part's own coordinates.
+        let cell_px = f64::from(lens.cell.max(1.0));
         let key = (recording.depth, slot_index);
         let image =
             provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
@@ -681,7 +854,9 @@ fn record(
             bounds,
             // The theme's radius is logical; a host drawing through a device
             // scale records in device pixels.
-            blur_px: f64::from(blur_px) * transform.determinant().abs().sqrt(),
+            blur_px: f64::from(blur_px) * device_scale,
+            sampling: lens.sampling,
+            cell_px: cell_px * device_scale,
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
@@ -725,6 +900,19 @@ fn texels(logical: f64) -> u32 {
         .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
 }
 
+/// Placeholder texels for a cell-sampled edge of `logical` pixels: one
+/// texel per cell of `cell`, so the image's texels are the cells.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 1..=MAX_PLACEHOLDER_EDGE before the cast"
+)]
+fn cells(logical: f64, cell: f64) -> u32 {
+    (logical / cell.max(1.0))
+        .ceil()
+        .clamp(1.0, f64::from(MAX_PLACEHOLDER_EDGE)) as u32
+}
+
 /// The opaque `ground`-coloured image a surface draws in `slot`.
 fn placeholder(slot: PlaceholderKey, width: u32, height: u32, ground: Color) -> ImageData {
     let rgba = ground.to_rgba8().to_u8_array();
@@ -761,6 +949,12 @@ pub struct BackdropRegion {
     pub rect: Rect,
     /// Blur standard deviation in target pixels.
     pub blur_px: f64,
+    /// How the sample is filtered after the blur: smoothly, or at one
+    /// colour per cell of `cell_px` target pixels (a surface shown as
+    /// pixels).
+    pub sampling: Sampling,
+    /// The cell's side in target pixels, for [`Sampling::Blocky`].
+    pub cell_px: f64,
     /// Everything composed below the surface, in target pixels.
     pub below: Scene,
     /// The opaque panel ground: what the backdrop shows where nothing below
@@ -782,12 +976,9 @@ impl BackdropFrame {
         Self {
             regions: surfaces
                 .into_iter()
-                .map(|surface| BackdropRegion {
-                    image: surface.image,
-                    rect: surface.bounds,
-                    blur_px: surface.blur_px,
-                    below: surface.below,
-                    ground: surface.ground,
+                .map(|surface| {
+                    let rect = surface.bounds;
+                    surface.into_region(rect, 1.0, |below| below)
                 })
                 .collect(),
         }
@@ -1278,6 +1469,17 @@ impl BackdropBlur {
     }
 }
 
+/// The blur `region` is drawn with, in target pixels: its own, and for a
+/// cell-sampled backdrop at least half a cell, so each cell (one texel of
+/// the placeholder the last pass resamples onto) is the average of what
+/// lies below it rather than one point of it.
+fn region_sigma(region: &BackdropRegion) -> f64 {
+    match region.sampling {
+        Sampling::Smooth => region.blur_px,
+        Sampling::Blocky => region.blur_px.max(region.cell_px * 0.5),
+    }
+}
+
 /// Decide the source rectangle, the halvings and the kernel for `region`,
 /// or `None` when it has nothing to blur.
 #[allow(
@@ -1286,7 +1488,7 @@ impl BackdropBlur {
     reason = "sizes are rounded, positive and bounded by the device's texture limit before the cast"
 )]
 fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
-    let sigma = region.blur_px;
+    let sigma = region_sigma(region);
     if !sigma.is_finite() || sigma <= 0.0 || region.image.width == 0 || region.image.height == 0 {
         return None;
     }

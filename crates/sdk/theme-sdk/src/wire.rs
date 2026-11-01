@@ -6,26 +6,44 @@
 //! the answer as untrusted input (every length is bounded by the bytes that
 //! are there, and a malformed answer is `None`, drawn by the built-in set).
 //!
-//! Request: `kind: u8` ([`PAINT`] or [`TRANSITION`]), then
+//! Request: `kind: u8` ([`PAINT`], [`TRANSITION`] or [`PARAMS`]), then
 //! * paint: `part: u8, width: f64, height: f64, now: u16, was: u16,
 //!   progress: f32`, the tokens;
-//! * transition: `part: u8, from: u16, to: u16`.
+//! * transition: `part: u8, from: u16, to: u16`;
+//! * params: nothing more.
+//!
+//! The tokens are seven colours, `radius`, `border_width`, `scale`, the
+//! four frame flags and the parameter list, then — since the light a
+//! surface catches became a token — the tokens' `light` colour. That last
+//! field is read as the stock white when the bytes end before it, so a
+//! request encoded before it existed still reads ([`Reader::tokens`]); a
+//! field added to [`PartTokens`] goes at the end of them the same way. A
+//! module built against an older SDK is handed the longer request and
+//! must be rebuilt, as its own `request` reads no trailing bytes.
 //!
 //! Answer: paint is `0` for "not mine" or `1`, the scene and the hit shape;
-//! transition is one [`crate::Transition`].
+//! transition is one [`crate::Transition`]; params is the set's
+//! [`crate::ParamSpec`]s.
+
+use std::sync::Arc;
 
 use kurbo::{Affine, BezPath, PathEl, Point, Size};
 use peniko::Color;
 
 use crate::{
-    Brush, Easing, Lens, Op, PaintedPart, Param, Part, PartImage, PartScene, PartState, PartTokens,
-    States, Stop, Transition,
+    Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartScene, PartState,
+    PartTokens, Sampling, ShaderSource, States, Stop, Transition,
 };
 
 /// A paint request.
 pub const PAINT: u8 = 1;
 /// A transition request.
 pub const TRANSITION: u8 = 2;
+/// A request for the set's parameters.
+pub const PARAMS: u8 = 3;
+
+/// Longest parameter name an answer may carry, bytes.
+pub const MAX_PARAM_NAME: usize = 64;
 
 /// Deepest layer nesting an answer may carry; vello's own bound is far
 /// above any part's need.
@@ -44,12 +62,15 @@ pub struct PaintRequest {
 /// A request, decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    Paint(PaintRequest),
+    /// Boxed: a paint request carries the part's tokens, a theme's shader
+    /// among them, and the other requests are a few bytes.
+    Paint(Box<PaintRequest>),
     Transition {
         part: Part,
         from: States,
         to: States,
     },
+    Params,
 }
 
 /// Encode a paint request.
@@ -78,12 +99,18 @@ pub fn transition_request(part: Part, from: States, to: States) -> Vec<u8> {
     out.0
 }
 
+/// Encode a request for the set's parameters.
+#[must_use]
+pub fn params_request() -> Vec<u8> {
+    vec![PARAMS]
+}
+
 /// Decode a request.
 #[must_use]
 pub fn request(bytes: &[u8]) -> Option<Request> {
     let mut input = Reader(bytes);
     let request = match input.u8()? {
-        PAINT => Request::Paint(PaintRequest {
+        PAINT => Request::Paint(Box::new(PaintRequest {
             part: Part::from_index(input.u8()?)?,
             size: Size::new(input.f64()?, input.f64()?),
             state: PartState {
@@ -92,12 +119,13 @@ pub fn request(bytes: &[u8]) -> Option<Request> {
             },
             progress: input.f32()?,
             tokens: input.tokens()?,
-        }),
+        })),
         TRANSITION => Request::Transition {
             part: Part::from_index(input.u8()?)?,
             from: States::from_bits(input.u16()?),
             to: States::from_bits(input.u16()?),
         },
+        PARAMS => Request::Params,
         _ => return None,
     };
     input.0.is_empty().then_some(request)
@@ -202,6 +230,71 @@ pub fn transition(bytes: &[u8]) -> Option<Transition> {
         _ => return None,
     };
     input.0.is_empty().then_some(transition)
+}
+
+/// Encode a params answer.
+#[must_use]
+pub fn params_answer(params: &[ParamSpec]) -> Vec<u8> {
+    let mut out = Writer::default();
+    out.len(params.len());
+    for param in params {
+        out.bytes(param.name.as_bytes());
+        match param.default {
+            None => out.u8(0),
+            Some(value) => {
+                out.u8(1);
+                out.f32(value);
+            }
+        }
+        for value in [
+            *param.admitted.start(),
+            *param.admitted.end(),
+            *param.usable.start(),
+            *param.usable.end(),
+        ] {
+            out.f32(value);
+        }
+    }
+    out.0
+}
+
+/// Decode a params answer: `None` for bytes that are not one, a name that
+/// is empty, too long, not UTF-8 or stated twice, or a band that is empty
+/// or a usable band outside its admitted one.
+#[must_use]
+pub fn params(bytes: &[u8]) -> Option<Vec<ParamSpec>> {
+    let mut input = Reader(bytes);
+    // A name's length, its default flag and four bounds.
+    let count = input.count(21)?;
+    let mut params: Vec<ParamSpec> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = std::str::from_utf8(input.bytes()?).ok()?.to_owned();
+        let default = match input.u8()? {
+            0 => None,
+            1 => Some(input.f32()?),
+            _ => return None,
+        };
+        let admitted = input.f32()?..=input.f32()?;
+        let usable = input.f32()?..=input.f32()?;
+        let well_formed = !name.is_empty()
+            && name.len() <= MAX_PARAM_NAME
+            && !params.iter().any(|known| known.name == name)
+            && admitted.start() <= admitted.end()
+            && usable.start() <= usable.end()
+            && admitted.start() <= usable.start()
+            && usable.end() <= admitted.end()
+            && default.is_none_or(|value| admitted.contains(&value));
+        if !well_formed {
+            return None;
+        }
+        params.push(ParamSpec {
+            name: name.into(),
+            default,
+            admitted,
+            usable,
+        });
+    }
+    input.0.is_empty().then_some(params)
 }
 
 #[derive(Default)]
@@ -311,17 +404,27 @@ impl Writer {
                 blur,
                 lens,
                 fallback,
+                glaze,
             } => {
                 self.u8(4);
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
+                self.u8(u8::from(lens.sampling == Sampling::Blocky));
+                self.f32(lens.cell);
+                self.ops(glaze);
+            }
+            Brush::Shader { source, fallback } => {
+                self.u8(5);
+                self.u32(source.time_centis);
+                self.bytes(source.wgsl.as_bytes());
+                self.color(*fallback);
             }
         }
     }
-    fn scene(&mut self, scene: &PartScene) {
-        self.len(scene.ops.len());
-        for op in &scene.ops {
+    fn ops(&mut self, ops: &[Op]) {
+        self.len(ops.len());
+        for op in ops {
             match op {
                 Op::Fill {
                     path,
@@ -348,6 +451,9 @@ impl Writer {
             }
         }
     }
+    fn scene(&mut self, scene: &PartScene) {
+        self.ops(&scene.ops);
+    }
     fn tokens(&mut self, tokens: &PartTokens) {
         for color in [
             tokens.fill,
@@ -366,11 +472,19 @@ impl Writer {
         self.u8(u8::from(tokens.dark));
         self.u8(u8::from(tokens.high_contrast));
         self.u8(u8::from(tokens.reduce_transparency));
+        self.u8(u8::from(tokens.backdrop));
         self.len(tokens.params.len());
-        for param in &tokens.params {
+        for param in tokens.params.iter() {
             self.bytes(param.name.as_bytes());
             self.f32(param.value);
         }
+        // Appended after the parameter list so a shorter, older encoding
+        // still reads: see the module note.
+        self.color(tokens.light);
+        // A theme's surface shader (`crate::Brush::Shader`), empty for a set
+        // that draws without one.
+        self.bytes(tokens.shader.wgsl.as_bytes());
+        self.u32(tokens.shader.time_centis);
     }
 }
 
@@ -463,7 +577,9 @@ impl Reader<'_> {
             })
             .collect()
     }
-    fn brush(&mut self) -> Option<Brush> {
+    /// A brush; `glazed`: inside a backdrop's glaze, where another
+    /// backdrop is refused.
+    fn brush(&mut self, glazed: bool) -> Option<Brush> {
         Some(match self.u8()? {
             0 => Brush::Solid(self.color()?),
             1 => Brush::Linear {
@@ -490,17 +606,40 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 => Brush::Backdrop {
-                blur: self.f32()?,
-                lens: Lens {
-                    refraction: self.f32()?,
+            4 if !glazed => {
+                let blur = self.f32()?;
+                let refraction = self.f32()?;
+                let fallback = self.color()?;
+                let sampling = match self.u8()? {
+                    0 => Sampling::Smooth,
+                    1 => Sampling::Blocky,
+                    _ => return None,
+                };
+                let cell = self.f32()?;
+                let lens = Lens {
+                    refraction,
+                    sampling,
+                    cell,
+                };
+                Brush::Backdrop {
+                    blur,
+                    lens,
+                    fallback,
+                    glaze: self.ops(true)?,
+                }
+            }
+            5 => Brush::Shader {
+                source: ShaderSource {
+                    time_centis: self.u32()?,
+                    wgsl: String::from_utf8(self.bytes()?.to_vec()).ok()?,
                 },
                 fallback: self.color()?,
             },
             _ => return None,
         })
     }
-    fn scene(&mut self) -> Option<PartScene> {
+    /// Operations whose layers balance; `glazed`: a backdrop's glaze.
+    fn ops(&mut self, glazed: bool) -> Option<Vec<Op>> {
         let count = self.count(1)?;
         let mut ops = Vec::with_capacity(count);
         let mut depth = 0_usize;
@@ -508,13 +647,13 @@ impl Reader<'_> {
             let op = match self.u8()? {
                 0 => Op::Fill {
                     path: self.path()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                     brush_transform: self.affine()?,
                 },
                 1 => Op::Stroke {
                     path: self.path()?,
                     width: self.f32()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                 },
                 2 => {
                     depth = depth.checked_add(1).filter(|d| *d <= MAX_LAYER_DEPTH)?;
@@ -532,7 +671,12 @@ impl Reader<'_> {
             ops.push(op);
         }
         // Every layer an answer opens, it closes.
-        (depth == 0).then_some(PartScene { ops })
+        (depth == 0).then_some(ops)
+    }
+    fn scene(&mut self) -> Option<PartScene> {
+        Some(PartScene {
+            ops: self.ops(false)?,
+        })
     }
     fn tokens(&mut self) -> Option<PartTokens> {
         let mut colors = [Color::BLACK; 7];
@@ -540,6 +684,44 @@ impl Reader<'_> {
             *slot = self.color()?;
         }
         let [fill, ink, edge, ground, raised, accent, border] = colors;
+        let radius = self.f32()?;
+        let border_width = self.f32()?;
+        let scale = self.f32()?;
+        let dark = self.u8()? != 0;
+        let high_contrast = self.u8()? != 0;
+        let reduce_transparency = self.u8()? != 0;
+        let backdrop = self.u8()? != 0;
+        let params: Arc<[Param]> = {
+            let count = self.count(8)?;
+            (0..count)
+                .map(|_| {
+                    Some(Param {
+                        name: String::from_utf8(self.bytes()?.to_vec()).ok()?,
+                        value: self.f32()?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?
+                .into()
+        };
+        // The light a surface catches came after the parameter list: bytes
+        // that end before it are an encoding from before it, whose only
+        // light was the stock white.
+        let light = if self.0.is_empty() {
+            PartTokens::default().light
+        } else {
+            self.color()?
+        };
+        // The set's surface shader came after the light: bytes that end
+        // before it are an encoding from before a set could carry one.
+        let shader = if self.0.is_empty() {
+            ShaderSource::default()
+        } else {
+            let wgsl = String::from_utf8(self.bytes()?.to_vec()).ok()?;
+            ShaderSource {
+                wgsl,
+                time_centis: self.u32()?,
+            }
+        };
         Some(PartTokens {
             fill,
             ink,
@@ -547,24 +729,17 @@ impl Reader<'_> {
             ground,
             raised,
             accent,
+            light,
+            radius,
+            border_width,
             border,
-            radius: self.f32()?,
-            border_width: self.f32()?,
-            scale: self.f32()?,
-            dark: self.u8()? != 0,
-            high_contrast: self.u8()? != 0,
-            reduce_transparency: self.u8()? != 0,
-            params: {
-                let count = self.count(8)?;
-                (0..count)
-                    .map(|_| {
-                        Some(Param {
-                            name: String::from_utf8(self.bytes()?.to_vec()).ok()?,
-                            value: self.f32()?,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?
-            },
+            scale,
+            dark,
+            high_contrast,
+            reduce_transparency,
+            backdrop,
+            params,
+            shader,
         })
     }
 }
@@ -607,8 +782,17 @@ mod tests {
             },
             Brush::Backdrop {
                 blur: 12.0,
-                lens: Lens { refraction: 3.0 },
+                lens: Lens {
+                    refraction: 3.0,
+                    sampling: Sampling::Blocky,
+                    cell: 8.0,
+                },
                 fallback: Color::WHITE,
+                glaze: vec![Op::Fill {
+                    path: Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1),
+                    brush: Brush::Solid(Color::WHITE.with_alpha(0.1)),
+                    brush_transform: Affine::IDENTITY,
+                }],
             },
         ]
     }
@@ -630,6 +814,53 @@ mod tests {
     }
 
     #[test]
+    fn the_tokens_light_round_trips_and_older_bytes_read_it_as_stock_white() {
+        let light = Color::from_rgb8(0xf7, 0xf9, 0xfd);
+        let tokens = PartTokens {
+            light,
+            ..PartTokens::default()
+        };
+        let request_in = PaintRequest {
+            part: Part::BarBody,
+            size: Size::new(640.0, 32.0),
+            state: PartState::settled(States::REST),
+            progress: 1.0,
+            tokens: tokens.clone(),
+        };
+        let bytes = paint_request(&request_in);
+        let Some(Request::Paint(read)) = request(&bytes) else {
+            panic!("the request does not decode");
+        };
+        assert_eq!(read.tokens.light, light, "the light a surface catches");
+        assert_eq!(read.tokens, tokens);
+        // A theme's light is not the stock one: the round trip would hold
+        // with a constant, so the encoding is checked to carry the value.
+        assert_ne!(light, PartTokens::default().light);
+        // The fields after the light: an empty shader (its length and its
+        // time). Bytes from before a set carried a shader read as none.
+        let shader_tail = 4 + 4;
+        let Some(Request::Paint(unshaded)) = request(&bytes[..bytes.len() - shader_tail]) else {
+            panic!("a request without the shader does not decode");
+        };
+        assert_eq!(unshaded.tokens, tokens);
+        // Bytes from before the light existed (here: the same request with
+        // the trailing colour and shader cut) read as the stock white.
+        let older = &bytes[..bytes.len() - 16 - shader_tail];
+        let Some(Request::Paint(before)) = request(older) else {
+            panic!("a request without the light does not decode");
+        };
+        assert_eq!(before.tokens.light, PartTokens::default().light);
+        assert_eq!(
+            PartTokens {
+                light: tokens.light,
+                ..before.tokens
+            },
+            tokens,
+            "every other field is read as it was written"
+        );
+    }
+
+    #[test]
     fn requests_and_transitions_round_trip() {
         let request_in = PaintRequest {
             part: Part::ButtonContainer,
@@ -643,13 +874,16 @@ mod tests {
                 params: vec![Param {
                     name: "levels".into(),
                     value: 4.0,
-                }],
+                }]
+                .into(),
+                backdrop: true,
+                light: Color::from_rgb8(0xf8, 0xfa, 0xff),
                 ..PartTokens::default()
             },
         };
         assert_eq!(
             request(&paint_request(&request_in)),
-            Some(Request::Paint(request_in))
+            Some(Request::Paint(Box::new(request_in)))
         );
         assert_eq!(
             request(&transition_request(
@@ -715,5 +949,52 @@ mod tests {
             },
         );
         assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
+        // A backdrop inside a backdrop's glaze.
+        let backdrop = |glaze| Brush::Backdrop {
+            blur: 4.0,
+            lens: Lens::default(),
+            fallback: Color::WHITE,
+            glaze,
+        };
+        let mut scene = PartScene::new();
+        scene.fill(
+            BezPath::new(),
+            backdrop(vec![Op::Fill {
+                path: BezPath::new(),
+                brush: backdrop(Vec::new()),
+                brush_transform: Affine::IDENTITY,
+            }]),
+        );
+        assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
+    }
+
+    #[test]
+    fn params_round_trip_and_malformed_bands_are_refused() {
+        let specs = vec![
+            ParamSpec::new("levels", Some(4.0), 2.0..=16.0),
+            ParamSpec::new("grain", None, 0.0..=1.0).usable_within(0.0..=0.5),
+        ];
+        assert_eq!(request(&params_request()), Some(Request::Params));
+        assert_eq!(params(&params_answer(&specs)), Some(specs.clone()));
+        assert_eq!(params(&params_answer(&[])), Some(Vec::new()));
+        for bad in [
+            vec![ParamSpec::new("", None, 0.0..=1.0)],
+            vec![ParamSpec::new("x", None, 1.0..=0.0)],
+            vec![ParamSpec::new("x", Some(2.0), 0.0..=1.0)],
+            vec![ParamSpec::new("x", None, 0.0..=1.0).usable_within(0.0..=2.0)],
+            vec![
+                ParamSpec::new("x", None, 0.0..=1.0),
+                ParamSpec::new("x", None, 0.0..=1.0),
+            ],
+        ] {
+            assert_eq!(params(&params_answer(&bad)), None, "{bad:?}");
+        }
+        let long = ParamSpec {
+            name: "n".repeat(MAX_PARAM_NAME + 1).into(),
+            ..ParamSpec::new("x", None, 0.0..=1.0)
+        };
+        assert_eq!(params(&params_answer(&[long])), None);
+        // A count the bytes cannot hold is refused before anything is read.
+        assert_eq!(params(&u32::MAX.to_le_bytes()), None);
     }
 }

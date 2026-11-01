@@ -576,6 +576,10 @@ pub(crate) trait HostCore {
         let applied = parts.root.remount_children(&mut remount);
         let (mounted, unmounted) = remount.finish();
         let built = (parts.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        // What was mounted was built after the tell above, as a rebuild's controls are: tell
+        // the whole tree once more, so a control the remount just made is sized for how the
+        // person reaches the window too.
+        parts.root.set_interaction_environment(parts.interaction);
         // The rows it mounted are checked against the live tree at once, as
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();

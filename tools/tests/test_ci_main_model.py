@@ -66,11 +66,10 @@ class MainIsNotGated(unittest.TestCase):
                 self.assertNotIn("pull_request", on)
                 self.assertRegex(on, r"(?m)^  workflow_dispatch:")
 
-    def test_lint_keeps_only_the_newest_commit_of_a_ref(self):
-        # Lint checks the whole tree, so an older run's result says nothing a
-        # newer one will not say again: a newer push replaces a waiting run,
-        # and the running one is left to finish — cancelling it meant that
-        # while pushes came faster than a lint run, main got no verdict at all.
+    def test_lint_replaces_a_waiting_run_and_finishes_the_running_one(self):
+        # Lint checks the whole tree, so a run waiting behind a newer push of
+        # the same ref is replaced by it. The running one finishes: cancelling
+        # it left main with no verdict while pushes came faster than a run.
         concurrency = block(workflow("lint.yml"), "concurrency")
         self.assertIn("group: lint-${{ github.event_name }}-${{ github.ref }}",
                       concurrency)

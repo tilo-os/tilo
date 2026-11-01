@@ -96,13 +96,18 @@ impl Checker<'_> {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
-            ExprKind::Duration(..) | ExprKind::Range { .. } => {
-                let what = if matches!(e.kind, ExprKind::Range { .. }) {
-                    "a range"
-                } else {
-                    "a duration"
-                };
-                self.err("E105", e.span, format!("{what} is the value of a filter, resolved when the query is answered: `query(T, received: -7d)`, `query(T, due: today..today + 7d)`"));
+            // A length of time is a number of seconds where a value is one: a moment moved by
+            // it (`now + 10s`, the moment an outside effect is held until). In a filter it is
+            // the filter's (`query(T, received: -7d)`).
+            ExprKind::Duration(n, u) => match crate::duration::seconds(*n, u) {
+                Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                None => {
+                    self.err("E105", e.span, "the duration is too long");
+                    Ex::error()
+                }
+            },
+            ExprKind::Range { .. } => {
+                self.err("E105", e.span, "a range is the value of a filter, resolved when the query is answered: `query(T, due: today..today + 7d)`");
                 Ex::error()
             }
             ExprKind::Calendar(text) => match text.len() {
@@ -623,6 +628,16 @@ impl Checker<'_> {
                 Ex::new(Ek::Not(Box::new(v)), Ty::Bool)
             }
             UnOp::Neg => {
+                // `-7d`, a length of time moved backwards.
+                if let ExprKind::Duration(n, u) = &operand.kind {
+                    return match crate::duration::seconds(n.checked_neg().unwrap_or(*n), u) {
+                        Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                        None => {
+                            self.err("E105", span, "the duration is too long");
+                            Ex::error()
+                        }
+                    };
+                }
                 let v = self.expr(operand, None);
                 match &v.ty {
                     Ty::Int | Ty::Float => {
@@ -747,6 +762,12 @@ impl Checker<'_> {
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)
             }
+            // A moment moved by a number of seconds (`now + 10s`, `now - 30s`): the moment is
+            // a handle, the seconds an `i64`, and `back` an `i32`.
+            (Ty::Time, Ty::Int) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                let back = Ex::new(Ek::I32(i32::from(op == BinOp::Sub)), Ty::Bool);
+                Ex::host(Imp::TimeShift, vec![l, r, back], Ty::Time)
+            }
             _ => {
                 let (a, b) = (self.show(&l.ty), self.show(&r.ty));
                 let hint = match (&l.ty, &r.ty) {
@@ -771,6 +792,18 @@ impl Checker<'_> {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {
                     return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
+                }
+                // `host.Resource`: any resource at all, whose fields depend on what it is.
+                if key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME {
+                    self.err(
+                        "E021",
+                        name.span,
+                        format!(
+                            "`{}` is a resource of whatever type, so its fields depend on what it is; read its own type's fields inside `if let` on the type, or pass it to a view that takes one",
+                            name.name
+                        ),
+                    );
+                    return Ex::error();
                 }
                 let env = self.env;
                 let Some(info) = env.type_info(&key) else {

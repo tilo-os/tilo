@@ -15,8 +15,9 @@
 use tilolang_runtime::meta::Meta;
 
 use crate::host::Host;
-use crate::publish::resource_id;
+use crate::publish::{package_resource_id, resource_id};
 use crate::record::{DynRecord, DynValue};
+use tilo_resource::search_index::{IndexAction, IndexEntry, IndexWeight};
 
 /// One searchable resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,6 +136,7 @@ pub fn group_of(meta: &Meta) -> String {
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
     let snapshot = host.store().snapshot();
+    let _schemas = snapshot.scoped();
     let reader: &crate::store::Snapshot = &snapshot;
     let mut out = Vec::new();
     for package in host.packages() {
@@ -162,3 +164,77 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
     }
     out
 }
+
+/// The action that opens a resource at its anchor (`open(r)`), as every published resource
+/// offers it bound to itself.
+const OPEN_ACTION: &str = "open";
+
+/// Every hit of the room as the session's persistent search index keeps it: one [`IndexEntry`]
+/// per resource with text, short metadata only (never a prose body), keyed by the resource's
+/// published id and opening it through its package's `open` action at that anchor. This is what
+/// a live tilolang instance publishes on its connection, so a Mail message or a note is found by
+/// a word of its body through the system's one search, whether or not the app runs.
+#[must_use]
+pub fn index_entries(host: &Host) -> Vec<IndexEntry> {
+    let open_of: std::collections::HashMap<String, tilo_actions::ActionAddress> = host
+        .packages()
+        .into_iter()
+        .map(|package| {
+            (
+                package.meta.app.clone(),
+                tilo_actions::ActionAddress::new(
+                    package_resource_id(&package.meta.app),
+                    OPEN_ACTION,
+                ),
+            )
+        })
+        .collect();
+    every_hit(host)
+        .into_iter()
+        .filter_map(|hit| {
+            let app = hit
+                .resource
+                .strip_prefix("tl:")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(app, _)| app.to_owned())?;
+            let action = open_of.get(&app).cloned();
+            // The texts besides the title, each found by its weight: short metadata first
+            // (a sender, a subject), then long prose (a body), so the index keeps a bounded
+            // number of fields ([`IndexEntry::bounded`]) with the metadata that ranks highest.
+            let mut fields: Vec<(String, IndexWeight)> = hit
+                .texts
+                .iter()
+                .skip(1)
+                .filter(|text| text.chars().count() <= SHORT_TEXT)
+                .map(|text| (text.clone(), IndexWeight::Metadata))
+                .collect();
+            fields.extend(
+                hit.texts
+                    .iter()
+                    .skip(1)
+                    .filter(|text| text.chars().count() > SHORT_TEXT)
+                    .map(|text| (text.clone(), IndexWeight::Body)),
+            );
+            let entry = IndexEntry {
+                key: hit.resource.clone(),
+                resource: hit.resource.clone(),
+                action: action.map(|address| IndexAction {
+                    resource: address.resource.clone(),
+                    action: address.action,
+                }),
+                title: hit.title.clone(),
+                subtitle: Some(hit.type_name.clone()),
+                group: Some(hit.app_title.clone()),
+                icon: None,
+                boost: 0,
+                fields,
+                secret: false,
+                references: hit.references.clone(),
+            };
+            entry.bounded()
+        })
+        .collect()
+}
+
+/// The longest text an entry keeps as a short field: a name, a subject, a sender.
+const SHORT_TEXT: usize = 80;

@@ -53,7 +53,16 @@ fn root(r: &Replica, app: &str) -> Value {
 fn text(r: &Replica, item: &ResourceRef, field: &str) -> String {
     match r.host.runtime().read(item, field).unwrap() {
         Value::Text(text) => text,
+        Value::Rich(rich) => rich.written_text(),
         other => panic!("{field} is text: {other:?}"),
+    }
+}
+
+/// The rich value `r` holds of `field` of `item`.
+fn rich(r: &Replica, item: &ResourceRef, field: &str) -> tilolang_runtime::rich::RichValue {
+    match r.host.runtime().read(item, field).unwrap() {
+        Value::Rich(rich) => rich,
+        other => panic!("{field} is rich text: {other:?}"),
     }
 }
 
@@ -78,22 +87,29 @@ fn edit(r: &mut Replica, app: &str, (item, ty, field): (&ResourceRef, &str, &str
     });
 }
 
+/// `r`'s person types `typed` right after the first `after` in the note's rich body, as the
+/// shared rich input does: a rich splice in that paragraph.
 fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
-    let body = text(r, note, "body");
-    let at = body
-        .find(after)
-        .unwrap()
-        .saturating_add(after.chars().count());
-    edit(
-        r,
-        NOTES_APP,
-        (note, "Note", "body"),
-        EditOp::Splice {
-            at,
-            delete: 0,
-            insert: typed.to_owned(),
-        },
-    );
+    let body = rich(r, note, "body");
+    let (block, at) = body
+        .blocks
+        .iter()
+        .find_map(|block| {
+            block
+                .text
+                .find(after)
+                .map(|from| (block.id.clone(), from.saturating_add(after.chars().count())))
+        })
+        .unwrap_or_else(|| panic!("the body says {after}: {:?}", body.written_text()));
+    let action = tilo_document::RichTextAction::SpliceText {
+        region: tilo_document::action::RegionKind::Body,
+        block,
+        at,
+        del: 0,
+        ins: typed.to_owned(),
+    };
+    let rich = serde_json::to_value(&action).unwrap();
+    edit(r, NOTES_APP, (note, "Note", "body"), EditOp::Rich { rich });
 }
 
 /// `r`'s person runs the history verb `edit` on the record, as their window's Undo does.
@@ -140,13 +156,18 @@ fn shared_note(ada: &mut Replica, ben: &mut Replica, body: &str) -> ResourceRef 
         vec![root(ada, NOTES_APP)],
     ));
     ada.commit();
+    // The body as a paragraph per line, no marks: the same words a plain text held.
+    let blocks: Vec<tilo_document::ClipBlock> = tilo_document::blocks_of_plain(body)
+        .iter()
+        .map(tilo_document::ClipBlock::from_view)
+        .collect();
+    let action = tilo_document::RichTextAction::SyncClips { blocks };
+    let rich = serde_json::to_value(&action).unwrap();
     edit(
         ada,
         NOTES_APP,
         (&note, "Note", "body"),
-        EditOp::Replace {
-            text: body.to_owned(),
-        },
+        EditOp::Rich { rich },
     );
     ada.sync_with(ben);
     note

@@ -315,13 +315,9 @@ impl Theme {
             },
             material: ThemeMaterial {
                 floating: if self.blur > 0.0 {
-                    ui::tokens::Finish::Translucent {
-                        blur: narrow(self.blur),
-                        tint: narrow(self.tint_opacity),
-                        saturation: 1.0,
-                    }
+                    ui::tokens::Finish::frosted(narrow(self.blur), narrow(self.tint_opacity), 1.0)
                 } else {
-                    ui::tokens::Finish::Solid
+                    ui::tokens::Finish::solid()
                 },
                 selector: SelectorFinish {
                     strip: if self.frosted_strip {
@@ -333,9 +329,10 @@ impl Theme {
                     rim_alpha: narrow(self.rim_alpha),
                     hover_alpha: narrow(self.hover_alpha),
                 },
-                ..ThemeMaterial::STOCK
+                ..ThemeMaterial::stock()
             },
             depth: ui::tokens::Depth::STOCK,
+            response: None,
         }
     }
 
@@ -520,9 +517,9 @@ impl Studio {
     ) -> Result<(), Refusal> {
         let mut document: ThemeDocument = serde_json::from_str(&document)
             .map_err(|error| Refusal::new(format!("not a theme document: {error}")))?;
-        document
-            .validate()
-            .map_err(|reason| Refusal::new(reason.to_owned()))?;
+        if let Some(reason) = ui::Theme::refusal(&document) {
+            return Err(Refusal::new(reason));
+        }
         let findings = document.findings();
         if !findings.is_empty() {
             return Err(Refusal::new(format!(

@@ -217,6 +217,30 @@ view sorted(b: Board, q: Text) {
     }
 
     #[test]
+    fn free_text_finds_what_a_type_holds_by_a_word_of_it() {
+        let t = Tasks::new();
+        // The message subjects' words find their messages, in any case.
+        assert_eq!(
+            t.shows("typed_mail", Some("fresh")),
+            ["fresh from yc", "fresh from acme"]
+        );
+        assert_eq!(
+            t.shows("typed_mail", Some("FRESH acme")),
+            ["fresh from acme"]
+        );
+        assert_eq!(
+            t.shows("typed_mail", Some("yc")),
+            ["fresh from yc", "old from yc", "read from yc",]
+        );
+        // Free text with filters is both: the word and the filter together.
+        assert_eq!(
+            t.shows("typed_mail", Some("acme is:unread")),
+            ["fresh from acme"]
+        );
+        assert!(t.shows("typed_mail", Some("nothing says this")).is_empty());
+    }
+
+    #[test]
     fn a_query_lists_what_its_filters_hold_in_its_order_and_follows_changes() {
         let t = Tasks::new();
         let mut view = t.view("open_by_effort", None);
@@ -288,7 +312,6 @@ view sorted(b: Board, q: Text) {
                 .err()
                 .unwrap_or_else(|| panic!("`{q}` resolves"))
         };
-        assert!(why("nope>1").contains("text to search for"));
         assert!(why("status:done").contains("Status has no case `done`"));
         assert!(why("done:maybe").contains("a toggle is `true` or `false`"));
         assert!(why("effort:lots").contains("is not a whole number"));
@@ -296,9 +319,30 @@ view sorted(b: Board, q: Text) {
         assert!(why("contact:janedoe").contains("is not an identifier"));
         assert!(why("sort:-tags").contains("which has no order"));
         assert!(why("owner.org:YC").contains("goes through a reference"));
-        assert!(why("milk").contains("text to search for"));
+        // A word alone is free text, and free text is searched, not refused: every text field
+        // of the type is searched, so a word finds what it appears in.
+        let text = |q: &str| {
+            resolve(&find(q).unwrap(), task, enums, &clock)
+                .unwrap_or_else(|why| panic!("`{q}` resolves as text: {why}"))
+                .pred
+        };
+        assert_eq!(
+            text("nope>1"),
+            Pred::Text(t.field("Task", "title"), "nope>1".into())
+        );
+        assert_eq!(
+            text("milk"),
+            Pred::Text(t.field("Task", "title"), "milk".into())
+        );
+        assert_eq!(
+            text("two words"),
+            Pred::And(vec![
+                Pred::Text(t.field("Task", "title"), "two".into()),
+                Pred::Text(t.field("Task", "title"), "words".into()),
+            ])
+        );
         // A key that is no filter, of a type that holds no identifier, says so; an identifier
-        // alone in such a type matches nothing.
+        // alone in such a type matches nothing, nor does a word in a type with no text.
         let board = t.ty("Board");
         assert!(
             resolve(&find("nope:1").unwrap(), board, enums, &clock)
@@ -310,6 +354,13 @@ view sorted(b: Board, q: Text) {
                 .unwrap()
                 .pred,
             Pred::Const(false)
+        );
+        assert_eq!(
+            resolve(&find("milk").unwrap(), board, enums, &clock)
+                .unwrap()
+                .pred,
+            Pred::Const(false),
+            "a type with no text field holds no free text"
         );
     }
 }

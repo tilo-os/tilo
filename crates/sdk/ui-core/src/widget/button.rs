@@ -10,6 +10,7 @@ use crate::widget::ActionEmitter;
 use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::badge::{BadgeMetrics, CountBadge};
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -59,6 +60,10 @@ pub struct Button {
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
     badge: Option<String>,
+    /// A count or dot on an icon-only face's icon ([`Self::with_count`]), and how large it was
+    /// measured, in `adjust_layout_style`.
+    count: Option<CountBadge>,
+    count_size: vello::kurbo::Size,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -144,9 +149,7 @@ fn theme_key(theme: &Theme) -> ThemeKey {
         colors.semantic.danger,
         colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
-        theme
-            .painter(crate::tokens::SurfaceRole::Control)
-            .map_or(0, crate::part_paint::PainterSet::id),
+        theme.painter(crate::tokens::SurfaceRole::Control).id(),
     )
 }
 
@@ -183,6 +186,8 @@ impl Button {
             image: None,
             transport: None,
             badge: None,
+            count: None,
+            count_size: vello::kurbo::Size::ZERO,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -355,6 +360,62 @@ impl Button {
         self.badge = badge.filter(|text| !text.is_empty()).map(str::to_owned);
         self.dirty = true;
         self
+    }
+
+    /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
+    /// new things wait behind the control (unread notifications, new mail), as an app icon's
+    /// count stands on it. Only an icon-only face shows it. The button keeps room for the part
+    /// past its trailing edge, so the count never covers the control beside it or leaves the
+    /// row; a zero count is none. The button's name says the count, not the badge.
+    #[must_use]
+    pub fn with_count(
+        mut self,
+        content: crate::widget::BadgeContent,
+        style: crate::widget::ChipStyle,
+    ) -> Self {
+        self.count = crate::widget::badge::shows(&content).then_some(CountBadge {
+            content,
+            style,
+            metrics: None,
+        });
+        self.dirty = true;
+        self
+    }
+
+    /// Whether it shows `content` on its icon, in the warning tone when `alert`.
+    pub(crate) fn shows_count(
+        &self,
+        content: Option<&crate::widget::BadgeContent>,
+        alert: bool,
+    ) -> bool {
+        use crate::widget::BadgeContent;
+        let same = |a: &BadgeContent, b: &BadgeContent| match (a, b) {
+            (BadgeContent::Count(a), BadgeContent::Count(b)) => a == b,
+            (BadgeContent::Dot, BadgeContent::Dot) => true,
+            _ => false,
+        };
+        match (&self.count, content) {
+            (None, None) => true,
+            (Some(shown), Some(content)) => {
+                same(&shown.content, content)
+                    && matches!(shown.style, crate::widget::ChipStyle::Tinted(_)) == alert
+            }
+            _ => false,
+        }
+    }
+
+    /// Where the count stands: centred on the icon's top-trailing corner. `None` without one.
+    fn count_rect(&self) -> Option<Rect> {
+        self.count.as_ref()?;
+        if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
+            return None;
+        }
+        let icon = self.metrics.icon.min(self.rect.height());
+        let corner = Point::new(
+            self.rect.center().x + icon / 2.0,
+            self.rect.center().y - icon / 2.0,
+        );
+        Some(Rect::from_center_size(corner, self.count_size))
     }
 
     /// The text isn't painted — it's what a screen reader announces in
@@ -1261,12 +1322,10 @@ fn container_states(interact: ButtonInteract, on: bool) -> crate::part_paint::St
 }
 
 impl FacePaint<'_> {
-    /// Paint the face. Returns the shape the theme's painter set drew the
-    /// container as, where it drew one: the button takes the pointer there.
-    fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
-        let theme = ctx.theme;
-        let disabled = self.interact.disabled;
-        let on = self.on && !disabled;
+    /// The face's colours `(fill, edge, ink)` in its state and the effective
+    /// interaction they were resolved for.
+    fn colors(&self, theme: &Theme) -> (FaceColors, ButtonInteract) {
+        let on = self.on && !self.interact.disabled;
         // An "on" toggle is a lift and stays one under the pointer; a press
         // still answers.
         let interact = ButtonInteract {
@@ -1279,21 +1338,75 @@ impl FacePaint<'_> {
         } else {
             fill
         };
-        let radius = f64::from(theme.tokens.radii.control);
-        // A labelled plain face keeps its ink on its layout edge; its lift
-        // (and focus ring) reach outward by the padding it does not take.
-        let face_rect = if self.content.flush {
+        ((fill, edge, ink), interact)
+    }
+
+    /// The rect the face fills: a labelled plain face keeps its ink on its
+    /// layout edge, and its lift (and focus ring) reach outward by the
+    /// padding it does not take.
+    fn face_rect(&self) -> Rect {
+        if self.content.flush {
             self.rect.inflate(self.metrics.pad_x, 0.0)
         } else {
             self.rect
-        };
-        let shape = RoundedRect::from_rect(face_rect, radius);
+        }
+    }
+
+    /// Draw the container with the control role's painter set into
+    /// `scene`, where the set draws it; `None` leaves it to the toolkit's
+    /// face.
+    fn painted_container(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Option<crate::part_paint::Painted> {
         let set = theme.painter(crate::tokens::SurfaceRole::Control);
+        let ((fill, edge, ink), _) = self.colors(theme);
+        crate::part_paint::paint_part(
+            scene,
+            transform,
+            self.face_rect(),
+            (
+                set,
+                crate::part_paint::Part::ButtonContainer,
+                crate::tokens::SurfaceRole::Control,
+            ),
+            self.moment,
+            &crate::part_paint::part_tokens(
+                theme,
+                crate::tokens::SurfaceRole::Control,
+                (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
+                theme.tokens.colors.surfaces.content,
+            ),
+            theme,
+        )
+    }
+
+    /// The shape the theme's painter set draws the container as, in the
+    /// face's coordinates; `None` where the set leaves the container to the
+    /// toolkit.
+    fn painted_shape(&self, theme: &Theme) -> Option<vello::kurbo::BezPath> {
+        self.painted_container(&mut Scene::new(), Affine::IDENTITY, theme)?
+            .hit
+    }
+
+    /// Paint the face. Returns the shape the theme's painter set drew the
+    /// container as, where it drew one: the button takes the pointer there.
+    fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
+        let theme = ctx.theme;
+        let disabled = self.interact.disabled;
+        let ((fill, edge, ink), _) = self.colors(theme);
+        let radius = f64::from(theme.tokens.radii.control);
+        let face_rect = self.face_rect();
+        let shape = RoundedRect::from_rect(face_rect, radius);
+        let mut container = Scene::new();
+        let painted = self.painted_container(&mut container, ctx.transform, theme);
         // Disabled is the rest face under one group alpha (HIG §9.5), the
-        // same signal every other control gives. A painter set's container
-        // may take any shape in the face's rect.
+        // same signal every other control gives. A painted container may
+        // take any shape in the face's rect.
         if disabled {
-            let clip = if set.is_some() {
+            let clip = if painted.is_some() {
                 RoundedRect::from_rect(face_rect, 0.0)
             } else {
                 shape
@@ -1306,26 +1419,9 @@ impl FacePaint<'_> {
                 &clip,
             );
         }
-        let painted = set.and_then(|set| {
-            crate::part_paint::paint_part(
-                ctx.scene,
-                ctx.transform,
-                face_rect,
-                (
-                    set,
-                    crate::part_paint::Part::ButtonContainer,
-                    crate::tokens::SurfaceRole::Control,
-                ),
-                self.moment,
-                &crate::part_paint::part_tokens(
-                    theme,
-                    crate::tokens::SurfaceRole::Control,
-                    (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
-                    theme.tokens.colors.surfaces.content,
-                ),
-                theme,
-            )
-        });
+        if painted.is_some() {
+            ctx.scene.append(&container, None);
+        }
         // A painted container draws its own edge; a border stands in for
         // the rest edge.
         let bordered = painted.is_some()
@@ -1561,9 +1657,40 @@ impl<'a> ButtonFace<'a> {
         let grow_y = ((target - self.rect.height()) / 2.0).max(0.0);
         self.rect.inflate(grow_x, grow_y)
     }
-    /// Whether `point` activates this face.
+    /// Whether `point` activates this face: inside the shape the theme's
+    /// painter set draws it as, or else in its hit rect.
     pub fn contains(&self, theme: &Theme, point: Point) -> bool {
-        self.hit_rect(theme).contains(point)
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        match self.painter(&metrics, "").painted_shape(theme) {
+            Some(shape) => crate::part_paint::hit_contains(&shape, point),
+            None => self.hit_rect(theme).contains(point),
+        }
+    }
+
+    /// This face as it is painted, labelled `label`.
+    fn painter<'b>(&'b self, metrics: &'b FaceMetrics, label: &'b str) -> FacePaint<'b> {
+        FacePaint {
+            rect: self.rect,
+            role: self.role,
+            confirms: self.confirms,
+            on: self.on,
+            interact: self.interact,
+            content: FaceContent {
+                icon: self.icon,
+                image: None,
+                badge: None,
+                label,
+                hint: self.shortcut.as_ref().map(shortcut_text),
+                // A painted face fills the rect its host gave it.
+                flush: false,
+                filled_icon: self
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (self.on && fills_when_on(icon))),
+                menu: false,
+            },
+            metrics,
+            moment: crate::part_paint::Moment::settled(container_states(self.interact, self.on)),
+        }
     }
 }
 
@@ -1606,29 +1733,12 @@ impl Button {
     ) {
         let label = localized_label(face.label);
         let metrics = FaceMetrics::of_role(face.control_size, face.role, theme);
-        FacePaint {
-            rect: face.rect,
-            role: face.role,
-            confirms: face.confirms,
-            on: face.on,
-            interact: face.interact,
-            content: FaceContent {
-                icon: face.icon,
-                image: None,
-                badge: None,
-                label: &label,
-                hint: face.shortcut.as_ref().map(shortcut_text),
-                // A painted face fills the rect its host gave it.
-                flush: false,
-                filled_icon: face
-                    .icon
-                    .is_some_and(|icon| icon.is_brand() || (face.on && fills_when_on(icon))),
-                menu: false,
-            },
-            metrics: &metrics,
-            moment: crate::part_paint::Moment::settled(container_states(face.interact, face.on)),
-        }
-        .paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
+        face.painter(&metrics, &label).paint(&mut PaintCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        ));
     }
 
     fn content(&self) -> (String, Option<String>) {
@@ -1708,6 +1818,51 @@ impl Button {
         }
         let mut style = style.clone();
         style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// The room the count takes past the face's edges, kept on the node as its margins, so the
+    /// count stands over no control beside it and never leaves the row it is in: past the
+    /// trailing edge on that side, and past the top edge on the top and the bottom alike, so
+    /// the face stays centred where its row centres it.
+    fn keep_room_for_count(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.count_size = self
+            .count
+            .as_ref()
+            .map_or(vello::kurbo::Size::ZERO, |count| count.size(text));
+        let (past_x, past_y) =
+            if self.count.is_some() && self.label.is_empty() && self.icon.is_some() {
+                let face = self.face_height();
+                let icon = self.metrics.icon.min(face);
+                // The icon is centred in a square face: its corner stands `icon / 2` from the
+                // centre, the count's half again past that.
+                (
+                    (icon / 2.0 + self.count_size.width / 2.0 - face / 2.0).max(0.0),
+                    (icon / 2.0 + self.count_size.height / 2.0 - face / 2.0).max(0.0),
+                )
+            } else {
+                (0.0, 0.0)
+            };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let length = |v: f64| taffy::LengthPercentageAuto::length(f32_of_f64(v.ceil()));
+        let margin = taffy::Rect {
+            left: length(0.0),
+            right: length(past_x),
+            top: length(past_y),
+            bottom: length(past_y),
+        };
+        if style.margin == margin {
+            return false;
+        }
+        let mut style = style.clone();
+        style.margin = margin;
         taffy.set_style(node, style).is_ok()
     }
 
@@ -1805,6 +1960,13 @@ impl Widget for Button {
             self.dirty = true;
             self.metrics = metrics;
         }
+        if let Some(count) = &mut self.count {
+            let badge = BadgeMetrics::of(theme);
+            if count.metrics.as_ref() != Some(&badge) {
+                count.metrics = Some(badge);
+                self.dirty = true;
+            }
+        }
         let height = f32_of_f64(self.face_height());
         let style = Style {
             // An intrinsic button never shrinks below its label: a parent
@@ -1858,7 +2020,7 @@ impl Widget for Button {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let tall = self.pin_face_height(taffy, node);
+        let tall = self.pin_face_height(taffy, node) | self.keep_room_for_count(taffy, node, text);
         if self.fill_width {
             return tall;
         }
@@ -1912,7 +2074,7 @@ impl Widget for Button {
         // The toolkit's own button changes state at once.
         self.motion.go(
             container_states(interact, on),
-            (set, crate::part_paint::Part::ButtonContainer),
+            (Some(set), crate::part_paint::Part::ButtonContainer),
             crate::part_paint::Transition::None,
             theme.reduce_motion,
             now,
@@ -1991,6 +2153,16 @@ impl Widget for Button {
             text_renderer,
             theme,
         ));
+        if let (Some(count), Some(rect)) = (&self.count, self.count_rect()) {
+            // Into the cached face, where it moves with the button.
+            count.paint(
+                self.face.scene_mut(),
+                Affine::IDENTITY,
+                rect,
+                text_renderer,
+                theme,
+            );
+        }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
         crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
@@ -2141,6 +2313,21 @@ impl Widget for Button {
         self.rect
     }
 
+    /// The count on the icon, and the icon it stands on.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let Some(count) = self.count_rect() else {
+            return Vec::new();
+        };
+        let icon = self.metrics.icon.min(self.rect.height());
+        vec![
+            ("count".to_owned(), count),
+            (
+                "icon".to_owned(),
+                Rect::from_center_size(self.rect.center(), (icon, icon)),
+            ),
+        ]
+    }
+
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.takes(point) {
             Some(winit::window::CursorIcon::Pointer)
@@ -2220,7 +2407,10 @@ impl Widget for Button {
         };
         let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
-            .with_bounds(self.rect)
+            // A painted button is spoken where it is drawn.
+            .with_bounds(self.painted_hit.as_ref().map_or(self.rect, |hit| {
+                vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2()
+            }))
             .with_optional_name(name)
             .with_interface_name(interface)
             .with_state(AccessState {

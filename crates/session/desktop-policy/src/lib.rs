@@ -977,6 +977,13 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.asks_attention(tab))
     }
 
+    /// The tab the desktop gave `window`, once it mapped: the key a shell's well names it by
+    /// (shell.md §8). A dialog has no tab; it floats over the window it belongs to.
+    #[must_use]
+    pub fn tab_of(&self, window: u64) -> Option<TabId> {
+        self.handle.read(|tree| tab_of(tree, window))
+    }
+
     /// The windows the desk shows on the workspace in front, each with the
     /// id its app announces itself by: what a launch of an app that may
     /// already be running is decided against. A window still arriving is not

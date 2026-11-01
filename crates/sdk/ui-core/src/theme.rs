@@ -133,6 +133,17 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
         // A floating panel's inner hairline becomes the border.
         tokens.elevation.floating_edge = ink;
     }
+    // The pointer's answer is the document's response role. One that states
+    // none and holds still answers with lifts only: nothing scales and no
+    // edge lights, the same rule reduced motion follows.
+    tokens.response =
+        document
+            .response
+            .unwrap_or(if matches!(document.motion.curve, MotionCurve::None) {
+                crate::tokens::Response::STILL
+            } else {
+                crate::tokens::Response::STOCK
+            });
     tokens.selector = if document.palette.high_contrast {
         crate::tokens::SelectorFinish::OPAQUE
     } else {
@@ -218,10 +229,6 @@ pub struct Theme {
     /// to edge. `None` when no host said; nothing then keeps out of corners.
     /// Set where the window is drawn, not part of the configured theme.
     pub surface: Option<SurfaceShape>,
-    /// The painter set drawing each surface role's parts, where the theme
-    /// names one; the toolkit's own painters elsewhere
-    /// ([`crate::part_paint`]). Read through [`Theme::painter`].
-    pub painters: crate::part_paint::RolePainters,
 }
 
 // Written out rather than derived: a derived `eq` is `#[inline]`, so every
@@ -250,7 +257,6 @@ impl PartialEq for Theme {
             caret_width,
             forced_colors,
             surface,
-            painters,
         } = self;
         *name == other.name
             && *document == other.document
@@ -271,7 +277,6 @@ impl PartialEq for Theme {
             && *caret_width == other.caret_width
             && *forced_colors == other.forced_colors
             && *surface == other.surface
-            && *painters == other.painters
     }
 }
 
@@ -300,7 +305,6 @@ impl Clone for Theme {
             caret_width: self.caret_width,
             forced_colors: self.forced_colors,
             surface: self.surface,
-            painters: self.painters.clone(),
         }
     }
 }
@@ -327,6 +331,7 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     || Theme::preset(Preset::GlassLight),
     || Theme::preset(Preset::Block),
     || Theme::preset(Preset::BlockLight),
+    || Theme::preset(Preset::Pixelated),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
@@ -401,19 +406,45 @@ impl Theme {
             caret_width: 2.0,
             forced_colors: document.palette.high_contrast,
             surface: None,
-            painters: crate::part_paint::RolePainters::default(),
             document,
             tokens,
         }
     }
 
+    /// Why `document` is not a theme this build can show, as the person or
+    /// the theme's author reads it: the schema, an out-of-band role, or a
+    /// surface shader that is not a surface shader. `None` when it is a
+    /// theme.
+    #[must_use]
+    pub fn refusal(document: &ThemeDocument) -> Option<String> {
+        // A surface shader's own compile error first: the structural check
+        // below only knows that one is wrong, not where.
+        let material = &document.material;
+        for (role, finish) in [
+            ("window", Some(&material.window)),
+            ("control", Some(&material.control)),
+            ("floating", Some(&material.floating)),
+            ("bar", material.bar.as_ref()),
+        ] {
+            if let Some(finish) = finish
+                && finish.set() == crate::part_paint::builtin::shader_set()
+                && let Err(reason) = finish.shader().validate()
+            {
+                return Some(format!("material.{role}: {reason}"));
+            }
+        }
+        document.validate().err().map(str::to_owned)
+    }
+
     /// The theme a document describes, or `None` for one this build does not
-    /// admit ([`ThemeDocument::validate`]). Values outside a role's usable
-    /// band are clamped, and a pairing that misses a contrast floor is
-    /// repaired, so every theme that materializes is legible.
+    /// admit ([`Self::refusal`], which names why). Values outside a role's
+    /// usable band are clamped, and a pairing that misses a contrast floor
+    /// is repaired, so every theme that materializes is legible.
     #[must_use]
     pub fn from_document(document: &ThemeDocument) -> Option<Self> {
-        document.validate().ok()?;
+        if Self::refusal(document).is_some() {
+            return None;
+        }
         Some(Self::built(document.clone(), PresenceHue::Blue))
     }
 
@@ -762,7 +793,7 @@ impl Theme {
     ///
     /// Exists so a check can be run against *all* of them rather than against
     /// whichever two someone remembered.
-    pub const ALL: [&'static str; 11] = [
+    pub const ALL: [&'static str; 12] = [
         Preset::Dark.name(),
         Preset::DarkCool.name(),
         Preset::DarkGraphite.name(),
@@ -774,6 +805,7 @@ impl Theme {
         Preset::GlassLight.name(),
         Preset::Block.name(),
         Preset::BlockLight.name(),
+        Preset::Pixelated.name(),
     ];
 
     /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
@@ -798,50 +830,43 @@ impl Theme {
     }
 
     /// The finish `role` is painted in: the theme's, made opaque under
-    /// reduced transparency and forced colours (a flat finish stays flat).
+    /// reduced transparency (a flat finish stays flat, a theme's own set
+    /// keeps drawing opaque), and the toolkit's own under forced colours,
+    /// whose guarantees are not a theme's set to keep.
     #[must_use]
-    pub fn finish(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
-        self.finish_of(role)
-    }
-
-    /// The painter set drawing `role`'s parts, or `None` for the toolkit's
-    /// own. Forced colours always draw with the toolkit's own: what they
-    /// guarantee is not a painter's to keep.
-    #[must_use]
-    pub fn painter(
-        &self,
-        role: crate::tokens::SurfaceRole,
-    ) -> Option<&crate::part_paint::PainterSet> {
-        if self.forced_colors {
-            return None;
-        }
-        self.painters.of(role)
-    }
-
-    /// This theme with `set` drawing `role`'s parts.
-    #[must_use]
-    pub fn with_painter_set(
-        mut self,
-        role: crate::tokens::SurfaceRole,
-        set: crate::part_paint::PainterSet,
-    ) -> Self {
-        let slot = match role {
-            crate::tokens::SurfaceRole::Window => &mut self.painters.window,
-            crate::tokens::SurfaceRole::Control => &mut self.painters.control,
-            crate::tokens::SurfaceRole::Floating => &mut self.painters.floating,
-            crate::tokens::SurfaceRole::Bar => &mut self.painters.bar,
-        };
-        *slot = Some(set);
-        self
-    }
-
-    fn finish_of(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
+    pub fn finish(&self, role: crate::tokens::SurfaceRole) -> &crate::tokens::Finish {
         let finish = self.tokens.finishes.of(role);
-        if self.reduce_transparency || self.forced_colors {
+        if self.forced_colors {
+            finish.forced()
+        } else if self.reduce_transparency {
             finish.opaque()
         } else {
             finish
         }
+    }
+
+    /// The painter set drawing `role`'s parts: its finish's.
+    #[must_use]
+    pub fn painter(&self, role: crate::tokens::SurfaceRole) -> &crate::part_paint::PainterSet {
+        self.finish(role).set()
+    }
+
+    /// This theme with `set` drawing `role`'s parts, with none of its
+    /// parameters stated. `Err` where the set requires one.
+    pub fn with_painter_set(
+        mut self,
+        role: crate::tokens::SurfaceRole,
+        set: crate::part_paint::PainterSet,
+    ) -> Result<Self, &'static str> {
+        let finish = crate::tokens::Finish::new(set, std::iter::empty::<(String, f32)>())?;
+        let finishes = &mut self.tokens.finishes;
+        match role {
+            crate::tokens::SurfaceRole::Window => finishes.window = finish,
+            crate::tokens::SurfaceRole::Control => finishes.control = finish,
+            crate::tokens::SurfaceRole::Floating => finishes.floating = finish,
+            crate::tokens::SurfaceRole::Bar => finishes.bar = Some(finish),
+        }
+        Ok(self)
     }
 
     #[must_use]
@@ -1339,6 +1364,93 @@ mod tests {
         doc
     }
 
+    /// The pointer's answer is the document's `response` role: a theme
+    /// that states one is read through it by every shared selection tier,
+    /// and one that states none keeps the stock (or, held still, the still)
+    /// response.
+    #[test]
+    fn a_documents_response_role_is_how_controls_answer_the_pointer() {
+        use crate::chrome::{SelectionState, selection_tier_on};
+        use crate::tokens::{Response, ResponseStep};
+        let mut document = Preset::Dark.document();
+        assert_eq!(
+            Theme::from_document(&document).unwrap().tokens.response,
+            Response::STOCK
+        );
+        let response = Response {
+            hover: ResponseStep {
+                lift: 1.0,
+                tint: 0.2,
+                scale: 1.05,
+                glow: 0.0,
+            },
+            press: ResponseStep {
+                lift: 2.0,
+                tint: 0.0,
+                scale: 0.9,
+                glow: 0.4,
+            },
+        };
+        document.response = Some(response);
+        let theme = Theme::from_document(&document).expect("an admitted response");
+        assert_eq!(theme.tokens.response, response);
+        let ground = theme.tokens.colors.surfaces.content;
+        let pressed = SelectionState {
+            pressed: true,
+            ..SelectionState::default()
+        };
+        let hovered = SelectionState {
+            hover: true,
+            ..SelectionState::default()
+        };
+        assert!((selection_tier_on(&theme, pressed, ground).scale - 0.9).abs() < 1e-6);
+        assert!((selection_tier_on(&theme, hovered, ground).scale - 1.05).abs() < 1e-6);
+        let stock = Theme::dark();
+        assert_ne!(
+            selection_tier_on(&theme, hovered, ground).fill,
+            selection_tier_on(&stock, hovered, ground).fill,
+            "the hover's lift and tint are the theme's"
+        );
+        // Out of band is not a theme, and the reason says which lever.
+        document.response = Some(Response {
+            press: ResponseStep {
+                scale: 0.2,
+                ..response.press
+            },
+            ..response
+        });
+        assert!(Theme::from_document(&document).is_none());
+        assert!(Theme::refusal(&document).unwrap().contains("scale"));
+        // Block holds still: lifts only.
+        let block = Theme::preset(Preset::Block);
+        assert_eq!(block.tokens.response, Response::STILL);
+    }
+
+    /// A theme whose surface shader does not compile is refused with the
+    /// compiler's reason and where it is, so the person importing it can
+    /// fix it; it never applies.
+    #[test]
+    fn a_broken_surface_shader_is_refused_with_its_reason() {
+        let mut document = Preset::Dark.document();
+        let finish = crate::tokens::Finish::named(
+            "shader",
+            std::collections::BTreeMap::<String, f32>::new(),
+        )
+        .expect("the shader set")
+        .with_shader(crate::tokens::SurfaceShader {
+            wgsl: "fn fs_surface( -> vec4<f32> { return fill; }".to_owned(),
+            time: 0.0,
+        });
+        document.material.window = finish;
+        assert!(Theme::from_document(&document).is_none());
+        let reason = Theme::refusal(&document).expect("a reason");
+        assert!(reason.starts_with("material.window: "), "{reason}");
+        assert_ne!(
+            reason, "material.window: surface shader is not a shader a theme may draw",
+            "the reason is the compiler's, not a generic refusal"
+        );
+    }
+
     #[test]
     fn the_shipped_themes_resolve_by_name_and_keep_every_floor() {
         // phase: every_name_round_trips
@@ -1745,13 +1857,9 @@ mod tests {
                 hover_alpha: 0.8,
             };
             doc.material = ThemeMaterial {
-                floating: crate::tokens::Finish::Translucent {
-                    blur: 40.0,
-                    tint: 0.9,
-                    saturation: 1.0,
-                },
+                floating: crate::tokens::Finish::frosted(40.0, 0.9, 1.0),
                 selector,
-                ..ThemeMaterial::STOCK
+                ..ThemeMaterial::stock()
             };
             doc.emphasis = Emphasis::Tinted { hue: 150.0 };
             let theme = Theme::from_document(&doc).unwrap();
@@ -1779,8 +1887,8 @@ mod tests {
             let block = Theme::preset(Preset::Block);
             assert_eq!(block.tokens.radii.control, 0.0);
             assert_eq!(block.tokens.radii.tile, 0.0);
-            assert_eq!(block.tokens.finishes.window, Finish::Flat);
-            assert_eq!(block.tokens.finishes.floating, Finish::Flat);
+            assert_eq!(block.tokens.finishes.window, Finish::flat());
+            assert_eq!(block.tokens.finishes.floating, Finish::flat());
             assert_eq!(block.tokens.colors.surfaces.material_blur_px, 0.0);
             assert_eq!(block.tokens.elevation.window.color.components[3], 0.0);
             assert_eq!(block.tokens.elevation.floating.color.components[3], 0.0);
@@ -1798,7 +1906,7 @@ mod tests {
             );
 
             let glass = Theme::preset(Preset::Glass);
-            assert!(matches!(glass.tokens.finishes.window, Finish::Glass { .. }));
+            assert_eq!(glass.tokens.finishes.window.painter(), "glass");
             assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
             assert!(
                 glass.tokens.elevation.floating.color.components[3]
@@ -1823,7 +1931,7 @@ mod tests {
             // Default stays exactly the design language.
             let stock = Theme::dark();
             assert_eq!(stock.tokens.elevation, crate::tokens::Elevation::dark());
-            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::STOCK);
+            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::stock());
             assert!(!stock.motion().still());
         }
 

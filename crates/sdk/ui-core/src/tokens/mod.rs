@@ -9,8 +9,10 @@ pub mod metrics;
 pub mod motion;
 pub mod palette;
 pub mod radii;
+pub mod response;
 pub mod search;
 pub mod selector;
+pub mod shader;
 pub mod spacing;
 pub mod syntax_palette;
 pub mod terminal_palette;
@@ -23,7 +25,7 @@ pub use colors::{
 };
 pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Outline, Shadow};
-pub use finish::{Border, BorderInk, Depth, Finish, Optics, RoleFinishes, SurfaceRole};
+pub use finish::{Border, BorderInk, Depth, Finish, RoleFinishes, SurfaceRole};
 pub use layout::{Breakpoint, BreakpointTracker, Layout};
 pub use metrics::Metrics;
 pub use motion::{
@@ -32,6 +34,26 @@ pub use motion::{
 };
 pub use palette::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
 pub use radii::Radii;
+pub use response::{Response, ResponseStep};
+pub use shader::Source as SurfaceShader;
+
+/// A theme document's surface shader as the wire carries it: its WGSL and
+/// its static time in hundredths of a second (an exact integer, so the value
+/// a document states is the value a shader reads).
+#[must_use]
+pub(crate) fn shader_source(source: &SurfaceShader) -> tilo_theme_sdk::ShaderSource {
+    let centis = (source.time.max(0.0) * 100.0).round();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the source's time is finite and non-negative, and a shader's time is at most an hour"
+    )]
+    let time_centis = centis.clamp(0.0, 360_000.0) as u32;
+    tilo_theme_sdk::ShaderSource {
+        wgsl: source.wgsl.clone(),
+        time_centis,
+    }
+}
 pub use selector::{SelectorFinish, StripMaterial};
 pub use spacing::{Rhythm, RhythmScale, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
@@ -77,6 +99,9 @@ pub struct Tokens {
     /// How surfaces stand off what is below them; the elevation above is
     /// already this depth's.
     pub depth: Depth,
+    /// How the shared components answer the pointer: hover and press
+    /// ([`Response`]).
+    pub response: Response,
 }
 
 impl Tokens {
@@ -111,13 +136,14 @@ impl Tokens {
             },
             density: Density::Comfortable,
             finishes: if colors_high_contrast {
-                RoleFinishes::OPAQUE
+                RoleFinishes::solid()
             } else {
-                RoleFinishes::STOCK
+                RoleFinishes::stock()
             },
             border: Border::STOCK,
             border_color: None,
             depth: Depth::STOCK,
+            response: Response::STOCK,
         }
     }
 

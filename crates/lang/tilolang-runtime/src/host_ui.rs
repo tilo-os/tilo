@@ -71,7 +71,8 @@ impl Core {
         let mut offered = Vec::with_capacity(actions.len());
         let mut events = Vec::with_capacity(actions.len());
         for (index, action) in actions.into_iter().enumerate() {
-            // `host.Action`: label, icon, role, primary, destructive, on, params, run.
+            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run,
+            // group, frequent.
             let Value::Tuple(fields) = action else {
                 return trap("an offered action is a host.Action");
             };
@@ -90,7 +91,7 @@ impl Core {
                 },
                 _ => None,
             };
-            let Some(run @ Value::Action(_)) = fields.get(7).cloned() else {
+            let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
                 return trap("an offered action runs an action reference");
             };
             let event = offered_event(&name, index);
@@ -100,6 +101,7 @@ impl Core {
                 primary: flag(3).unwrap_or(false),
                 destructive: flag(4).unwrap_or(false),
                 on: flag(5),
+                key: text(6),
                 event: event.clone(),
             })));
             events.push((event, run));
@@ -313,7 +315,9 @@ impl Core {
         };
         let root = self.with_view(|vs| {
             let root = shown_nodes(vs, &key, &shown, &phrase);
-            // What a field held before reads quieter than what it holds now.
+            // What a field held before reads quieter than what it holds now. A rich text
+            // cannot take it (its component declares no such prop): its before side says
+            // what the change took away by striking those runs.
             if side == "before"
                 && let Some(node) = vs.nodes.get_mut(root)
                 && node.kind == "ui.Text"
@@ -373,6 +377,10 @@ impl Core {
             }
             Imp::UiPropI => self.set_prop(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
             Imp::UiPropF => self.set_prop(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
+            Imp::UiPropPic => {
+                let src = self.text(a.h(2)?)?;
+                self.set_prop(a.h(0)?, a.h(1)?, Value::Picture(src))
+            }
             Imp::UiChild => {
                 let (parent, child) = (self.node_index(a.h(0)?)?, self.node_index(a.h(1)?)?);
                 self.with_view(|vs| {
@@ -403,28 +411,7 @@ impl Core {
                 })?;
                 ret_void()
             }
-            Imp::UiOn => {
-                let node = self.node_index(a.h(0)?)?;
-                let event = self.text(a.h(1)?)?;
-                let act = match self.val(a.h(2)?)? {
-                    v @ Value::Action(_) => v,
-                    other => {
-                        return trap(format!(
-                            "expected an action reference, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                self.with_view(|vs| {
-                    vs.nodes
-                        .get_mut(node)
-                        .ok_or("unknown ui node")?
-                        .events
-                        .insert(event, act);
-                    Ok(())
-                })?;
-                ret_void()
-            }
+            Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
                 let node = self.node_index(a.h(0)?)?;
@@ -447,6 +434,30 @@ impl Core {
             Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),
         }
+    }
+
+    /// `on event: action` on a node: the action runs when the node's component fires `event`.
+    fn ui_on(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let node = self.node_index(a.h(0)?)?;
+        let event = self.text(a.h(1)?)?;
+        let act = match self.val(a.h(2)?)? {
+            v @ Value::Action(_) => v,
+            other => {
+                return trap(format!(
+                    "expected an action reference, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        self.with_view(|vs| {
+            vs.nodes
+                .get_mut(node)
+                .ok_or("unknown ui node")?
+                .events
+                .insert(event, act);
+            Ok(())
+        })?;
+        ret_void()
     }
 }
 
@@ -619,6 +630,17 @@ fn shown_nodes(
             text_node(vs, key, Value::Text(phrase(id)), false)
         }
         "case" => chip_node(vs, key.to_owned(), value, extra),
+        // A rich text a change made: its paragraphs, drawn by the shared rich text
+        // component, the runs it inserted marked and the runs it deleted struck.
+        "rich" => push_node(
+            vs,
+            Made {
+                kind: "ui.RichText",
+                key: key.to_owned(),
+                props: vec![("value", value)],
+                children: Vec::new(),
+            },
+        ),
         "text" if value.as_text().is_some_and(str::is_empty) => {
             text_node(vs, key, Value::Text(phrase("tilolang-empty-value")), true)
         }

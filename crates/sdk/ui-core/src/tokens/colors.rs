@@ -31,7 +31,8 @@ use crate::paint::with_alpha;
 use vello::peniko::Color;
 
 pub use super::palette::{
-    Emphasis, NEUTRAL_MAX_CHROMA, Palette, STATUS_HUES, STATUS_MAX_CHROMA, TINTED_LIFT_CHROMA, Tone,
+    Emphasis, NEUTRAL_MAX_CHROMA, Palette, STATUS_HUES, STATUS_MAX_CHROMA, SURFACE_LIGHT,
+    TINTED_LIFT_CHROMA, Tone,
 };
 
 /// How far [`Colors::legible_fill`] may deepen a filled chip toward black
@@ -627,6 +628,13 @@ pub struct Colors {
     pub border_standard: Color,
     /// The focus ring: always [`Intents::you`].
     pub border_focus: Color,
+    /// The light a surface catches: the specular sheen across a glass body
+    /// and the rim lit along its edge (`crate::part_paint::builtin`'s Glass
+    /// set, through [`crate::part_paint::PartTokens::light`]). Daylight at
+    /// no chroma ([`super::palette::SURFACE_LIGHT`]), so a workspace's
+    /// temperature never tints it; how strongly a part catches it belongs
+    /// to the role's finish (`specular`, `edge_highlight`).
+    pub light: Color,
 
     // --- state veneers ----------------------------------------------------
     //
@@ -874,6 +882,7 @@ impl Colors {
             text_tertiary: n(palette.ink.tertiary),
             border_standard: n(palette.border()),
             border_focus: accent_ink,
+            light: oklch(SURFACE_LIGHT.lightness, SURFACE_LIGHT.chroma, 0.0),
             overlay_subtle: subtle,
             overlay_medium: medium,
             overlay_strong: strong,
@@ -1014,6 +1023,21 @@ impl Colors {
             -step
         };
         oklch(g.l + step * t, chroma, hue)
+    }
+
+    /// `ground` lifted `t` surface steps with `tint` of the accent washed
+    /// into it (up to `tint` 0.25: a hover or a press may carry a trace of
+    /// the person's colour, a selected row keeps its own tier). The lift's
+    /// lightness is [`Self::lift_on`]'s; the wash is the accent laid over
+    /// it at `tint` opacity and composited, so ink still reads on it.
+    #[must_use]
+    pub fn lift_tinted_on(&self, ground: Color, t: f32, tint: f32) -> Color {
+        let lift = self.lift_on(ground, t);
+        let tint = tint.clamp(0.0, 0.25);
+        if tint <= 0.0 {
+            return lift;
+        }
+        composite(self.intent.accent.with_alpha(tint), lift)
     }
 
     /// The selected row's lift on `ground`: a fifth past one surface step
@@ -1527,6 +1551,14 @@ mod tests {
             for (label, palette) in palettes() {
                 for hue in hues() {
                     let c = at_hue(&palette, hue);
+                    // The light a surface catches is daylight, not a neutral
+                    // of the material: white under every temperature and on
+                    // both polarities, so a workspace hue never tints it.
+                    assert_eq!(
+                        c.light,
+                        Color::WHITE,
+                        "{label}@{hue}: the light a surface catches is white"
+                    );
                     let mut neutrals: Vec<(&str, Color)> = surfaces(&c).to_vec();
                     neutrals.extend([
                         ("primary", c.text_primary),

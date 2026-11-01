@@ -34,6 +34,8 @@ pub struct SettleReport {
     pub waiting: usize,
     /// Entries another process was handing over when it stopped: outcome unknown.
     pub unknown: usize,
+    /// Entries held back until a moment that has not come yet: nothing was done with them.
+    pub held: usize,
 }
 
 /// This process's token, which an outbox entry it marks as being handed over carries: an
@@ -231,6 +233,29 @@ impl Runtime {
             .map_err(RuntimeError::Package)
     }
 
+    /// Load another app's package with its module: its views run here, inline in the views
+    /// that call them (`mail.inbox(m)`, or `show(r)` by the resource's type), as that package's own code,
+    /// so what they create and invoke carries its module as the author, never the caller's.
+    /// Its records stay its app's: a view of it reads a resource from the reading its app
+    /// publishes ([`Runtime::set_reading`]), named by app and type (`mail#Inbox`), and its
+    /// actions are child invocations at that app's door ([`Runtime::set_invoker`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::load_package`].
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        let hash = self.core.engine.compile(wasm)?;
+        self.check_exports(&hash, &meta)?;
+        let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
+            .map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(hash)
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -257,16 +282,24 @@ impl Runtime {
             )));
         }
         let mut foreign = self.core.foreign.borrow_mut();
+        let first = foreign.generation(target) == 0;
         if !foreign.set_reading(target, json) {
             return Ok(false);
         }
         let generation = foreign.generation(target);
+        let known = foreign.known();
         drop(foreign);
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-        self.core
-            .view_states
-            .borrow_mut()
-            .set(crate::foreign::reading_key(target), Value::Int(seen));
+        let mut states = self.core.view_states.borrow_mut();
+        states.set(crate::foreign::reading_key(target), Value::Int(seen));
+        // A resource known here for the first time: views that looked it up by id
+        // (`resource(id)`) and found nothing run again.
+        if first {
+            states.set(
+                crate::foreign::known_key(),
+                Value::Int(i64::try_from(known).unwrap_or(i64::MAX)),
+            );
+        }
         Ok(true)
     }
 
@@ -687,16 +720,20 @@ impl Runtime {
         self.core.unshared()
     }
 
-    /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and
-    /// whether it is the person looking. What `lenses(r)` reads; a view that read the lenses
-    /// on it runs again when they move.
-    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool)]) {
+    /// The lenses on the resource `resource` (its id) now, as presence reports them: who,
+    /// whether it is the person looking, and whether they are composing a message in it. What
+    /// `lenses(r)` reads; a view that read the lenses on it runs again when they move.
+    pub fn set_lenses(&self, resource: &str, lenses: &[(Principal, bool, bool)]) {
         let key = crate::platform::lens_key(resource);
         let value = Value::List(
             lenses
                 .iter()
-                .map(|(who, mine)| {
-                    Value::Tuple(vec![Value::Principal(who.clone()), Value::Bool(*mine)])
+                .map(|(who, mine, composing)| {
+                    Value::Tuple(vec![
+                        Value::Principal(who.clone()),
+                        Value::Bool(*composing),
+                        Value::Bool(*mine),
+                    ])
                 })
                 .collect(),
         );
@@ -809,6 +846,26 @@ impl Runtime {
         self.core.retry_waiting.set(true);
     }
 
+    /// The earliest moment an outside effect waits to be held until, ISO-8601 UTC text
+    /// (`outside(.., at:)`): nothing carries it out before then, and the device sleeps until
+    /// it. `None` when none is held back.
+    #[must_use]
+    pub fn next_held(&self) -> Option<String> {
+        self.core.store.borrow().outbox_next_held()
+    }
+
+    /// How long from the clock now until the earliest moment an outside effect is held until:
+    /// zero once it has come, so the next settle carries it out. `None` when none is held.
+    #[must_use]
+    pub fn held_for(&self) -> Option<std::time::Duration> {
+        let at = self.next_held()?;
+        let at = tilolang::calendar::instant(&at)?;
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
     /// Carry the queued outside effects out (convergence.md, "What people see"). An entry is
     /// first marked as being handed over, as a change of its own; the next settle, once that
     /// mark is in the record, hands it to the sink, so a process that stops in between leaves
@@ -834,6 +891,7 @@ impl Runtime {
         let mut report = SettleReport::default();
         let retry = self.core.retry_waiting.replace(false);
         let token = process_token();
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
         let pending = self.pending_outbox();
         if !pending.is_empty() && self.core.sink.borrow().is_none() {
             return Err(RuntimeError::Package("no outside sink is set".into()));
@@ -884,6 +942,17 @@ impl Runtime {
                 // Resolved by `retry_waiting`, which the origin calls when its service is
                 // reachable again.
                 OutboxState::Waiting { .. } if !retry => {}
+                // Held back until a moment the person's action named (undo send): the device
+                // carries it out only once the clock reaches it.
+                OutboxState::Queued | OutboxState::Waiting { .. }
+                    if entry
+                        .held_until
+                        .as_deref()
+                        .and_then(tilolang::calendar::instant)
+                        .is_some_and(|at| at > now) =>
+                {
+                    report.held = report.held.saturating_add(1);
+                }
                 OutboxState::Queued | OutboxState::Waiting { .. } => {
                     let sending = OutboxState::Sending {
                         by: token.to_owned(),

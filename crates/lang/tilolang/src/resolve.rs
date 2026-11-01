@@ -203,6 +203,18 @@ pub struct Presentation {
     /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
     /// button for it shows as toggled.
     pub on: Option<Expr>,
+    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and
+    /// (on a row's action) while that row is selected. Read through the person's keymap, never
+    /// as a key code, so it is layout-correct on any keyboard.
+    pub key: Option<String>,
+    /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names
+    /// it. A surface that shows the resource's actions — a window bar, the desktop's action
+    /// bar — draws the runs in the order the app declared them, so an app decides which
+    /// commands read as one without any surface keeping a list of its own.
+    pub group: Option<String>,
+    /// `frequent`: a command the person reaches for on most things of this type, which the
+    /// desktop's action bar shows directly rather than behind its menu of the rest.
+    pub frequent: bool,
 }
 
 /// `new_note` as "New note".
@@ -574,6 +586,9 @@ impl Env {
                 label_text: None,
                 icon_when: None,
                 on: None,
+                key: a.key.clone(),
+                group: a.group.clone(),
+                frequent: a.frequent,
             };
             add(
                 CKind::Action,
@@ -1929,6 +1944,9 @@ impl Resolver<'_> {
             label_text: None,
             icon_when: None,
             on: None,
+            key: None,
+            group: None,
+            frequent: false,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1973,10 +1991,55 @@ impl Resolver<'_> {
                     "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
                 ("on", _) => out.on = Some(opt.value.clone()),
+                // `key: "e"`: one plain key, read through the person's keymap.
+                ("key", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let key = plain_text(&opt.value).unwrap_or_default();
+                    if key.chars().count() != 1 || key.chars().any(char::is_whitespace) {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`key:` takes one character, the key pressed on its own: `key: \"e\"`, `key: \"/\"`",
+                        );
+                    } else {
+                        out.key = Some(key);
+                    }
+                }
+                ("key", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`key:` takes one character in quotes, without `{ }`: `key: \"e\"`",
+                ),
+                // `group: "Reply"`: the run of the resource's actions this one stands in, by
+                // the app's own name for it.
+                ("group", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let group = plain_text(&opt.value).unwrap_or_default();
+                    if group.trim().is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`group:` names a run of the resource's actions: `group: \"Reply\"`",
+                        );
+                    } else {
+                        out.group = Some(group);
+                    }
+                }
+                ("group", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`group:` takes the run's name in quotes, without `{ }`: `group: \"Reply\"`",
+                ),
+                // `frequent: true`: a command the person reaches for on most things of this
+                // type, which a surface showing the resource's actions draws directly.
+                ("frequent", ExprKind::Bool(frequent)) => out.frequent = *frequent,
+                ("frequent", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`frequent:` takes `true` or `false`: `frequent: true`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:` and `on:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:` and `frequent:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

@@ -3430,7 +3430,12 @@ impl Widget for ListRow {
             let room = rect.width()
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
-            child_origin.x += shift.min(room);
+            // Taffy rounds every layout box onto the display's device pixels; a control placed
+            // here by hand takes the same grid, or its edge lands between two device pixels (a
+            // text band's fractional inset at a large text scale put a button's left edge at
+            // 39.596 at 1.5x).
+            let scale = f64::from(crate::widget::device_scale());
+            child_origin.x = ((child_origin.x + shift.min(room)) * scale).round() / scale;
         } else if trailing.on_disclosure_column
             && let Some(metrics) = &self.metrics
         {
@@ -3974,3 +3979,6 @@ pub use component::{ListRowProps, SwipeActionProps};
 
 mod control_row;
 pub use control_row::ControlRow;
+
+mod control_row_component;
+pub use control_row_component::ControlRowProps;

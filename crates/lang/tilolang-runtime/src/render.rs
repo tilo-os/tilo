@@ -24,6 +24,14 @@ const MAX_VIEW_DEPTH: usize = 32;
 const FOREIGN_VIEW: &str = "view:";
 /// The kind of a node that renders a block's source (`embed(source, author: who)`).
 pub(crate) const EMBED: &str = "embed";
+/// The kind of a node that draws a resource through its type's default view (`show(r)`): a
+/// call of that view, which package's it is known only once the resource is.
+const SHOW: &str = "show";
+/// The property of a `show` node holding the resource it draws.
+const SHOWN: &str = "of";
+/// The property of a `show` node naming the view it draws the resource through (its id or
+/// name); empty or absent for its type's default view.
+const SHOWN_AS: &str = "view";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
 /// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
@@ -31,7 +39,12 @@ const ARG_PREFIX: &str = "arg.";
 /// properties, and a boundary of its own.
 const FOR_EACH: &str = "for:";
 /// The property of a loop's node that holds its items.
-const ITEMS: &str = "items";
+pub const ITEMS: &str = "items";
+/// The property of a `ui.VirtualList` naming the item its reader has not seen
+/// (`first_unseen`): the list draws its "New messages" divider over the row that shows it.
+pub const UNREAD: &str = "unread";
+/// The kind of the divider over a transcript's first unread row.
+pub const UNREAD_DIVIDER: &str = "ui.UnreadDivider";
 /// The property of a loop's node that names the parameter of its row view the item goes to.
 const EACH: &str = "each";
 /// The property of a loop's node that holds the key suffix of the rows around it.
@@ -348,31 +361,15 @@ impl Core {
                 (name.clone(), r)
             })
             .collect();
-        if let (Some(target), Some(boundaries)) =
-            (n.kind.strip_prefix(FOREIGN_VIEW), hook.as_deref_mut())
+        // A call of another package's view: its boundary renders it where it stands, and this
+        // node is the fragment the boundary's tree goes in.
+        if let Some(boundaries) = hook.as_deref_mut()
+            && let Some(call) = self.view_call(&n.kind, &n.props)
         {
-            let (vt, args) = self.call_of(target, &n.props)?;
-            let mut props = n.props.clone();
-            props.retain(|name, _| !name.starts_with(ARG_PREFIX));
-            let children = boundaries.boundary(Stub {
-                key: &key,
-                target: Rc::new(vt),
-                args,
-                lazy: walk.in_list,
-                depth: cx.offer.depth.saturating_add(1),
-            })?;
-            return Ok(UiNode {
-                kind: "fragment".to_owned(),
-                key,
-                props,
-                binding: n.binding.clone(),
-                events,
-                anchor: n.anchor.clone(),
-                children,
-            });
+            return Self::foreign_view(cx, n, key, events, call?, walk, boundaries);
         }
         // A view call's keys are the same at every call site, so they go under the call's key.
-        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW);
+        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
         let below = Walk {
             level: walk.level.saturating_add(1),
             prefix: if calls {
@@ -386,8 +383,16 @@ impl Core {
                 _ => None,
             },
         };
-        let (children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
+        let (mut children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
         let mut props = n.props.clone();
+        // A list draws its "New messages" divider where the app said its reader stopped: over
+        // the row of the item the list was told (`unread: first_unseen(c)`). The list carries
+        // the item; the divider is the same in every conversation.
+        if crate::view::is_virtual(&n.kind)
+            && let Some(Value::Ref(unread)) = props.get(UNREAD).cloned()
+        {
+            place_unread_divider(&mut children, &unread.target);
+        }
         if below.preview.is_some() {
             props.insert(
                 LIST_LEN.to_owned(),
@@ -403,8 +408,8 @@ impl Core {
             anchor: n.anchor.clone(),
             children,
         };
-        if let Some(target) = n.kind.strip_prefix(FOREIGN_VIEW) {
-            self.resolve_foreign(cx, target, &mut node, acc)?;
+        if let Some(call) = self.view_call(&n.kind, &node.props) {
+            self.resolve_foreign(cx, call?, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
         } else {
@@ -426,6 +431,37 @@ impl Core {
             )?;
         }
         Ok(node)
+    }
+
+    /// The fragment a call of another package's view stands for: its props without the
+    /// arguments passed, and the tree its boundary renders for it.
+    fn foreign_view(
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        key: String,
+        events: std::collections::BTreeMap<String, Retained>,
+        (vt, args): (ViewTarget, Vec<Value>),
+        walk: Walk<'_>,
+        boundaries: &mut dyn Boundaries,
+    ) -> Result<UiNode, RuntimeError> {
+        let mut props = n.props.clone();
+        props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
+        let children = boundaries.boundary(Stub {
+            key: &key,
+            target: Rc::new(vt),
+            args,
+            lazy: walk.in_list,
+            depth: cx.offer.depth.saturating_add(1),
+        })?;
+        Ok(UiNode {
+            kind: "fragment".to_owned(),
+            key,
+            props,
+            binding: n.binding.clone(),
+            events,
+            anchor: n.anchor.clone(),
+            children,
+        })
     }
 
     /// The children of `n`, its loops' rows in their places, and how many there are: a
@@ -644,6 +680,65 @@ impl Core {
         Ok((vt, around))
     }
 
+    /// The view a node of kind `kind` calls and its arguments, when it calls one: another
+    /// package's view by name (`view:<app>:<view id>`), or a resource's type's default view
+    /// (`show(r)`).
+    fn view_call(
+        &self,
+        kind: &str,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Option<Result<(ViewTarget, Vec<Value>), RuntimeError>> {
+        if let Some(target) = kind.strip_prefix(FOREIGN_VIEW) {
+            return Some(self.call_of(target, props));
+        }
+        (kind == SHOW).then(|| self.shown_view(props))
+    }
+
+    /// The view a `show` node draws its resource through, called on it: the one its `view`
+    /// names (an offered view of the resource's package that takes the resource alone, by id or
+    /// name), or its type's default view when it names none. A type without a default view is
+    /// an error: a shell asks `meta(r).opens` before it shows a resource. The view is its own
+    /// package's code wherever it is drawn, another app's (`Runtime::load_foreign_package`)
+    /// included.
+    fn shown_view(
+        &self,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(ViewTarget, Vec<Value>), RuntimeError> {
+        let Some(Value::Ref(shown)) = props.get(SHOWN) else {
+            return Err(RuntimeError::Package(
+                "`show` was given no resource to draw".into(),
+            ));
+        };
+        let ty = &shown.target.ty;
+        let named = match props.get(SHOWN_AS) {
+            Some(Value::Text(view)) if !view.is_empty() => Some(view.as_str()),
+            _ => None,
+        };
+        let view = {
+            let registry = self.registry.borrow();
+            match named {
+                Some(view) => registry.view_of_type(ty, view).ok_or_else(|| {
+                    RuntimeError::Package(format!(
+                        "`show`: `{ty}` has no view `{view}` that takes it alone"
+                    ))
+                })?,
+                None => registry.default_view(ty).ok_or_else(|| {
+                    RuntimeError::Package(format!(
+                        "`show`: the type `{ty}` has no default view to draw it with"
+                    ))
+                })?,
+            }
+        };
+        let vt = self.view_target(&view)?;
+        if vt.params.len() != 1 {
+            return Err(RuntimeError::Package(format!(
+                "`show`: the view {view} of `{ty}` takes {} arguments, not the resource alone",
+                vt.params.len()
+            )));
+        }
+        Ok((vt, vec![Value::Ref(shown.clone())]))
+    }
+
     /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's
     /// `arg.<name>` properties.
     pub(crate) fn call_of(
@@ -690,11 +785,11 @@ impl Core {
     fn resolve_foreign(
         &self,
         cx: &Build<'_>,
-        target: &str,
+        (vt, args): (ViewTarget, Vec<Value>),
         node: &mut UiNode,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
-        let (vt, args) = self.call_of(target, &node.props)?;
+        node.props.remove(SHOWN);
         let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
         let root = acc.absorb(nested);
         "fragment".clone_into(&mut node.kind);
@@ -877,4 +972,42 @@ enum RowArg {
     /// The row's key suffix.
     Key,
     Value(Value),
+}
+
+/// The "New messages" divider over the row of the item `unread`, in `rows`: the row whose own
+/// loop lists that item alone (or, for a row of plain values, that item). A row's first child
+/// is the divider, at a key of its own so a rebuild keeps it where it is.
+fn place_unread_divider(rows: &mut [UiNode], unread: &crate::value::ResourceRef) {
+    let Some(id) = unread.item.as_deref() else {
+        return;
+    };
+    let Some(row) = rows.iter_mut().find(|row| shows(row, id)) else {
+        return;
+    };
+    if row.children.iter().any(|c| c.kind == UNREAD_DIVIDER) {
+        return;
+    }
+    let mut divider = UiNode::empty(UNREAD_DIVIDER, &format!("{}~unread", row.key));
+    divider
+        .props
+        .insert("name".to_owned(), Value::Text(UNREAD_DIVIDER.to_owned()));
+    row.children.insert(0, divider);
+}
+
+/// Whether `row` is the row of the item `id`: the loop it holds lists that item alone, or one
+/// of its references does.
+fn shows(row: &UiNode, id: &str) -> bool {
+    fn listed(props: &std::collections::BTreeMap<String, Value>, id: &str) -> Option<bool> {
+        match props.get(ITEMS) {
+            Some(Value::List(items)) => Some(matches!(items.as_slice(), [Value::Ref(item)]
+                if item.target.item.as_deref() == Some(id))),
+            _ => None,
+        }
+    }
+    if let Some(found) = listed(&row.props, id) {
+        return found;
+    }
+    row.children
+        .iter()
+        .any(|child| listed(&child.props, id).unwrap_or(false))
 }

@@ -548,6 +548,13 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
     )
     if spec.encoding not in ENCODINGS:
         raise InterfaceError(f"{path}: encoding must be one of {', '.join(ENCODINGS)}")
+    # A file listed twice would read every type it defines twice, and the schema
+    # would blame the code for defining it more than once.
+    for listed in ("sources", "roots", "capnp"):
+        names = getattr(spec, listed)
+        twice = sorted({name for name in names if names.count(name) > 1})
+        if twice:
+            raise InterfaceError(f"`{listed}` lists {', '.join(twice)} more than once")
     return spec, dict(data.get("schema", {}))
 
 
@@ -1012,7 +1019,7 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
             return data, code_version(spec, scratch_root), schema_of(spec, scratch_root)
         except (InterfaceError, KeyError, OSError):
             # What that revision committed, when its sources no longer read.
-            return data, int(data.get("version", 0)), dict(committed)
+            return data, int(data.get("version", 0)), dict(data.get("schema", {}))
 
 
 def files_at(revision: str, root: Path = ROOT) -> dict[str, str]:

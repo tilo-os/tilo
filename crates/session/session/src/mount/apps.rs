@@ -151,6 +151,12 @@ impl Apps {
         *self.desktop.borrow_mut() = Some(desktop);
     }
 
+    /// The session is ending: every app it started that still runs is asked
+    /// to end with it.
+    pub fn end_running(&self) {
+        self.state.borrow().spawner.end_running();
+    }
+
     /// Start what the desktop queued since the last pass, and show what
     /// stopped: called once per pass of the session's loop.
     pub fn follow(&self) {

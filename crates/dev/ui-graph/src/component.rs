@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -305,6 +305,13 @@ pub struct Semantics {
     /// belongs to that view; a list item holds those of its row.
     #[serde(default, skip_serializing_if = "is_false")]
     pub attaches: bool,
+    /// Why the gallery cannot show it, when it cannot (`#[component(not_in_gallery = "…")]` at
+    /// the component's declaration): a component that only means something in a live session —
+    /// a place's window well, which draws nothing and holds the app's own window — is left out
+    /// of the gallery by its own declaration, never by a name list in a check. `None` when the
+    /// gallery can show it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_in_gallery: Option<String>,
 }
 
 /// The type of a prop, an event's value, a binding or a piece of state: the language's types.
@@ -323,6 +330,8 @@ pub enum Type {
     Time,
     /// One of the platform's icons, by its kebab-case name.
     Icon,
+    /// A picture: where its bytes are read from, and what it shows the person.
+    Picture,
     /// Rich text, with how its references read for the person reading it.
     RichText,
     /// One of a closed set of cases: the design system's roles and tokens.
@@ -357,6 +366,7 @@ impl Type {
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
+            Self::Picture => "Picture".into(),
             Self::RichText => "RichText".into(),
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
@@ -385,6 +395,9 @@ pub enum Value {
     Resource(String),
     /// An icon's kebab-case name.
     Icon(String),
+    /// A picture: its address (where a host reads its bytes) and what it says to assistive
+    /// technology.
+    Picture(Picture),
     /// A case of a choice, by name.
     Choice(String),
     /// Rich text, with how its references read for the person reading it.
@@ -397,6 +410,16 @@ pub enum Value {
     Map(Vec<(Value, Value)>),
     /// An action offered to the person.
     Action(Offered),
+}
+
+/// A picture a component shows, by where its bytes are. The address is opaque to the toolkit: a
+/// window whose host holds a content store reads `tilo-blob://<hash>` from it, and any other
+/// address is fetched by the store the picture loads through.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Picture {
+    /// Where its bytes are read from: a content address (`tilo-blob://<hash>`) or a URL.
+    pub src: String,
 }
 
 /// An action offered to the person, as a component holds one: how a control shows it, and the
@@ -415,6 +438,10 @@ pub struct Offered {
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
     pub on: Option<bool>,
+    /// `key: "e"`: the plain key that runs it while its window has the keyboard (and, on a
+    /// row's action, while that row is selected), as the person's keymap spells it. `None` when
+    /// it declares none.
+    pub key: Option<String>,
     /// The event of the instance choosing it fires.
     pub event: String,
 }
@@ -432,6 +459,7 @@ impl Value {
             Self::Principal { .. } => "Principal",
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
+            Self::Picture(_) => "a picture",
             Self::Choice(_) => "a case",
             Self::Rich(_) => "RichText",
             Self::None => "nothing",

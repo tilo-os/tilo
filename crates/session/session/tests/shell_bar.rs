@@ -294,6 +294,56 @@ fn with_nothing_changing_the_bar_does_no_work() {
     );
 }
 
+/// The whole session frame for a change the bar shows: a new workspace, the frames the session
+/// runs to bring it to the front, at the median. The tool that compares the tilolang bar to the
+/// Rust bar holds this number.
+#[test]
+fn a_new_workspace_frame_is_measured() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    for _ in 0..20 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    // The bar's turns before the change: its own share, measured the same way.
+    let mut frame_ms: Vec<f64> = Vec::new();
+    // One new workspace per round; the session runs on from where the last left it.
+    for _ in 0..25 {
+        let workspaces = desk(&session).workspaces.len();
+        session
+            .invoke(
+                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                "new-workspace",
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        // The frames it takes: each a step, timed to the frame the change reaches the bar.
+        let mut reached = false;
+        for _ in 0..8 {
+            let started = std::time::Instant::now();
+            session.step(Duration::from_millis(1)).unwrap();
+            let took = started.elapsed().as_secs_f64() * 1000.0;
+            if desk(&session).workspaces.len() > workspaces {
+                frame_ms.push(took);
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "the new workspace reaches the desk");
+        // What the frames after it started (a fade, a layout) land.
+        for _ in 0..8 {
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+    }
+    frame_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = frame_ms[frame_ms.len() / 2];
+    println!(
+        "shell bar session frame (new workspace): median {median:.2} ms over {} changes",
+        frame_ms.len()
+    );
+    assert!(frame_ms.len() == 25, "every change was measured");
+}
+
 /// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
 struct SessionBus {
     daemon: std::process::Child,
@@ -402,8 +452,323 @@ fn an_apps_notification_is_counted_on_the_bar() {
             .deserialize()
             .unwrap();
     });
+    // The bell stays named with what it shows, and says how many are unread.
     until(&mut session, |session| {
         desk(session).unread == 1 && says(session, "Notifications, 1 unread")
     });
     keep(&mut session, "shell-bar-notification");
+}
+
+// ---- the shell's overlays ------------------------------------------------------------------
+
+/// A window of `app` on the desk, its tab's id: a tab of the strip in front.
+fn open_window(session: &mut Session, app: &str) -> u64 {
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let tab = handle.mint_id();
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == tree.active)
+        .expect("a workspace is in front");
+    let strip = workspace.strips.first_mut().expect("a strip is in front");
+    let group = handle.mint_id();
+    strip.window_groups.push(tilo_desktop_model::WindowGroup {
+        id: group,
+        tabs: vec![tilo_desktop_model::Tab {
+            id: tab,
+            title: app.to_owned(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: app.to_owned(),
+                label: app.to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: tilo_desktop_model::WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    handle.replace_tree(tree);
+    session.step(Duration::from_millis(1)).unwrap();
+    tab
+}
+
+/// The shell's surface up now, as the desk's reading names it.
+fn here(session: &Session) -> String {
+    desk(session).here
+}
+
+#[test]
+fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let first = open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    assert_eq!(here(&session), "none", "the desk is at rest");
+    // The bar's Overview opens the desktop's overview, as its menu item does.
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("overview".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| here(session) == "overview");
+    // The shell's overview is drawn over the desk, naming each window.
+    until(&mut session, |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Overview")
+    });
+    for w in desk(&session).windows {
+        assert!(
+            session.accessible_labels().contains(&w.title),
+            "the overview shows {:?}: {:?}",
+            w.title,
+            session.accessible_labels()
+        );
+    }
+    keep(&mut session, "shell-overview");
+    // Picking a window's place goes to it. (Its place may not be on screen until the
+    // overlay has been drawn, so the press comes once it is.)
+    let notes = desk(&session)
+        .windows
+        .iter()
+        .find(|w| w.key == first.to_string())
+        .map(|w| w.title.clone())
+        .expect("the notes window is one of them");
+    until(&mut session, |session| {
+        session.shell_control(&notes).is_some()
+    });
+    press(&mut session, &notes);
+    until(&mut session, |session| {
+        session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .any(|group| {
+                    group.tabs.iter().any(|tab| tab.id == first) && group.active_tab == first
+                })
+        })
+    });
+}
+
+#[test]
+fn the_launcher_opens_from_the_bar_and_searches_windows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    // The shell's actions reach the desk's surface through its door.
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("launcher".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| here(session) == "launcher");
+    assert!(
+        says(&session, "Overview") && says(&session, "Notifications"),
+        "the launcher shows the desk's doors: {:?}",
+        session.accessible_labels()
+    );
+    keep(&mut session, "shell-launcher");
+    // Closing it from the desk's reading puts the desk back at rest.
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "close-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("launcher".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| here(session) == "none");
+}
+
+#[test]
+fn the_notification_centre_lists_a_notice_and_it_dismisses() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    // The session posts a notice of its own, as an app's would arrive.
+    session.notices().post(
+        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
+            .with_app_name("Settings"),
+    );
+    until(&mut session, |session| !desk(session).notices.is_empty());
+    assert_eq!(desk(&session).notices[0].title, "Backup finished");
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("centre".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| here(session) == "centre");
+    until(&mut session, |session| says(session, "Backup finished"));
+    keep(&mut session, "shell-notification-centre");
+    // Dismissing it, as the centre's own Dismiss does, takes it off the desk.
+    let id = desk(&session).notices[0].key.clone();
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "dismiss-notice",
+            &serde_json::Map::from_iter([("notice".to_owned(), serde_json::Value::String(id))]),
+        )
+        .unwrap();
+    until(&mut session, |session| desk(session).notices.is_empty());
+}
+
+/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the
+/// desk's `dismiss-notice` on the notice the row is for, so the shell's surfaces and an agent
+/// dismiss the same way.
+#[test]
+fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    session.notices().post(
+        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
+            .with_app_name("Settings"),
+    );
+    until(&mut session, |session| !desk(session).notices.is_empty());
+    // A notice that arrives is unread: the desk's own count says so, the same number the bar's
+    // bell shows.
+    until(&mut session, |session| desk(session).unread == 1);
+    assert!(!desk(&session).notices[0].read, "a fresh notice is unread");
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("centre".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| says(session, "Backup finished"));
+    // The centre opened, so the person saw them: every notice is read, and the desk's count
+    // the bell shows is none.
+    until(&mut session, |session| {
+        desk(session).unread == 0 && desk(session).notices.iter().all(|notice| notice.read)
+    });
+    // The view draws each notice with its Dismiss; pressing it runs the desk's
+    // `dismiss-notice` on that notice, as any action on the desk runs.
+    press(&mut session, "Dismiss");
+    until(&mut session, |session| desk(session).notices.is_empty());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the centre's Dismiss reached the desk: {:?}",
+        session.shell_refusals()
+    );
+    until(&mut session, |session| {
+        says(session, "Nothing to catch up on")
+    });
+}
+
+#[test]
+fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    // The desk's order, the window in front first: Alt+Tab opens on the next one.
+    let before = desk(&session);
+    let front = before
+        .windows
+        .iter()
+        .position(|window| window.focused)
+        .expect("a window is in front");
+    let next = before
+        .windows
+        .get((front + 1) % before.windows.len())
+        .expect("there is a window after it")
+        .key
+        .clone();
+    let key = |keycode: u32, pressed: bool| InputEvent::Key { keycode, pressed };
+    session.compositor().input(key(56, true)).unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    session.compositor().input(key(15, true)).unwrap();
+    until(&mut session, |session| here(session) == "switcher");
+    // The switcher lifts the window its walk reached.
+    until(&mut session, |session| {
+        desk(session)
+            .windows
+            .iter()
+            .any(|window| window.key == next && window.focused)
+    });
+    keep(&mut session, "shell-switcher");
+    // Letting Alt go goes to it, and the desk is at rest again.
+    session.compositor().input(key(15, false)).unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    session.compositor().input(key(56, false)).unwrap();
+    until(&mut session, |session| here(session) == "none");
+    assert_eq!(
+        desk(&session)
+            .windows
+            .iter()
+            .find(|window| window.focused)
+            .map(|window| window.key.clone()),
+        Some(next),
+        "the window Alt+Tab walked to is in front: {:?}",
+        session.shell_refusals()
+    );
+}
+
+#[test]
+fn a_persons_presence_opens_their_menu() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    // Someone else here, as the collaboration plane lists them.
+    let member = tilo_desktop::here::LiveMember {
+        publisher: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned(),
+        kind: "person".to_owned(),
+        label: "Mia Clayton".to_owned(),
+        ..tilo_desktop::here::LiveMember::default()
+    };
+    session
+        .sync()
+        .expect("the session takes part in the plane")
+        .here()
+        .borrow_mut()
+        .set_members(None, Some(vec![member]));
+    until(&mut session, |session| says(session, "Mia Clayton"));
+    // Their presence opens their menu: follow, message, and what they are working on.
+    press(&mut session, "Mia Clayton");
+    until(&mut session, |session| {
+        session.shell_control("Follow").is_some()
+    });
+    assert!(
+        session.shell_control("Message").is_some(),
+        "the menu offers a message: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.shell_control("What they are working on").is_some(),
+        "the menu offers what they are on: {:?}",
+        session.accessible_labels()
+    );
+    keep(&mut session, "shell-person-menu");
 }

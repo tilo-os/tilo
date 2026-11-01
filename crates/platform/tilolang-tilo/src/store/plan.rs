@@ -1,14 +1,15 @@
 //! Planning a mutation against the store as it is: the edit it records, and where the items
 //! it inserts, moves or removes are ([`crate::items`]).
 
-use tilo_resource::{Id, Model as _, Segment};
+use serde_json::Value as Json;
+use tilo_resource::{Edit, EditOp, Id, Model as _, Segment};
 use tilolang_runtime::place::{Place, Placement};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, Mutation, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
 use super::{
-    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, edit_of, field_of, idx, invalid, lookup,
-    not_found, sanitize_key,
+    DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, json_of_scalar, lookup,
+    not_found, path_to, sanitize_key,
 };
 use crate::items::Items;
 use crate::store::{AppId, DocReads};
@@ -21,6 +22,7 @@ impl Inner {
             Mutation::OutboxPush {
                 capability,
                 payload,
+                held_until,
                 key,
             } => {
                 let entry = key.as_deref().map_or_else(|| self.fresh("o"), sanitize_key);
@@ -31,6 +33,7 @@ impl Inner {
                         capability: capability.clone(),
                         payload: payload.clone(),
                         owner: self.device.clone(),
+                        held_until: held_until.clone(),
                     },
                     item: None,
                     touched: Vec::new(),
@@ -173,7 +176,7 @@ impl Inner {
     }
 
     /// The map of the record of `at`, and the record's type.
-    fn record_root(
+    pub(super) fn record_root(
         &self,
         at: &ResourceRef,
     ) -> Result<(AppId, automerge::ObjId, &'static crate::schema::TypeSchema), StoreError> {
@@ -188,7 +191,7 @@ impl Inner {
     /// The path from the record's map to the map of `at`: none for the record, the item's id
     /// for an item stored by it, the steps it is nested at for one of a record written before
     /// items were flat.
-    fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
+    pub(super) fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
         let Some(item) = &at.item else {
             return Ok(Vec::new());
         };
@@ -358,4 +361,90 @@ impl Inner {
         };
         Ok(Some((holder, place.field.clone())))
     }
+}
+
+/// The field a mutation writes.
+pub(super) fn field_of(m: &Mutation) -> String {
+    match m {
+        Mutation::SetRegister { field, .. }
+        | Mutation::AddCounter { field, .. }
+        | Mutation::SetText { field, .. }
+        | Mutation::SetRich { field, .. }
+        | Mutation::CollInsert { field, .. }
+        | Mutation::CollRemove { field, .. }
+        | Mutation::CollMove { field, .. }
+        | Mutation::SetAdd { field, .. }
+        | Mutation::SetRemove { field, .. }
+        | Mutation::MapPut { field, .. }
+        | Mutation::MapRemove { field, .. } => field.clone(),
+        Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => String::new(),
+    }
+}
+
+/// The edit a mutation of a field makes below the resource whose map `prefix` reaches.
+pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreError> {
+    let (field, op) = match m {
+        Mutation::SetRegister { field, value } => (
+            field,
+            EditOp::Set {
+                value: json_of_scalar(value),
+            },
+        ),
+        Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }),
+        Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }),
+        // A rich text is brought to read as the value by splices and marks of the paragraphs
+        // that differ, the edit native rich text takes.
+        Mutation::SetRich { field, value } => (field, rich_edit(value).map_err(backend)?),
+        Mutation::SetAdd { field, key } => (
+            field,
+            EditOp::Insert {
+                value: Json::String(key.clone()),
+            },
+        ),
+        Mutation::SetRemove { field, key } => (
+            field,
+            EditOp::Remove {
+                value: Json::String(key.clone()),
+            },
+        ),
+        Mutation::MapPut { field, key, value } => {
+            let mut path = path_to(prefix, field);
+            path.push(Segment::Key(key.clone()));
+            let op = EditOp::Set {
+                value: json_of_scalar(value),
+            };
+            return Ok(Edit::new(path, op));
+        }
+        Mutation::MapRemove { field, key } => (field, EditOp::RemoveKey { key: key.clone() }),
+        Mutation::CollInsert { .. } | Mutation::CollRemove { .. } | Mutation::CollMove { .. } => {
+            return Err(invalid("a collection's items are placed, not edited"));
+        }
+        Mutation::OutboxPush { .. } | Mutation::OutboxWithdraw => {
+            return Err(invalid(
+                "outside effects are not stored in the workspace record yet",
+            ));
+        }
+    };
+    Ok(Edit::new(path_to(prefix, field), op))
+}
+
+/// The edit that brings a rich text field to read as `value`: splices and marks of the
+/// paragraphs that differ, the edit native rich text takes. One form for every writer of a
+/// rich text: a view of the package's own, and a view of another app's sent to its door.
+///
+/// # Errors
+/// The rich text action does not serialize.
+pub(crate) fn rich_edit(
+    value: &tilolang_runtime::rich::RichValue,
+) -> Result<EditOp, serde_json::Error> {
+    let action = tilo_document::RichTextAction::SyncClips {
+        blocks: value
+            .blocks
+            .iter()
+            .map(tilo_document::ClipBlock::from_view)
+            .collect(),
+    };
+    Ok(EditOp::Rich {
+        rich: serde_json::to_value(&action)?,
+    })
 }

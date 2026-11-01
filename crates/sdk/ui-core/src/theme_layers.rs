@@ -520,11 +520,20 @@ pub fn user_document(
             .get(CUSTOM_THEMES_KEY)?
             .as_array()?
             .iter()
-            .filter_map(|value| serde_json::from_value::<ThemeDocument>(value.clone()).ok())
-            .find(|document| document.id == custom)?,
+            .filter(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(custom))
+            .find_map(|value| {
+                serde_json::from_value::<ThemeDocument>(value.clone())
+                    .map_err(|error| {
+                        tracing::warn!(theme = custom, %error, "a saved theme is not a theme document; the stock theme shows");
+                    })
+                    .ok()
+            })?,
         None => Preset::find(id)?.document(),
     };
-    document.validate().ok()?;
+    if let Some(reason) = crate::theme::Theme::refusal(&document) {
+        tracing::warn!(theme = %document.id, %reason, "a saved theme is refused; the stock theme shows");
+        return None;
+    }
     if let Some(density) = appearance
         .get(DENSITY_KEY)
         .and_then(serde_json::Value::as_f64)
@@ -641,7 +650,7 @@ fn merge_pins(
         merged.motion = distribution.motion;
     }
     if policy.pins(PIN_MATERIAL) {
-        merged.material = distribution.material;
+        merged.material = distribution.material.clone();
     }
     merged
 }
@@ -740,10 +749,17 @@ fn apply_finish(
     if let Some(strength) = finish.translucency {
         if !pinned(PIN_MATERIAL) {
             let material = &mut document.material;
-            material.window = material.window.with_translucency(strength);
-            material.control = material.control.with_translucency(strength);
-            material.floating = material.floating.with_translucency(strength);
-            material.bar = material.bar.map(|bar| bar.with_translucency(strength));
+            // A finish is a painter set; the setting is taken by value.
+            let window = material.window.clone();
+            material.window = window.with_translucency(strength);
+            let control = material.control.clone();
+            material.control = control.with_translucency(strength);
+            let floating = material.floating.clone();
+            material.floating = floating.with_translucency(strength);
+            material.bar = material
+                .bar
+                .clone()
+                .map(|bar| bar.with_translucency(strength));
         }
     }
 }
@@ -1286,11 +1302,7 @@ mod tests {
     fn a_pinned_type_or_material_keeps_the_distributions_and_accessibility_still_wins() {
         let mut pinned_document = house();
         pinned_document.type_.face = "Noto Sans".into();
-        pinned_document.material.floating = crate::tokens::finish::Finish::Translucent {
-            blur: 24.0,
-            tint: 0.72,
-            saturation: 1.0,
-        };
+        pinned_document.material.floating = crate::tokens::finish::Finish::frosted(24.0, 0.72, 1.0);
         let pinned = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
                 document: Some(pinned_document),

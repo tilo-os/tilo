@@ -65,6 +65,10 @@ pub fn local_surface_pointer() -> PresenceKey {
     PresenceKey::surface_pointer(crate::local_surface_id())
 }
 
+/// How long a person stays shown as composing after their last word: a draft under way is
+/// said again as they type, so one who stops drops out shortly after, with no message.
+pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
+
 /// How long a "just typed" highlight lingers, its fade included: the
 /// standard trace of a collaborator's mark ([`crate::motion::Trace`]).
 pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
@@ -502,6 +506,11 @@ pub struct PresenceCtx {
     /// and [`Self::call_of`] read. A context that hears one workspace needs
     /// none: what it heard is that workspace's.
     workspace_in_front: Option<String>,
+    /// Who is composing a message in which resource, and since when: the resource's key, the
+    /// person, and the instant they last said so. A composer that stops, or a window that
+    /// closes, says `composing: false`; one gone quiet without a word drops out after
+    /// [`COMPOSING_LINGER`].
+    composing: HashMap<(PresenceKey, UserId), Instant>,
     /// Faces that bounce because their person waved at this one.
     bounces: HashMap<UserId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
@@ -1794,6 +1803,30 @@ impl PresenceCtx {
     // `shell::peer_presence` and app crates outside this file's ownership,
     // so narrowing it would ripple into call sites out of scope for this
     // pass.
+    /// Who is composing a message in `key` now, the person looking excluded: a channel's
+    /// "Mia is typing". A composer gone quiet for [`COMPOSING_LINGER`] without saying they
+    /// stopped drops out, so a crashed window leaves no one typing forever.
+    #[must_use]
+    pub fn composing_at(&self, key: &PresenceKey, now: Instant) -> Vec<UserId> {
+        let mut found: Vec<UserId> = self
+            .composing
+            .iter()
+            .filter(|((at, _), since)| {
+                at == key && now.saturating_duration_since(**since) < COMPOSING_LINGER
+            })
+            .map(|((_, who), _)| who.clone())
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+
+    /// Drop composers gone quiet for [`COMPOSING_LINGER`]: what a frame does before it asks
+    /// [`Self::composing_at`], so the answer does not depend on when it was last asked.
+    pub fn prune_composing(&mut self, now: Instant) {
+        self.composing
+            .retain(|_, since| now.saturating_duration_since(*since) < COMPOSING_LINGER);
+    }
+
     pub fn apply_remote_presence(
         &mut self,
         user_id: String,
@@ -1820,8 +1853,8 @@ impl PresenceCtx {
         now: Instant,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Availability, Caret, Following, Interaction, Left, Pointer, Selection, Status,
-            Typing,
+            Arrived, Availability, Caret, Composing, Following, Interaction, Left, Pointer,
+            Selection, Status, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1902,6 +1935,16 @@ impl PresenceCtx {
             }
             Typing { start, end } => {
                 self.record_peer_typing(UserId(user_id), key, SelectionRange { start, end }, now);
+            }
+            Composing { composing } => {
+                // A draft under way in the resource the key names: nothing of what it says,
+                // only that someone is writing it. A stop clears it at once.
+                let uid = UserId(user_id);
+                if composing {
+                    self.composing.insert((key, uid), now);
+                } else {
+                    self.composing.remove(&(key, uid));
+                }
             }
             Interaction(update) => {
                 // Semantic action presence has its own resource/anchor model.

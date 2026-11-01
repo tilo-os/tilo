@@ -286,7 +286,9 @@ impl View<'_> {
 
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
     /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
-    /// the path of the resource holding it: fields by id, a collection's items in order
+    /// the path of the resource holding it: its own texts name it before its items' do, a
+    /// `title` field first and a `body` field's first line next, then the rest by id, and only
+    /// a resource holding no text of its own falls back to its items
     /// ([`crate::reads::first_text`]).
     ///
     /// # Errors
@@ -297,40 +299,40 @@ impl View<'_> {
         schema: &TypeSchema,
     ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
-        let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
-        fields.sort_by(|a, b| a.id.cmp(&b.id));
+        let fields = schema.in_naming_order();
+        // Its own texts name it before its items' do: a channel called "design" whose messages
+        // hold text is "design", not the first of its messages.
+        for field in &fields {
+            if field.kind.holds_text()
+                && let Some(text) = self
+                    .field(path, &field.id)?
+                    .and_then(crate::reads::text_value)
+                && !crate::reads::is_empty(&text)
+            {
+                return Ok(Some((named_text(field.role, &text), path.to_owned())));
+            }
+        }
         for field in fields {
-            match field.kind {
-                MergeKind::Text | MergeKind::RichText => {
-                    if let Some(text) = self
-                        .field(path, &field.id)?
-                        .and_then(crate::reads::text_value)
-                        && !crate::reads::is_empty(&text)
-                    {
-                        return Ok(Some((text, path.to_owned())));
-                    }
+            if field.kind != MergeKind::Collection {
+                continue;
+            }
+            let Some(item_schema) = field
+                .record
+                .as_deref()
+                .and_then(lookup)
+                .filter(|item| may_hold_text(item))
+            else {
+                continue;
+            };
+            let items = self.list(path, &field.id)?;
+            for index in 0..items.len() {
+                let Some(id) = items.get(index) else {
+                    break;
+                };
+                let found = self.first_text(&child(path, &id), item_schema)?;
+                if found.is_some() {
+                    return Ok(found);
                 }
-                MergeKind::Collection => {
-                    let Some(item_schema) = field
-                        .record
-                        .as_deref()
-                        .and_then(lookup)
-                        .filter(|item| may_hold_text(item))
-                    else {
-                        continue;
-                    };
-                    let items = self.list(path, &field.id)?;
-                    for index in 0..items.len() {
-                        let Some(id) = items.get(index) else {
-                            break;
-                        };
-                        let found = self.first_text(&child(path, &id), item_schema)?;
-                        if found.is_some() {
-                            return Ok(found);
-                        }
-                    }
-                }
-                _ => {}
             }
         }
         Ok(None)
@@ -547,4 +549,36 @@ pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexE
         out.insert(doc, ty);
     }
     Ok(out)
+}
+
+/// The text that names a resource of the field's role: a `body` field's first non-blank line
+/// and nothing more (a message is called by what it opens with), any other field's whole text.
+fn named_text(role: crate::schema::FieldRole, text: &FieldValue) -> FieldValue {
+    if role != crate::schema::FieldRole::Body {
+        return text.clone();
+    }
+    let first = |whole: &str| {
+        whole
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match text {
+        FieldValue::Text(whole) => FieldValue::Text(first(whole)),
+        FieldValue::Rich(rich) => {
+            let mut cut = rich.clone();
+            if let Some(opening) = rich
+                .blocks
+                .iter()
+                .find(|block| !block.text.trim().is_empty())
+            {
+                cut.blocks = vec![opening.clone()];
+            } else {
+                cut.blocks.clear();
+            }
+            FieldValue::Rich(cut)
+        }
+        other => other.clone(),
+    }
 }

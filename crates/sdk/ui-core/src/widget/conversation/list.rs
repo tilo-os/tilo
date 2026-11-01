@@ -880,6 +880,10 @@ fn seconds(at_ms: i64) -> i64 {
 }
 
 /// The message list: a conversation, drawn. See the module docs.
+#[crate::component::not_a_component(
+    part,
+    "`ui.ConversationList` (`DescribedConversationList`) is its described form"
+)]
 pub struct ConversationList {
     lines: Vec<ConversationLine>,
     rect: Rect,
@@ -914,6 +918,15 @@ impl ConversationList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
+    }
+
+    /// Show `lines` instead, oldest first: the list measures only what changed, since a line's
+    /// bubble is a function of its text, the column's width and the theme's type.
+    pub fn set_lines(&mut self, lines: Vec<ConversationLine>) {
+        if self.lines == lines {
+            return;
+        }
+        self.lines = lines;
     }
 
     /// The lines, in order.

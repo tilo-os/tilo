@@ -4184,6 +4184,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The active page/view can change during `sync` (e.g. the initial
         // auto-select), which the post-event broadcast above wouldn't catch.
         app.broadcast_location_presence();
+        app.broadcast_composing_presence();
         app.broadcast_view_presence();
 
         // Run here too, not only `RedrawRequested`, since painting isn't

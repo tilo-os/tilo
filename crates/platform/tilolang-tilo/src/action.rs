@@ -121,6 +121,10 @@ pub enum DynEdit {
         capability: String,
         payload: Json,
         owner: String,
+        /// Held back until this moment, ISO-8601 UTC text: the device carries it out only once
+        /// its clock reaches it. Absent carries it out as soon as it is read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held_until: Option<String>,
     },
     /// Record how the owning device settled the entry `entry` of the resource `id`: `done`,
     /// `rejected` (with the service's `reason`) or `unknown`.
@@ -198,6 +202,23 @@ impl DynEdit {
             | Self::Migrated { .. } => false,
         }
     }
+
+    /// The id of the resource it is addressed to (its document).
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        match self {
+            Self::Create { id, .. }
+            | Self::Edit { id, .. }
+            | Self::Insert { id, .. }
+            | Self::Place { id, .. }
+            | Self::Remove { id }
+            | Self::OutboxPush { id, .. }
+            | Self::OutboxSettle { id, .. }
+            | Self::OutboxMark { id, .. }
+            | Self::Migrated { id, .. } => id,
+            Self::In { edit, .. } => edit.resource(),
+        }
+    }
 }
 
 /// What an action did to one resource ([`DynAction::made`]).
@@ -240,6 +261,14 @@ fn ensure_map(
 }
 
 impl DynAction {
+    /// The schemas of the package version that wrote this action, installed while it applies:
+    /// its types resolve by that version. `None` for an action with no module recorded (a
+    /// record's creation, an action a test built): it resolves through whatever table the
+    /// caller installed — the store's, which holds its own package versions.
+    fn package_schemas(&self) -> Option<crate::schema::Current> {
+        crate::schema::for_module(&self.app, &self.authorship.module).map(|package| package.enter())
+    }
+
     /// What this action is, by what it writes: one that queues an outside effect reaches outside
     /// the record, as the package action that planned it is declared to; every other one is an
     /// undoable change of the record. What a workspace's grants must allow to commit it.
@@ -641,6 +670,7 @@ fn apply_one(
             capability,
             payload,
             owner,
+            held_until,
         } => {
             let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
                 return Err(ActionError::Refused(format!("there is no resource `{id}`")));
@@ -652,6 +682,9 @@ fn apply_one(
                 doc.put(&held, "capability", capability.as_str())?;
                 doc.put(&held, "payload", payload.to_string())?;
                 doc.put(&held, "owner", owner.as_str())?;
+                if let Some(at) = held_until {
+                    doc.put(&held, "held_until", at.as_str())?;
+                }
             }
         }
         DynEdit::OutboxSettle { .. } | DynEdit::OutboxMark { .. } => {
@@ -863,6 +896,9 @@ pub struct StoredEntry {
     pub state: String,
     /// The token of the process handing it over, or why it waits.
     pub detail: String,
+    /// Held back until this moment, ISO-8601 UTC text, when the action held it back: the
+    /// device carries it out only once the clock reaches it.
+    pub held_until: Option<String>,
 }
 
 impl StoredEntry {
@@ -884,11 +920,12 @@ impl StoredEntry {
     /// How it stands, as `delivery(r)` reads it.
     #[must_use]
     pub fn delivery(&self) -> tilolang_runtime::store::DeliveryState {
-        tilolang_runtime::store::DeliveryState::of(
+        tilolang_runtime::store::DeliveryState::of_entry(
             &self.outbox_state(),
             self.settled
                 .as_deref()
                 .map(|outcome| (outcome, self.reason.as_str())),
+            self.held_until.as_deref(),
         )
     }
 }
@@ -999,6 +1036,7 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
                 // Absent while it is queued (`outbox_state`).
                 state: text(&held, "state").unwrap_or_default(),
                 detail: text(&held, "detail").unwrap_or_default(),
+                held_until: text(&held, "held_until").filter(|at| !at.is_empty()),
                 entry,
             };
             match read() {
@@ -1032,10 +1070,15 @@ impl Action for DynAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload =
             serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
+        // The package that wrote this action, installed: its record's type resolves by that
+        // package version, whatever other version of the app the thread loaded last (a receiver
+        // replaying a peer's action, two versions in one process).
+        let _package = self.package_schemas();
         apply_edits(doc, &self.app, &self.edits, &payload)
     }
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
+        let _package = self.package_schemas();
         let args = self
             .args
             .as_object()

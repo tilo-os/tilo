@@ -110,6 +110,12 @@ impl ViewTabs {
         self.map(|strip| strip.with_enabled(enabled))
     }
 
+    /// How many tabs it offers.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.strip.count()
+    }
+
     /// The tab showing.
     pub fn selected(&self) -> usize {
         self.strip.selected()

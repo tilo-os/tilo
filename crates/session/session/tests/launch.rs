@@ -42,7 +42,7 @@ fn host_app_declaring(
     desktop_id: &str,
     lines: &str,
     body: &str,
-) -> std::path::PathBuf {
+) -> PathBuf {
     let applications = home.data().join("applications");
     fs::create_dir_all(&applications).unwrap();
     let program = home.home().join("probe");
@@ -66,14 +66,14 @@ fn host_app_claiming(
     desktop_id: &str,
     body: &str,
     mime: Option<&str>,
-) -> std::path::PathBuf {
+) -> PathBuf {
     let claim = mime.map_or_else(String::new, |mime| format!("MimeType={mime}\n"));
     host_app_declaring(home, desktop_id, &claim, body)
 }
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// and the path that body was written to.
-fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> std::path::PathBuf {
+fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> PathBuf {
     host_app_claiming(home, desktop_id, body, None)
 }
 
@@ -314,9 +314,9 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
 const PROBE: &str = "so.tilo.probe";
 
 /// Install [`PROBE`] in `home`'s own app store, and write the launcher the
-/// session starts it through: it records the pid of every start and runs until
-/// the test creates `stop`.
-fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path, stop: &Path) -> PathBuf {
+/// session starts it through: it records the pid of every start and runs, as
+/// the app would, until the test is over.
+fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path) -> tilo_test_env::StandIn {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(PROBE);
     fs::create_dir_all(payload.join("bin")).unwrap();
@@ -363,32 +363,31 @@ fn installed_probe(home: &mut tilo_test_env::TestHome, started: &Path, stop: &Pa
     )
     .unwrap();
     home.env().set("TILO_APPS_DATA_DIR", &store);
-    let launcher = home.home().join("tilo-launcher");
-    tilo_test_env::script(
-        &launcher,
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
         &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '{started}'\n\
-             while [ ! -e '{stop}' ]; do sleep 0.05; done\n",
+            "printf '%s\\n' \"$$\" >> '{started}'\nhold\n",
             started = started.display(),
-            stop = stop.display(),
         ),
     )
-    .unwrap();
-    launcher
+    .unwrap()
 }
 
-/// A session whose apps start from `home`'s own app store, and the record of
-/// the launches it makes.
+/// A session whose apps start from `home`'s own app store, the record of the
+/// launches it makes, and the launcher they start through.
 fn probe_session(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
-    stop: &Path,
-) -> (Session, Rc<Apps>, Arc<Launches>) {
+) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
     let socket = home.runtime().join("wayland-7");
-    let started_by = installed_probe(home, started, stop);
+    let probe = installed_probe(home, started);
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
     environment.wayland_socket = Some(socket);
-    let apps = Rc::new(Apps::with_launcher(environment, None, Some(started_by)));
+    let apps = Rc::new(Apps::with_launcher(
+        environment,
+        None,
+        Some(probe.path().to_owned()),
+    ));
     let launches = Arc::new(Launches::default());
     let session = Session::headless(
         Options {
@@ -401,7 +400,7 @@ fn probe_session(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session");
-    (session, apps, launches)
+    (session, apps, launches, probe)
 }
 
 /// The window groups of the workspace in front, each with its tabs' titles in
@@ -511,8 +510,7 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
-    let stop = home.home().join("stop");
-    let (mut session, apps, launches) = probe_session(&mut home, &started, &stop);
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, room) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
@@ -547,7 +545,6 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
         vec![vec![PROBE.to_owned(), PROBE.to_owned()]],
         "the window took the tab beside the app's own"
     );
-    fs::write(&stop, b"").unwrap();
 }
 
 #[test]
@@ -555,8 +552,7 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
-    let stop = home.home().join("stop");
-    let (mut session, apps, launches) = probe_session(&mut home, &started, &stop);
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, room) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
@@ -583,7 +579,6 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
         1,
         "and starts nothing"
     );
-    fs::write(&stop, b"").unwrap();
 }
 
 /// The class the X11 app's window announces: no program name here matches it,
@@ -664,8 +659,7 @@ fn an_app_closes_only_its_own_tab() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
-    let stop = home.home().join("stop");
-    let (mut session, apps, launches) = probe_session(&mut home, &started, &stop);
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
     let (pid, room) = probe_showing(&mut session, &apps, &started);
     session
         .desktop()
@@ -701,5 +695,34 @@ fn an_app_closes_only_its_own_tab() {
     until(&mut session, "the closed tab is back", |session| {
         groups(session).iter().flatten().any(|title| title == PROBE)
     });
-    fs::write(&stop, b"").unwrap();
+}
+
+#[test]
+fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, _launches, launcher) = probe_session(&mut home, &started);
+    let (pid, _room) = probe_showing(&mut session, &apps, &started);
+
+    // The session goes while its app runs, as when a test fails part-way:
+    // the launcher it started goes with it, though the test is still here.
+    drop(session);
+    drop(apps);
+    tilo_test_env::exited("the launcher of a session that is gone", pid);
+
+    // And a launcher the session never got to end ends with its test.
+    let (sender, ended) = std::sync::mpsc::channel();
+    let mut orphan = launcher
+        .script()
+        .command()
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::spawn(move || {
+        let _ = orphan.wait();
+        let _ = sender.send(());
+    });
+    drop(launcher);
+    tilo_test_env::recv("the launcher of a test that is over", &ended);
 }

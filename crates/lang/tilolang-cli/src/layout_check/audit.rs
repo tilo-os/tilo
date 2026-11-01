@@ -129,8 +129,8 @@ fn floats(widget: &str) -> bool {
     matches!(widget, "HoverToolbarFace")
 }
 
-/// Whether a node shows text: its own, or its children's.
-fn has_text(node: &InspectionNode) -> bool {
+/// Whether a node is text itself.
+fn is_text(node: &InspectionNode) -> bool {
     use ui::a11y::Role;
     node.widget == "Text"
         || node.semantics.as_ref().is_some_and(|access| {
@@ -139,7 +139,47 @@ fn has_text(node: &InspectionNode) -> bool {
                 Role::StaticText | Role::Label | Role::Heading { .. }
             )
         })
-        || node.children.iter().any(has_text)
+}
+
+/// The boxes of the text `node` shows, its own and its descendants', each as much of it as can
+/// be seen: what a scroller or a clip of theirs hides is not read, so it covers nothing, and
+/// what floats over everything (a menu, a tooltip) is no text of the box it opens from.
+fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+    if floats(&node.widget) {
+        return;
+    }
+    if is_text(node) {
+        let seen = rect(node.rect).intersect(clip);
+        if has_area(seen) {
+            out.push(seen);
+        }
+        return;
+    }
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    for child in &node.children {
+        text_boxes(child, inner, out);
+    }
+}
+
+/// Whether some text of `a` and some text of `b` stand on each other, so neither can be read:
+/// two boxes laid over each other on purpose (a dock over the desk under the bar) whose text
+/// stands apart can both be read.
+fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
+    let (mut under, mut over) = (Vec::new(), Vec::new());
+    text_boxes(a, clip, &mut under);
+    text_boxes(b, clip, &mut over);
+    under
+        .iter()
+        .any(|u| over.iter().any(|o| has_area(u.intersect(*o))))
+}
+
+/// Whether `node` is a window standing on a desktop, or holds only one: its surface is opaque
+/// and drawn over what it stands on, so what it covers is behind it by design, as on every
+/// desktop, and nothing of the two is read through the other.
+fn stands_as_window(node: &InspectionNode) -> bool {
+    node.widget == "WindowFrame" || matches!(&node.children[..], [only] if stands_as_window(only))
 }
 
 /// Whether a widget lays its children over each other on purpose.
@@ -148,6 +188,7 @@ fn layers(widget: &str) -> bool {
         widget,
         "Layers"
             | "NavShell"
+            | "WindowFrame"
             | "NavPane"
             | "Pane"
             | "TilolangWindow"
@@ -292,7 +333,16 @@ impl Walk<'_> {
         let scrolls = scrolls(node);
         let scrolling = scrolls.down || scrolls.across;
         // The box children are measured against, and which ways it scrolls them.
-        let (inner_parent, inner_scroller) = if geometric {
+        // A manual region in a view that pans both ways is the canvas's content placed by code
+        // (its places, put where its camera puts them): what it places pans as the canvas does.
+        // In a view that scrolls one way a region sizes itself, and its children are checked
+        // against it.
+        let placed_content = matches!(node.layout, Some(ui::widget::LayoutInfo::Manual(_)))
+            && scroller.down
+            && scroller.across;
+        let (inner_parent, inner_scroller) = if geometric && placed_content {
+            (own, scroller)
+        } else if geometric {
             (own, scrolls)
         } else {
             (parent, scroller)
@@ -494,10 +544,12 @@ impl Walk<'_> {
         for (i, (a, ra)) in shown.iter().enumerate() {
             for (b, rb) in shown.iter().skip(i.saturating_add(1)) {
                 let both = ra.intersect(*rb);
-                let covers = if places {
+                let covers = if stands_as_window(b) {
+                    false
+                } else if places {
                     is_control(a) && is_control(b)
                 } else {
-                    !layered || (has_text(a) && has_text(b))
+                    !layered || texts_meet(a, b, clip)
                 };
                 if has_area(both) && covers {
                     let mut keys = keys.to_vec();
@@ -695,6 +747,102 @@ mod tests {
         assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
     }
 
+    fn inspected(root: &InspectionNode) -> Vec<Problem> {
+        inspect(root, (800, 600), None, 1.0)
+            .into_iter()
+            .filter(|p| p.kind == Kind::Overlap)
+            .collect()
+    }
+
+    fn holding(mut outer: InspectionNode, children: Vec<InspectionNode>) -> InspectionNode {
+        outer.children = children;
+        outer
+    }
+
+    /// Layers that each hold text somewhere cover nothing until the text itself meets: a bar
+    /// across the top and a dock on the foot of a desk drawn over the whole window are two
+    /// layers whose words stand apart; a caption drawn on another caption is caught.
+    #[test]
+    fn layers_cover_each_other_only_where_their_text_meets() {
+        let layer = |id: &str, text: [f64; 4]| {
+            holding(
+                node("Stack", id, [0.0, 0.0, 800.0, 600.0], None),
+                vec![node("Text", &format!("{id}-text"), text, None)],
+            )
+        };
+        let apart = holding(
+            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            vec![
+                layer("bar", [8.0, 8.0, 120.0, 20.0]),
+                layer("dock", [300.0, 560.0, 40.0, 20.0]),
+            ],
+        );
+        assert!(inspected(&apart).is_empty());
+        let meeting = holding(
+            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            vec![
+                layer("bar", [8.0, 8.0, 120.0, 20.0]),
+                layer("over", [60.0, 12.0, 120.0, 20.0]),
+            ],
+        );
+        assert_eq!(inspected(&meeting).len(), 1);
+        // Text a scroller has moved out of its view is not read, so it covers nothing: a
+        // conversation scrolled to its end, its first messages above its top edge.
+        let mut scroller = holding(
+            node("Scroll", "scroller", [0.0, 100.0, 800.0, 400.0], None),
+            vec![node("Text", "scrolled-out", [8.0, 8.0, 120.0, 20.0], None)],
+        );
+        scroller.child_clip = Some([0.0, 100.0, 800.0, 400.0]);
+        let desk_over_scroller = holding(
+            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            vec![
+                layer("bar", [8.0, 8.0, 120.0, 20.0]),
+                holding(
+                    node("Stack", "window", [0.0, 0.0, 800.0, 600.0], None),
+                    vec![scroller],
+                ),
+            ],
+        );
+        assert!(inspected(&desk_over_scroller).is_empty());
+    }
+
+    /// Windows on a desktop stand over each other by design: the one drawn later is opaque
+    /// and covers the one under it, and that is no finding; two plain boxes side by side in a
+    /// free placement covering each other still are.
+    #[test]
+    fn a_window_over_another_window_is_no_finding() {
+        let window = |id: &str, at: [f64; 4]| {
+            holding(
+                node("TilolangPane", id, at, None),
+                vec![holding(
+                    node("WindowFrame", &format!("{id}-frame"), at, None),
+                    vec![node(
+                        "Text",
+                        &format!("{id}-title"),
+                        [at[0] + 16.0, at[1] + 12.0, 100.0, 20.0],
+                        None,
+                    )],
+                )],
+            )
+        };
+        let desk = holding(
+            node("Manual", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            vec![
+                window("behind", [40.0, 40.0, 400.0, 300.0]),
+                window("front", [200.0, 100.0, 400.0, 300.0]),
+            ],
+        );
+        assert!(inspected(&desk).is_empty());
+        let boxes = holding(
+            node("Manual", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            vec![
+                node("Stack", "a", [40.0, 40.0, 400.0, 300.0], None),
+                node("Stack", "b", [200.0, 100.0, 400.0, 300.0], None),
+            ],
+        );
+        assert_eq!(inspected(&boxes).len(), 1);
+    }
+
     /// On touch a control smaller than a finger's target is caught, at its own box grown by
     /// what it reports; with a mouse, whose hit areas grow about the face, nothing is.
     #[test]
@@ -747,6 +895,39 @@ mod tests {
         };
         assert_eq!(clipped(ui::text_render::TextWrapMode::Wrap), 0);
         assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
+    }
+
+    /// A place on a canvas past its viewport is reached by panning, so it is no finding; the
+    /// same place in a region of a plain column reaches past it, and is caught.
+    #[test]
+    fn a_place_past_a_canvas_viewport_pans_and_past_a_column_overflows() {
+        use ui::widget::{LayoutInfo, ManualLayout, ScrollDirection, ScrollLayout};
+        let found = |outer: Option<LayoutInfo>| {
+            let mut region = node("Manual", "region", [0.0, 0.0, 320.0, 300.0], None);
+            region.layout = Some(LayoutInfo::Manual(ManualLayout {
+                allocation: [320.0, 300.0],
+                requested_bounds: [0.0, 0.0, 320.0, 300.0],
+                content_bounds: [0.0, 0.0, 560.0, 300.0],
+                overflow: false,
+                first_conflict: None,
+            }));
+            region.children = vec![node("Card", "place", [200.0, 40.0, 240.0, 90.0], None)];
+            let mut view = node("View", "view", [0.0, 0.0, 320.0, 300.0], None);
+            view.child_clip = Some([0.0, 0.0, 320.0, 300.0]);
+            view.layout = outer;
+            view.children = vec![region];
+            // The window is wider than the view, so the place stays within the window and only
+            // the view's own box is passed.
+            inspect(&view, (600, 300), None, 1.0)
+                .into_iter()
+                .map(|p| p.kind)
+                .collect::<Vec<_>>()
+        };
+        let canvas = Some(LayoutInfo::Scroll(ScrollLayout {
+            direction: ScrollDirection::Both,
+        }));
+        assert_eq!(found(canvas), []);
+        assert!(found(None).contains(&Kind::Overflow));
     }
 
     /// A header action the shell holds in a frame of its own is the control it frames.

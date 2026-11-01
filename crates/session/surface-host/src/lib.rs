@@ -14,6 +14,7 @@ mod door;
 mod frames;
 pub mod shell_part;
 pub mod slot_view;
+mod well_policy;
 mod widget;
 
 pub use desktop::{
@@ -21,6 +22,7 @@ pub use desktop::{
 };
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
+pub use well_policy::{DeskHost, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;

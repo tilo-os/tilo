@@ -100,6 +100,14 @@ impl Adapter {
                     return match fired.value {
                         Some(Prop::Text(text)) => Some(UiEvent::Edit(fired.key, text)),
                         Some(Prop::Bool(checked)) => Some(UiEvent::Toggle(fired.key, checked)),
+                        // A number's edit goes as its text: the runtime reads it back as the
+                        // number the bound field holds (a number, a date's ISO text).
+                        Some(Prop::Int(number)) => {
+                            Some(UiEvent::Edit(fired.key, number.to_string()))
+                        }
+                        Some(Prop::Float(number)) => {
+                            Some(UiEvent::Edit(fired.key, number.to_string()))
+                        }
                         Some(Prop::Rich(rich)) => Some(UiEvent::EditRich(fired.key, rich)),
                         _ => None,
                     };
@@ -139,7 +147,7 @@ impl Adapter {
                     .map(|item| self.value_of(item))
                     .collect::<Option<_>>()?,
             ),
-            Prop::None | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) => {
+            Prop::None | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) | Prop::Picture(_) => {
                 return None;
             }
         })
@@ -290,6 +298,9 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
+        (Type::Picture, Value::Picture(picture)) => Prop::Picture(ui::component::Picture {
+            src: picture.src.clone(),
+        }),
         // A moment reaches the component as the instant it is, never as text read the
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
@@ -364,21 +375,35 @@ impl Source for NodeSource<'_> {
         ));
         let called = binding.name.clone();
         let path = presence_path(self.node);
+        let key = self.node.key.clone();
         Some(match ty {
-            Type::Text => BoundValue::Text(Bound {
-                state: self.reconciler.text_state(&self.node.key),
+            // A moment is held as its ISO text (or the day it names): what its widget shows.
+            Type::Text | Type::Time => BoundValue::Text(Bound {
+                state: self.reconciler.text_state(&key),
                 edits,
                 name: called,
                 path,
             }),
             Type::Bool => BoundValue::Bool(Bound {
-                state: self.reconciler.flag_state(&self.node.key),
+                state: self.reconciler.flag_state(&key),
+                edits,
+                name: called,
+                path,
+            }),
+            Type::Int => BoundValue::Int(Bound {
+                state: self.reconciler.count_state(&key),
+                edits,
+                name: called,
+                path,
+            }),
+            Type::Float => BoundValue::Float(Bound {
+                state: self.reconciler.number_state(&key),
                 edits,
                 name: called,
                 path,
             }),
             Type::RichText => BoundValue::Rich(Bound {
-                state: self.reconciler.rich_state(&self.node.key),
+                state: self.reconciler.rich_state(&key),
                 edits,
                 name: called,
                 path,

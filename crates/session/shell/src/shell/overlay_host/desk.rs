@@ -982,11 +982,11 @@ impl ShellOverlayHost {
         let super_up = self.super_up();
         changed |= self.relayout_desk(now, super_up);
         changed |= self.decide_desk(now);
-        let fade = self.desk.motion.fade(self.desk.motion.fast());
         let before = self.desk.leaving.len();
-        self.desk
-            .leaving
-            .retain(|leaving| now.saturating_duration_since(leaving.since) < fade);
+        let spec = ui::motion::Transient::READOUT;
+        self.desk.leaving.retain(|leaving| {
+            ui::motion::Transient::exit_progress(spec, leaving.since, now, self.desk.motion) < 1.0
+        });
         changed |= before != self.desk.leaving.len();
         changed
     }

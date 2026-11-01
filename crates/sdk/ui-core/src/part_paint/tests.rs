@@ -25,11 +25,13 @@ impl Triangles {
         (PainterSet::new("test.triangles", painter.clone()), painter)
     }
 
+    /// A triangle on the rect's foot, a tenth of its width in from each
+    /// side, its apex at the top centre.
     fn triangle(size: Size) -> BezPath {
         let mut path = BezPath::new();
         path.move_to((size.width / 2.0, 0.0));
-        path.line_to((size.width, size.height));
-        path.line_to((0.0, size.height));
+        path.line_to((size.width * 0.9, size.height));
+        path.line_to((size.width * 0.1, size.height));
         path.close_path();
         path
     }
@@ -100,7 +102,9 @@ fn moved_to(button: &mut Button, at: (f64, f64)) -> bool {
 #[test]
 fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     let (set, _) = Triangles::set();
-    let theme = Theme::dark().with_painter_set(SurfaceRole::Control, set);
+    let theme = Theme::dark()
+        .with_painter_set(SurfaceRole::Control, set)
+        .unwrap();
     let fired = Arc::new(AtomicUsize::new(0));
     let clicks = fired.clone();
     let mut button = Button::new("go", "Go").on_click(move || {
@@ -111,7 +115,13 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     // The apex column and the foot of the triangle take it; the rect's top
     // corners, outside the triangle, do not.
     assert!(moved_to(&mut button, (160.0, 60.0)));
-    assert!(moved_to(&mut button, (110.0, 88.0)));
+    assert!(moved_to(&mut button, (116.0, 88.0)));
+    assert!(!moved_to(&mut button, (104.0, 88.0)));
+    // It is spoken where it is drawn.
+    let spoken = Widget::accessibility(&button)
+        .and_then(|node| node.bounds)
+        .expect("bounds");
+    assert_eq!(spoken, Rect::new(112.0, 50.0, 208.0, 90.0).into());
     assert!(!moved_to(&mut button, (104.0, 54.0)));
     assert!(!moved_to(&mut button, (216.0, 54.0)));
     // A press in a corner does nothing; one inside the triangle clicks.
@@ -133,6 +143,10 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     assert_eq!(fired.load(Ordering::Relaxed), 0);
     click((160.0, 80.0));
     assert_eq!(fired.load(Ordering::Relaxed), 1);
+    // An immediate-mode face takes it in the same shape.
+    let face = crate::widget::ButtonFace::new(Rect::new(100.0, 50.0, 220.0, 90.0), "Go");
+    assert!(face.contains(&theme, Point::new(160.0, 60.0)));
+    assert!(!face.contains(&theme, Point::new(104.0, 54.0)));
     // Without a painter set the whole rect takes it, as before.
     let mut plain = Button::new("go", "Go");
     plain.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
@@ -143,7 +157,9 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
 #[test]
 fn a_settled_part_is_painted_once_and_replayed() {
     let (set, painter) = Triangles::set();
-    let theme = Theme::dark().with_painter_set(SurfaceRole::Control, set.clone());
+    let theme = Theme::dark()
+        .with_painter_set(SurfaceRole::Control, set.clone())
+        .unwrap();
     let tokens = part_tokens(
         &theme,
         SurfaceRole::Control,
@@ -268,6 +284,7 @@ fn a_painted_backdrop_is_its_fallback_where_nothing_may_be_translucent() {
             blur: 20.0,
             lens: Lens::default(),
             fallback: Color::from_rgb8(9, 9, 9),
+            glaze: Vec::new(),
         },
     );
     struct Panel(PartScene);
@@ -313,19 +330,95 @@ fn a_registered_set_is_found_by_name_and_replaced_by_a_newer_one() {
     let (first, _) = Triangles::set();
     let named = |set: &PainterSet| PainterSet::new("test.registry", set.painter.clone());
     let older = named(&first);
-    register_painter_set(older.clone());
+    assert!(register_painter_set(older.clone()));
     assert_eq!(painter_set("test.registry"), Some(older.clone()));
     let newer = named(&first);
-    register_painter_set(newer.clone());
+    assert!(register_painter_set(newer.clone()));
     assert_eq!(painter_set("test.registry"), Some(newer));
     assert_ne!(painter_set("test.registry"), Some(older));
     assert_eq!(painter_set("test.nothing"), None);
+    // The toolkit's own names are not a theme's to take.
+    assert!(!register_painter_set(PainterSet::new(
+        builtin::GLASS,
+        first.painter.clone()
+    )));
+    assert_eq!(
+        painter_set(builtin::GLASS).as_ref(),
+        Some(builtin::glass_set())
+    );
+}
+
+#[test]
+fn the_glass_sheen_and_rim_take_the_themes_light() {
+    // Glass draws its specular sheen and its lit rim in `tokens.light`: the
+    // colour the theme names for the light a surface catches, never a
+    // literal white in the painter.
+    let theme = Theme::named("glass").expect("the Glass preset");
+    let color = Color::from_rgb8(0x40, 0x60, 0x80);
+    let tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
+    assert_eq!(
+        tokens.light, theme.tokens.colors.light,
+        "the theme's light reaches the painter"
+    );
+    let painted = builtin::glass_set()
+        .painter()
+        .paint(
+            Part::BarBody,
+            Size::new(320.0, 32.0),
+            PartState::settled(States::REST),
+            1.0,
+            &tokens,
+        )
+        .expect("glass draws a bar body");
+    // Every stop of the sheen and of the rim is the tokens' light at some
+    // opacity; a literal white would not be. The fade's last stop is the
+    // light at zero, which is transparent whatever the light's channels.
+    let lit = |stop: &Stop| {
+        stop.color.components[3] == 0.0
+            || stop.color.components[..3] == tokens.light.components[..3]
+    };
+    let stops: Vec<Stop> = painted
+        .scene
+        .ops
+        .iter()
+        .flat_map(|op| match op {
+            Op::Fill {
+                brush: Brush::Linear { stops, .. },
+                ..
+            }
+            | Op::Stroke {
+                brush: Brush::Linear { stops, .. },
+                ..
+            } => stops.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert!(!stops.is_empty(), "a glass bar catches light");
+    assert!(stops.iter().all(lit), "every lit stop is the theme's light");
+    // And it moves with the theme: another light is another drawing.
+    let other = PartTokens {
+        light: Color::from_rgb8(0xff, 0xe0, 0xb0),
+        ..tokens.clone()
+    };
+    assert_ne!(
+        builtin::glass_set().painter().paint(
+            Part::BarBody,
+            Size::new(320.0, 32.0),
+            PartState::settled(States::REST),
+            1.0,
+            &other,
+        ),
+        Some(painted),
+        "the painter reads the light it is handed"
+    );
 }
 
 #[test]
 fn forced_colours_draw_with_the_toolkits_own_painters() {
     let (set, _) = Triangles::set();
-    let theme = Theme::high_contrast().with_painter_set(SurfaceRole::Control, set);
+    let theme = Theme::high_contrast()
+        .with_painter_set(SurfaceRole::Control, set)
+        .unwrap();
     assert!(theme.forced_colors);
-    assert!(theme.painter(SurfaceRole::Control).is_none());
+    assert_eq!(theme.painter(SurfaceRole::Control), builtin::default_set());
 }

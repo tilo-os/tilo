@@ -79,6 +79,7 @@ impl Gen<'_> {
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             Ek::Int(v) => self.i(Instruction::I64Const(*v)),
+            Ek::Duration(secs) => self.i(Instruction::I64Const(*secs)),
             Ek::Float(v) => self.i(Instruction::F64Const((*v).into())),
             Ek::Bool(b) => self.i(Instruction::I32Const(i32::from(*b))),
             Ek::I32(v) => self.i(Instruction::I32Const(*v)),

@@ -36,8 +36,9 @@ pub struct Options {
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
     /// The tilolang shell package's bar (`apps/tl/shell`) is shown as a layer over the
-    /// desktop. Off until it covers every display and steps aside for a fullscreen window as
-    /// the desktop's own bar does.
+    /// desktop: one bar per display, standing on its own display's rectangle and stepping
+    /// aside where a fullscreen window owns one, as the desktop's own bar does. Off by default
+    /// until the desktop's own bar and its tests move onto it.
     pub shell_bar: bool,
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
@@ -81,9 +82,6 @@ pub struct Options {
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
     pub session_actions: fn(SessionAction) -> Result<(), String>,
-    /// Whether the lock screen may offer suspend, restart and shut down:
-    /// a session that owns the machine, not one running inside a window.
-    pub lock_power: bool,
     /// Whose session this is, as the system knows them: the user a
     /// password unlocks the lock screen for.
     pub user: String,
@@ -303,7 +301,6 @@ impl Default for Options {
             launch: None,
             setup: None,
             session_actions: no_session_actions,
-            lock_power: false,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),

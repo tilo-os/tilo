@@ -26,6 +26,9 @@ pub struct TypeInfo {
     pub id: TypeId,
     pub name: String,
     pub fields: Vec<FieldInfo>,
+    /// `mark others` in its `search` block: another person's change to it is marked unseen
+    /// for a reader, as an agent's is (task-legibility.md §4).
+    pub mark_others: bool,
 }
 
 impl TypeInfo {
@@ -62,9 +65,12 @@ pub struct Package {
     pub hash: ModuleHash,
     pub meta: Meta,
     pub types: Vec<Rc<TypeInfo>>,
-    /// The description of an app this runtime does not run: its types, actions and views, and
-    /// no code to run them (`Runtime::load_foreign`).
+    /// A package of an app this runtime does not run: its records are that app's, read from the
+    /// readings it publishes, and its actions are invoked at its own door (`crate::delegate`).
     pub foreign: bool,
+    /// Whether its module is loaded: its views run here. Only a description of another app
+    /// (`Runtime::load_foreign`) has none.
+    pub code: bool,
 }
 
 impl Package {
@@ -82,6 +88,7 @@ impl Package {
             meta,
             types,
             foreign: false,
+            code: true,
         })
     }
 
@@ -93,6 +100,21 @@ impl Package {
     ///
     /// As [`Package::new`].
     pub fn foreign(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
+        Ok(Self {
+            foreign: true,
+            code: false,
+            ..Self::new(hash, meta)?
+        })
+    }
+
+    /// A package of an app this runtime does not run, with its module: its views run here, as
+    /// that package's own code, over the readings its app publishes; its records and actions
+    /// stay that app's (`Runtime::load_foreign_package`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Package::new`].
+    pub fn foreign_with_code(hash: ModuleHash, meta: Meta) -> Result<Self, String> {
         Ok(Self {
             foreign: true,
             ..Self::new(hash, meta)?
@@ -140,6 +162,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
+        mark_others: t.search.mark_others,
     })
 }
 
@@ -347,8 +370,37 @@ impl Registry {
     /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the
     /// default view the type's package declares.
     pub fn default_view(&self, ty: &str) -> Option<ViewId> {
-        let pkg = self.package(self.types.get(ty)?)?;
-        pkg.meta.default_view(ty).map(str::to_owned)
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        pkg.meta.default_view(&ty).map(str::to_owned)
+    }
+
+    /// The id of the type `ty` names: a type id, or another app's type as its resources name
+    /// it (`app#Type`, [`crate::foreign`]).
+    pub fn type_id(&self, ty: &str) -> Option<TypeId> {
+        match crate::foreign::foreign_type(ty) {
+            Some(key) => self.type_for(&key),
+            None => self.types.contains_key(ty).then(|| ty.to_owned()),
+        }
+    }
+
+    /// The offered view `view` (its id or name) of the package declaring `ty` that takes a
+    /// resource of `ty` and nothing else: what a place names as `shown_as`.
+    pub fn view_of_type(&self, ty: &str, view: &str) -> Option<ViewId> {
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        let name = &pkg.type_by_id(&ty)?.name;
+        pkg.meta
+            .offered_views()
+            .filter(|v| v.id == view || v.name == view)
+            .find(|v| match v.params.as_slice() {
+                [param] => matches!(
+                    crate::meta::parse_ty(&param.ty, &pkg.meta.app),
+                    Ok(Ty::Record(key)) if key.app == pkg.meta.app && &key.name == name
+                ),
+                _ => false,
+            })
+            .map(|v| v.id.clone())
     }
 
     /// What a new resource of this type starts out with.

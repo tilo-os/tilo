@@ -651,6 +651,7 @@ impl App {
         let publication = phases.start();
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
+        app.broadcast_composing_presence();
         app.broadcast_view_presence();
         if sync_follows {
             app.actions.action_surface_owed = true;

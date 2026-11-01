@@ -2415,23 +2415,17 @@ impl FrameBuilder {
             .filter_map(|surface| {
                 let layers = below_layer(surface.layer)?;
                 let (rect, scale) = self.surface_to_scene(surface.bounds)?;
-                let below = if layers.is_empty() {
-                    surface.below
-                } else {
+                Some(surface.into_region(rect, scale, |own| {
+                    if layers.is_empty() {
+                        return self.below_to_scene(own);
+                    }
                     let mut below = Scene::new();
                     for layer in layers {
                         below.append(layer, None);
                     }
-                    below.append(&surface.below, None);
-                    below
-                };
-                Some(BackdropRegion {
-                    image: surface.image,
-                    rect,
-                    blur_px: surface.blur_px * scale,
-                    below: self.below_to_scene(below),
-                    ground: surface.ground,
-                })
+                    below.append(&own, None);
+                    self.below_to_scene(below)
+                }))
             })
             .collect();
         (!regions.is_empty()).then(|| Arc::new(BackdropFrame { regions }))

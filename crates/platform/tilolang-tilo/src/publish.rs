@@ -205,6 +205,11 @@ pub fn action_type(
     if is_destructive(action) {
         spec = spec.destructive();
     }
+    // `key: "e"`: the plain key that runs it while its window has the keyboard, shown at the
+    // action's row as the keyboard in use spells it.
+    if let Some(key) = &action.key {
+        spec.type_mut().state.shortcut = Some(key.clone());
+    }
     spec.type_mut().contract.settle_confirmation();
     Arc::clone(spec.action_type())
 }
@@ -451,6 +456,8 @@ struct Whole {
 
 impl Whole {
     fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
+        // This record is published by the package version the snapshot's store was taken from.
+        let _schemas = snapshot.scoped();
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
         let schema = crate::schema::lookup(&self.type_id);
@@ -951,8 +958,9 @@ impl Published<'_> {
             relabels: std::collections::BTreeSet::new(),
             relabel: Relabel::Kept,
         };
-        // The field of the record the name is read through, when an item holds it: fields after
-        // it in id order cannot name the record while it does.
+        // The field of the record the name is read through, when an item holds it: a field
+        // after it in naming order cannot name the record while it does
+        // ([`TypeSchema::in_naming_order`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
             .and_then(|at| self.chain(at));
@@ -961,6 +969,9 @@ impl Published<'_> {
             .and_then(|chain| chain.get(1))
             .and_then(|top| self.holder(top))
             .map(|(_, field)| field);
+        let naming_position = naming_field
+            .as_deref()
+            .and_then(|field| self.schema.naming_position(field));
         for key in fields {
             // A resource's first and last versions (`created(r)`, `updated(r)`), which every
             // change moves: nothing published reads them.
@@ -974,10 +985,14 @@ impl Published<'_> {
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
                 }
-                if naming_field
-                    .as_deref()
-                    .is_none_or(|f| key.field.as_str() <= f)
-                {
+                // Whether the field is read before (or as) the text that names the record.
+                // In naming order, not by id: a title is read first whatever id it drew, and
+                // its change always names the record again.
+                let or_before = match (naming_position, self.schema.naming_position(&key.field)) {
+                    (None, _) | (Some(_), None) => true,
+                    (Some(naming), Some(changed)) => changed <= naming,
+                };
+                if or_before {
                     rework.relabel = Relabel::Whole;
                 }
                 continue;
@@ -1397,8 +1412,9 @@ impl Published<'_> {
 
     /// The item at `path`, read from the index and published.
     fn item(&self, path: &str) -> Option<ResourceSpec> {
-        let schema = self.schema_at(path)?;
         let snapshot = self.store.snapshot();
+        let _schemas = snapshot.scoped();
+        let schema = self.schema_at(path)?;
         let view = snapshot.view(&self.types.meta().app)?;
         indexed_item(self.types, &view, &snapshot, path, Some(&schema.id))
     }
@@ -1417,11 +1433,58 @@ fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
     None
 }
 
-/// What names an item: the first of its texts.
+/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first —
+/// a `title` field, then a `body`'s first line, then the rest in declaration order — and only a
+/// record holding none of its own is named by an item it holds (a record that is nothing but
+/// its list). A channel's messages never name the channel: its `name` does.
 fn item_label(item: &crate::record::DynRecord) -> Option<String> {
-    let mut text = Vec::new();
-    tilo_resource::Model::collect_text(item, &mut text);
-    text.into_iter().next()
+    use crate::record::DynValue;
+    use crate::schema::{FieldRole, MergeKind};
+    let schema = item.schema();
+    let read = |field: &crate::schema::FieldSchema| match item.get(&field.id) {
+        Some(DynValue::Text(text)) if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    };
+    let mut texts = schema
+        .fields
+        .iter()
+        .filter(|field| field.kind == MergeKind::Text);
+    let titled = texts.clone().find(|field| field.role == FieldRole::Title);
+    if let Some(text) = titled.as_ref().and_then(|field| read(field)) {
+        return Some(text);
+    }
+    let bodied = texts.clone().find(|field| field.role == FieldRole::Body);
+    if let Some(text) = bodied.as_ref().and_then(|field| read(field)) {
+        let first = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        if !first.trim().is_empty() {
+            return Some(first.to_owned());
+        }
+    }
+    if let Some(text) = texts.find_map(read) {
+        return Some(text);
+    }
+    // No text of its own: a record that is nothing but its list is named by its first item.
+    for field in &schema.fields {
+        match item.get(&field.id) {
+            Some(DynValue::Record(record)) => {
+                if let Some(found) = item_label(record) {
+                    return Some(found);
+                }
+            }
+            Some(DynValue::Collection(items)) => {
+                for (_, item) in items.iter() {
+                    if let Some(found) = item_label(item) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The package's own resource, carrying the actions that take no record.
@@ -1515,6 +1578,26 @@ pub fn edit_action(
         (MergeKind::Register, value) => EditOp::Set {
             value: value.clone(),
         },
+        // A rich text comes as the runtime's encoding of it, or as that encoding's text where
+        // the door takes text: the edit is the one the package's own views write.
+        (MergeKind::RichText, value) => {
+            let parsed;
+            let encoded = match value {
+                Json::String(text) => {
+                    parsed = serde_json::from_str::<Json>(text)
+                        .map_err(|_| format!("the field `{field}` takes a rich text"))?;
+                    &parsed
+                }
+                other => other,
+            };
+            let tilolang_runtime::value::Value::Rich(rich) =
+                tilolang_runtime::value::from_json(encoded)
+                    .map_err(|why| format!("the field `{field}` takes a rich text: {why}"))?
+            else {
+                return Err(format!("the field `{field}` takes a rich text"));
+            };
+            crate::store::rich_edit(&rich).map_err(|error| error.to_string())?
+        }
         _ => return Err(format!("the field `{field}` cannot be set to that value")),
     };
     let action_id = if value.is_boolean() {

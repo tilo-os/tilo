@@ -1,6 +1,6 @@
 //! `layers`: children drawn on top of each other, each at one of nine logical positions.
 
-use taffy::style_helpers::{fr, length, line, minmax};
+use taffy::style_helpers::{fr, length, line, minmax, percent};
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
@@ -22,7 +22,10 @@ impl Layout for LayersLayout {
         Style {
             display: taffy::Display::Grid,
             grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
-            grid_template_rows: vec![taffy::style_helpers::auto()],
+            // As tall as the tallest layer where the layers' height is open (a card's image
+            // under its badge), and no taller than a height they are given (a window's desk):
+            // a layer longer than that scrolls or overflows inside it, never the cell.
+            grid_template_rows: vec![minmax(length(0.0_f32), fr(1.0_f32))],
             min_size: Size {
                 width: length(0.0_f32),
                 height: taffy::Dimension::auto(),
@@ -34,6 +37,20 @@ impl Layout for LayersLayout {
     fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         slot.fit.apply(&mut style, Axis::Inline, resolved.rem);
+        // A layer that fills takes the whole cell. A grid child's flex-grow says
+        // nothing, so the fill is a width the cell resolves, and the layer keeps
+        // its own height (a bar at the top is as tall as the bar).
+        if slot.fit.width.fill.is_some() {
+            style.size.width = percent(1.0_f32);
+            style.flex_grow = 0.0;
+            style.flex_basis = taffy::Dimension::auto();
+        }
+        // A layer placed at an edge keeps its own height (a bar at the top is as tall
+        // as the bar); only the layer that takes the whole cell, the one with no
+        // position, fills it top to bottom.
+        if slot.at.is_none() && slot.fit.height.fill.is_some() {
+            style.size.height = percent(1.0_f32);
+        }
         let cell = taffy::Line {
             start: line(1),
             end: taffy::GridPlacement::Auto,

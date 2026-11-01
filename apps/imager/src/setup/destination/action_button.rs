@@ -120,6 +120,7 @@ impl ActionButton {
         let control = self.control.clone();
         let id = self.id().to_owned();
         self.inner = if let Some(checked) = self.checked {
+            let id = self.id().to_owned();
             Box::new(
                 Checkbox::from_state(&ui::LocalState::new(checked))
                     .with_id(&id)
@@ -188,6 +189,12 @@ impl ui::widget::Decorator for ActionButton {
 }
 
 impl ui::widget::controls::ActionControls for ActionButton {
+    /// The press the control queued: the button's own published action, which a decorator's
+    /// default walk skips (it forwards to the widget's children).
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        ui::widget::controls::take_control_invocation(&mut *self.inner)
+    }
+
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         vec![self.control.metadata(self.id())]
     }
@@ -245,12 +252,7 @@ mod tests {
             assert_eq!(button.test_id(), Some("reboot"));
 
             let mut doc = AutoCommit::new();
-            assert!(button.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
+            crate::setup::destination::press(&mut button, &ui::a11y::Action::Activate, &mut doc);
             assert!(presses.take().map(|press| press.effect) == Some(DestinationEffect::Reboot));
             assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
@@ -279,12 +281,7 @@ mod tests {
             assert_eq!(node.state.checked, Some(true));
             assert_eq!(button.test_id(), Some("recovery_ack"));
             let mut doc = AutoCommit::new();
-            assert!(button.perform_action(
-                &ui::a11y::Action::ToggleCheck,
-                &[],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
+            crate::setup::destination::press(&mut button, &ui::a11y::Action::ToggleCheck, &mut doc);
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SetRecoveryPromise {

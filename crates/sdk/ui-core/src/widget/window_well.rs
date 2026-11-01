@@ -1,0 +1,278 @@
+//! `WindowWell`: where a place's window goes (`docs/designs/app-language/shell.md` §8).
+//!
+//! A shell view never draws a place's content: it puts a well where the content goes, and the
+//! app's own window shows there, composited above the desk layer. The well draws nothing and
+//! takes no input. After each layout, and on each frame an enclosing component moves it (a
+//! canvas's pan and zoom, a strip row's scroll), it reports its rectangle in layout coordinates
+//! to the host's [`Wells`], keyed by the place it stands for. The window policy that places
+//! windows reads those rectangles, so a well that moves without changing size moves its window
+//! in the same frame.
+//!
+//! The well is a leaf that fills the room its frame leaves it: a frame's bar and chrome stand
+//! outside it, in the layout around it.
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+
+use crate::component::{Component, Described};
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::{TaffyTreeExt, Widget};
+
+/// Where the wells of a tree on this thread report, shared with the window policy that places
+/// the windows they stand for: the same handle, so a well that moves moves its window.
+///
+/// A host that shows a shell's views in the compositor's process installs one handle
+/// ([`install`]) before it lays the tree out; the well reports into it on every layout. With
+/// none installed, a well reports nowhere and costs one thread-local read.
+#[derive(Clone, Default)]
+pub struct Wells {
+    placed: Rc<RefCell<BTreeMap<String, Rect>>>,
+    generation: Rc<std::cell::Cell<u64>>,
+}
+
+impl Wells {
+    /// A handle with no well on it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the well of place `place` stands, in the layout's logical coordinates, as of the
+    /// last layout that placed it.
+    #[must_use]
+    pub fn well(&self, place: &str) -> Option<Rect> {
+        self.placed.borrow().get(place).copied()
+    }
+
+    /// Every well on screen, by place, as of the last layout.
+    #[must_use]
+    pub fn wells(&self) -> BTreeMap<String, Rect> {
+        self.placed.borrow().clone()
+    }
+
+    /// Whether any well stands on a tree at all: empty after a layout that placed none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.placed.borrow().is_empty()
+    }
+
+    /// Moves with every layout that placed a well, so a reader of [`Self::well`] knows whether
+    /// the last answer still stands: a canvas pan, a scroll and a resize each move it.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+
+    /// Record `rect` as the well of `place`.
+    pub fn place(&self, place: &str, rect: Rect) {
+        let mut placed = self.placed.borrow_mut();
+        if placed.get(place).copied() == Some(rect) {
+            return;
+        }
+        placed.insert(place.to_owned(), rect);
+        self.generation.set(self.generation.get().wrapping_add(1));
+    }
+
+    /// Forget the well of `place`: it left the screen (its place scrolled away, or the shell
+    /// shows another workspace and does not draw it).
+    pub fn remove(&self, place: &str) {
+        if self.placed.borrow_mut().remove(place).is_some() {
+            self.generation.set(self.generation.get().wrapping_add(1));
+        }
+    }
+
+    /// Forget every well: a layout that placed none leaves nothing on screen.
+    pub fn clear(&self) {
+        let mut placed = self.placed.borrow_mut();
+        if placed.is_empty() {
+            return;
+        }
+        placed.clear();
+        self.generation.set(self.generation.get().wrapping_add(1));
+    }
+}
+
+thread_local! {
+    /// The wells of the tree the host on this thread lays out ([`install`]).
+    static CURRENT: RefCell<Option<Wells>> = const { RefCell::new(None) };
+}
+
+/// Report every well laid out on this thread from now on into `wells`, until the returned
+/// guard is dropped: how a host shares one handle with the policy placing its windows. A guard
+/// that is already installed nests and restores the one before.
+#[must_use = "the wells hold only while the guard lives"]
+pub fn install(wells: Wells) -> Installed {
+    let previous = CURRENT.with(|current| current.borrow_mut().replace(wells));
+    Installed { previous }
+}
+
+/// The wells installed by [`install`], restored when dropped.
+pub struct Installed {
+    previous: Option<Wells>,
+}
+
+impl Drop for Installed {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CURRENT.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Report `rect` as the well of `place` to the wells installed on this thread, if any.
+fn report(place: &str, rect: Rect) {
+    CURRENT.with(|current| {
+        if let Some(wells) = current.borrow().as_ref() {
+            wells.place(place, rect);
+        }
+    });
+}
+
+/// Forget the well of `place` on the wells installed on this thread, if any: it left the screen.
+fn forget(place: &str) {
+    CURRENT.with(|current| {
+        if let Some(wells) = current.borrow().as_ref() {
+            wells.remove(place);
+        }
+    });
+}
+
+/// A place's window, at the rectangle the well stands at: the app's own window shows there, so
+/// the well draws nothing and takes no input.
+#[derive(Component, Default)]
+#[component(
+    name = "WindowWell",
+    role = "Group",
+    label = "place",
+    not_in_gallery = "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
+)]
+pub struct WindowWellProps {
+    /// The place whose window shows here: the tab id the desktop model gives the window when
+    /// it maps (shell.md §8).
+    #[component(required, positional)]
+    pub place: String,
+}
+
+/// See the module docs.
+pub struct WindowWell {
+    place: String,
+    rect: Rect,
+    /// Whether the well stands on a laid-out tree: it reports on every layout while it does,
+    /// so a host that installs another handle (a new policy, a test) sees it at once, and
+    /// reports its leave when it goes.
+    on_screen: bool,
+}
+
+impl WindowWell {
+    /// A well for the place `place`.
+    #[must_use]
+    pub fn new(place: impl Into<String>) -> Self {
+        Self {
+            place: place.into(),
+            rect: Rect::ZERO,
+            on_screen: false,
+        }
+    }
+
+    /// The place whose window shows in it.
+    #[must_use]
+    pub fn place(&self) -> &str {
+        &self.place
+    }
+}
+
+impl Drop for WindowWell {
+    fn drop(&mut self) {
+        // The place left the screen: its window goes with it.
+        if self.on_screen {
+            forget(&self.place);
+        }
+    }
+}
+
+impl Described for WindowWell {
+    type Props = WindowWellProps;
+
+    fn from_props(_key: &str, props: WindowWellProps) -> Self {
+        Self::new(props.place)
+    }
+
+    fn set_props(&mut self, props: WindowWellProps) -> bool {
+        if self.place == props.place {
+            return true;
+        }
+        // The window this well shows is another one: the one it showed leaves the screen.
+        if self.on_screen {
+            forget(&self.place);
+        }
+        self.place = props.place;
+        true
+    }
+}
+
+impl Widget for WindowWell {
+    fn name(&self) -> &'static str {
+        "WindowWell"
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The well takes the room its frame leaves it; it holds nothing.
+        taffy.widget_leaf(
+            Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                min_size: taffy::Size::from_lengths(1.0, 1.0),
+                ..Style::default()
+            },
+            node_map,
+            self,
+        )
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.on_screen = true;
+        // Reported on every layout the well is placed by, so a host that installed another
+        // handle since it last laid out finds it (a policy's own handle, a test's).
+        report(&self.place, self.rect);
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        // The window is composited above the desk layer: the well paints nothing.
+    }
+
+    /// A well paints nothing, so it is never dirty.
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
+    /// Placement is the only layout the well takes.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}

@@ -152,6 +152,13 @@ pub enum MediaSize {
     Large,
 }
 
+// How large the cards of a grid are, as a component's prop.
+crate::component::choice!(MediaSize, "MediaSize", {
+    Small => "small",
+    Regular => "regular",
+    Large => "large",
+});
+
 impl MediaSize {
     /// The minimum column width (or, for justified rows, the target row
     /// height) under `theme`.
@@ -937,6 +944,10 @@ impl HoverAction {
 }
 
 /// A retained media card. See the module docs.
+#[crate::component::not_a_component(
+    part,
+    "the card of a `ui.MediaGrid`, whose props `ui.MediaCard` gives"
+)]
 pub struct MediaCard {
     source: MediaSource,
     loaded: Option<peniko::ImageData>,
@@ -1682,6 +1693,20 @@ impl MediaGrid {
     pub fn with_size(mut self, size: MediaSize) -> Self {
         self.size = size;
         self
+    }
+
+    /// The card `index`, out of the grid: for a host that places a card itself.
+    #[must_use]
+    pub fn take_card(&mut self, index: usize) -> Option<MediaCard> {
+        let card = self.cards.get_mut(index)?;
+        card.as_any_mut()
+            .and_then(|any| any.downcast_mut::<MediaCard>())
+            .map(|card| {
+                std::mem::replace(
+                    card,
+                    MediaCard::new(String::new(), MediaSource::Placeholder),
+                )
+            })
     }
 
     fn cards_mut(&mut self) -> impl Iterator<Item = &mut MediaCard> {

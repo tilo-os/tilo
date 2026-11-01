@@ -459,6 +459,24 @@ impl Workspace {
             other => panic!("not a list: {other:?}"),
         }
     }
+
+    /// The keys in `at`'s set field `field`, as the runtime reads them.
+    fn set_of(&self, at: &ResourceRef, field: &str) -> Vec<String> {
+        let host = self.window.current_host().unwrap();
+        match host.runtime().read(at, field).unwrap() {
+            RtValue::List(items) => items.into_iter().filter_map(rt_text_opt).collect(),
+            other => panic!("{field} is not a set: {other:?}"),
+        }
+    }
+}
+
+/// The text a value of the runtime holds, as an item of a list of texts.
+fn rt_text_opt(value: RtValue) -> Option<String> {
+    match value {
+        RtValue::Text(text) => Some(text),
+        RtValue::Opt(Some(held)) => rt_text_opt(*held),
+        _ => None,
+    }
 }
 
 /// The first node of the tree with `kind` whose prop `name` is `value` (any, when `name` is
@@ -1304,6 +1322,32 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     assert!(
         format!("{channel:?}").contains("Coffee machine on the third floor is fixed."),
         "the channel shows the message: {channel:#?}"
+    );
+}
+
+#[test]
+fn a_plain_key_in_a_focused_mail_window_archives_the_conversation_it_shows() {
+    let mut room = Workspace::staged("mail", "a busy inbox");
+    // The first conversation's row, opened: its window shows the thread's actions, the archive
+    // among them, each carrying the key the package declared (`key: "e"`).
+    let (key, _) = room.rows().remove(0);
+    let thread = room.item_of(&key);
+    assert!(
+        room.set_of(&thread, "boxes").iter().any(|b| b == "inbox"),
+        "the conversation starts in the inbox"
+    );
+    room.activate(&key);
+    room.settle();
+    // A plain `e` reaches the archive the open conversation's window offers, and runs it.
+    assert!(
+        room.window.run_shortcut("e"),
+        "the open conversation's window offers `e`"
+    );
+    room.settle();
+    let boxes = room.set_of(&thread, "boxes");
+    assert!(
+        boxes.iter().any(|b| b == "archive") && !boxes.iter().any(|b| b == "inbox"),
+        "the key archived the conversation: {boxes:?}"
     );
 }
 
@@ -2291,5 +2335,37 @@ fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
         body.written_text(),
         "See you at noon",
         "the message has the keystroke typed in the frame of the press"
+    );
+}
+
+/// Every node the window composes is one the toolkit describes or the host
+/// builds: the tree a seed puts in a fresh window goes through the same
+/// validator the window applies to each batch an app sends, so a component the
+/// catalogue lacks fails here rather than blanking the window.
+#[test]
+fn the_composed_tree_passes_the_window_s_validator() {
+    use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
+    for app in ["chat", "notes", "tasks", "today"] {
+        let room = Workspace::seeded(app);
+        let tree = room.composed();
+        let validator = Validator::new(tilo_ui_host::adapter::catalogue(), PatchLimits::default());
+        assert!(
+            validator.node(&tree, 0).is_ok(),
+            "{app}: {}",
+            validator
+                .node(&tree, 0)
+                .err()
+                .map(|refused| refused.to_string())
+                .unwrap_or_default()
+        );
+    }
+    // And the validator does refuse an undescribed component: the check above is not vacuous.
+    let mut probe = Workspace::seeded("chat").composed();
+    probe.kind = "ui.NoSuchPart".to_owned();
+    assert!(
+        Validator::new(tilo_ui_host::adapter::catalogue(), PatchLimits::default())
+            .node(&probe, 0)
+            .is_err(),
+        "an undescribed component is refused"
     );
 }

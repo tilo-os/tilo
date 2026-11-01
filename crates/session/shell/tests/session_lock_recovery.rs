@@ -6,6 +6,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const PASSWORD: &str = "synthetic-lock-test";
 
@@ -52,7 +53,7 @@ impl Session {
                 .env_remove("TILO_LOCK_TEST_PASSWORD")
                 .env("TILO_UNLOCK_HELPER", root.join("missing-unlock-helper"));
         }
-        let child = command.spawn().unwrap();
+        let child = command.spawn_locked().unwrap();
         let mut session = Self(child, root.to_owned());
         let deadline = tilo_test_env::hang_deadline();
         loop {

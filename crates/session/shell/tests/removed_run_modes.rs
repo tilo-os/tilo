@@ -8,6 +8,7 @@
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tempfile::TempDir;
 
@@ -32,7 +33,7 @@ fn portal_server_only_is_refused_before_any_setup() {
         .env_remove("DISPLAY")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("run production shell binary");
 
     let deadline = tilo_test_env::hang_deadline();

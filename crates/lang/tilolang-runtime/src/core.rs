@@ -300,24 +300,25 @@ impl Core {
             Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, ArgAt, ChangeView,
             CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere,
             CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
-            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FloatToStr, IdentPart,
-            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd,
-            ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI,
-            ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq,
-            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew,
-            RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart,
-            RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers,
-            StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
+            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, Filters, FirstUnseen, FloatToStr,
+            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
+            ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
+            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
+            MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt,
+            Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
+            Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
+            StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke,
             TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
             UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
+            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
+            Withdraw, WorkspaceMembers,
         };
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
-                self.text_import(imp, mem, a)
-            }
+            StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp | StrFind
+            | StrSlice | StrReplace => self.text_import(imp, mem, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
             | ListSortByKey | ListReverse | ListGetH | ListEnd | TupleNew | TupleSetI
             | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF
@@ -352,20 +353,17 @@ impl Core {
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
-                self.resource_import(imp, a)
-            }
-            ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
-            | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
-                self.effect_import(imp, a)
-            }
-            UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
-            | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
+            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
+            | ResourceRef => self.resource_import(imp, a),
+            ActRef | Invoke | TryInvoke | IsError | Outside | OutsideAt | Withdraw | ModelCall
+            | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
+            | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
+            | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
+            | ActThen | ActOpen | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
-            | RunChanges | Unseen | Steps | VersionEnd | Phrase | Dated => {
-                self.platform_import(imp, a)
-            }
+            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase
+            | Dated | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

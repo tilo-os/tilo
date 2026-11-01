@@ -20,7 +20,10 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+#[path = "link_component.rs"]
+mod component;
 use crate::widget::Widget;
+pub use component::LinkProps;
 
 /// Best-effort and non-blocking — a launch failure is logged, not surfaced.
 /// See [`crate::portal::open_uri`] for how the URL reaches the desktop.
@@ -60,6 +63,12 @@ pub struct Link {
     action: Option<crate::widget::ActionEmitter<()>>,
     dirty: bool,
     last_state: (bool, bool, bool),
+    /// What a press does instead of opening the address: a view's event.
+    click: Option<Box<dyn FnMut()>>,
+    /// Its stable identity, as the view names it.
+    id: Option<String>,
+    /// What inputs the host has, from the frame: the link's target grows to a finger's.
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Link {
@@ -79,6 +88,9 @@ impl Link {
             action: None,
             dirty: true,
             last_state: (false, false, false),
+            click: None,
+            id: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -122,6 +134,48 @@ impl Link {
         self
     }
 
+    /// Run `f` when the link is pressed, instead of opening its address.
+    #[must_use]
+    pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self {
+        self.click = Some(Box::new(f));
+        self
+    }
+
+    /// Give it a stable identity, for tests, captures and agents.
+    #[must_use]
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_owned());
+        self
+    }
+
+    /// Show another address in place.
+    pub fn set_url(&mut self, url: &str) {
+        url.clone_into(&mut self.url);
+        if self.label == self.url {
+            url.clone_into(&mut self.label);
+        }
+        self.dirty = true;
+    }
+
+    /// Say something else in place.
+    pub fn set_label(&mut self, label: &str) {
+        label.clone_into(&mut self.label);
+        self.dirty = true;
+    }
+
+    /// What a press lands on: its face, grown to the host's minimum target about its centre,
+    /// so a finger meets it however thin its line is.
+    #[must_use]
+    pub fn target(&self) -> Rect {
+        self.interaction.minimum_target_rect(self.rect)
+    }
+
+    /// Whether what a press does is a view's event.
+    #[must_use]
+    pub fn has_action(&self) -> bool {
+        self.click.is_some() || self.action.is_some()
+    }
+
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -147,6 +201,10 @@ impl Link {
     /// Single entry point shared by mouse, keyboard and AT so all three paths behave identically.
     pub fn activate(&mut self) {
         if !self.effectively_enabled() {
+            return;
+        }
+        if let Some(click) = &mut self.click {
+            click();
             return;
         }
         if let Some(action) = &mut self.action {
@@ -313,7 +371,7 @@ impl Widget for Link {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
-                let hover = self.rect.contains(p);
+                let hover = self.target().contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
                     *ctx.handled = true;
@@ -345,6 +403,14 @@ impl Widget for Link {
         }
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.is_hovered &= environment.supports_hover();
+    }
+
     fn name(&self) -> &'static str {
         "Link"
     }
@@ -358,7 +424,7 @@ impl Widget for Link {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.enabled && self.rect.contains(point) {
+        if self.enabled && self.target().contains(point) {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None
@@ -403,6 +469,7 @@ impl Widget for Link {
         Some(
             AccessNode::new(Role::Link)
                 .with_name(self.label.clone())
+                .with_bounds(self.target())
                 .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
                 .with_state(
                     AccessState::new()

@@ -120,6 +120,7 @@ struct RichTextDirty {
     styled_layout: bool,
 }
 
+#[crate::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -225,6 +226,19 @@ impl RichTextLine {
             emoji_revision: None,
             composer: false,
         }
+    }
+
+    /// The line around `inner`, a field its caller built (a state-bound field, its edits
+    /// reported where it was bound).
+    #[must_use]
+    pub fn from_input(inner: TextInput) -> Self {
+        let text = inner.value().to_owned();
+        let mut line = Self::new();
+        line.inner = inner;
+        line.inner.keep_document_inset();
+        line.prev_text.clone_from(&text);
+        line.prev_cursor = text.len();
+        line
     }
 
     /// Make the line a field of its own (a composer): see the field's docs.
@@ -1235,6 +1249,15 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
+    /// The inner field is no child, so it takes the host's inputs from here: a coarse pointer
+    /// makes the field a finger's target tall, as any field is.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.inner.set_interaction_environment(environment);
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
@@ -2233,3 +2256,7 @@ mod tests {
         }
     }
 }
+
+#[path = "rich_text_line_component.rs"]
+mod component;
+pub use component::{DeclaredLine, RichTextLineProps};

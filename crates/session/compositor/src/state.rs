@@ -89,6 +89,11 @@ impl ClientData for ClientState {
 /// a handful of closes at once, and older ones go.
 const MOST_CLOSING: usize = 16;
 
+/// How long after a keystroke the person still counts as typing: the pause
+/// after which a next key starts a new word, and long enough that moving
+/// something between two keystrokes never takes the keys from them.
+const TYPING_PAUSE: Duration = Duration::from_millis(1000);
+
 /// A window that closed, drawn from its last buffer where it stood so the
 /// desktop can animate it away ([`crate::Compositor::closing_windows`]).
 pub(crate) struct Closing {
@@ -190,6 +195,12 @@ pub struct State {
     pub(crate) idle: crate::power::Idle,
     /// The keys hosted surfaces hold, and their repeat.
     pub(crate) host_keys: HostKeys,
+    /// The pointer buttons that are down: a drag, a resize or any press in
+    /// flight is an ongoing gesture for whatever must not move under it.
+    pub(crate) buttons_down: std::collections::BTreeSet<u32>,
+    /// When the person last typed a key that types something. What must not
+    /// move while they type reads it.
+    typed_at: Option<Instant>,
     /// The pointer lock or confinement a client holds, and its region.
     pub(crate) pointer_lock: crate::pointer_lock::PointerLock,
     /// The client that holds the desktop's shortcuts, if any.
@@ -296,6 +307,8 @@ impl State {
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             host_keys: HostKeys::default(),
+            buttons_down: std::collections::BTreeSet::new(),
+            typed_at: None,
             pointer_lock: crate::pointer_lock::PointerLock::default(),
             shortcut_inhibit: crate::keys::ShortcutInhibit::default(),
             zoom: 1.0,
@@ -739,12 +752,33 @@ impl State {
                     },
                 };
                 if !pressed {
-                    return state
-                        .host_keys
-                        .release(keycode)
-                        .map_or(FilterResult::Forward, |host| {
-                            FilterResult::Intercept((host, key))
-                        });
+                    if let Some(host) = state.host_keys.release(keycode) {
+                        return FilterResult::Intercept((host, key));
+                    }
+                    // A key no surface took the press of, let go: a surface that takes it now
+                    // (a shell's switcher, which opened after Alt went down) hears it, so a
+                    // held modifier's release reaches what it opened. Otherwise it goes on to
+                    // the client as any release does. A client holding the desktop's
+                    // shortcuts had the press, so it has the release too.
+                    if state.shortcut_inhibit.is_active() {
+                        return FilterResult::Forward;
+                    }
+                    let locked = state.locked();
+                    for index in (0..state.hosts.len()).rev() {
+                        let claim = state
+                            .hosts
+                            .get_mut(index)
+                            .map_or(KeyClaim::Pass, |host| host.claim_key(&key, locked, false));
+                        if claim != KeyClaim::Pass {
+                            return FilterResult::Intercept((index, key));
+                        }
+                    }
+                    return FilterResult::Forward;
+                }
+                // Typing is what arms the rule that nothing moves under it:
+                // a key that types something, modifiers and chords aside.
+                if key.text.is_some() {
+                    state.typed_at = Some(Instant::now());
                 }
                 let locked = state.locked();
                 // A client holding the desktop's shortcuts keeps them: only
@@ -781,6 +815,21 @@ impl State {
         {
             host.key(&key);
         }
+    }
+
+    /// Whether an arranging change must not move anything now, and why: a
+    /// pointer button is down (something is being dragged or resized, or a
+    /// press is in flight), or the person typed within the typing pause.
+    pub(crate) fn underway(&self) -> crate::Underway {
+        crate::Underway {
+            gesture: !self.buttons_down.is_empty(),
+            typing: self.typing(),
+        }
+    }
+
+    /// Whether the person typed within the typing pause: they are typing.
+    pub(crate) fn typing(&self) -> bool {
+        self.typed_at.is_some_and(|at| at.elapsed() <= TYPING_PAUSE)
     }
 
     /// Hand hosted surfaces the repeats of the keys they hold that are due.
@@ -883,9 +932,12 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
-        // Every surface hears the press end, before any of them acts on the
-        // button: a press and what it is still doing are over together.
-        if !pressed {
+        if pressed {
+            self.buttons_down.insert(button);
+        } else {
+            self.buttons_down.remove(&button);
+            // Every surface hears the press end, before any of them acts on the
+            // button: a press and what it is still doing are over together.
             for host in &mut self.hosts {
                 host.press_ended(self.pointer.x, self.pointer.y);
             }

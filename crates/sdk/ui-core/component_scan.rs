@@ -1,6 +1,6 @@
 //! What the toolkit's sources declare about components, read from the sources themselves: the
 //! build script generates the registry of described widgets from it (`component::registry`,
-//! `component::parts`), and the coverage check (`tests/component_coverage.rs`) holds every public
+//! `component::parts`), and the coverage check (`component/coverage_tests.rs`) holds every public
 //! widget to being described or saying why not. One reading, so the two cannot disagree.
 //!
 //! The declarations it reads, each where the component is written:
@@ -45,6 +45,9 @@ pub struct DescribedWidget {
 pub struct Props {
     pub top: String,
     pub name: String,
+    /// The name the component is described by (`ui.<component>`), which its `#[component(name
+    /// = "..")]` may set apart from the props type.
+    pub component: Option<String>,
     pub file: PathBuf,
 }
 
@@ -95,6 +98,67 @@ impl Scan {
             .iter()
             .any(|d| d.widget.split('<').next().unwrap_or_default().trim() == name)
     }
+
+    /// The name each component is described by: the `name` its props' `#[component(..)]` sets,
+    /// else the widget's type with a `Described` prefix taken off (`DescribedTable` is
+    /// `Table`, `DeclaredRail` is `PageSidebar`, its props' name).
+    #[must_use]
+    pub fn component_names(&self) -> Vec<String> {
+        self.described
+            .iter()
+            .map(|d| {
+                let props = d.props.rsplit("::").next().unwrap_or_default();
+                self.props
+                    .iter()
+                    .find(|p| p.name == props)
+                    .and_then(|p| p.component.clone())
+                    .unwrap_or_else(|| widget_component_name(&d.widget).to_owned())
+            })
+            .chain(
+                // An entry written by hand describes its props, and is named by their
+                // `#[component(..)]`.
+                self.custom.iter().flat_map(|c| {
+                    c.props.iter().filter_map(|props| {
+                        self.props
+                            .iter()
+                            .find(|p| p.name == *props)
+                            .and_then(|p| p.component.clone())
+                    })
+                }),
+            )
+            .chain(
+                // A part stands in another component's slot, and is described with it.
+                self.parts().into_iter().filter_map(|p| p.component.clone()),
+            )
+            .collect()
+    }
+
+    /// The component name the public widget `name` is reached by (`ui.<name>`), when the
+    /// toolkit describes it: a widget whose type its component's `#[component(name = "..")]`
+    /// sets apart (`IconWidget` is `Icon`, `ReactionStripWidget` is `Reactions`) is reached by
+    /// the component's name, not its type's.
+    #[must_use]
+    pub fn component_of_widget(&self, name: &str) -> Option<String> {
+        let found = self.described.iter().find(|d| {
+            let widget = d.widget.trim();
+            widget == name || widget_component_name(widget) == name
+        })?;
+        let props = found.props.rsplit("::").next().unwrap_or_default();
+        Some(
+            self.props
+                .iter()
+                .find(|p| p.name == props)
+                .and_then(|p| p.component.clone())
+                .unwrap_or_else(|| widget_component_name(&found.widget).to_owned()),
+        )
+    }
+}
+
+/// The name a described widget is written to the catalogue by when its props set none: the
+/// widget's type, with a `Described` prefix taken off (`DescribedTable` is `Table`).
+fn widget_component_name(widget: &str) -> &str {
+    let widget = widget.trim();
+    widget.strip_prefix("Described").unwrap_or(widget)
 }
 
 /// Read the sources under `src`.
@@ -370,9 +434,27 @@ fn read_props(text: &str, top: &str, file: &Path, out: &mut Vec<Props>) {
         out.push(Props {
             top: top.to_owned(),
             name,
+            component: component_name_of(&after[..item]),
             file: file.to_owned(),
         });
     }
+}
+
+/// The `name = ".."` of the `#[component(..)]` among the attributes just above an item, given
+/// the text before it (back to the end of the item before), when it sets one.
+fn component_name_of(before: &str) -> Option<String> {
+    let item_start = blank_strings(before)
+        .trim_end()
+        .rfind(['}', ';', '{'])
+        .map_or(0, |i| i + 1);
+    let attrs = &before[item_start..];
+    let open = attrs.find("#[component(")? + "#[component(".len();
+    let args = &attrs[open..];
+    let at = args.find("name")?;
+    let rest = args[at + "name".len()..].trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_owned())
 }
 
 fn read_custom(text: &str, modules: &[String], file: &Path) -> Option<CustomEntry> {

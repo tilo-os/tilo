@@ -74,13 +74,13 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         let want = match (prim, name) {
             ("toggle", "bind") => {
-                let _ = self.bind_typed(&node, value, &[Ty::Bool]);
+                let _ = self.bind_typed(&node, value, &[Ty::Bool], false);
                 return true;
             }
             ("date", "bind") => {
                 let day = [Ty::Date, Ty::Option(Box::new(Ty::Date))];
                 // Only a date that may be none can be cleared.
-                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day) {
+                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day, false) {
                     let yes = Ex::new(Ek::Bool(true), Ty::Bool);
                     self.prop(node, "optional", yes, value.span);
                 }
@@ -455,7 +455,7 @@ impl Checker<'_> {
                 }
                 Some("avatar") => avatar = Some(value),
                 Some("checkbox") => {
-                    if self.bind_typed(&node, value, &[Ty::Bool]).is_some() {
+                    if self.bind_typed(&node, value, &[Ty::Bool], false).is_some() {
                         self.emit(host(
                             Imp::UiPropH,
                             vec![node.clone(), Ex::str("bind"), Ex::str("checkbox")],
@@ -697,6 +697,14 @@ impl Checker<'_> {
                 match b.ty.clone() {
                     Ty::Record(key) if crate::host::is_value(&key) => {
                         self.value_field(b, &key, name)
+                    }
+                    // A resource's own `icon` field names the glyph it shows, as a
+                    // host value's does: an app, an entry of the launcher, an item of a
+                    // dock. Read as a field, its type tells whether it is a glyph or
+                    // something else.
+                    Ty::Record(_) => {
+                        let icon = self.field_read(b, name);
+                        (icon.ty == Ty::Text).then_some(icon)
                     }
                     Ty::Error => Some(Ex::error()),
                     _ => None,

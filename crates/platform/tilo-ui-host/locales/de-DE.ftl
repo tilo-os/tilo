@@ -29,7 +29,6 @@ tilolang-empty = Noch nichts hier
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
-tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
 tilolang-did = { $action }: { $title }
@@ -46,7 +45,6 @@ tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer
 tilolang-yes = Ja
 tilolang-no = Nein
-tilolang-undo-unavailable = Dieses Fenster kann keinen Schritt aus seinem Verlauf zurücknehmen.
 tilolang-history = Verlauf
 tilolang-history-changes = { $count ->
     [one] 1 Änderung

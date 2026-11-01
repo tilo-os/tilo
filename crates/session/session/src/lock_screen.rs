@@ -198,7 +198,7 @@ impl crate::Session {
             // The screen draws its own keyboard: a touch-only device can
             // always ask for it.
             keyboard: true,
-            power: self.shared.lock_power,
+            power: !self.shared.hosted,
         }
     }
 

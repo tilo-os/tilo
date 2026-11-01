@@ -30,6 +30,21 @@ pub trait Published {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError>;
 
+    /// Run its published action `address` as `actor` (an agent, a script):
+    /// who the change it makes is attributed to. The person's own input is
+    /// [`Self::invoke`], and is theirs.
+    ///
+    /// # Errors
+    /// The surface's refusal: no such action, bad arguments, not allowed.
+    fn invoke_as(
+        &mut self,
+        _actor: &str,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        self.invoke(address, arguments)
+    }
+
     /// The labels of its accessibility tree, in reading order.
     fn accessible_labels(&mut self) -> Vec<String>;
 
@@ -181,6 +196,26 @@ impl Doors {
             };
             if ui::tilo_actions::door::resolve(&published, address).is_some() {
                 return surface.invoke(address, arguments);
+            }
+        }
+        Err(DoorError::Unknown(address.clone()))
+    }
+
+    /// Invoke the published action `address` as `actor` (an agent, a
+    /// script), which the surface attributes its change to.
+    ///
+    /// # Errors
+    /// No surface publishes it, or the surface refused.
+    pub fn invoke_as(
+        &self,
+        actor: &str,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        for (_, surface) in self.offered() {
+            let mut surface = surface.borrow_mut();
+            if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
+                return surface.invoke_as(actor, address, arguments);
             }
         }
         Err(DoorError::Unknown(address.clone()))

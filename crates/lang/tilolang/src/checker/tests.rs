@@ -86,7 +86,9 @@ fn walk(e: &Expr, out: &mut Vec<String>) {
                     "node {}",
                     args.first().and_then(text).unwrap_or("?")
                 )),
-                Imp::UiPropH | Imp::UiPropI | Imp::UiPropF => out.push(format!("prop {name}")),
+                Imp::UiPropH | Imp::UiPropI | Imp::UiPropF | Imp::UiPropPic => {
+                    out.push(format!("prop {name}"));
+                }
                 Imp::UiOn => out.push(format!("on {name}")),
                 Imp::UiBind => out.push("bind".into()),
                 Imp::UiBindState => out.push("bind_state".into()),
@@ -484,6 +486,28 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 }
 
 #[test]
+fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
+    // A field marked `(title)` bound by a text field is the document's title; bound by code to
+    // read, it is the text alone, and the code is never sent a prop it does not declare.
+    let (m, _) = lower(
+        "type Step {\n    program: Text (title)\n}\nroot Step\ndefault view step for Step\nview step(s: Step) {\n    ui.TextInput(value: s.program)\n    ui.CodeEditor(value: s.program, read_only: true)\n}",
+    );
+    let calls = ui_calls(func(&m, "step"));
+    let editor = calls
+        .iter()
+        .position(|c| c == "node ui.CodeEditor")
+        .expect("the code");
+    let titles: Vec<usize> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| *c == "prop title")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(titles.len(), 1, "{calls:#?}");
+    assert!(titles.iter().all(|at| *at < editor), "{calls:#?}");
+}
+
+#[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
         "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
@@ -586,7 +610,7 @@ fn host_imports(f: &Func) -> Vec<Imp> {
 #[test]
 fn workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role() {
     let (m, _) = lower(
-        "type Room {\n    topic: Text\n}\nfn agents(r: Room) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview room(r: Room) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}",
+        "type Room {\n    topic: Text\n}\nfn agents(r: Room) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview room(r: Room) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}\nview mine(r: Room) {\n    text(\"{workspace.me.name()}\")\n}",
     );
     let agents = host_imports(func(&m, "agents"));
     for want in [Imp::Members, Imp::PrincipalKind] {
@@ -601,6 +625,11 @@ fn workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role
         assert!(roles.contains(&want), "{want:?} in {roles:?}");
     }
     assert!(host_imports(func(&m, "room")).contains(&Imp::WorkspaceMembers));
+    let mine = host_imports(func(&m, "mine"));
+    assert!(
+        mine.contains(&Imp::Viewer),
+        "`workspace.me` is the viewer, read where the view runs: {mine:?}"
+    );
     for (source, code) in [
         (
             "type Room {\n    topic: Text\n}\nfn f() -> Int {\n    workspace.people.len()\n}",

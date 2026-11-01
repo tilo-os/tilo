@@ -1,12 +1,19 @@
-//! The process-wide registry of record schemas.
+//! A host's registry of record schemas.
 //!
 //! A tilolang resource stores its fields by **field id** and names its type by id in `$type`.
 //! Nothing in the document says how a field merges, so every reader, and every peer replaying
-//! an edit, resolves the type id here. Registration happens once per package version, so the
-//! schemas are leaked and handed out as `&'static`.
+//! an edit, resolves the type id through a [`Schemas`] table.
+//!
+//! One table belongs to each host and store, not to the process. Two packages are loaded at
+//! once all the time: the Chat's conversation types and its channel types both declare a type
+//! `Message`, and two versions of one app share every id while their types differ. A
+//! process-wide table keyed by type id lets one loaded package overwrite the other's schema, and
+//! then a record of the first reads its fields by the second's shape — a trap, or a field read
+//! as missing. So a store keeps its own table, and hands it out as `&'static` schemas: one
+//! package version is registered once and read for as long as anything may hold its records.
 
 use std::collections::BTreeMap;
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use tilo_action_policy::EarlierIds;
 
@@ -87,6 +94,24 @@ pub struct FieldSchema {
     /// A register holding a structured runtime value (an option, a list, a reference) rather
     /// than an integer, float, flag or text: the runtime reads such a value as JSON.
     pub composite: bool,
+    /// What the field is to the platform (`title: Text (title)`): the record's
+    /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
+    /// field search reads it by; a type declares at most one of each.
+    pub role: FieldRole,
+}
+
+/// What a field is to the platform, as the package declares it (`(title)`, `(body)`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FieldRole {
+    /// Text for people to read, or data with no role of its own.
+    #[default]
+    Plain,
+    /// The record's name: the one text a person knows it by, in a row, a menu, a search
+    /// hit.
+    Title,
+    /// The record's substance, for a record the person does not name by a word of its own (a
+    /// message, an article): search shows its first line where a title would stand.
+    Body,
 }
 
 impl FieldSchema {
@@ -98,7 +123,22 @@ impl FieldSchema {
             record: None,
             default: serde_json::Value::Null,
             composite: false,
+            role: FieldRole::Plain,
         }
+    }
+
+    /// The field is the record's name (`title: Text (title)`).
+    #[must_use]
+    pub const fn titled(mut self) -> Self {
+        self.role = FieldRole::Title;
+        self
+    }
+
+    /// The field is the record's substance (`body: RichText (body)`).
+    #[must_use]
+    pub const fn bodied(mut self) -> Self {
+        self.role = FieldRole::Body;
+        self
     }
 
     /// The field holds records of the type `type_id`.
@@ -172,6 +212,8 @@ pub struct TypeSchema {
     pub fields: Vec<FieldSchema>,
     /// Its filter columns: its filters' and those of every other field a `filter` compares.
     pub columns: Vec<ColumnSchema>,
+    /// The outside kind it holds (`type Message (origin: imap.message)`), when it holds one.
+    pub origin: Option<String>,
 }
 
 impl TypeSchema {
@@ -199,7 +241,17 @@ impl TypeSchema {
             name: name.into(),
             fields: Vec::new(),
             columns: Vec::new(),
+            origin: None,
         }
+    }
+
+    /// Whether its origin derives its resources, and so they are never saved to a collaborative
+    /// record: the store keeps them in its unsaved layer ([`crate::store`]).
+    #[must_use]
+    pub fn derived(&self) -> bool {
+        self.origin
+            .as_deref()
+            .is_some_and(tilolang::origin::is_derived)
     }
 
     #[must_use]
@@ -227,50 +279,295 @@ impl TypeSchema {
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
         self.columns.iter().find(|column| column.name == name)
     }
-}
 
-fn registry() -> &'static RwLock<BTreeMap<String, &'static TypeSchema>> {
-    static REGISTRY: RwLock<BTreeMap<String, &'static TypeSchema>> = RwLock::new(BTreeMap::new());
-    &REGISTRY
-}
-
-/// Make `schema` the one `schema.id` resolves to, and return the registered copy.
-///
-/// Registering what is already registered returns the held copy and leaks nothing; a changed
-/// schema (a new package version) replaces it.
-pub fn register(schema: TypeSchema) -> &'static TypeSchema {
-    if let Some(held) = lookup(&schema.id)
-        && *held == schema
-    {
-        return held;
+    /// The fields in the order a name is read from them: the `title` first, a `body`'s first
+    /// line next, then the rest as declared. Within a tier the declaration order stands
+    /// (`sort_by_key` is stable), never the field's id: ids are drawn per compile, so an order
+    /// over them would name a type with two plain texts differently on every build.
+    #[must_use]
+    pub fn in_naming_order(&self) -> Vec<&FieldSchema> {
+        let mut fields: Vec<&FieldSchema> = self.fields.iter().collect();
+        fields.sort_by_key(|field| match field.role {
+            FieldRole::Title => 0_u8,
+            FieldRole::Body => 1,
+            FieldRole::Plain => 2,
+        });
+        fields
     }
-    let leaked: &'static TypeSchema = Box::leak(Box::new(schema));
-    registry()
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(leaked.id.clone(), leaked);
-    leaked
+
+    /// The order [`crate::reads::first_text`] looks at the fields: every text of the resource's
+    /// own first (in [`Self::in_naming_order`]), then the records and collections it holds, in
+    /// that order. A resource holding a text of its own is named by it before any item it
+    /// holds, whatever the fields' ids.
+    #[must_use]
+    pub fn naming_scan(&self) -> Vec<&FieldSchema> {
+        let ordered = self.in_naming_order();
+        let own: Vec<&FieldSchema> = ordered
+            .iter()
+            .copied()
+            .filter(|field| field.kind.holds_text())
+            .collect();
+        let mut scan = own;
+        scan.extend(
+            ordered
+                .into_iter()
+                .filter(|field| matches!(field.kind, MergeKind::Record | MergeKind::Collection)),
+        );
+        scan
+    }
+
+    /// Where the field `id` stands in [`Self::naming_scan`]: a change to a field at or before
+    /// this one may move the resource's name, a change to one after it cannot.
+    #[must_use]
+    pub fn naming_position(&self, id: &str) -> Option<usize> {
+        self.naming_scan().iter().position(|field| field.id == id)
+    }
 }
 
-/// The schema of the type `id`, when its package registered it.
+thread_local! {
+    /// The tables the code running on this thread resolves through, innermost last. A store
+    /// installs its own for as long as it reads, writes or derives, and an action its package's
+    /// while it applies: a record's type id means the schema of the package version that
+    /// registered it, and two packages on one thread hold different ones.
+    static CURRENT: std::cell::RefCell<Vec<Arc<Schemas>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Every schema any package registered here, by type id, whichever table did: what a caller
+/// that holds no table of its own reads — a compiler tool, a layout check, a peer reading a
+/// room's record without its app's host. Every `register` fills it as well as its own table, so
+/// a record read through no host resolves the last version registered for its type; a store,
+/// which holds one version, reads through its own and never through this.
+///
+/// One for the process, not one per thread: a caller with no table of its own (a view opened
+/// from a thread the store was not installed on) reads what any package loaded here registered.
+fn fallback() -> Arc<Schemas> {
+    static FALLBACK: std::sync::OnceLock<Arc<Schemas>> = std::sync::OnceLock::new();
+    Arc::clone(FALLBACK.get_or_init(|| Arc::new(Schemas::new())))
+}
+
+thread_local! {
+    /// The schemas of each package this thread loaded, by the app it is of and the hash of its
+    /// module: a record's type id names one package version, never another's. An action may be
+    /// applied (`Action::apply`) or described outside the store that holds its records — a
+    /// receiver replaying it, a task's door — and resolves through its own package's table.
+    static PACKAGES: std::cell::RefCell<BTreeMap<(String, String), Arc<PackageSchemas>>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// One package's schemas: what its types are, by id.
+pub struct PackageSchemas {
+    schemas: Arc<Schemas>,
+}
+
+impl PackageSchemas {
+    /// Make `schema` the one `schema.id` resolves to in this package, and return the copy.
+    pub fn register(&self, schema: TypeSchema) -> &'static TypeSchema {
+        self.schemas.register(schema)
+    }
+
+    /// The table of this package, to install for as long as its code runs.
+    #[must_use]
+    pub fn enter(&self) -> Current {
+        self.schemas.enter()
+    }
+}
+
+/// The schemas of the packages one host or store holds.
+///
+/// One per store, not one per process: two packages can be loaded at once whose types share an
+/// id — two versions of an app share every id — so a table keyed by id alone would let one
+/// overwrite the other's schema.
+pub struct Schemas {
+    types: RwLock<BTreeMap<String, &'static TypeSchema>>,
+    /// The table consulted for the types this one does not hold: one package's table holds its
+    /// own types by the version it loaded, and every other type by whatever registered it.
+    parent: Option<Arc<Schemas>>,
+}
+
+impl std::fmt::Debug for Schemas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Schemas")
+            .field("types", &self.types.read().map_or(0, |held| held.len()))
+            .field("parent", &self.parent.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Schemas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Schemas {
+    /// A table of its own: only what is registered in it.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            types: RwLock::new(BTreeMap::new()),
+            parent: None,
+        }
+    }
+
+    /// A table of a store's own: the packages it loads, and, for a type none of them declares
+    /// (a record naming another app's type), whatever package registered it on this thread.
+    #[must_use]
+    pub fn store() -> Self {
+        Self::over(fallback())
+    }
+
+    /// A table of its own over `parent`: the types registered here, the rest from `parent`.
+    #[must_use]
+    pub fn over(parent: Arc<Schemas>) -> Self {
+        Self {
+            types: RwLock::new(BTreeMap::new()),
+            parent: Some(parent),
+        }
+    }
+
+    /// Make `schema` the one `schema.id` resolves to here, and return the registered copy.
+    ///
+    /// Registering what is already registered returns the held copy and leaks nothing; a changed
+    /// schema (a new package version) replaces it.
+    pub fn register(&self, schema: TypeSchema) -> &'static TypeSchema {
+        // What this table holds itself, never what its parent does: a package's table keeps its
+        // own copy of every type it declares, even when its parent holds the same schema.
+        let held = self
+            .types
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&schema.id)
+            .copied();
+        if let Some(held) = held
+            && *held == schema
+        {
+            return held;
+        }
+        let leaked: &'static TypeSchema = Box::leak(Box::new(schema));
+        self.types
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(leaked.id.clone(), leaked);
+        // A caller that holds no table of its own reads whichever version was registered last
+        // (the process's fallback); a store still reads this one.
+        let fallback = fallback();
+        if !std::ptr::eq(fallback.as_ref(), self) {
+            fallback.register(leaked.clone());
+        }
+        leaked
+    }
+
+    /// The schema of the type `id`, when a package of it was registered here.
+    #[must_use]
+    pub fn lookup(&self, id: &str) -> Option<&'static TypeSchema> {
+        self.types
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .copied()
+            .or_else(|| self.parent.as_ref().and_then(|parent| parent.lookup(id)))
+    }
+
+    /// The registered type `name` of the app `app`.
+    #[must_use]
+    pub fn lookup_in(&self, app: &str, name: &str) -> Option<&'static TypeSchema> {
+        let found = self
+            .types
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .copied()
+            .find(|schema| schema.app == app && schema.name == name);
+        found.or_else(|| {
+            self.parent
+                .as_ref()
+                .and_then(|parent| parent.lookup_in(app, name))
+        })
+    }
+
+    /// Make this table the one [`lookup`] resolves through on this thread until the returned
+    /// scope drops.
+    ///
+    /// The store, its snapshots and its index install their own while they read, write and
+    /// derive, so what a record's type id means is the schema of the package version the store
+    /// holds.
+    #[must_use]
+    pub fn enter(self: &Arc<Self>) -> Current {
+        CURRENT.with(|current| current.borrow_mut().push(Arc::clone(self)));
+        Current(())
+    }
+
+    /// The table this thread resolves through now: the innermost installed, else the fallback.
+    fn grabbed() -> Arc<Self> {
+        CURRENT.with(|current| current.borrow().last().cloned().unwrap_or_else(fallback))
+    }
+}
+
+/// Register `meta`'s package's schemas for the process's shared table of packages, by its app
+/// and `module` (the runtime's id of the loaded module, which an action records as its
+/// `authorship.module`): what an action applied or described outside the store that holds its
+/// records resolves its own package's types through ([`for_module`]).
+pub fn register_package(
+    meta: &tilolang_runtime::meta::Meta,
+    module: &tilolang_runtime::ids::ModuleHash,
+) -> Arc<PackageSchemas> {
+    let schemas = Arc::new(PackageSchemas {
+        schemas: Arc::new(Schemas::new()),
+    });
+    {
+        let _current = schemas.enter();
+        for schema in crate::meta::MetaExt::schemas(meta) {
+            schemas.register(schema);
+        }
+    }
+    let package = Arc::clone(&schemas);
+    PACKAGES.with(|packages| {
+        packages
+            .borrow_mut()
+            .insert((meta.app.clone(), module.0.clone()), Arc::clone(&package));
+    });
+    package
+}
+
+/// The schemas of the package of `app` whose module is `module` (`register_package`).
+#[must_use]
+pub fn for_module(app: &str, module: &str) -> Option<Arc<PackageSchemas>> {
+    PACKAGES.with(|packages| {
+        packages
+            .borrow()
+            .get(&(app.to_owned(), module.to_owned()))
+            .cloned()
+    })
+}
+
+/// Makes the table [`Schemas::enter`] installed apply again when dropped.
+pub struct Current(());
+
+impl Drop for Current {
+    fn drop(&mut self) {
+        CURRENT.with(|current| {
+            current.borrow_mut().pop();
+        });
+    }
+}
+
+/// Make `schema` the one `schema.id` resolves to in the table this thread reads through, and
+/// return the registered copy; see [`Schemas::register`].
+pub fn register(schema: TypeSchema) -> &'static TypeSchema {
+    Schemas::grabbed().register(schema)
+}
+
+/// The schema of the type `id` in the table this thread reads through; see [`Schemas::lookup`].
 #[must_use]
 pub fn lookup(id: &str) -> Option<&'static TypeSchema> {
-    registry()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(id)
-        .copied()
+    Schemas::grabbed().lookup(id)
 }
 
-/// The registered type `name` of the app `app`.
+/// The registered type `name` of the app `app`; see [`Schemas::lookup_in`].
 #[must_use]
 pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
-    registry()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .values()
-        .copied()
-        .find(|schema| schema.app == app && schema.name == name)
+    Schemas::grabbed().lookup_in(app, name)
 }
 
 /// Record that `app` was published under the ids `before` earlier: the records the workspace holds
@@ -288,7 +585,11 @@ pub fn previously(app: &str) -> Vec<String> {
 }
 
 /// The app the records stored under `stored` belong to: the app that was published as `stored`
-/// before, else `stored` itself.
+/// before (`previously:`), else `stored` itself.
+///
+/// Read where an app's id is the process's ([`tilo_action_policy::earlier`]): its `previously:`
+/// is fixed by the version of the app whose records these are, so a later version of another app
+/// renaming to it, another package loaded here for another host, never takes its records over.
 #[must_use]
 pub fn successor(stored: &str) -> String {
     tilo_action_policy::earlier::held_current(stored)

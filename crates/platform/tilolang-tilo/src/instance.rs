@@ -38,7 +38,7 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::background::Waker;
 use crate::bundle::Bundle;
-use crate::host::{Host, Opening, Package};
+use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -157,6 +157,11 @@ pub struct Config {
     pub record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
+    /// The root and the view the window opens over, each by name. A package with more than one
+    /// root (the shell's `Desk` and its `Arrangement`) says which layer this window is;
+    /// [`RootView::default`] takes the package's first root and its default view, as the
+    /// launcher opens an app.
+    pub root: RootView,
 }
 
 /// Commits waiting to be handed to the door, each tagged with the invocation of the door that
@@ -239,6 +244,8 @@ struct Pending {
 )]
 pub struct Instance {
     app: String,
+    /// The root and the view the window opens over, by name.
+    root_view: RootView,
     me: String,
     mode: Mode,
     device: Option<String>,
@@ -264,7 +271,7 @@ pub struct Instance {
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
     /// The lenses on each resource of the package, as presence last reported them.
-    lenses: HashMap<String, Vec<(Principal, bool)>>,
+    lenses: HashMap<String, Vec<(Principal, bool, bool)>>,
     lenses_changed: bool,
     /// The person and the workspace's policy the runtime's members were last read from.
     members_from: Option<(
@@ -291,6 +298,9 @@ pub struct Instance {
     history: Vec<HistoryAsk>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
+    /// Why the scenario a capture staged did not run whole, until the capture takes it: a
+    /// capture of a half-run scenario is no picture of it.
+    stage_failed: Option<String>,
     started: bool,
     /// The package has no root of its own to open: everything it shows is opened by its
     /// embedder ([`Instance::without_root`]).
@@ -333,6 +343,7 @@ impl Instance {
         let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
+            root_view: config.root,
             me: config.me,
             mode: config.mode,
             device: config.device,
@@ -372,6 +383,7 @@ impl Instance {
             pending: Pending::default(),
             history: Vec::new(),
             staged: None,
+            stage_failed: None,
             started: false,
             rootless: false,
             loading: false,
@@ -520,6 +532,15 @@ impl Instance {
     /// the time ever wakes the instance.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let views = self.views_wake_in();
+        match (views, self.held_in()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// How long until the time a view read (`today` in a query) next reads differently.
+    fn views_wake_in(&self) -> Option<std::time::Duration> {
         let at = [self.root.as_ref(), self.detail.as_ref()]
             .into_iter()
             .flatten()
@@ -534,6 +555,12 @@ impl Instance {
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
+    }
+
+    /// How long until an outside effect an action held back (`outside(.., at:)`) is due: the
+    /// frame then runs and the host carries it out. `None` when none is held back.
+    fn held_in(&self) -> Option<std::time::Duration> {
+        self.host()?.runtime().held_for()
     }
 
     /// The resource the root view shows.
@@ -603,6 +630,13 @@ impl Instance {
     /// Run the scenario `scenario` once the host runs, as a capture stages it.
     pub fn stage(&mut self, scenario: Option<&str>) {
         self.staged = scenario.map(str::to_owned);
+        self.stage_failed = None;
+    }
+
+    /// Why the scenario [`stage`](Self::stage) named failed, or a package it uses failed its
+    /// first scenario, once the host ran it: a capture refuses to picture a half-staged room.
+    pub fn take_stage_failure(&mut self) -> Option<String> {
+        self.stage_failed.take()
     }
 
     /// The workspace record moved: what the views read may have changed, and outside effects may
@@ -788,7 +822,10 @@ impl Instance {
             .detail
             .as_ref()
             .map(|view| (view.target.clone(), view.with.clone()));
-        let (Ok(target), Ok(view)) = (host.root_of(&self.app), host.open_main(&self.app)) else {
+        let (Ok(target), Ok(view)) = (
+            host.root_of_layer(&self.app, &self.root_view),
+            host.open_layer(&self.app, &self.root_view),
+        ) else {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
@@ -832,14 +869,14 @@ impl Instance {
 
     /// Open the package's root view.
     fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of(&self.app) {
+        let target = match host.root_of_layer(&self.app, &self.root_view) {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app has no root to open");
                 return;
             }
         };
-        match host.open_main(&self.app) {
+        match host.open_layer(&self.app, &self.root_view) {
             Ok(view) => {
                 self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
@@ -1060,18 +1097,32 @@ impl Instance {
             if sorted.content {
                 // A list inside the content may have rows the view has not rendered yet.
                 show_content_rows(&mut view.view.borrow_mut());
-                let tree = {
-                    let instance = view.view.borrow();
-                    convert_with(&host, &*names, &instance, |convert| {
-                        convert.node(instance.tree())
-                    })
+                // Only what changed is converted, where it can be: a clock's minute converts
+                // the clock's text, not the window.
+                let in_place = match (&mut view.sent, &sorted.changed) {
+                    (Some(sent), Some(changed)) => {
+                        let instance = view.view.borrow();
+                        convert_with(&host, &*names, &instance, |convert| {
+                            patch_in_place(sent, instance.tree(), changed, convert)
+                        })
+                    }
+                    _ => None,
                 };
-                let mut patches = Vec::new();
-                match &view.sent {
-                    Some(sent) => wire::diff(sent, &tree, &mut patches),
-                    None => patches.push(ui::Patch::SetRoot(tree.clone())),
-                }
-                view.sent = Some(tree);
+                let patches = in_place.unwrap_or_else(|| {
+                    let tree = {
+                        let instance = view.view.borrow();
+                        convert_with(&host, &*names, &instance, |convert| {
+                            convert.node(instance.tree())
+                        })
+                    };
+                    let mut patches = Vec::new();
+                    match &view.sent {
+                        Some(sent) => wire::diff(sent, &tree, &mut patches),
+                        None => patches.push(ui::Patch::SetRoot(tree.clone())),
+                    }
+                    view.sent = Some(tree);
+                    patches
+                });
                 if !patches.is_empty() {
                     self.out.push(ToUi::Patch { lane, patches });
                 }
@@ -1157,6 +1208,28 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// Whether the detail view's bound controls hold anything, and where: a draft being typed
+    /// in a conversation. Only whether, never what it says: presence carries "composing",
+    /// never the words.
+    #[must_use]
+    pub fn composing_in(&self) -> Option<&ResourceRef> {
+        let detail = self.detail.as_ref()?;
+        // The view's own controls, as the bound values it holds: any text or rich text with
+        // something in it is a draft under way.
+        let holds = self.lane(Lane::Detail).is_some_and(|shown| {
+            shown
+                .bound
+                .keys()
+                .filter_map(|key| shown.view.borrow().bound_value(key))
+                .any(|value| match value {
+                    crate::runtime::Value::Text(text) => !text.trim().is_empty(),
+                    crate::runtime::Value::Rich(rich) => !rich.written_text().trim().is_empty(),
+                    _ => false,
+                })
+        });
+        holds.then_some(&detail.target)
+    }
+
     /// The window shows what was typed into its bound control `key` of `lane` (the edit it
     /// sent just applied): take it as what the window holds, so a later change from elsewhere
     /// (the draft cleared once it was sent) differs from it and is sent.
@@ -1175,17 +1248,32 @@ impl Instance {
 
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
+    /// Someone composing a message in the detail view is a typist there: `composers` names
+    /// them, and their lens reads `composing` (`lenses(c)`), so a conversation can say
+    /// "… is typing" without reading a draft.
     pub fn set_peers(&mut self, peers: HashMap<String, String>) {
-        let mut now: HashMap<String, Vec<(Principal, bool)>> = HashMap::new();
+        self.set_peers_and_composers(peers, &[]);
+    }
+
+    /// [`Self::set_peers`], with who is composing a message in the detail view's resource.
+    pub fn set_peers_and_composers(
+        &mut self,
+        peers: HashMap<String, String>,
+        composers: &[String],
+    ) {
+        let mut now: HashMap<String, Vec<(Principal, bool, bool)>> = HashMap::new();
         for (resource, who) in peers {
+            let typing = composers.contains(&who);
             now.entry(resource)
                 .or_default()
-                .push((Principal::new(who), false));
+                .push((Principal::new(who), false, typing));
         }
         if let Some(detail) = &self.detail {
-            now.entry(detail.target.id_string())
-                .or_default()
-                .push((Principal::new(self.me.clone()), true));
+            now.entry(detail.target.id_string()).or_default().push((
+                Principal::new(self.me.clone()),
+                true,
+                false,
+            ));
         }
         if now == self.lenses {
             return;
@@ -1219,17 +1307,29 @@ impl Instance {
                 .find(|scenario| scenario.name == name)
                 .cloned()
         }) else {
-            tracing::warn!(app = self.app, scenario = name, "no such scenario");
+            self.stage_failed = Some(format!("{} has no scenario \"{name}\"", self.app));
             return;
         };
         // The packages this one points into (a board's apps) are staged first, each with its
         // first scenario, so a scenario that attaches their roots shows them filled.
+        let mut failed = Vec::new();
         for used in used_packages(host, &self.app) {
-            if let Some(first) = used.meta.scenarios.first() {
-                let _ = self.run_scenario(host, &used.meta.app, &first.name, &first.action);
+            if let Some(first) = used.meta.scenarios.first()
+                && let Err(why) = self.run_scenario(host, &used.meta.app, &first.action)
+            {
+                failed.push(format!("{} \"{}\": {why}", used.meta.app, first.name));
             }
         }
-        let shown = self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
+        let shown = match self.run_scenario(host, &self.app.clone(), &scenario.action) {
+            Ok(shown) => shown,
+            Err(why) => {
+                failed.push(format!("{} \"{name}\": {why}", self.app));
+                None
+            }
+        };
+        if !failed.is_empty() {
+            self.stage_failed = Some(failed.join("; "));
+        }
         self.commit_planned();
         // A scenario that returns a resource shows it, as a primary action shows what it made.
         // A script opened it, so a narrow window shows it in front at once.
@@ -1238,31 +1338,27 @@ impl Instance {
         }
     }
 
-    /// Run the scenario `name` (its hidden action `action`) of the package `app` over its root;
-    /// the resource it returned, when it returns one.
+    /// Run a scenario (its hidden action `action`) of the package `app` over its root: the
+    /// resource it returned, when it returns one, or why it did not run whole.
     fn run_scenario(
         &self,
         host: &Host,
         app: &str,
-        name: &str,
         action: &str,
-    ) -> Option<ResourceRef> {
-        if let Err(error) = host.root_of(app) {
-            tracing::warn!(app, %error, "the package has no root to stage");
-            return None;
-        }
+    ) -> Result<Option<ResourceRef>, String> {
+        host.root_of(app)
+            .map_err(|error| format!("the package has no root to stage: {error}"))?;
         match host
             .runtime()
             .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
         {
             Ok(InvokeOutcome::Done(Value::Ref(shown))) => {
-                return Some(Rc::unwrap_or_clone(shown.target));
+                Ok(Some(Rc::unwrap_or_clone(shown.target)))
             }
-            Ok(InvokeOutcome::Done(_)) => {}
-            Ok(other) => tracing::warn!(scenario = name, ?other, "the scenario did not run"),
-            Err(error) => tracing::warn!(scenario = name, %error, "the scenario failed"),
+            Ok(InvokeOutcome::Done(_)) => Ok(None),
+            Ok(other) => Err(format!("it did not run: {other:?}")),
+            Err(error) => Err(error.to_string()),
         }
-        None
     }
 
     // ----- the door ------------------------------------------------------------------------
@@ -1308,7 +1404,7 @@ impl Instance {
         let action = self
             .host()
             .and_then(|host| {
-                host.packages().iter().find_map(|package| {
+                host.find_in_packages(|package| {
                     package
                         .meta
                         .actions
@@ -1380,8 +1476,13 @@ impl Instance {
         };
         let first = host.next_ticket();
         match host.settle_outbox() {
-            Ok(0) => false,
-            Ok(_) => {
+            Ok(settled) => {
+                // What was marked as being handed over is handed over by the next settle,
+                // which nothing else would ask for.
+                self.settle_due |= settled.owes_settle;
+                if settled.written == 0 {
+                    return false;
+                }
                 queue_commits(&host, &self.outgoing, first, None);
                 true
             }
@@ -2001,7 +2102,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return;
         };
-        let Some(action) = host.packages().into_iter().find_map(|package| {
+        let Some(action) = host.find_in_packages(|package| {
             package
                 .meta
                 .actions
@@ -2399,15 +2500,14 @@ fn toggles(
     event: &str,
 ) -> Option<(ResourceRef, String)> {
     let aref = view.event_action(key, event)?;
-    let action = host.packages().into_iter().find_map(|package| {
+    let field = host.find_in_packages(|package| {
         package
             .meta
             .actions
             .iter()
             .find(|action| action.id == aref.action)
-            .cloned()
-    })?;
-    let field = action.toggles?;
+            .map(|action| action.toggles.clone())
+    })??;
     match aref.args.first() {
         Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
         _ => None,
@@ -2514,6 +2614,50 @@ struct ListChanges {
     reread: bool,
 }
 
+/// The patches that bring `sent`, the tree the window holds, to the view's `tree` where the
+/// view's patches changed it (`changed`, paths of keys from the root), with `sent` brought there
+/// too: each changed node converted alone, not the whole tree. `None`, and `sent` untouched,
+/// when that cannot be done (a node not found, keys not unique): the tree is converted whole.
+fn patch_in_place(
+    sent: &mut ui::Node,
+    tree: &UiNode,
+    changed: &[Vec<String>],
+    convert: &Convert<'_>,
+) -> Option<Vec<ui::Patch>> {
+    let mut paths: Vec<&[String]> = changed.iter().map(Vec::as_slice).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    // A change below one already converted is in it.
+    let mut tops: Vec<&[String]> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !tops.iter().any(|top| path.starts_with(top)) {
+            tops.push(path);
+        }
+    }
+    let mut out = Vec::new();
+    let mut fresh = Vec::with_capacity(tops.len());
+    for path in tops {
+        let (root, below) = path.split_first()?;
+        if *root != tree.key || sent.key != tree.key {
+            return None;
+        }
+        let node = below.iter().try_fold(tree, |node, key| {
+            let mut named = node.children.iter().filter(|child| child.key == *key);
+            let child = named.next()?;
+            named.next().is_none().then_some(child)
+        })?;
+        let new = convert.node(node);
+        if !wire::diff_at(wire::at(sent, below)?, &new, below, &mut out) {
+            return None;
+        }
+        fresh.push((below, new));
+    }
+    for (below, new) in fresh {
+        *wire::at_mut(sent, below)? = new;
+    }
+    Some(out)
+}
+
 /// What a view's patches changed, by where it shows.
 #[derive(Default)]
 struct Sorted {
@@ -2521,6 +2665,9 @@ struct Sorted {
     lists: BTreeMap<String, ListChanges>,
     /// Something besides those rows changed.
     content: bool,
+    /// Where it changed, each a path of keys from the root; `None` when the root itself was
+    /// replaced.
+    changed: Option<Vec<Vec<String>>>,
 }
 
 impl Sorted {
@@ -2532,11 +2679,15 @@ impl Sorted {
 /// Sort a view's `patches` against its virtual lists `lists` (each with its keys from the root):
 /// rows inserted, removed or moved, and rows changed, are their lists'; the rest is content.
 fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
-    let mut sorted = Sorted::default();
+    let mut sorted = Sorted {
+        changed: Some(Vec::new()),
+        ..Sorted::default()
+    };
     for patch in patches {
         let (path, structural) = match &patch {
             Patch::SetRoot(_) => {
                 sorted.content = true;
+                sorted.changed = None;
                 for (list, _) in lists {
                     sorted.list(list).reread = true;
                 }
@@ -2574,6 +2725,9 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
         }
         if !taken {
             sorted.content = true;
+            if let Some(changed) = &mut sorted.changed {
+                changed.push(path.to_vec());
+            }
         }
     }
     sorted
@@ -2604,14 +2758,14 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
 /// The package that declares the type `ty` (an id), with the type.
 #[must_use]
 pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
-    host.packages().into_iter().find_map(|package| {
+    host.find_in_packages(|package| {
         let declared = package
             .meta
             .types
             .iter()
             .find(|declared| declared.id == ty)?
             .clone();
-        Some((package.meta, declared))
+        Some((package.meta.clone(), declared))
     })
 }
 
@@ -2678,34 +2832,32 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
 /// name.
 #[must_use]
 pub fn cases(host: &Host, id: &str) -> Vec<wire::Case> {
-    host.packages()
-        .into_iter()
-        .find_map(|package| {
-            package
-                .meta
-                .enums
-                .iter()
-                .find(|declared| declared.id == id || declared.name == id)
-                .map(|declared| {
-                    declared
-                        .variants
-                        .iter()
-                        .map(|variant| {
-                            let label = if variant.label.is_empty() {
-                                sentence(&variant.name)
-                            } else {
-                                variant.label.clone()
-                            };
-                            wire::Case {
-                                name: variant.name.clone(),
-                                label,
-                                icon: variant.icon.as_ref().map(|icon| icon.replace('_', "-")),
-                            }
-                        })
-                        .collect()
-                })
-        })
-        .unwrap_or_default()
+    host.find_in_packages(|package| {
+        package
+            .meta
+            .enums
+            .iter()
+            .find(|declared| declared.id == id || declared.name == id)
+            .map(|declared| {
+                declared
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let label = if variant.label.is_empty() {
+                            sentence(&variant.name)
+                        } else {
+                            variant.label.clone()
+                        };
+                        wire::Case {
+                            name: variant.name.clone(),
+                            label,
+                            icon: variant.icon.as_ref().map(|icon| icon.replace('_', "-")),
+                        }
+                    })
+                    .collect()
+            })
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(test)]

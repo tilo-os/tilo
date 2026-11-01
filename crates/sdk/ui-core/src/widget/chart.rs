@@ -790,13 +790,19 @@ impl Widget for Chart {
 /// or a stat card to show a recent trend.
 pub struct Sparkline {
     data: Vec<f32>,
-    color: Color,
+    /// The colour it was built in; `None` wears the theme's accent at paint.
+    color: Option<Color>,
     /// Explicit max; `None` ⇒ derived from the data.
-    max: Option<f32>,
+    pub(crate) max: Option<f32>,
     width: f32,
     height: f32,
     style: TrendStyle,
     rect: Rect,
+    /// What the trend is of, for assistive technology; `None` makes it decorative.
+    pub(crate) label: Option<String>,
+    /// What the line means, when it means something: a status, a person. Its colour comes from
+    /// the theme at paint; without one the sparkline wears the colour it was built in.
+    pub(crate) tone: Option<crate::widget::Tone>,
 }
 
 impl Sparkline {
@@ -804,13 +810,52 @@ impl Sparkline {
     /// intrinsic size and a data-derived max.
     pub fn new(data: Vec<f32>, color: Color) -> Self {
         Self {
+            color: Some(color),
+            ..Self::accented(data)
+        }
+    }
+
+    /// A sparkline of `data` in the theme's accent, read at paint so every theme wears its
+    /// own, until it is told what its line means (its tone).
+    #[must_use]
+    pub fn accented(data: Vec<f32>) -> Self {
+        Self {
             data,
-            color,
+            color: None,
             max: None,
             width: 64.0,
             height: 20.0,
             style: TrendStyle::SPARKLINE,
             rect: Rect::ZERO,
+            label: None,
+            tone: None,
+        }
+    }
+
+    /// The look a component gives: the area fill under the line unless `filled` is false, the
+    /// curve smooth rather than straight, and a dot of `leading_dot` radius on the newest
+    /// sample.
+    pub fn set_look(&mut self, filled: bool, smooth: bool, leading_dot: Option<f64>) {
+        let mut style = TrendStyle::SPARKLINE;
+        if !filled {
+            style = style.with_fill(TrendFill::None);
+        }
+        if smooth {
+            style = style.with_curve(TrendCurve::CatmullRom);
+        }
+        if let Some(radius) = leading_dot {
+            style = style.with_leading_dot(radius);
+        }
+        self.style = style;
+    }
+
+    /// The colour painted now: the tone's, when it has one, else the one it was built with,
+    /// else the theme's accent.
+    fn painted_colour(&self, theme: &Theme) -> Color {
+        match (self.tone, self.color) {
+            (Some(tone), _) => tone.colour(theme),
+            (None, Some(color)) => color,
+            (None, None) => theme.tokens.colors.intent.accent,
         }
     }
 
@@ -914,7 +959,7 @@ impl Widget for Sparkline {
         scene: &mut Scene,
         transform: Affine,
         _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
+        theme: &Theme,
         _presence: &PresenceCtx,
     ) {
         Sparkline::paint(
@@ -923,7 +968,7 @@ impl Widget for Sparkline {
             self.rect,
             &self.data,
             TrendRange::up_to(f64::from(self.ceiling())),
-            self.color,
+            self.painted_colour(theme),
             &self.style,
         );
     }
@@ -932,10 +977,18 @@ impl Widget for Sparkline {
         "Sparkline"
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // What the trend is of is the accessible name; without one it is decorative.
+        Some(AccessNode::new(Role::Image).with_optional_name(self.label.clone()))
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
 }
+
+mod sparkline_component;
 
 #[cfg(test)]
 mod tests {

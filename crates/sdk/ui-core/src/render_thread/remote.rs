@@ -921,6 +921,8 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
             image: session.image(&region.image)?,
             rect: wire_rect(region.rect),
             blur_px: region.blur_px as f32,
+            sampling: u8::from(region.sampling == crate::part_paint::Sampling::Blocky),
+            cell_px: region.cell_px as f32,
             ground: region.ground.components,
             below: region.below.encoding().clone(),
         };

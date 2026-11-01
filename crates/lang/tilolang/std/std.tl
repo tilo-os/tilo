@@ -129,8 +129,10 @@ view rows<T>(
 
 /// A header's controls, as native headers place them: the sort menu and search first, then
 /// `extra`, then each action with an icon as an icon button (drawn on while the state it
-/// toggles is), a More menu of those without one, and the primary action last as the labelled
-/// Primary button.
+/// toggles is), and the primary action last as the labelled Primary button. An action with no
+/// icon has no control here: it stands under the name the app gave it in the top bar's window
+/// menu (the traditional desktop's) and in a row's menu, never in a "More" list made up for the
+/// header.
 view header<S>(
     offered: List<host.Action>,
     sort: Option<State<S>> = .none,
@@ -149,18 +151,8 @@ view header<S>(
     extra
     for a in offered {
         if not a.primary and a.icon != .none {
-            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true)) {
+            ui.Button(a.label, icon: a.icon, icon_only: true, toggled: a.on == .some(true), key: a.key) {
                 on press: a.run
-            }
-        }
-    }
-    let more = offered.filter(a -> not a.primary and a.icon == .none)
-    if not more.is_empty() {
-        ui.MenuButton(phrase("tilolang-more"), icon: .more_horizontal, icon_only: true) {
-            for a in more {
-                ui.MenuItem(a.label, destructive: a.destructive) {
-                    on choose: a.run
-                }
             }
         }
     }
@@ -240,7 +232,11 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 /// a divider where the day changes; the `row` then shows only what the item says. Each item's
 /// menu offers its actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every
 /// action stays reachable; the row's hover toolbar and swipe are its own.
-view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
+///
+/// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
+/// list draws the "New messages" divider over it, keeps the reader where they are as items
+/// arrive, and offers the way back to it, or to what is new, while they read history.
+view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer: View, row: (T) -> View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -252,7 +248,7 @@ view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
                         composer
                     }
                 }
-                ui.VirtualList(transcript: true) {
+                ui.VirtualList(transcript: true, unread: unread) {
                     for m in items {
                         let made = created(m)
                         let offered = actions(m)
@@ -313,7 +309,7 @@ view history<R>(of: R) {
                     row(gap: .related, align: .center) {
                         avatar(s.who)
                         stack(gap: .tight) {
-                            ui.Text("{s.who}", role: .label)
+                            ui.Text(s.who.name(), role: .label)
                             ui.Text(what, role: .caption, secondary: true)
                             if not single {
                                 ui.Text(phrase("tilolang-history-changes", count: s.versions.len()), role: .caption, secondary: true)

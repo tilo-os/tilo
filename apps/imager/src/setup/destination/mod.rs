@@ -61,6 +61,32 @@ pub mod unattended;
 
 pub use installer_app::{InstallState, InstallerApp, Step};
 
+/// Press `control`, then answer what its published action queued, as the
+/// window that holds it does after handling the press. A control's own
+/// closure runs in the toolkit; its press is the published action the tree
+/// answers, so a test drives the same door a person, a script and an agent do.
+#[cfg(test)]
+pub(crate) fn press(
+    control: &mut dyn ui::widget::Widget,
+    action: &ui::a11y::Action,
+    doc: &mut automerge::AutoCommit,
+) {
+    assert!(
+        control.perform_action(
+            action,
+            &[],
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT
+        ),
+        "the control refused {action:?}"
+    );
+    ui::widget::controls::start_pending_control_invocations(
+        control,
+        &mut ui::widget::Edits::lend(doc),
+        &automerge::ROOT,
+    );
+}
+
 /// Whether this process is the installer on the live medium.
 static LIVE_INSTALLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

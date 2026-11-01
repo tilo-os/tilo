@@ -127,6 +127,12 @@ pub struct Backdrop {
     pub rect: Rect,
     /// Blur standard deviation, in surface pixels.
     pub blur_px: f32,
+    /// The sampling the surface asked for, after the blur: `0` smooth, `1`
+    /// at one colour per cell of `cell_px` (a surface shown as pixels).
+    pub sampling: u8,
+    /// The cell's side in surface pixels, where `sampling` is blocky; `0`
+    /// otherwise.
+    pub cell_px: f32,
     /// What the backdrop shows where nothing below covers it.
     pub ground: [f32; 4],
     /// Everything composed below the surface.
@@ -326,9 +332,17 @@ impl<'a> FrameWriter<'a> {
         self.section(SECTION_BACKDROP, |w| {
             w.u32(backdrop.image.0);
             let rect = backdrop.rect;
-            for value in [rect.x0, rect.y0, rect.x1, rect.y1, backdrop.blur_px] {
+            for value in [
+                rect.x0,
+                rect.y0,
+                rect.x1,
+                rect.y1,
+                backdrop.blur_px,
+                backdrop.cell_px,
+            ] {
                 w.f32(value);
             }
+            w.u8(backdrop.sampling);
             for value in backdrop.ground {
                 w.f32(value);
             }
@@ -607,10 +621,15 @@ fn read_backdrop(
         y1: r.f32()?,
     };
     let blur_px = r.f32()?;
+    let cell_px = r.f32()?;
+    let sampling = r.u8()?;
     let ground = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
     let valid = rect.valid()
         && blur_px.is_finite()
         && (0.0..=4096.0).contains(&blur_px)
+        && sampling <= 1
+        && cell_px.is_finite()
+        && (0.0..=4096.0).contains(&cell_px)
         && ground.iter().all(|value| value.is_finite());
     if !valid {
         return Err(WireError::Invalid("backdrop"));
@@ -621,6 +640,8 @@ fn read_backdrop(
             image,
             rect,
             blur_px,
+            sampling,
+            cell_px,
             ground,
             below,
         },

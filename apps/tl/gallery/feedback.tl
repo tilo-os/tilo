@@ -61,6 +61,7 @@ view feedback(f: Feedback) {
         ui.Section("Progress") {
             ui.ProgressBar(.some(0.62), label: .some("Uploading"))
             ui.ProgressBar(label: .some("Preparing"))
+            progress(0.25)
             row(gap: .related, wrap: true) {
                 ui.ProgressRing(0.4, readout: .some("40%"))
                 ui.ProgressRing(0.9, tone: .warning, size: .small)
@@ -72,6 +73,10 @@ view feedback(f: Feedback) {
                 ui.StatTile("Open", "24", change: .some("+3"), trend: .up)
                 ui.StatTile("Closed", "112", unit: .some("this month"), samples: [3.0, 5.0, 4.0, 8.0, 6.0])
                 ui.StatTile("Late", "2", tone: .danger)
+            }
+            row(gap: .related) {
+                ui.Sparkline([3.0, 5.0, 4.0, 8.0, 6.0, 9.0], label: .some("Requests per second"), tone: .success)
+                ui.Sparkline([9.0, 6.0, 8.0, 4.0, 5.0, 3.0], label: .some("Errors per minute"), smooth: true, filled: false)
             }
         }
         ui.Section("Details") {

@@ -1,48 +1,10 @@
-ActivityTimeline
-Autocomplete
-CardGrid
-CartesianPlot
-Chart
-Checkbox
-CodeEditor
-ColorPicker
-ColorSwatchPicker
-ControlRow
-ConversationList
-DataTable
-DateField
-DatePicker
-Dropdown
-DropZone
-EditableLabel
-EmojiPicker
-FilterMenu
-FloatingPanel
-GraphCanvas
-Image
-ImageCropEditor
-ImageViewer
-Link
-MediaCard
-MediaGrid
-MediaTransport
-ModalDialog
-NumberInput
-PagePreview
-PageSidebar
-PictureChoice
-Popover
-PopoverButton
-QrWidget
-RichTextLine
-ShortcutRecorder
-Slider
-Sparkline
-Stepper
-TimePicker
-Toggle
-ToggleGroup
-TreeView
-VideoPlayer
-ViewTabs
-WebView
+# The toolkit's public app-facing widgets that tilolang does not reach as `ui.<Name>` yet, each
+# with the reason it is not bound. The list only shrinks: a widget bound since must leave it, and
+# no widget may join it (crates/lang/tilolang/tests/it/coverage.rs holds every public widget to
+# being bound or being here; crates/sdk/ui-core/src/component/coverage_tests.rs holds it to being
+# described by the toolkit or being here).
+#
+# A line is `Name — why it is not bound yet`.
+CartesianPlot — numeric axes and mixed series: its axes, series and marks are Rust data the language has no value for yet
+Chart — a titled trend chart with its axis labels: its series are Rust data the language has no value for yet
+GraphCanvas — a node-and-connection drawing: its nodes and connections are Rust data the language has no value for yet

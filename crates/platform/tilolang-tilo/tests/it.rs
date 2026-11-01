@@ -23,11 +23,13 @@ mod foreign;
 mod history_views;
 mod incremental;
 mod index;
+mod inline_views;
 mod items;
 mod lanes;
 mod legacy;
 mod legibility;
 mod marks;
+mod naming;
 mod outbox;
 mod outcomes;
 mod policy;
@@ -35,9 +37,12 @@ mod publication;
 #[cfg(feature = "record")]
 mod record;
 mod records;
+mod records_service;
 mod reflection;
 mod rich_text;
 mod scenarios;
+#[cfg(feature = "record")]
+mod shell_record;
 mod surface;
 mod sync;
 mod task;
@@ -46,5 +51,6 @@ mod tasks;
 #[cfg(feature = "record")]
 mod undo_own;
 mod unions;
+mod unsaved;
 mod upgrade;
 mod views_migration;

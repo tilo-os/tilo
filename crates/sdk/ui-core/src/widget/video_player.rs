@@ -225,6 +225,10 @@ pub struct NowPlaying {
     clippy::struct_excessive_bools,
     reason = "flags are independent widget state, not related toggles"
 )]
+#[crate::component::not_a_component(
+    part,
+    "the player surface `ui.VideoPlayer` is built from, over its app's engine"
+)]
 pub struct VideoPlayer {
     /// `None` in push mode.
     engine: Option<media::MediaEngine>,
@@ -253,7 +257,9 @@ pub struct VideoPlayer {
     /// [`FullscreenProvider::fullscreen_intent`].
     fullscreen: bool,
     fullscreen_touched: bool,
-    /// Push-mode consumers that own their own clock.
+    /// Push-mode consumers that own their own clock: told the position each seek reached, so
+    /// a host playing on its own reports where the person took the playhead.
+    on_seek: Option<Box<dyn FnMut(Duration)>>,
     /// Bounds + hit regions, recomputed each draw.
     rect: Rect,
     play_button_rect: Rect,
@@ -393,6 +399,7 @@ impl VideoPlayer {
             transport_enabled: true,
             fullscreen: false,
             fullscreen_touched: false,
+            on_seek: None,
             rect: Rect::ZERO,
             play_button_rect: Rect::ZERO,
             scrub_track_rect: Rect::ZERO,
@@ -869,6 +876,14 @@ impl VideoPlayer {
         self.duration_ms
     }
 
+    /// Tell `f` the position each seek reaches: a host playing on its own reports where the
+    /// person took the playhead, as a described component's event does.
+    #[must_use]
+    pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
+        self.on_seek = Some(Box::new(f));
+        self
+    }
+
     /// `ms` is clamped to the duration.
     pub fn seek_to_ms(&mut self, ms: u64) {
         if !self.transport_enabled {
@@ -878,6 +893,9 @@ impl VideoPlayer {
         self.position_ms = target;
         if let Some(e) = &mut self.engine {
             e.seek_ms(target);
+        }
+        if let Some(report) = self.on_seek.as_mut() {
+            report(Duration::from_millis(target));
         }
         self.dirty = true;
         if self.mpris.is_active() {
@@ -2773,3 +2791,7 @@ mod input;
 
 #[cfg(test)]
 mod tests;
+
+#[path = "video_player_component.rs"]
+mod component;
+pub use component::{DeclaredVideo, VideoPlayerProps};

@@ -83,6 +83,9 @@ pub struct RichInput {
     /// How each reference written here reads, by the `mention` mark's value.
     views: Rc<RefCell<HashMap<String, InlineView>>>,
     picked: Picked,
+    /// The key its node has in the composed tree: what the host finds the field by, gives it
+    /// the keyboard with, and sends its edits for.
+    key: String,
     /// The placeholder and the name the field was built with: a change builds it again.
     name: String,
     /// The revision of the bound value last looked at.
@@ -189,13 +192,13 @@ impl RichInput {
             shown: RichText::default(),
             views: Rc::new(RefCell::new(HashMap::new())),
             picked: Rc::new(RefCell::new(Vec::new())),
+            key: key.to_owned(),
             name: name.to_owned(),
             seen: 0,
             people: DrawerPeople::default(),
             sources: Vec::new(),
             people_source: None,
         };
-        let _ = key;
         let picked = Rc::clone(&input.picked);
         input
             .line
@@ -479,6 +482,12 @@ impl Decorator for RichInput {
 
     fn name(&self) -> &'static str {
         "RichInput"
+    }
+
+    /// The key its node has in the composed tree: what the host finds the field by, gives it
+    /// the keyboard with, and sends its edits for.
+    fn test_id(&self) -> Option<&str> {
+        Some(self.key.as_str())
     }
 
     fn build_layout(

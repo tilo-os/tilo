@@ -42,6 +42,7 @@ mod refused_answer;
 #[path = "task_agent_route.rs"]
 mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
+#[cfg(all(unix, any(test, feature = "test-support")))]
 #[path = "broker_fixtures.rs"]
 mod fixtures;
 #[path = "broker_published.rs"]
@@ -6359,6 +6360,13 @@ async fn dispatch_sdk_request(
                     )
                     .await;
                 }
+                PresencePayload::Composing { composing } => {
+                    publish_presence(
+                        "composing",
+                        presence.publish_composing(&key_bytes, composing),
+                    )
+                    .await;
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -6935,6 +6943,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
         runtime_collab::PresencePayload::Status { text, automatic } => {
             PresencePayload::Status { text, automatic }
         }
+        runtime_collab::PresencePayload::Composing { composing } => {
+            PresencePayload::Composing { composing }
+        }
         runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
         runtime_collab::PresencePayload::Left => PresencePayload::Left,
         // Keeps the coordinate space its key carries.
@@ -7152,6 +7163,8 @@ mod tests {
         pub caret_publishes: Vec<(Vec<u8>, u64)>,
         pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
+        /// `(key, composing)`: whether each publish said the person was composing.
+        pub composing_publishes: Vec<(Vec<u8>, bool)>,
         pub arrived: Vec<Vec<u8>>,
         pub left: Vec<Vec<u8>>,
         pub scrollback_requests: Vec<(Vec<u8>, u64, u32)>,

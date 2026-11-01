@@ -108,6 +108,25 @@ pub use input::{
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
+
+/// What the person is in the middle of, as the compositor sees it: an
+/// arranging change moves nothing under a gesture or while they type
+/// (shell.md §1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Underway {
+    /// A pointer button is down: a drag or a resize is in flight.
+    pub gesture: bool,
+    /// The person typed within the typing pause.
+    pub typing: bool,
+}
+
+impl Underway {
+    /// Whether an arrangement must wait.
+    #[must_use]
+    pub const fn holds(self) -> bool {
+        self.gesture || self.typing
+    }
+}
 pub use policy::{
     Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo,
     WindowPolicy, WindowRequest,
@@ -1268,6 +1287,13 @@ impl Compositor {
             .refresh(&outputs, &capabilities, backend.describe());
     }
 
+    /// The outputs a fullscreen window owns, by connector name: the shell's
+    /// bar there steps aside and leaves the display to the window, on the
+    /// same displays as [`Compositor::fullscreen_monitors`].
+    pub fn fullscreen_outputs(&self) -> Vec<String> {
+        self.data.state.fullscreen_outputs()
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off); `false` when no output is
     /// there to light.
@@ -1471,6 +1497,14 @@ impl Compositor {
         self.data.state.keycode_for_keysym(keysym)
     }
 
+    /// Whether the person is in the middle of something an arrangement must
+    /// not move under, and why. Shell.md §1's one fixed rule reads it.
+    #[must_use]
+    pub fn underway(&self) -> Underway {
+        self.data.state.underway()
+    }
+
+    /// Route one input event (see [`InputEvent`]) and flush what it sent.
     /// Route one input event (see [`InputEvent`]) through the person's
     /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {

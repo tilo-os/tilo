@@ -30,7 +30,6 @@ tilolang-empty = Nothing here yet
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
-tilolang-more = More actions
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
 tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
@@ -48,7 +47,6 @@ tilolang-none-value = None
 tilolang-empty-value = Empty
 tilolang-yes = Yes
 tilolang-no = No
-tilolang-undo-unavailable = This window cannot take back a step named in its history.
 tilolang-history = History
 tilolang-history-changes = { $count ->
     [one] 1 change

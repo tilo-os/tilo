@@ -2180,6 +2180,25 @@ impl PresenceHandle {
         .await
     }
 
+    /// Whether the local participant is composing a message under `key_bytes` (a channel, a
+    /// direct conversation): a draft is being typed, never what it says. `false` says they
+    /// stopped, so no reader is left "typing" after the window closes.
+    ///
+    /// # Errors
+    ///
+    /// The host refuses it.
+    pub async fn publish_composing(
+        &self,
+        key_bytes: &[u8],
+        composing: bool,
+    ) -> Result<(), NotAvailable> {
+        self.publish(
+            key_bytes,
+            collab_types::PeerPresencePayload::Composing { composing },
+        )
+        .await
+    }
+
     /// Say `key_bytes` arrived.
     ///
     /// # Errors
@@ -2236,6 +2255,7 @@ impl PresenceStream {
                 P::Following { target } => PresencePayload::Following { target },
                 P::InteractionJson(json) => PresencePayload::InteractionJson(json),
                 P::Status { text, automatic } => PresencePayload::Status { text, automatic },
+                P::Composing { composing } => PresencePayload::Composing { composing },
                 _ => continue,
             };
             return Ok(PresenceEvent {

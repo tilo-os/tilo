@@ -139,6 +139,17 @@ pub enum Emphasis {
 /// [`Emphasis::Tinted`]).
 pub const TINTED_LIFT_CHROMA: f32 = 0.035;
 
+/// The light a surface catches: the specular sheen across a glass body and
+/// the rim lit along its edge ([`crate::tokens::Colors::light`], read by the
+/// Glass painter set).
+///
+/// Daylight, at no chroma: light is not a shade of what it lands on, so a
+/// theme's or a workspace's temperature never tints it, and it is white on
+/// every polarity. High contrast says white too: its surfaces carry no
+/// finish, so nothing paints it. How strongly a surface catches it is the
+/// theme's, in the role's finish (`specular`, `edge_highlight`).
+pub const SURFACE_LIGHT: Tone = Tone::new(1.0, 0.0);
+
 const DARK_STATUS: StatusTones = StatusTones {
     danger: Tone::new(0.70, 0.13),
     warning: Tone::new(0.80, 0.12),

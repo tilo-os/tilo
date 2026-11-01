@@ -542,6 +542,13 @@ impl Checker<'_> {
         if p.name == "embed" {
             self.embed_complete(c, args);
         }
+        if p.name == "show" && args.is_empty() {
+            self.err(
+                "E022",
+                c.call.span,
+                "`show` takes the resource to draw: `show(r)`",
+            );
+        }
         if p.name == "rich_input" {
             self.drawer_props(n);
         }
@@ -771,6 +778,25 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
             return;
         }
+        if p.name == "show" && name == "view" {
+            let v = self.expr_as(&a.value, &Ty::Text);
+            self.prop(Ex::local(n, Ty::View), "view", v, a.value.span);
+            return;
+        }
+        if p.name == "show" && name == "of" {
+            let v = self.expr(&a.value, None);
+            if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
+                let t = self.show(&v.ty);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!("`show` draws a resource: `show(r)`; this is {t}"),
+                );
+                return;
+            }
+            self.prop(Ex::local(n, Ty::View), "of", v, a.value.span);
+            return;
+        }
         if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {
             let want = match name.as_str() {
                 "source" => Ty::Text,
@@ -797,7 +823,7 @@ impl Checker<'_> {
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
         } else if name == "bind" && prim == "rich_input" {
-            let _ = self.bind_typed(&node, value, &[Ty::RichText]);
+            let _ = self.bind_typed(&node, value, &[Ty::RichText], false);
         } else if name == "bind" {
             self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {
@@ -949,16 +975,19 @@ impl Checker<'_> {
         }
     }
 
+    /// `bind:` on a primitive: its text fields draw a document's title.
     pub(super) fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
-        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text]);
+        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text], true);
     }
 
-    /// `bind:` to a field or view state whose type is one of `allowed`.
+    /// `bind:` to a field or view state whose type is one of `allowed`; `titled` when the
+    /// control draws a document's title, bound to the field marked `(title)`.
     pub(super) fn bind_typed(
         &mut self,
         node: &Ex,
         value: &ast::Expr,
         allowed: &[Ty],
+        titled: bool,
     ) -> Option<Ty> {
         let names = allowed
             .iter()
@@ -1046,14 +1075,19 @@ impl Checker<'_> {
             Ty::Unit,
         )));
         // A control bound to the field marked `(title)` or `(body)` edits the resource's title
-        // or its body: a document draws them as its large title and its running text.
-        if let Some(role) = &f.role {
+        // or its body: a document draws them as its large title and its running text. Only a
+        // text field draws it so; any other control is given the value it binds alone. Whether
+        // it draws a title is the control's own to say (`titled`, its component declaring
+        // `title`): one that does not is never sent a prop it does not declare.
+        if let Some(role) = &f.role
+            && f.ty == Ty::Text
+        {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropH,
                 vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
                 Ty::Unit,
             )));
-            if role == "title" && f.ty == Ty::Text {
+            if role == "title" && titled {
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropI,
                     vec![node.clone(), Ex::str("title"), Ex::int(1)],

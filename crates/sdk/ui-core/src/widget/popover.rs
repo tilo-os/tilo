@@ -106,6 +106,10 @@ impl MenuMetrics {
 
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
+#[crate::component::not_a_component(
+    part,
+    "the panel `ui.Popover` is built from, around the view's content"
+)]
 pub struct Popover<C: Widget = NoContent> {
     content: C,
     options: Option<Options>,
@@ -1506,6 +1510,10 @@ impl<C: Widget + 'static> Widget for Popover<C> {
 /// ([`crate::widget::Button::with_popover`]): a filter's options, a share
 /// sheet's details. A click, Enter or Space opens it and closes it again;
 /// the button reads as expanded while it is open.
+#[crate::component::not_a_component(
+    part,
+    "the button and its panel `ui.PopoverButton` is built from"
+)]
 pub struct PopoverButton<C: Widget + 'static> {
     button: crate::widget::Button,
     popover: Popover<C>,

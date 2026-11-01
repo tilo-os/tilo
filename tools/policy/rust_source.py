@@ -407,6 +407,13 @@ def module_children(file: Path) -> Path:
     return file.parent / file.stem
 
 
+def build_includes(build: Path) -> list[str]:
+    """Every `#[path = "..."]` a package's build script includes, as written."""
+    if not build.is_file():
+        return []
+    return PATH_ATTRIBUTE.findall(build.read_text(encoding="utf-8", errors="replace"))
+
+
 def production_sources(
     directory: Path, exempt_dirs: list[str], root: Path
 ) -> list[Source]:
@@ -440,6 +447,10 @@ def production_sources(
             children = module_children(path)
             excluded.add((children / f"{module}.rs").resolve())
             excluded.add((children / module).resolve())
+    # A source `build.rs` includes by `#[path]` is build code: it generates
+    # what the crate compiles, and the crate itself never declares it.
+    for path_attribute in build_includes(directory / "build.rs"):
+        excluded.add((directory / path_attribute).resolve())
     return [
         source
         for source in parsed

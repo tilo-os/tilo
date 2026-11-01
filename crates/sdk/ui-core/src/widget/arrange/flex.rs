@@ -66,9 +66,28 @@ impl Layout for FlexLayout {
         }
     }
 
-    fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
+    fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         slot.fit.apply(&mut style, self.axis, resolved.rem);
+        // A spacer that takes the room its siblings leave is room, not a sibling: the gap the
+        // container puts between its children is not put on both sides of it as well, so a row
+        // short of room lays out as if it held none (a card's title and its menu keep their
+        // one gap), and a row with room sends what follows it to the far end.
+        let along = match self.axis {
+            Axis::Inline => slot.fit.width.fill,
+            Axis::Block => slot.fit.height.fill,
+        };
+        if along.is_some() && slot.element.name() == "Spacer" {
+            // The gap before it, or after it when it comes first.
+            let back = length(-resolved.gap(self.gap));
+            let before = index > 0;
+            match (self.axis, before == (self.direction == Direction::Ltr)) {
+                (Axis::Inline, true) => style.margin.left = back,
+                (Axis::Inline, false) => style.margin.right = back,
+                (Axis::Block, _) if before => style.margin.top = back,
+                (Axis::Block, _) => style.margin.bottom = back,
+            }
+        }
         style
     }
 }

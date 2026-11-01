@@ -2680,7 +2680,18 @@ impl TextInput {
             .single_layout
             .as_ref()
             .map_or(minimum, |layout| layout.height().max(minimum));
-        height + if self.compact_multiline { 0.0 } else { 16.0 }
+        let height = f64::from(height) + if self.compact_multiline { 0.0 } else { 16.0 };
+        // The field's least height, as [`Self::measure`] gives it: a wrapping chrome'd field
+        // is at least a band tall (a finger's target under a coarse pointer). A line measured
+        // through here is the leaf of a decorator (`RichInput`), the only measure it gets, so
+        // without the floor it would come out shorter than the same field laid out as a node.
+        let floor = self.multiline_floor(self.scale_for(theme.text_scale));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
+        )]
+        let height = height.max(floor) as f32;
+        height
     }
 
     /// Prepare the shared shaped hit-testing geometry for a projected cell
@@ -4357,6 +4368,12 @@ impl TextInput {
         self.adopt_field_theme(theme);
     }
 
+    /// What inputs the host has: a coarse one makes the field a finger's target tall.
+    #[must_use]
+    pub fn interaction(&self) -> crate::interaction::InteractionEnvironment {
+        self.interaction
+    }
+
     /// The single-line band at `scale`: the control height, grown with the
     /// line plus `spacing.s1` above and below at large text.
     pub(crate) fn band_in(&self, theme: &Theme) -> f64 {
@@ -4386,7 +4403,8 @@ impl TextInput {
     }
 
     /// The least height of a wrapping chrome'd field: one band, or
-    /// `min_lines` lines and the vertical inset.
+    /// `min_lines` lines and the vertical inset; a coarse pointer makes it at
+    /// least the touch target, as a single-line field's band is.
     fn multiline_floor(&self, scale: f32) -> f64 {
         if self.plain {
             return 0.0;
@@ -4394,7 +4412,13 @@ impl TextInput {
         let line =
             f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
         let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
-        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band_height)
+        let band = if self.interaction.supports_hover() {
+            self.band_height
+        } else {
+            self.band_height
+                .max(f64::from(self.interaction.minimum_target()))
+        };
+        (lines * line + 2.0 * self.multiline_padding_y()).max(band)
     }
 
     fn masked(&self) -> bool {

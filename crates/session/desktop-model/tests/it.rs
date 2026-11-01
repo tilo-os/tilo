@@ -23,6 +23,8 @@ pub mod desktop_doc;
 pub mod history;
 #[path = "one_desk.rs"]
 pub mod one_desk;
+#[path = "own_arrangement.rs"]
+pub mod own_arrangement;
 #[path = "peer_window_merge.rs"]
 pub mod peer_window_merge;
 #[path = "portable_state.rs"]

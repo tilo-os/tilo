@@ -17,6 +17,7 @@
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::{self, Receiver, Sender};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use shell::compositor::accessibility::NativeAccessibility;
 use smithay_client_toolkit::reexports::calloop::ping::make_ping;
@@ -80,7 +81,7 @@ fn run_probe(socket: &std::path::Path, log: &std::path::Path, probe: &str) {
         )
         // A file, not a pipe: a D-Bus worker thread's process cannot block the read.
         .stdout(std::fs::File::create(log).unwrap())
-        .status()
+        .status_locked()
         .unwrap();
     let stdout = std::fs::read_to_string(log).unwrap();
     assert!(

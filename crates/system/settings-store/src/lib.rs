@@ -125,9 +125,9 @@ pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use source::{
     ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, DisplayUpdate, HostDocument,
-    InvokingAction, Listener, SectionChange, SettingsSource, deferred_failure_pending,
+    InvokingAction, Listener, SectionChange, SettingsSource, SourceScope, deferred_failure_pending,
     flush_pending_writes, install_source, installed_source, merge_section, note_deferred_failure,
-    take_deferred_failures,
+    scoped_source, take_deferred_failures,
 };
 pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
 

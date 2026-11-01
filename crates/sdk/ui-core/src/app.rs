@@ -2458,6 +2458,12 @@ impl App {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("rebuild.build");
         self.build_history_presentation();
+        // A widget the build just made heard nothing yet: a container hands the environment
+        // down as it builds, but a control that builds its faces later (a drag run's items) is
+        // made after the tell above. Tell the whole tree once it exists, so every target is
+        // sized for how the person reaches the window from the first frame.
+        self.root_widget
+            .set_interaction_environment(self.input.interaction);
         #[cfg(test)]
         drop(probe);
         self.layout.structure_dirty = false;

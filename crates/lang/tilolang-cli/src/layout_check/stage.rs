@@ -11,10 +11,11 @@ use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
+// `DynAction::apply` is the action protocol's.
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
+use ui::tilo_actions::Action as _;
 
 /// The compiled packages an instance loads: the app and what it uses, the app last.
 pub struct Packages(pub Rc<Vec<Compiled>>);
@@ -47,15 +48,6 @@ impl Platform for Packages {
     }
 }
 
-/// A workspace nobody else is in.
-struct Alone;
-
-impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
-    }
-}
-
 /// One window of the app, laid out by one frame pipeline that every configuration reuses.
 pub struct Staged {
     instance: Instance,
@@ -67,13 +59,17 @@ pub struct Staged {
 const EXCHANGES: usize = 8;
 
 impl Staged {
-    /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`.
-    pub fn new(
+    /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`,
+    /// showing the layer `root` names rather than the package's first root: a package with more
+    /// than one root (the shell's `Desk` beside its `Arrangement`) shows each, and each is laid
+    /// out as a person sees it.
+    pub fn over(
         app: &str,
         packages: &Rc<Packages>,
         scenario: &str,
         viewport: (u32, u32),
         mut theme: ui::Theme,
+        root: Option<&str>,
     ) -> Result<Self, String> {
         // Layout at rest: what changes land at once rather than moving there.
         theme.reduce_motion = true;
@@ -86,16 +82,63 @@ impl Staged {
                 device: None,
                 index_dir: None,
                 record_loader: None,
+                root: tilolang_tilo::host::RootView {
+                    root: root.map(str::to_owned),
+                    view: None,
+                },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
-            Rc::new(Alone),
+            // People are called as a window calls them when nobody told it their names: a
+            // scenario's sample person (`person("Leo")`) by that name, never by their id.
+            Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
-        let record = ui::automerge::AutoCommit::new();
+        let mut record = ui::automerge::AutoCommit::new();
+
         instance.sync(Some(&record));
+        // The package's own root resources — every layer it has (the shell's `Desk` beside its
+        // arrangement) and a person's record kept beside them (`root shell: Shell`) — are made
+        // and its migrations run, as the live session does when a window opens: a scenario
+        // that seeds another layer than the one laid out, or seeds a root through a migration,
+        // shows them. Making a root queues a change; `sync` after the origin's say-so runs the
+        // migrations, and each queued change is committed into the record as the door commits
+        // an app's.
+        if let Some(host) = instance.host() {
+            let meta = host.package(app).map(|package| package.meta);
+            let roots = meta.iter().flat_map(|meta| {
+                meta.roots
+                    .iter()
+                    .cloned()
+                    .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
+            });
+            for ty in roots {
+                host.root_record(app, &ty)
+                    .map_err(|error| format!("a root could not be made: {error}"))?;
+            }
+        }
+        instance.set_origin(true);
+        let settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
+            instance.sync(Some(record));
+            instance.commit_planned();
+            if let Some(host) = instance.host() {
+                for committed in host.take_committed() {
+                    committed
+                        .action
+                        .apply(record)
+                        .map_err(|error| format!("a change could not be committed: {error}"))?;
+                }
+            }
+            record.commit();
+            instance.sync(Some(record));
+            Ok::<(), String>(())
+        };
+        settle(&mut instance, &mut record)?;
         instance.stage(Some(scenario));
-        instance.sync(Some(&record));
+        settle(&mut instance, &mut record)?;
+        if let Some(why) = instance.take_stage_failure() {
+            return Err(format!("the scenario \"{scenario}\" failed: {why}"));
+        }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
         window.receive();
@@ -174,10 +217,14 @@ impl Staged {
                 id: doc.clone(),
                 ty: ty.clone(),
             });
-            let (Some(schema), Ok(record)) = (
-                tilolang_tilo::schema::lookup(&ty),
-                host.store().record(&doc),
-            ) else {
+            // The record's type by the package versions this host loaded, not by whatever a
+            // store elsewhere in this process registered last.
+            let (Some(schema), Ok(record)) = host.with_schemas(|| {
+                (
+                    tilolang_tilo::schema::lookup(&ty),
+                    host.store().record(&doc),
+                )
+            }) else {
                 continue;
             };
             for field in &schema.fields {
@@ -233,6 +280,13 @@ impl Staged {
             }
         }
         out
+    }
+
+    /// The tree the window composed from what the app sent, as sent: every view that ran is in
+    /// it, keyed by its view, even one that drew nothing (a bare `if let` whose value is
+    /// absent leaves an empty fragment), where the laid-out widgets keep no trace of it.
+    pub fn composed(&mut self) -> Option<tilo_ui_host::UiNode> {
+        self.window()?.composed().cloned()
     }
 
     /// The trees of the rows the window's lists show, by row key: a list draws each row as one

@@ -117,6 +117,13 @@ A shell view re-runs only on discrete changes (a place opened, focus moved, a no
 motion stays in the Rust components. Idle means no work. The shell's views are held to the same
 budgets and `layout-check` as apps.
 
+A shell's own data is derived, not saved. What the session owns and can make again at start (the
+clock, the desk, the device's state, the session origin's resources) is written into the store's
+unsaved layer, never into a collaborative record: a change of one reaches the views at once, and
+leaves no change to be committed, synced or replayed. A minute therefore costs a view run and a
+draw, not a record round-trip. Data that is the person's (their arrangement, their settings)
+stays a saved record, synced and undoable like any app's.
+
 ## 8. On the native session
 
 The native session (`crates/session/session`) is already a thin host: the compositor
@@ -143,18 +150,138 @@ seams:
 - **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the desk layer
   under the window, positioned from the policy's layout, as `tilo-desktop`'s window bars are
   today. Per-type and per-app frame rules are the shell's.
+- **Where a window goes.** For a surface it can't compose (a foreign or legacy window), a shell
+  view puts a well where the content goes, and the app's own window shows there. A tilolang
+  resource is composed as a view instead (below).
 
-Order, each step deleting the Rust part it replaces once the tilolang one passes that part's
-tests, screenshots and frame budgets:
+  ```
+  view place_window(p: ArrangementPlace) {
+      stack {
+          frame_bar(p)                 // the shell's: title, tabs, actions, presence
+          ui.WindowWell(place: p.key)  // the app's window, at this rectangle
+      }
+  }
+  ```
 
-1. The tilolang surface host and the system resources it needs; the top bar as a tilolang view
-   (clock, workspaces, running tasks, notifications, the person).
-2. Window frames and tabs as shell views, with per-type rules.
-3. The canvas arrangement: a `WindowPolicy` for canvas places, pan and zoom in Rust, point and
-   type (canvas.md) as shell views.
-4. Overview, switcher, launcher, palette and the agent composer as views.
-5. Strips in tilolang over `tilo-desktop-policy`; shell packages and switching them in Settings;
-   the §5 settings.
+  `ui.WindowWell` is a described Rust component. It draws nothing and takes no input, because
+  the window is composited above the desk layer. After each layout, and on each frame that a
+  component around it moves it (`ui.Map`'s pan and zoom, a strip row's scroll), it reports its
+  rectangle in layout coordinates to the host's `Wells`, keyed by place. The shell's views run in
+  the compositor's process (`tilo-surface-host`), so the surface host and the policy share one
+  `Wells` handle, as `DesktopHost` and `StripPolicy` share `Desk` today.
+
+  The policy for a tilolang shell answers `initial_size`, `place` and `arrange` from `Wells`, as
+  `StripPolicy` answers them from `Desk::shown`. A well that moves without changing size moves
+  its window in the same frame. A size change configures the client, and the window catches up
+  on its next commit, as it does today. A place without a well on screen (scrolled away, or on
+  another workspace) leaves its window unmapped from the output, so it gets no frame callbacks.
+
+  A place's key is the tab id the desktop model gives the window when it maps
+  (`DesktopPolicy::map`), so a well and its window meet by that id. A window the arrangement
+  has no place for gets one through the arranging action, never a well of its own.
+
+- **The canvas composes views; it opens nothing.** The four layers stay apart:
+  - *Resource:* a mailbox, a message, a channel page. The person's arrangement is a resource
+    too, theirs alone: which resources they look at, through which view, where.
+  - *Action:* putting the mailbox on the canvas as its `inbox` view at a point is an action on
+    the **arrangement** (`shell:arrangement`, `arranging.tl`), never on the mailbox. Archiving
+    a message is an action on the message. A person, an agent and the REPL show things the same
+    way, attributed and undoable. No resource carries an action that shows it.
+  - *View:* the canvas is a view over the arrangement. For each entry it calls the entry's view
+    of its resource, the same views the app's own default view is made of: `mail.inbox(m)`,
+    `mail.message(msg)`, `yt.channel(c)`. "Mail" is never placed. A mailbox's list, one message
+    and the folder sidebar are three entries, laid out by the person or an agent. A composed
+    view's buttons press its own app's actions, as child invocations carrying that view's
+    author (`tilolang_runtime::foreign`).
+  - *Theme:* an entry names a resource and a view id, never a look. An arrangement, or an
+    agent's summary made of views, renders in each viewer's own theme.
+
+  The mechanism: the shell's runtime runs another tilolang package's views inline, under that
+  package's authority, reading that app's live readings. The host loads the other app's
+  package with its module (`Runtime::load_foreign_package`): its views run in the shell's
+  runtime as that package's code, so what they invoke carries its module as the author; its
+  records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
+  `tilolang_runtime::foreign`), and its actions are child invocations at its door. A view that
+  `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
+  can't `use` every app, finds the resource by the id the arrangement keeps and names the view
+  as text:
+
+  ```
+  view place_view(p: ArrangementPlace) {
+      if let r = placed_resource(p.record) {        // `resource(id)`: its type from where it is held
+          if p.shown_as != "" or meta(r).opens {
+              show(r, view: p.shown_as)               // that view, or its type's default
+          } else {
+              ui.WindowWell(place: p.key, min: 12rem)
+          }
+      } else {
+          ui.WindowWell(place: p.key, min: 12rem)   // a window: nothing here to draw
+      }
+  }
+  ```
+
+  `resource(id)` finds the resource's type where it is held: this runtime's store, or the
+  reading another app published of it (until that reading arrives it finds nothing, and the
+  view runs again when it does). `show(r, view:)` draws it through the offered view of its
+  package the place names (by id or name, taking the resource alone), or its type's default
+  view. An entry made from a resource fills `record` and `shown_as`. `ui.WindowWell` stays only
+  for surfaces that can't be composed (Xwayland, legacy native apps). `OpenEffect::Open` on
+  every resource goes away once nothing needs it.
+
+  Still to build: the surface host loading each installed tilolang package this way and
+  following the readings of the resources its places name.
+- **Finding what to place.** Text typed on the canvas ("my mails", "videos of the Rust
+  conference") is a `find` over the system index and the apps' search providers, the same
+  one the palette and the `tilo` tool use. The top result's primary view is placed at the
+  caret. Results that are a service's own (a video site's channel page) are resources of the
+  app that connects to it, so "videos of X" places that channel's page view from the YouTube
+  client, not the client.
+
+## 8.1 The conversation
+
+The agent chat and the REPL are one view, `conversation(r: Run)`, over a run of the session's
+agent (`tilo_agent_runs`). It is a shell view like any other: it can be a place on the canvas,
+a panel beside the strips or the whole screen of the conversation shell.
+
+- **One input, two ways in.** A line that parses as a tilolang program runs as it is: one
+  `tilo` call on the run's door session, attributed to the person, with the same `let` scope
+  as the agent's own calls. Anything else is a sentence to the agent, which answers with
+  `tilo` calls of its own. So the person types exactly what the agent would. The terminal
+  `tilolang repl` is the same session reached from outside.
+- **The transcript is steps.** Each entry is a `ProgramStep`, whoever wrote it: the program,
+  highlighted; the changes it made, as undo rows; and what it printed, as references.
+  The agent's prose sits between steps. Nothing is drawn from the agent's text that a step
+  does not back.
+- **References place.** A reference in a step is drawn with its type's row view (search.md).
+  Activating it is §3: on the canvas, a place next to the conversation; in strips, a column
+  after it; in the conversation shell, embedded in the transcript. What the agent wants to
+  show is a reference it printed. It reaches the screen by §5's "What opens" setting: by
+  default what it creates, plus its answer.
+- **Looks.** The conversation uses the shared components (`ui.Composer`, `ui.CodeBlock`,
+  `ui.ListRow`) and theme roles only, so every theme reaches it.
+
+## 8.2 Steps
+
+Each step deletes the Rust part it replaces once the tilolang one passes that part's tests,
+screenshots and frame budgets.
+
+1. *(landed; `shell_bar` on by default)* The tilolang surface host and system resources, with
+   the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
+   on a display a fullscreen window owns (`Compositor::fullscreen_outputs`).
+2. The canvas composes views (§8, first point above): a package's views run inline in the
+   shell's runtime, arrangement entries name a resource and a view, and the canvas places them
+   from `find`.
+3. The conversation (§8.1) as a canvas place, beside the REPL.
+4. The canvas shell as a whole: `WellPolicy` for canvas places, point and type (canvas.md),
+   with the conversation and placed views.
+5. Window frames and tabs as shell views with per-type rules; the traditional desktop (dock,
+   top bar, the focused window's actions in the top bar, window bars with the window's own
+   actions); overlays, quick settings and notifications as views.
+6. Strips in tilolang over `tilo-desktop-policy`; shell packages a person can replace and
+   switch in Settings; the §5 settings.
+7. Looks: theme finishes beyond block, default and glass (pixelated, shader), hover and press
+   responses, and fonts, icons and sizes. All of these are theme roles, so a view never names
+   a look.
 
 ## 9. Open
 

@@ -884,6 +884,10 @@ pub type AnyRow = dyn std::any::Any;
 /// it again for each row type it showed (40 to 100 KB of text per app); now
 /// only the conversions here are, and every method that does not name a row
 /// is the core's, reached through `Deref`.
+#[crate::component::not_a_component(
+    part,
+    "`ui.DataTable` (`DescribedTable`) is its described form, over rows of its own"
+)]
 pub struct DataTable<Row> {
     core: DataTableCore,
     row: std::marker::PhantomData<fn() -> Row>,

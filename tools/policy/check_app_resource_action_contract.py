@@ -146,6 +146,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_asked": "wakes the host's loop when an invocation arrives: it runs the app's own "
     "frame, and activates no control",
     "on_effect": "activates a published native effect action",
+    "on_choose": "publishes the row's own press as its view action `choose`, which a person, "
+    "a screen reader, a script and an agent all reach",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
     "on_activate_view": "activates the widget's published view action for the entry it opened",
@@ -172,6 +174,10 @@ NOT_CONTROL_CALLBACKS = {
     "what this window shows, no edit",
     "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
     "on_presented": "a view's after-frame hook, run by the framework, not a control",
+    "on_choose": "a row's own control reports the choice between its views: the control itself "
+    "publishes the change on the row's resource",
+    "on_seek": "reports the position a seek reached: the seek itself reaches the player's engine, "
+    "never an edit of the app's resource",
     "on_station_view": "answers the stepper's published view action for the station chosen",
     "on_files_view": "answers the drop zone's published view action for the files dropped",
     "on_check_view": "answers the table's published view action for the box turned",

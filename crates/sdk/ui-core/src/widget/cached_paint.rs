@@ -36,6 +36,12 @@ impl CachedPaint {
         out.append(&self.scene, Some(transform.pre_translate(moved)));
     }
 
+    /// The scene last [`Self::repaint`]ed, to paint more of the face into, in the same
+    /// coordinates.
+    pub fn scene_mut(&mut self) -> &mut Scene {
+        &mut self.scene
+    }
+
     /// The emptied scene to paint the face into, in the coordinates of
     /// `rect`, which later [`Self::append`]s translate from.
     pub fn repaint(&mut self, rect: Rect) -> &mut Scene {

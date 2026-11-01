@@ -1,6 +1,6 @@
 //! [`NavList`] and its items as described components.
 
-use crate::component::{Component, Described, Event, Value};
+use crate::component::{Component, Described, Event, Person, ResourceId, Value};
 use crate::icons::Icon;
 
 use super::{NavItem, NavList, NavSection};
@@ -68,8 +68,24 @@ pub struct NavItemProps {
     pub label: String,
     /// Its glyph.
     pub icon: Option<Icon>,
-    /// How many things it holds.
+    /// How many things it holds: a quiet count in tertiary ink.
     pub count: Option<i64>,
+    /// How many things wait for attention (unread, mentions): the list's one filled badge,
+    /// in the person's colour; zero shows nothing.
+    pub live: Option<i64>,
+    /// Something new waits behind the place: its label stands out at rest.
+    pub unread: bool,
+    /// How many things behind the place name the person (mentions): more specific than the
+    /// place's unread count, so it takes the badge's place while there are any, as Slack's one
+    /// badge counts what names you rather than everything new.
+    pub mentions: Option<i64>,
+    /// The resource the place stands for, when it is one (a channel): the host says how much
+    /// of it the person has not seen, in `live`, and lifts the label while anything is.
+    pub item: Option<ResourceId>,
+    /// The person the place stands for, when it is one (a direct conversation): their avatar
+    /// in the icon's place, ringed in their presence colour, and their presence badge. The
+    /// icon and the avatar never both show: the person takes the icon's place.
+    pub person: Option<Person>,
     /// The place was chosen: what choosing it does, beside the list's own `select`.
     #[component(event)]
     pub select: Event,
@@ -81,8 +97,25 @@ impl From<NavItemProps> for NavItem {
         if let Some(icon) = props.icon {
             item = item.icon(icon);
         }
-        if let Some(count) = props.count {
+        // A person takes the icon's place: their face says who the place is, ringed in the
+        // presence colour their identity carries.
+        if let Some(person) = props.person {
+            item = item.person(&person.identity, None, false);
+            item = item.person_face(person.name, None);
+        }
+        // What names the person is what the badge counts: a mention count is more specific
+        // than the place's unread count, and the label lifts either way.
+        if let Some(mentions) = props.mentions.filter(|mentions| *mentions > 0) {
+            item = item
+                .live_count(u32::try_from(mentions).unwrap_or(u32::MAX))
+                .unread(true);
+        } else if let Some(live) = props.live {
+            item = item.live_count(u32::try_from(live.max(0)).unwrap_or(u32::MAX));
+        } else if let Some(count) = props.count {
             item = item.count(u32::try_from(count.max(0)).unwrap_or(u32::MAX));
+        }
+        if props.unread {
+            item = item.unread(true);
         }
         item
     }

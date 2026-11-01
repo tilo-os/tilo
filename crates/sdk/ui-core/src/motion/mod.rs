@@ -49,6 +49,7 @@
 mod appearing;
 mod beckon;
 mod clock;
+mod curve;
 mod disclosure;
 mod kept;
 mod named;
@@ -80,6 +81,7 @@ pub use clock::{
     frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted, frames_wanted_by,
     testing, want_frames_until,
 };
+pub use curve::blend_across;
 pub use disclosure::Disclosure;
 pub use kept::{HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
 pub(crate) use kept::{frame_ended, laying_out_window};

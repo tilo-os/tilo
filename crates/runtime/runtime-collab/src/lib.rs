@@ -996,6 +996,11 @@ pub enum PresencePayload {
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    /// The sender is composing a message under the event's key (a channel, a
+    /// direct conversation): a draft is being typed, never what it says.
+    Composing {
+        composing: bool,
+    },
     Status {
         text: String,
         automatic: bool,

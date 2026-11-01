@@ -214,6 +214,15 @@ fn a_value_cleared_elsewhere_empties_the_field() {
 }
 
 #[test]
+fn the_field_answers_to_the_key_its_node_has_in_the_composed_tree() {
+    // The host finds the field by this id to give it the keyboard and to type what a press
+    // left waiting into it: a field with no id is one nothing can reach.
+    let edits = crate::Intents::<Fired>::default();
+    let input = field(&edits);
+    assert_eq!(Widget::test_id(&input), Some("draft"));
+}
+
+#[test]
 fn rich_text_reads_back_as_the_text_and_marks_it_was_shown_with() {
     let rich = rich_of(
         "ping @Ada\nsecond",

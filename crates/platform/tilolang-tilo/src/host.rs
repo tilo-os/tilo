@@ -65,6 +65,60 @@ impl Package {
         let view = self.meta.default_view(root)?;
         Some((view.to_owned(), root.clone()))
     }
+
+    /// The type id of the root `name` names: a named root (`root notes: Notes`), or a root by
+    /// its type's name or id. `None` when the package declares no such root.
+    #[must_use]
+    pub fn root_type(&self, name: &str) -> Option<String> {
+        if let Some(named) = self.meta.named_roots.iter().find(|root| root.name == name) {
+            return Some(named.ty.clone());
+        }
+        self.meta
+            .roots
+            .iter()
+            .find(|ty| {
+                **ty == name
+                    || self
+                        .meta
+                        .types
+                        .iter()
+                        .any(|t| t.id == **ty && t.name == name)
+            })
+            .cloned()
+    }
+
+    /// The id of the view `name` names: its declared name, or its id. `None` when the package
+    /// declares no such view.
+    #[must_use]
+    pub fn view_id(&self, name: &str) -> Option<String> {
+        self.meta
+            .views
+            .iter()
+            .find(|view| view.name == name || view.id == name)
+            .map(|view| view.id.clone())
+    }
+}
+
+/// What one settle of the outbox did ([`Host::settle_outbox`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutboxSettled {
+    /// How many changes it wrote, each queued for the door.
+    pub written: usize,
+    /// It marked an effect as being handed over, which the next settle hands over: whoever
+    /// settles owes another settle, without waiting for anything else to happen.
+    pub owes_settle: bool,
+}
+
+/// The root of a package a view opens over, and the view itself, each chosen by name: a package
+/// with more than one root (the shell's `Desk` and its `Arrangement`) says which layer a view
+/// is, rather than taking the first root. `None`s take the package's first root and that
+/// type's default view, as the launcher opens an app.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootView {
+    /// The root, by a named root's name or by its type's name or id.
+    pub root: Option<String>,
+    /// The view, by its declared name or id.
+    pub view: Option<String>,
 }
 
 pub(crate) struct HostInner {
@@ -667,6 +721,8 @@ impl Host {
         }
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
+        let schemas = store.schemas();
+        let _schemas = schemas.enter();
         host_meta.register_schemas();
         store.open_index(&host_meta.app, &host_meta.schema_text());
         // What the runtime invokes is decided by the workspace's one policy: the person's standing,
@@ -762,28 +818,29 @@ impl Host {
 
     /// Carry out the outside effects of this device that wait in the record
     /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
-    /// what became of it is queued for the door like any other change. Returns how many
-    /// changes that wrote. What `delivery(r)` reads follows the record either way.
+    /// what became of it is queued for the door like any other change. What `delivery(r)`
+    /// reads follows the record either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
-    pub fn settle_outbox(&self) -> Result<usize, String> {
+    pub fn settle_outbox(&self) -> Result<OutboxSettled, String> {
         if self.inner.store.outbox_pending_count() == 0 {
             self.inner.runtime.refresh_deliveries();
-            return Ok(0);
+            return Ok(OutboxSettled::default());
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| {
-                [
+            .map(|report| OutboxSettled {
+                written: [
                     report.failed.len(),
                     report.marked,
                     report.waiting,
                     report.unknown,
                 ]
                 .into_iter()
-                .fold(report.delivered, usize::saturating_add)
+                .fold(report.delivered, usize::saturating_add),
+                owes_settle: report.marked > 0,
             })
             .map_err(|error| error.to_string())
     }
@@ -904,7 +961,14 @@ impl Host {
     /// The module does not link; the loaded version, if any, stays.
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
+        // The store's table holds this package's schemas, and only this store's: another host on
+        // this thread that loaded another version of the same app keeps its own.
+        let schemas = self.inner.store.schemas();
+        let _schemas = schemas.enter();
         meta.register_schemas();
+        // The package's own table too: an action applied or described outside this store (a
+        // receiver replaying it, a task's door) resolves its record's type by this version.
+        crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
         let package = Package { meta, id, ids };
@@ -919,6 +983,23 @@ impl Host {
         Ok(package)
     }
 
+    /// Load the package of an app this host does not run, trusted: its views draw resources of
+    /// that app from the readings the session hands in ([`tilolang_runtime::Runtime::set_reading`]),
+    /// and what they change is sent to those resources' doors through the runtime's invoker.
+    /// The store keeps none of its records, so the package is not among [`Self::packages`];
+    /// its code is decided by the host's authority as the app's own, as a loaded package's is.
+    ///
+    /// # Errors
+    /// The module does not link.
+    pub fn load_foreign_package(&self, wasm: &[u8], meta: &Meta) -> Result<(), HostError> {
+        let id = self
+            .inner
+            .runtime
+            .load_foreign_package(wasm, meta.clone())?;
+        self.inner.authority.load(&id, meta);
+        Ok(())
+    }
+
     /// Every loaded package.
     #[must_use]
     pub fn packages(&self) -> Vec<Package> {
@@ -929,6 +1010,13 @@ impl Host {
     #[must_use]
     pub fn package(&self, app: &str) -> Option<Package> {
         self.inner.package_of(app).ok()
+    }
+
+    /// The first thing `find` finds in a loaded package, read where the packages are kept: what
+    /// a frame looks up (an action's meta, an enum's cases) without copying every package.
+    /// `find` must not load or drop a package.
+    pub fn find_in_packages<R>(&self, find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
+        self.inner.packages.borrow().iter().find_map(find)
     }
 
     /// Bring the runtime's view of the workspace record up to date; see [`TiloStore::sync_from`].
@@ -962,27 +1050,69 @@ impl Host {
     }
 
     /// The package's root resource: the one per-workspace resource of its root type, created the
-    /// first time it is wanted.
+    /// first time it is wanted: its first root type with a default view, as the launcher opens
+    /// an app.
     ///
     /// # Errors
     /// The package declares no root with a default view, or the resource cannot be created.
     pub fn root_of(&self, app: &str) -> Result<ResourceRef, HostError> {
-        let package = self
-            .package(app)
-            .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
-        let (_, ty) = package.main().ok_or_else(|| {
-            HostError::NotFound(format!("a root type with a default view in {app}"))
-        })?;
+        self.root_of_layer(app, &RootView::default())
+    }
+
+    /// The root `chosen` names in `app`, created the first time it is wanted
+    /// ([`RootView::default`] takes the package's first root).
+    ///
+    /// # Errors
+    /// The package declares no such root, or the resource cannot be created.
+    pub fn root_of_layer(&self, app: &str, chosen: &RootView) -> Result<ResourceRef, HostError> {
+        let ty = self.root_type_of(app, chosen)?;
+        self.root_record(app, &ty)
+    }
+
+    /// The package's root resource of the root type `ty` (a type id): what a named root
+    /// (`root shell: Shell`) is, by the id the checker gives it, or what
+    /// [`Self::root_of_layer`] names. Created the first time it is wanted, as
+    /// [`Self::root_of`] does.
+    ///
+    /// # Errors
+    /// The package is not loaded, or the resource cannot be created.
+    pub fn root_record(&self, app: &str, ty: &str) -> Result<ResourceRef, HostError> {
+        let app_is_loaded = self
+            .find_in_packages(|package| (package.meta.app == app).then_some(()))
+            .is_some();
+        if !app_is_loaded {
+            return Err(HostError::NotFound(format!("package {app}")));
+        }
         let id = format!("root-{ty}");
         if self.inner.store.contains(&id) {
-            return Ok(ResourceRef::root(id, ty));
+            return Ok(ResourceRef::root(id, ty.to_owned()));
         }
         let record = NewRecord {
-            ty,
+            ty: ty.to_owned(),
             app: app.to_owned(),
             fields: Vec::new(),
         };
         Ok(self.inner.store.create_with_id(&record, &id)?)
+    }
+
+    /// The type id of the root `chosen` names in `app`: the named root, or a root by its type's
+    /// name or id, or the package's first root with a default view when none is named.
+    ///
+    /// # Errors
+    /// The package is not loaded, names no such root, or its first root has no default view.
+    fn root_type_of(&self, app: &str, chosen: &RootView) -> Result<String, HostError> {
+        let package = self
+            .package(app)
+            .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
+        if let Some(name) = &chosen.root {
+            return package
+                .root_type(name)
+                .ok_or_else(|| HostError::NotFound(format!("a root `{name}` in {app}")));
+        }
+        package
+            .main()
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| HostError::NotFound(format!("a root type with a default view in {app}")))
     }
 
     /// Run each loaded package's migrations (`migration action`) on the resources an earlier
@@ -990,9 +1120,23 @@ impl Host {
     /// something in a field the type now keeps `(previously)` (or, for a type without such a
     /// field, that the migration has not run on), as an action of the package version
     /// ([`crate::authority::migration_principal`]), which records in the same change that it
-    /// ran. Only the workspace's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
-    /// refused or fails leaves its resource as it was, to be tried again the next time.
+    /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
+    /// text carried into rich text first, the same words ([`crate::store`]'s
+    /// `upgrade_plain_text`). Only the workspace's origin calls it (`Instance::set_origin`). Returns
+    /// how many migrations ran. A migration that is refused or fails leaves its resource as it
+    /// was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
+        // The words of a field that became rich text, before any migration reads it, each
+        // record's change committed under the package version's migration principal.
+        for package in self.packages() {
+            let by =
+                crate::authority::migration_principal(&package.meta.app, &package.meta.module_hash);
+            self.inner.store.upgrade_plain_text(
+                &package.meta.app,
+                &package.meta.module_hash,
+                &by.0,
+            );
+        }
         let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {
@@ -1067,18 +1211,38 @@ impl Host {
             .any(|field| record.get(field) != empty.get(field))
     }
 
-    /// Open the window of `app`'s root resource, through the default view of its type.
+    /// Open the window of `app`'s root resource, through the default view of its type: its
+    /// first root type with a default view, as the launcher opens an app.
     ///
     /// # Errors
     /// The package has no root with a default view, or the view does not run.
     pub fn open_main(&self, app: &str) -> Result<ViewInstance, HostError> {
+        self.open_layer(app, &RootView::default())
+    }
+
+    /// Open the window of the layer `chosen` names in `app`: the root it names and the view it
+    /// names ([`RootView::default`] takes the package's first root and that type's default
+    /// view).
+    ///
+    /// # Errors
+    /// The package has no such root, the view it names does not exist or does not run, or the
+    /// root's type has no default view when none is named.
+    pub fn open_layer(&self, app: &str, chosen: &RootView) -> Result<ViewInstance, HostError> {
         let package = self
             .package(app)
             .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
-        let (view, _) = package.main().ok_or_else(|| {
-            HostError::NotFound(format!("a root type with a default view in {app}"))
+        let root = self.root_of_layer(app, chosen)?;
+        let view = match (&chosen.view, &chosen.root) {
+            (Some(name), _) => package.view_id(name),
+            (None, Some(_)) => package.meta.default_view(&root.ty).map(str::to_owned),
+            (None, None) => package.main().map(|(view, _)| view),
+        };
+        let view = view.ok_or_else(|| {
+            HostError::NotFound(format!(
+                "a view for {} in {app}",
+                chosen.view.as_deref().unwrap_or("the root")
+            ))
         })?;
-        let root = self.root_of(app)?;
         Ok(self
             .inner
             .runtime
@@ -1180,6 +1344,13 @@ impl Host {
     /// `json` does not read as a value of `ty`, with why.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
+    }
+
+    /// Run `work` with this host's store's schema table installed: an action applied here (a
+    /// receiver replaying a peer's change, a test acting as the host) resolves a record's type
+    /// by the package versions this host loaded.
+    pub fn with_schemas<R>(&self, work: impl FnOnce() -> R) -> R {
+        self.inner.store.with_schemas(work)
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).

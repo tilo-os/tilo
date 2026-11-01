@@ -43,6 +43,21 @@ pub fn parse_ty(text: &str, app: &str) -> Result<Ty, String> {
     Ty::parse_meta(text, app).ok_or_else(|| format!("cannot read the type `{text}`"))
 }
 
+/// What a register of type `ty` reads before anything wrote it: `default`, the field's declared
+/// one, else its type's own.
+///
+/// # Errors
+///
+/// When the type has no value to start from (a principal, a date, a record): a read of the
+/// field traps until something writes it, so whatever makes such a record outside the language's
+/// constructors (a seed, a fixture) must give it one.
+pub fn unwritten_value(
+    ty: &Ty,
+    default: Option<&serde_json::Value>,
+) -> Result<crate::value::Value, String> {
+    crate::host_res::declared_default(ty, default)
+}
+
 pub fn repr(ty: &Ty) -> Repr {
     match ty {
         Ty::Int | Ty::Choice(_) => Repr::I64,
