@@ -1,10 +1,15 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--host-desktop] [--firstboot|--firstboot-only] [--no-x11]
+//! [--size WxH] [--shell bar|screen] [--host-desktop]
+//! [--firstboot|--firstboot-only] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
 //! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
-//! Xwayland for X11 clients (unless `--no-x11`), prints both displays and
-//! starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to them; with a
-//! command, the session lasts as long as it does. The desktop services serve
+//! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
+//! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
+//! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
+//! them; with a command, the session lasts as long as it does. `--shell`
+//! shows the tilolang shell (`apps/tl/shell`): its bar over the desktop
+//! (`bar`), or the whole screen (`screen`), its bar, dock and the person's
+//! arrangement as their preset shows it, every window in its place's well. The desktop services serve
 //! on the buses the environment names unless a flag names another (or none);
 //! a nested session, which runs in a window of a desktop it did not start,
 //! serves no bus unless a flag names one and exports nothing to that
@@ -105,6 +110,8 @@ struct CommandLine {
     backend: Backend,
     size: (u16, u16),
     reach: Reach,
+    /// What the tilolang shell shows, when the command line asked for it.
+    shell: Option<tilo_surface_host::shell_part::ShellLayer>,
 }
 
 /// The command line `ours` parsed, or `None` when it names a backend there
@@ -120,6 +127,15 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     let Some(backend) = Backend::named(name) else {
         eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
         return None;
+    };
+    let shell = match value("--shell").map(String::as_str) {
+        None => None,
+        Some("bar") => Some(tilo_surface_host::shell_part::ShellLayer::Bar),
+        Some("screen") => Some(tilo_surface_host::shell_part::ShellLayer::Screen),
+        Some(other) => {
+            eprintln!("tilo-session: unknown shell {other} (bar, screen)");
+            return None;
+        }
     };
     let size: (u16, u16) = value("--size")
         .and_then(|size| size.split_once('x'))
@@ -143,6 +159,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         backend,
         size,
         reach,
+        shell,
     })
 }
 
@@ -162,6 +179,7 @@ fn start(
         backend,
         size,
         reach,
+        shell,
     } = line;
     let buses = reach.buses.clone();
     record_panics(backend);
@@ -228,8 +246,10 @@ fn start(
         portal,
         power,
         machine,
+        shell,
         ..device_options(machine)
     };
+    let agent_door = options.agent_door.clone();
     let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
         Err(error) => {
@@ -249,6 +269,7 @@ fn start(
         Some(&launch),
         session_bus,
         reach.export_displays,
+        agent_door.as_deref(),
     )
 }
 
@@ -290,6 +311,7 @@ fn run(
     launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
+    agent_door: Option<&std::path::Path>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
 
@@ -301,6 +323,11 @@ fn run(
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
+    // Where a program of this login asks to work here as an agent: what
+    // `tilolang repl --door` connects to. The session bound it as it started.
+    if let Some(door) = agent_door.filter(|door| door.exists()) {
+        println!("TILO_AGENT_DOOR={}", door.display());
+    }
     let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
         None
     } else {

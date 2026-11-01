@@ -210,6 +210,41 @@ pub fn bar_layer() -> RootView {
     }
 }
 
+/// The shell's whole screen: the `screen` view over the person's arrangement (the package's
+/// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
+/// preset the person picked lays them out. Each place an app's window shows in is a well, and
+/// the window stands where that well does.
+#[must_use]
+pub fn screen_layer() -> RootView {
+    RootView {
+        root: Some("arrangement".to_owned()),
+        view: Some("screen".to_owned()),
+    }
+}
+
+/// What a shell part stands as on its display.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShellLayer {
+    /// The bar's band over the windows ([`bar_layer`]): the rest of the display is the
+    /// desktop's, and the part covers it only while a menu or a surface of the desk's is up.
+    #[default]
+    Bar,
+    /// The whole display, under the windows ([`screen_layer`]): the shell draws the desk, and
+    /// every window stands in the well its place leaves it.
+    Screen,
+}
+
+impl ShellLayer {
+    /// The root and view the part shows.
+    #[must_use]
+    pub fn root_view(self) -> RootView {
+        match self {
+            Self::Bar => bar_layer(),
+            Self::Screen => screen_layer(),
+        }
+    }
+}
+
 /// The shell package and the packages it uses, compiled, the shell last: what a shell's instance
 /// loads, in order. `None` when a package does not compile, which every build of the shell is
 /// checked against, so a test that fails to compile here fails loudly.
@@ -2037,6 +2072,9 @@ pub struct ShellPart {
     /// The shell's record's heads the instance was last brought up to date with: a commit any
     /// part of the shell made reaches this one by them, so every display shows one shell.
     seen_heads: Vec<String>,
+    /// What the part stands as: the bar's band over the windows, or the whole display under
+    /// them.
+    layer: ShellLayer,
 }
 
 /// A shell part's identity: the package it runs, the person it is for, and the record the
@@ -2066,9 +2104,13 @@ impl ShellPart {
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
     /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
     /// no windows of its own (the bar).
+    ///
+    /// `layer` says what the part is: the bar's band over the windows, or the whole display
+    /// under them, which shows the person's arrangement and puts each window in its well.
     #[must_use]
     pub fn new(
         identity: ShellIdentity<'_>,
+        layer: ShellLayer,
         band: u32,
         scale: f64,
         waker: Waker,
@@ -2098,8 +2140,9 @@ impl ShellPart {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
-                // The bar's band shows the bar, not whatever root the package lists first.
-                root: bar_layer(),
+                // The bar's band shows the bar and the screen the desk, not whatever root the
+                // package lists first.
+                root: layer.root_view(),
             },
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
@@ -2116,8 +2159,17 @@ impl ShellPart {
             let record = record.borrow();
             instance.sync(Some(&record));
         }
-        let window = AppWindow::part(Box::new(window_end));
-        let mut widgets = WidgetHost::new(Box::new(window), placement, false);
+        let window = match layer {
+            ShellLayer::Bar => AppWindow::part(Box::new(window_end)),
+            ShellLayer::Screen => AppWindow::whole_part(Box::new(window_end)),
+        };
+        // The whole screen lies under the windows, which stand in its wells; the bar rides over
+        // them.
+        let mut widgets = WidgetHost::new(
+            Box::new(window),
+            placement,
+            matches!(layer, ShellLayer::Screen),
+        );
         widgets.install_wells(wells);
         let mut part = Self {
             widgets,
@@ -2140,6 +2192,7 @@ impl ShellPart {
                 dock_bottom: false,
             },
             seen_heads: Vec::new(),
+            layer,
         };
         if seed {
             part.seed();
@@ -2223,11 +2276,12 @@ impl ShellPart {
             return;
         }
         let band = self.band.min(output_height);
-        // A menu of the part's, or a surface of the desk's, takes the whole output; else the
-        // part stands in the band at each edge the chrome rides, so a change draws only what
-        // shows there.
-        let at_top = !self.cover && edges.bar_at_top();
-        let at_bottom = !self.cover && edges.dock_at_bottom();
+        // The screen, a menu of the part's or a surface of the desk's takes the whole output;
+        // else the part stands in the band at each edge the chrome rides, so a change draws
+        // only what shows there.
+        let whole = self.cover || self.layer == ShellLayer::Screen;
+        let at_top = !whole && edges.bar_at_top();
+        let at_bottom = !whole && edges.dock_at_bottom();
         let height = match (at_top, at_bottom) {
             (true, false) | (false, true) => band,
             _ => output_height.max(band),
@@ -2645,6 +2699,12 @@ impl SurfaceHost for ShellPart {
             return Vec::new();
         }
         self.widgets.layers()
+    }
+
+    /// The whole screen lies under the windows, which stand in its wells; the bar rides over
+    /// them.
+    fn below_windows(&self) -> bool {
+        self.widgets.below_windows()
     }
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {

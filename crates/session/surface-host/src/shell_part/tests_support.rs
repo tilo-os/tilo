@@ -33,8 +33,17 @@ pub(super) fn reading_with_windows() -> DeskReading {
     }
 }
 
-/// A part over `reading`, its outputs set.
+/// A bar part over `reading`, its outputs set.
 pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
+    part_as(ShellLayer::Bar, reading, None)
+}
+
+/// A part standing as `layer` over `reading`, its outputs set, its wells reporting to `wells`.
+pub(super) fn part_as(
+    layer: ShellLayer,
+    reading: DeskReading,
+    wells: Option<ui::widget::Wells>,
+) -> (ShellPart, Rc<SessionLink>) {
     let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
     let app = packages
         .last()
@@ -53,10 +62,11 @@ pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
+        layer,
         32,
         1.0,
         std::sync::Arc::new(|| {}),
-        None,
+        wells,
     );
     part.outputs_changed(&[(0, 0, 1280, 800)]);
     part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
