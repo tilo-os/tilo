@@ -211,6 +211,23 @@ mod tests {
         assert_eq!(read, policy());
     }
 
+    /// The grants the code makes for the session's own app reach it, so a
+    /// projection of that app keeps them and reads back as it was written,
+    /// in the order it wrote them.
+    #[test]
+    fn a_projection_of_the_sessions_own_app_reads_back_as_written() {
+        let projection = AppActionAuthorityProjection::project(
+            &WorkspacePolicy::new("room-a", "person-a"),
+            tilo_action_policy::roles::SESSION_APP,
+            "person-a",
+            false,
+        );
+        let read: AppActionAuthorityProjection =
+            serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+        read.validate().unwrap();
+        assert_eq!(read, projection);
+    }
+
     /// A grant the room gave that reaches beyond the app is still refused
     /// when read, not dropped.
     #[test]
