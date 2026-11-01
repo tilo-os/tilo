@@ -109,7 +109,6 @@ impl Apps {
             ),
         });
         let task = TaskSession::new(
-            "task-1",
             Some("ada"),
             &(Rc::clone(&door) as Rc<dyn TaskDoor>),
             &self.bundles,
@@ -121,7 +120,6 @@ impl Apps {
     /// A task of these apps, acting for ada.
     pub fn task(self: &Rc<Self>) -> TaskSession {
         TaskSession::new(
-            "task-1",
             Some("ada"),
             &(Rc::clone(self) as Rc<dyn TaskDoor>),
             &self.bundles,

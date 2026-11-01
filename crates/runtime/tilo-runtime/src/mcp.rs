@@ -592,6 +592,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .with_surface(Surface::Agent)
     }
 
+    /// One session of `person` themselves in `workspace`: a REPL the host admitted because
+    /// the person said so (a desktop's agent door). Every call is the person's own, attributed
+    /// to them and decided by their own authority, as their own input is. Its own fresh
+    /// execution, retired when the session drops.
+    #[must_use]
+    pub fn for_person(host: H, workspace: String, person: &str) -> Self {
+        let caller = Caller::local_person(person)
+            .in_workspace(workspace.clone())
+            .in_new_execution();
+        Self::from_caller(host, workspace, person.to_owned(), caller).with_surface(Surface::Agent)
+    }
+
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
     pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {

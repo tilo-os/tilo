@@ -96,12 +96,18 @@ struct Steps {
     done: usize,
     /// The apps whose resources it changed, in order.
     apps: Vec<String>,
+    /// Where each of them takes the step back (`{app, resource, published}`), in the same
+    /// order.
+    history: Vec<Json>,
 }
 
 /// The task's session: the runtime with every installed app's package, and its `let`s.
+///
+/// The session belongs to the task, not to one writer: the agent's programs and the lines its
+/// person types run in the same session with the same `let`s, each as its own author
+/// ([`TaskSession::run`]).
 pub struct TaskSession {
     runtime: Runtime,
-    task: Principal,
     /// The person the task acts for: `me`.
     person: Option<Principal>,
     session: RefCell<Session>,
@@ -122,13 +128,14 @@ impl Authority for DecidesNothing {
 }
 
 impl TaskSession {
-    /// The session of `task` (the agent run's id) reaching the workspace through `door`, with
-    /// the packages `bundles` (every installed app's, each after the packages it uses).
+    /// The session of a task reaching the workspace through `door`, with the packages `bundles`
+    /// (every installed app's, each after the packages it uses) and the platform's own (the
+    /// device's and the session's resources, Settings': [`crate::platform_apps`]), whose actions
+    /// a program invokes where the session publishes them.
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
     pub fn new(
-        task: &str,
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,
         bundles: &[Bundle],
@@ -172,6 +179,20 @@ impl TaskSession {
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
         reads.borrow_mut().apps = apps.keys().cloned().collect();
+        // The platform's packages: no record holds their resources, so they are read by no
+        // record read; their actions are invoked on the resource the session publishes.
+        let mut published = std::collections::HashSet::new();
+        for meta in crate::platform_apps::platform_packages()? {
+            if apps.contains_key(&meta.app) {
+                continue;
+            }
+            runtime
+                .load_foreign(meta.clone())
+                .map_err(|error| error.to_string())?;
+            meta.register_schemas();
+            published.insert(meta.app.clone());
+            apps.insert(meta.app.clone(), meta);
+        }
         *packages.borrow_mut() = modules
             .iter()
             .map(|(app, module)| (app.clone(), module.0.clone()))
@@ -180,6 +201,7 @@ impl TaskSession {
         runtime.set_invoker(DoorInvoker {
             door: Rc::clone(door),
             apps,
+            published,
             steps: Rc::clone(&steps),
         });
         let asked = Rc::clone(door);
@@ -190,7 +212,6 @@ impl TaskSession {
         runtime.set_clock(crate::host::system_time);
         Ok(Self {
             runtime,
-            task: Principal::new(format!("agent:{task}")),
             person: person.map(Principal::new),
             session: RefCell::new(Session::new()),
             steps,
@@ -225,13 +246,14 @@ impl TaskSession {
         self.runtime.set_clock(clock);
     }
 
-    /// Run `source` as one step of the task; see the module docs for `confirm`. The answer:
-    /// `{state, output, detail, lets, steps, changed, apps}`, `state` one of `done`, `preview`,
-    /// `suspended`, `rejected`, `failed`.
-    pub fn run(&self, source: &str, confirm: bool) -> Json {
+    /// Run `source`, written by `author`, as one step of the task; see the module docs for
+    /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
+    /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,
+    /// `state` one of `done`, `preview`, `suspended`, `rejected`, `failed`.
+    pub fn run(&self, source: &str, confirm: bool, author: &Principal) -> Json {
         if !confirm {
             let saved = self.session.borrow().clone();
-            let (answer, steps) = self.run_once(source, true);
+            let (answer, steps) = self.run_once(source, true, author);
             if steps.planned.is_empty() {
                 // It changed nothing: it has answered.
                 return answer;
@@ -251,10 +273,10 @@ impl TaskSession {
                 return preview;
             }
         }
-        self.run_once(source, false).0
+        self.run_once(source, false, author).0
     }
 
-    fn run_once(&self, source: &str, provisional: bool) -> (Json, Steps) {
+    fn run_once(&self, source: &str, provisional: bool, author: &Principal) -> (Json, Steps) {
         *self.steps.borrow_mut() = Steps {
             provisional,
             ..Steps::default()
@@ -268,7 +290,7 @@ impl TaskSession {
         let reply = self
             .session
             .borrow_mut()
-            .run_with(&self.runtime, &self.task, source, inputs);
+            .run_with(&self.runtime, author, source, inputs);
         let steps = std::mem::take(&mut *self.steps.borrow_mut());
         let lets: Vec<Json> = self
             .session
@@ -300,12 +322,9 @@ impl TaskSession {
             "changed": steps.done,
             "apps": steps.apps,
             // Where each app it changed takes a step back: the app's own resource, by its id,
-            // which the history verbs are published on.
-            "history": steps
-                .apps
-                .iter()
-                .map(|app| json!({"app": app, "resource": package_resource_id(app)}))
-                .collect::<Vec<_>>(),
+            // which the history verbs are published on; for a resource the session publishes,
+            // that resource itself, whose own `undo` the session publishes beside its actions.
+            "history": steps.history,
         });
         (answer, steps)
     }
@@ -332,6 +351,8 @@ pub fn wants_preview(planned: &[Json]) -> bool {
 struct DoorInvoker {
     door: Rc<dyn TaskDoor>,
     apps: HashMap<String, Meta>,
+    /// The platform's apps, whose resources the session publishes under their own ids.
+    published: std::collections::HashSet<String>,
     steps: Rc<RefCell<Steps>>,
 }
 
@@ -341,14 +362,26 @@ impl Invoker for DoorInvoker {
         let Some(meta) = self.apps.get(app) else {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
-        let call = match call_of(&self.apps, meta, invocation) {
+        let published = self.published.contains(app);
+        let call = if published {
+            published_call(meta, invocation)
+        } else {
+            call_of(&self.apps, meta, invocation)
+        };
+        let call = match call {
             Ok(call) => call,
             Err(why) => return Invoked::Failed(why),
         };
         let resources: Vec<String> = invocation
             .resources()
             .iter()
-            .map(|r| resource_id(app, &r.id_string()))
+            .map(|r| {
+                if published {
+                    r.id_string()
+                } else {
+                    resource_id(app, &r.id_string())
+                }
+            })
             .collect();
         let provisional = {
             let mut steps = self.steps.borrow_mut();
@@ -369,6 +402,14 @@ impl Invoker for DoorInvoker {
                 steps.done = steps.done.saturating_add(1);
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
+                    let resource = if published {
+                        call["resource"].as_str().unwrap_or_default().to_owned()
+                    } else {
+                        package_resource_id(app)
+                    };
+                    steps
+                        .history
+                        .push(json!({"app": app, "resource": resource, "published": published}));
                 }
                 drop(steps);
                 match result_of(meta, invocation, &output) {
@@ -383,6 +424,50 @@ impl Invoker for DoorInvoker {
             Answered::Asks(why) => Invoked::Asks(why),
         }
     }
+}
+
+/// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
+/// resource the session publishes it as (`shell:arrangement`), with every other argument as the
+/// published action takes it, by name. The call says it is the session's (`published`), which the
+/// door sends to the session's own provider.
+fn published_call(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
+    let Invocation::Action {
+        app,
+        action,
+        args,
+        subject,
+        ..
+    } = invocation
+    else {
+        return Err(format!(
+            "{} publishes its resources' fields read-only; change them through its actions",
+            meta.title
+        ));
+    };
+    let subject = subject
+        .as_ref()
+        .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?;
+    // A platform package's action is its published verb, by the same id (`show-surface`).
+    let resource = subject.id_string();
+    let mut arguments = serde_json::Map::new();
+    for (name, value) in args {
+        if matches!(value, Value::Ref(r) if r.target.id_string() == resource) {
+            continue;
+        }
+        let json = match value {
+            Value::Ref(r) => json!(r.target.id_string()),
+            other => tilolang_runtime::value::to_json(other)
+                .map_err(|error| format!("`{name}` does not send: {error}"))?,
+        };
+        arguments.insert(name.clone(), json);
+    }
+    Ok(json!({
+        "app": app,
+        "resource": resource,
+        "action": action,
+        "arguments": arguments,
+        "published": true,
+    }))
 }
 
 /// The door's call for `invocation` of the package `meta`: a declared action on its subject
