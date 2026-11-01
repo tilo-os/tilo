@@ -1577,8 +1577,23 @@ fn applier(
     std::os::unix::net::UnixStream,
     Sent,
 ) {
+    applier_of(person, APP, &counter(), doc)
+}
+
+/// The origin of `app`'s records, built as `bundle`, for `person`, holding `doc`: as
+/// [`applier`] is the counter's.
+fn applier_of(
+    person: &str,
+    app: &str,
+    bundle: &Bundle,
+    doc: automerge::AutoCommit,
+) -> (
+    tilolang_host::hosted::Applier,
+    std::os::unix::net::UnixStream,
+    Sent,
+) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let sent: Sent = Rc::default();
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -1599,13 +1614,13 @@ fn applier(
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
         Spec {
-            app: APP.to_owned(),
+            app: app.to_owned(),
             workspace: route.cluster_id.to_string(),
             instance: 1 << 62,
             person: person.to_owned(),
         },
         record,
-        &counter(),
+        bundle,
         &Phrases::new("en-US"),
         wake(),
         theirs.into(),
@@ -1767,6 +1782,52 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
         read.get_missing_deps(&[]).is_empty(),
         "what it says it wrote holds the root it made, for a task that read no record"
     );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the root and the change went to the workspace"
+    );
+}
+
+/// A package may declare several roots: a change of any of them that no window made yet makes
+/// that root first. The shell's top bar is its `shell` root, not the root it opens with.
+#[test]
+fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
+    let (app, bundle) = shipped(&shipped_dir().join("shell"));
+    let shell = bundle
+        .meta
+        .named_roots
+        .iter()
+        .find(|root| root.name == "shell")
+        .expect("the shell's top bar is a root of its own")
+        .ty
+        .clone();
+    assert_ne!(
+        bundle.meta.roots.first(),
+        Some(&shell),
+        "not the root the shell opens with"
+    );
+    let hide = &bundle
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "hide_app_menus")
+        .expect("the shell's top bar has its actions")
+        .id;
+    let (mut applier, connection, sent) =
+        applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
+            action: hide.clone(),
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
     assert!(
         documents_sent(&sent) > 0,
         "the root and the change went to the workspace"

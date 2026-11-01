@@ -1230,10 +1230,11 @@ impl Applier {
     }
 
     /// Make the app's root when `change` addresses it and the record does not hold it yet: the
-    /// one per-workspace resource of the package's root type is made the first time it is wanted,
-    /// here as in a window that opens it, and a task reads it from the package whether or not
-    /// any window ever made it. It is applied as the change's invoker's step, before the
-    /// change. Whether it made it.
+    /// one per-workspace resource of each of the package's root types is made the first time it
+    /// is wanted, here as in a window that opens it, and a task reads it from the package
+    /// whether or not any window ever made it. A package may declare several roots
+    /// (`root viewing: Viewing`, `root Desk`); the change names which. It is applied as the
+    /// change's invoker's step, before the change. Whether it made it.
     fn make_root(
         &mut self,
         change: &runtime_portal::tilolang_host::Change,
@@ -1247,19 +1248,25 @@ impl Applier {
         else {
             return Ok(false);
         };
-        if !doc.starts_with("root-") || self.host.store().contains(doc) {
+        let Some(ty) = doc.strip_prefix("root-") else {
+            return Ok(false);
+        };
+        if self.host.store().contains(doc) {
             return Ok(false);
         }
-        let made = self
+        let declared = self
             .host
-            .root_of(&self.spec.app)
-            .map_err(|error| error.to_string())?;
-        if made.doc != doc {
+            .package(&self.spec.app)
+            .is_some_and(|package| package.declares_root(ty));
+        if !declared {
             return Err(format!(
-                "{} is not the root of {}",
+                "{} is no root of {}",
                 change.resource, self.spec.app
             ));
         }
+        self.host
+            .root_record(&self.spec.app, ty)
+            .map_err(|error| error.to_string())?;
         let invoker: ActionInvoker = serde_json::from_value(change.invoker.clone())
             .map_err(|error| format!("the change's invoker does not decode: {error}"))?;
         let ambient: Option<ActionContext> = change
