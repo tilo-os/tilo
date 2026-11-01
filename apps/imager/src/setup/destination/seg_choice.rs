@@ -29,7 +29,7 @@ pub fn seg_choice(
     let choice = ToggleGroup::new(segments, selected)
         .with_id(test_id)
         .fill()
-        .on_change(move |index| {
+        .on_view(test_id, move |index| {
             if let Some(control) = controls.get(index) {
                 control.fire();
             }
