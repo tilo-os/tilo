@@ -870,7 +870,7 @@ impl Core {
                 author,
             }));
         }
-        let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+        let Some(target) = ResourceRef::parse_id(&id, ty) else {
             return trap(format!("`{id}` is not a reference id"));
         };
         // Another app's resource is its app's to know (`resource(id, of: T)`); a root nobody

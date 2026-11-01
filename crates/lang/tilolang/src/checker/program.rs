@@ -4,7 +4,7 @@
 //! query string, `read` gives a resource as text. Its top-level `let`s are kept for the next
 //! program of the session ([`ProgramResult::lets`]).
 
-use super::{Checker, Ctx, Ex, FnState, conv, store_op};
+use super::{Checker, Ctx, Ex, FnState, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, StmtKind};
 use crate::diag::{Diagnostic, Span};
@@ -51,7 +51,7 @@ pub fn check_program(
         at_event: Vec::new(),
     };
     c.begin(Ctx::Flow, params, Ty::Unit, export);
-    c.st.program = true;
+    c.st.written = Written::Program;
     let mut lets: Vec<(String, Ty)> = Vec::new();
     for (at, s) in stmts.iter().enumerate() {
         let last = at + 1 == stmts.len();
@@ -112,7 +112,7 @@ fn echoes(e: &ast::Expr) -> bool {
 impl Checker<'_> {
     /// The words only a program has, when the code being checked is a program.
     pub(super) fn program_builtins(&self) -> impl Iterator<Item = &'static str> {
-        let words: &[&str] = if self.st.program {
+        let words: &[&str] = if self.st.written == Written::Program {
             PROGRAM_BUILTINS
         } else {
             &[]
@@ -127,7 +127,7 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Option<Ex> {
-        if !self.st.program {
+        if self.st.written != Written::Program {
             return None;
         }
         Some(match name {

@@ -151,6 +151,23 @@ pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, Stri
     Ok(package_with(app, title, &surfaces, &instances))
 }
 
+/// The packages a tilolang package may `use` that are no tilolang package directory: the
+/// platform's ([`crate::platform_apps::platform_packages`]: the device, Settings) and the native
+/// apps among `search` ([`native_apps`]). What `tilolang check`, `build`, `describe` and
+/// `layout-check` compile against; a native app the platform already provides is the platform's.
+///
+/// # Errors
+/// A platform surface or a native app's manifest or surface file does not read.
+pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
+    let mut out = crate::platform_apps::platform_packages()?;
+    for native in native_apps(search)? {
+        if !out.iter().any(|meta| meta.app == native.app) {
+            out.push(native);
+        }
+    }
+    Ok(out)
+}
+
 /// The native apps among `search`: each entry an app directory itself or a directory of them.
 /// Directories that are not native apps are passed over.
 ///

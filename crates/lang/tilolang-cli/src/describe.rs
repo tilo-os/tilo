@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilolang::ids::SeededEntropy;
 use tilolang::meta::PackageMeta;
-use tilolang::source::{compile_dirs, dependency_order_with, search_of};
+
 use tilolang_tilo::catalogue;
 
 /// The catalogue's package of the app in `dir`: a native app's committed surface, or the
@@ -23,11 +23,8 @@ pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> 
     if let Some(meta) = catalogue::native_app(dir)? {
         return Ok(meta);
     }
-    let natives = catalogue::native_apps(&search_of(dir, search))?;
-    let provided: Vec<String> = natives.iter().map(|meta| meta.app.clone()).collect();
-    let dirs = dependency_order_with(dir, search, &provided)?;
-    let built =
-        compile_dirs(&dirs, &natives, &mut SeededEntropy(0)).map_err(|error| error.to_string())?;
+    let (built, _) =
+        crate::compile(dir, search, &mut SeededEntropy(0)).map_err(|error| error.to_string())?;
     let meta = &built
         .last()
         .ok_or_else(|| format!("{}: no package", dir.display()))?

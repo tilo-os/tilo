@@ -58,7 +58,8 @@ fn a_test_draws_on_lavapipe_and_never_on_the_machines_gpu() {
         .args([
             "sh",
             "-c",
-            "printf '%s\\n%s\\n%s\\n' \"$VK_DRIVER_FILES\" \"${WGPU_ADAPTER_NAME:-}\" \"${WGPU_BACKEND:-}\"",
+            // `sh` without `-u`: a variable that is unset prints as an empty line.
+            "printf '%s\\n%s\\n%s\\n' \"$VK_DRIVER_FILES\" \"$WGPU_ADAPTER_NAME\" \"$WGPU_BACKEND\"",
         ])
         // Outside every enclosing test environment, as a plain `cargo test`.
         .env_remove("TILO_TEST_ENVIRONMENT")

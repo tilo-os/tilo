@@ -28,8 +28,9 @@ pub struct AppActionAuthorityProjection {
 }
 
 /// An [`AppActionAuthorityProjection`] as written. Its policy loads with the
-/// built-in roles as the code defines them now, which gives a role back the
-/// grants the projection left out; [`From`] narrows those again.
+/// grants the code defines as it defines them now (the built-in roles' and
+/// the room's make-up), which gives back those the projection left out;
+/// [`From`] narrows them again.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredProjection {
@@ -43,21 +44,17 @@ struct StoredProjection {
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {
-    /// The grants the code makes — the built-in roles' and the session's own
-    /// app and device panel — are narrowed to the app here as
-    /// [`AppActionAuthorityProjection::project`] narrowed them, so a
-    /// projection reads back as the projection of the current policy. Grants
-    /// given in the room stay as written, for
+    /// The grants the code defines are the code's, so they are narrowed to
+    /// the app here as [`AppActionAuthorityProjection::project`] narrowed
+    /// them: a projection reads back as the projection of the current policy.
+    /// Grants given in the room stay as written, for
     /// [`AppActionAuthorityProjection::validate`] to judge.
     fn from(stored: StoredProjection) -> Self {
         let mut policy = stored.policy;
         let app = policy.node().app(&stored.app_id);
-        policy.grants.retain(|grant| {
-            let code_made = roles::is_role_grant(grant)
-                || roles::is_session_app(grant)
-                || roles::is_device_panel(grant);
-            !code_made || grant.node.overlaps(&app)
-        });
+        policy
+            .grants
+            .retain(|grant| !roles::is_code_defined(grant) || grant.node.overlaps(&app));
         Self {
             schema_version: stored.schema_version,
             room: stored.room,
@@ -96,24 +93,33 @@ impl AppActionAuthorityProjection {
         let valid_name = |value: &str| {
             !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
         };
-        if self.schema_version != SCHEMA_VERSION
-            || !valid_name(&self.room)
+        if self.schema_version != SCHEMA_VERSION {
+            return Err("invalid host action policy projection: another schema");
+        }
+        if !valid_name(&self.room)
             || !valid_name(&self.app_id)
             || !valid_name(&self.person)
-            || self.policy.workspace != self.room
             || self
                 .policy
                 .owner
                 .as_deref()
                 .is_some_and(|owner| !valid_name(owner))
-            || self.policy.grants.len() > MAX_GRANTS
         {
-            return Err("invalid host action policy projection");
+            return Err("invalid host action policy projection: a malformed name");
+        }
+        if self.policy.workspace != self.room {
+            return Err("invalid host action policy projection: the policy is another room's");
+        }
+        if self.policy.grants.len() > MAX_GRANTS {
+            return Err("invalid host action policy projection: too many grants");
         }
         let app = self.policy.node().app(&self.app_id);
         for grant in &self.policy.grants {
-            if !grant.node.overlaps(&app) || grant.node.workspace_id() != Some(self.room.as_str()) {
-                return Err("invalid host action policy projection");
+            if !grant.node.overlaps(&app) {
+                return Err("invalid host action policy projection: a grant reaches past the app");
+            }
+            if grant.node.workspace_id() != Some(self.room.as_str()) {
+                return Err("invalid host action policy projection: a grant is another room's");
             }
         }
         Ok(())
@@ -200,6 +206,26 @@ mod tests {
 
     /// A projection written while its policy named the workspace `room`
     /// still reads.
+    /// Every grant a read restores (the roles', the session app's, the
+    /// device panel's) is narrowed again, so an app's launch reads back
+    /// the projection its host wrote, also for a room no one owns yet.
+    #[test]
+    fn every_restored_grant_is_narrowed_on_read() {
+        let owned = WorkspacePolicy::new("room-a", "person-a");
+        let unowned = WorkspacePolicy::unowned("room-a", &Subject::Role(Role::Owner));
+        for room in [owned, unowned.with_current_roles()] {
+            for app in ["so.tilo.notes", roles::SESSION_APP, roles::DEVICE_PANEL] {
+                let written = AppActionAuthorityProjection::project(&room, app, "person-a", false);
+                written.validate().unwrap();
+                let read: AppActionAuthorityProjection =
+                    serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
+                read.validate()
+                    .unwrap_or_else(|error| panic!("{app}'s projection read back: {error}"));
+                assert_eq!(read, written, "{app}");
+            }
+        }
+    }
+
     #[test]
     fn a_projection_written_with_a_room_policy_still_reads() {
         let written = serde_json::to_string(&policy()).unwrap();

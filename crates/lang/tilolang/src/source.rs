@@ -338,6 +338,29 @@ impl std::fmt::Display for BuildError {
     }
 }
 
+/// Compiles the package in `root` and the packages it uses, found in `search`
+/// ([`search_of`]), in dependency order: an import of one of the apps `published` holds is that
+/// metadata (a native app's published types, an already built module), visible to every package.
+///
+/// # Errors
+/// A package cannot be found or read, or has errors.
+pub fn compile_package(
+    root: &Path,
+    search: &[PathBuf],
+    published: &[PackageMeta],
+    rng: &mut dyn Entropy,
+) -> Result<Vec<BuiltPackage>, BuildError> {
+    let dirs =
+        dependency_order_with(root, search, &apps_of(published)).map_err(BuildError::Read)?;
+    compile_dirs(&dirs, published, rng)
+}
+
+/// The apps `published` holds: what [`dependency_order_with`] takes as `provided`.
+#[must_use]
+pub fn apps_of(published: &[PackageMeta]) -> Vec<String> {
+    published.iter().map(|meta| meta.app.clone()).collect()
+}
+
 /// Compiles the packages in `dirs` in order, each against `extra` (already built modules'
 /// metadata) and the packages before it: pass [`dependency_order`]'s result. Nothing is
 /// written.

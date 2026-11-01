@@ -63,6 +63,18 @@ pub(crate) enum Ctx {
     Block,
 }
 
+/// What the code being checked was written as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Written {
+    /// A declaration of the module.
+    #[default]
+    Declared,
+    /// A scenario, where `root T` names a root resource.
+    Scenario,
+    /// An agent's program: a flow that may `print`, `find` and `read`.
+    Program,
+}
+
 /// Who `invoker` names outside an action.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Invoker {
@@ -100,16 +112,15 @@ struct FnState {
     try_invoke: bool,
     /// The view state the view declares, by name.
     states: HashMap<String, StateRef>,
-    /// Set while checking a scenario, where `root T` names a root resource.
-    scenario: bool,
+    /// What the code being checked was written as: a scenario or an agent's program
+    /// allows what declared code does not.
+    written: Written,
     /// Whether the callable takes a resource: an outside effect is queued on the first one,
     /// so an action without one cannot hand any over.
     takes_resource: bool,
     /// The role of the action being checked (`primary`, `destructive`, `migration`): a
     /// migration reads `(previously)` fields.
     role: Option<String>,
-    /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
-    program: bool,
     /// Who `invoker` is outside an action: while checking an action's requirements where it
     /// is presented, the person looking, who would invoke it.
     invoker: Invoker,
@@ -464,7 +475,9 @@ impl Checker<'_> {
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
-        self.st.scenario = c.scenario;
+        if c.scenario {
+            self.st.written = Written::Scenario;
+        }
         self.st.role.clone_from(&c.present.role);
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
@@ -634,7 +647,7 @@ impl Checker<'_> {
     /// `as who at time { ... }` also records the block's changes at `time`, which `now` reads.
     /// Each block is a change of its own, so history and reflection show it as `who` made it.
     fn act_as(&mut self, who: &ast::Expr, at: Option<&ast::Expr>, body: &ast::Block, span: Span) {
-        if !self.st.scenario {
+        if self.st.written != Written::Scenario {
             self.err("E094", span, "`as who { ... }` runs actions as a named person, which only a scenario does; elsewhere an action runs as whoever invokes it");
             let _ = self.expr(who, None);
             let _ = self.block_stmts(body);
@@ -981,7 +994,7 @@ impl Checker<'_> {
         if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
             && let Some(of) = kind.field(&field.name)
             && !of.people
-            && !self.st.scenario
+            && self.st.written != Written::Scenario
         {
             self.err(
                 "E113",
@@ -998,7 +1011,7 @@ impl Checker<'_> {
                 ),
             );
         }
-        if self.st.program {
+        if self.st.written == Written::Program {
             self.program_edit(base, &key, &f, op, value, span);
             return;
         }
