@@ -82,8 +82,8 @@ mod owner_session;
 mod panels;
 mod people;
 mod plane;
-mod press_outside;
 pub mod portal_link;
+mod press_outside;
 mod projection;
 mod projection_video;
 mod questions;
@@ -300,8 +300,6 @@ struct Shared {
     tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     /// The pictures the desk shows, by workspace.
     wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
-    /// Whether the lock screen offers suspend, restart and shut down.
-    lock_power: bool,
     /// The keyboard layouts the person switches between, and which one is
     /// in use, as the lock screen shows them.
     lock_layouts: Vec<String>,
@@ -1644,7 +1642,6 @@ impl Session {
             clock,
             tray,
             wallpapers,
-            lock_power: options.lock_power,
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,
@@ -2859,5 +2856,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
+        // Its apps' display goes with it, and so do they: the apps outlive
+        // no session, whoever else still holds what started them.
+        if let Some(launch) = &self.shared.launch {
+            launch.end_running();
+        }
     }
 }

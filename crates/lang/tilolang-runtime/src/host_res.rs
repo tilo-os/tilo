@@ -376,6 +376,7 @@ impl Core {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
+                    .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
             (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, author),
             (FieldKind::Counter, FieldValue::Counter(c)) => Ok(if field.ty == Ty::Float {

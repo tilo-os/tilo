@@ -322,7 +322,7 @@ impl Described for DescribedTable {
         }
         if !select.is_none() {
             let reading = Rc::clone(&shared);
-            table = table.on_row_click_view(&format!("{key}.select"), move |index, _, _| {
+            table = table.on_row_click_view(format!("{key}.select"), move |index, _, _| {
                 if let Some(item) = item_at(&reading, index) {
                     select.fire(Some(item));
                 }
@@ -330,7 +330,7 @@ impl Described for DescribedTable {
         }
         if !activate.is_none() {
             let reading = Rc::clone(&shared);
-            table = table.on_activate_view(&format!("{key}.activate"), move |index| {
+            table = table.on_activate_view(format!("{key}.activate"), move |index| {
                 if let Some(item) = item_at(&reading, index) {
                     activate.fire(Some(item));
                 }
