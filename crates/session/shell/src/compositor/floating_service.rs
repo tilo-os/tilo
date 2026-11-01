@@ -35,8 +35,10 @@ pub enum FloatingServiceEvent {
         connection: u64,
         app_id: String,
         network_status_allowed: bool,
-        /// The process at the other end, as the socket says it.
-        pid: Option<u32>,
+        /// The launch of the process at the other end, as the socket says it, by its
+        /// supervisor's pid ([`crate::compositor::input_order::launch_of`]): read on the
+        /// connection's thread, which may walk `/proc`.
+        launch: Option<u32>,
     },
     Message {
         connection: u64,
@@ -384,7 +386,7 @@ fn serve_connection(
         network_status_allowed: handshake.network_status_allowed,
         connection,
         app_id: app_id.clone(),
-        pid: peer_pid,
+        launch: peer_pid.map(crate::compositor::input_order::launch_of),
     });
 
     loop {

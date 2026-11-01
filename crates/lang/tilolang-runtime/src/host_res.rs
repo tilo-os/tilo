@@ -845,13 +845,14 @@ impl Core {
         );
         let (pkg, info) = self.type_of_ref(&ty)?;
         // A named root of an app this runtime does not run is the resource the session
-        // publishes it as: `device.sound` reads the reading of `sound`.
-        if pkg.foreign {
+        // publishes it as: `device.sound` reads the reading of `sound`. Any other resource of
+        // such an app (`resource(id, of: T)`) is the one its id names.
+        if pkg.foreign && id == format!("root-{}", info.id) {
             let published = pkg
                 .meta
                 .named_roots
                 .iter()
-                .find(|root| root.ty == info.id && id == format!("root-{}", info.id))
+                .find(|root| root.ty == info.id)
                 .and_then(|root| root.published.clone());
             let Some(doc) = published else {
                 return trap(format!(
@@ -872,8 +873,11 @@ impl Core {
         let Some(target) = ResourceRef::parse_id(&id, ty) else {
             return trap(format!("`{id}` is not a reference id"));
         };
-        // A root nobody opened yet is still the root: it reads as it would start.
-        if !target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok() {
+        // Another app's resource is its app's to know (`resource(id, of: T)`); a root nobody
+        // opened yet is still the root: it reads as it would start.
+        if !crate::foreign::is_foreign(&target)
+            && (!target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok())
+        {
             self.verify_ref(&target)?;
         }
         let author = Some(self.module_of_frame()?);

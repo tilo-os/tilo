@@ -18,7 +18,9 @@ use ui::interaction::InteractionEnvironment;
 use ui::tilo_actions::Action as _;
 
 /// The compiled packages an instance loads: the app and what it uses, the app last; and the
-/// platform's packages (the device's, Settings') whose published resources it reads.
+/// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
+/// whose actions run at their own doors, and the platform's (the device's, Settings') whose
+/// published resources it reads.
 pub struct Packages(
     pub Rc<Vec<Compiled>>,
     pub Vec<tilolang_tilo::tilolang::PackageMeta>,

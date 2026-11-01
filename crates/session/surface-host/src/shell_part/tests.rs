@@ -71,6 +71,43 @@ fn the_shell_ships_every_file_of_its_package() {
     );
 }
 
+/// The shell reaches the session only by calling its actions (`session.focus(window(w))`): it
+/// compiles with no outside effect at all, so no press of it is a string the door reads.
+#[test]
+fn the_shell_compiles_with_no_outside_effect() {
+    compile_shell().expect("the shell compiles");
+    for (name, text) in SHELL_FILES {
+        assert!(
+            !text.contains("outside("),
+            "{name} hands the session an outside effect; call the session's action instead"
+        );
+    }
+}
+
+/// No app names one of the session's actions as a string: each calls it on the session's
+/// package (`use so.tilo.session as session`), which the checker holds to what the door takes.
+#[test]
+fn no_app_hands_the_session_a_string() {
+    let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+    let mut pending = vec![apps];
+    let mut found = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("apps/ reads") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "tl")
+                && std::fs::read_to_string(&path)
+                    .expect("a .tl file reads")
+                    .contains("outside(\"session.")
+            {
+                found.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(found.is_empty(), "outside(\"session.…\") in {found:?}");
+}
+
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
 #[test]
@@ -109,9 +146,9 @@ fn with_the_centre_up_and_nothing_changing_the_part_draws_nothing() {
     );
 }
 
-/// The centre's presses are `session.notify` effects, which carry a tuple: Clear all and a
-/// notice's Dismiss each reach the session as the desk's own action, at that press rather
-/// than at the next input.
+/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
+/// and a notice's Dismiss each reach the session as that action, at that press rather than at
+/// the next input.
 #[test]
 fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
     let _settled = ui::motion::testing::settled();
@@ -275,22 +312,91 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     assert_eq!(
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
-            SWITCH_WORKSPACE.to_owned(),
-            BTreeMap::from([(WORKSPACE_ARG.to_owned(), "2".to_owned())])
+            "switch-workspace".to_owned(),
+            BTreeMap::from([("workspace".to_owned(), "2".to_owned())])
         )),
         "{:?} {:?}",
         part.work(),
         part.refusals()
     );
-    // The session ran it: the effect is settled.
+    // The session ran it.
     link.serve(|_| Ok(()));
-    for _ in 0..4 {
+    assert!(!link.has_asks());
+}
+
+/// A press on an app the person pinned to the dock calls the app's own `open`
+/// (`session.open(app)`): the session's door gets it on the app's resource, as the session
+/// publishes it.
+#[test]
+fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part();
+    let host = part.instance.host().expect("the shell runs");
+    let app = part.instance.app().to_owned();
+    let meta = host.package(&app).expect("the shell's package").meta;
+    let shell = meta
+        .named_roots
+        .iter()
+        .find(|root| root.name == SHELL_RECORD)
+        .map(|root| root.ty.clone())
+        .expect("the shell's record");
+    let shell = host
+        .root_record(&app, &shell)
+        .expect("the shell's record is made");
+    let pin = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "pin")
+        .expect("the shell's `pin`")
+        .id
+        .clone();
+    // The person pins Sheets, as from a menu.
+    host.runtime()
+        .invoke_action(
+            &tilolang_tilo::runtime::Principal::new("Pat"),
+            (
+                pin.as_str(),
+                vec![
+                    Value::resource(&shell),
+                    Value::Text("so.tilo.sheets".to_owned()),
+                    Value::Text("Sheets".to_owned()),
+                    Value::Text("table".to_owned()),
+                    Value::Text(String::new()),
+                ],
+            ),
+        )
+        .expect("Sheets is pinned");
+    // The dock rides the bottom on its own.
+    part.set_edges(HostEdges {
+        bar: false,
+        bar_top: true,
+        dock: true,
+        dock_bottom: true,
+    });
+    // The next reading of the desk's draws the dock again, over the record as it is now.
+    link.publish(DeskReading {
+        clock: "4:29 PM".to_owned(),
+        ..reading()
+    });
+    for _ in 0..6 {
         part.prepare_frame();
     }
-    assert!(!link.has_asks());
+    let labels = crate::Published::accessible_labels(&mut part);
     assert!(
-        part.origin.borrow().in_flight.is_empty(),
-        "the effect was answered"
+        part.control_bounds("Sheets").is_some(),
+        "the dock shows Sheets: {labels:?}"
+    );
+    click(&mut part, "Sheets");
+    let asked: Vec<Ask> = link.asked.borrow().iter().cloned().collect();
+    assert_eq!(
+        asked,
+        vec![Ask {
+            resource: "app.so.tilo.sheets".to_owned(),
+            action: "open".to_owned(),
+            arguments: BTreeMap::new(),
+        }],
+        "{:?}",
+        part.refusals()
     );
 }
 

@@ -322,6 +322,9 @@ pub(super) fn share_session_wake(
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(session_wake));
     crate::shell::app_list::set_wake(Arc::clone(session_wake));
+    // A launch's worker reports what became of it: its events, and a
+    // restored window's launch it could not start.
+    crate::shell::launcher::wake_with(Arc::clone(session_wake));
     crate::shell::downloaded_apps::set_wake(Arc::clone(session_wake));
     crate::shell::downloaded_apps::follow_moves();
     crate::app_icons::set_wake(Arc::clone(session_wake));

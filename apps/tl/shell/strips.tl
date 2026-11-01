@@ -8,7 +8,7 @@
 /// stays together; activating something already shown goes to the place that shows it rather
 /// than making a second one (§3). A place's content is its resource's view, drawn inside the
 /// shell's frame for it: the frame is the shell's, so the content never draws its own chrome
-/// (§1, §4). Every arranging change is one of the session's published actions (`arranging.tl`).
+/// (§1, §4). Every arranging change is one of the session's published actions (`shell:arrangement`).
 /// The places of the strip `strip`, in the order the record keeps them.
 fn places_of(a: Arrangement, strip: Text) -> List<ArrangementPlace> {
     a.places.filter(p -> p.strip == strip)
@@ -124,13 +124,13 @@ view strip_header(a: Arrangement, v: Viewing, s: ArrangementStrip, in_front: Boo
         }
         ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
-                on choose: resize_strip(arrangement, s.key, permille_of(.narrow))
+                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.narrow))
             }
             ui.MenuItem("Normal", checked: .some(width_of(s.width) == .normal)) {
-                on choose: resize_strip(arrangement, s.key, permille_of(.normal))
+                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.normal))
             }
             ui.MenuItem("Wide", checked: .some(width_of(s.width) == .wide)) {
-                on choose: resize_strip(arrangement, s.key, permille_of(.wide))
+                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.wide))
             }
         }
     }
@@ -168,15 +168,15 @@ view place_content(a: Arrangement, p: ArrangementPlace) {
 /// conversation over it (shell.md §8.1), drawn here as any other view of the shell is.
 view place_view(p: ArrangementPlace) {
     if let r = placed_run(p.record) {
-        conversation(r)
+        conversation(r, fill)
     } else if let r = placed_resource(p.record) {
         if p.shown_as != "" or meta(r).opens {
-            show(r, view: p.shown_as)
+            show(r, view: p.shown_as, fill)
         } else {
-            ui.WindowWell(place: p.key, min: 12rem)
+            ui.WindowWell(place: p.key, min: 12rem, fill)
         }
     } else {
-        ui.WindowWell(place: p.key, min: 12rem)
+        ui.WindowWell(place: p.key, min: 12rem, fill)
     }
 }
 
@@ -188,17 +188,17 @@ view place_controls(a: Arrangement, p: ArrangementPlace) {
             ui.Badge("Pinned", dot: true)
         }
         ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
-            on press: pin_place(arrangement, p.key, not p.pinned)
+            on press: session.pin_place(place: arranged(p.key), pinned: .some(not p.pinned))
         }
         ui.Button("Close place", icon: .x, icon_only: true, role: .plain) {
-            on press: close_place(arrangement, p.key)
+            on press: session.close_place(place: arranged(p.key))
         }
         if a.rows.len() > 1 {
             ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .plain) {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: move_place(arrangement, p.key, r.key)
+                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
                         }
                     }
                 }

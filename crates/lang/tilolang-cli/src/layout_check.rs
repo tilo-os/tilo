@@ -322,9 +322,9 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
-/// The app in `dir` and the packages it uses, found in `search`, built in dependency order; and
-/// what the platform and native apps publish (the device's, Settings'), which an app such as
-/// the shell uses as metadata rather than as a package directory ([`crate::compile`]).
+/// The app in `dir` compiled after the packages it uses, found in `search`; and the packages
+/// it uses as metadata rather than as a package directory: the native apps' (each a committed
+/// description, `surface.toml`) and the platform's (the device's, Settings'): [`crate::compile`].
 fn build(
     dir: &Path,
     search: &[PathBuf],
