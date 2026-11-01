@@ -11,8 +11,10 @@
 //! another device is never sent.
 //!
 //! [`State::verdict`] is the one place a decline is decided, in the order a
-//! person would state the rules; the requester ranks the willing answers
-//! (`tilo_peer_state::placement`).
+//! person would state the rules; the requester weighs and ranks the willing
+//! answers (`tilo_peer_state::placement`), and the work travels in the
+//! question ([`Work`]) and the answer ([`Answer`]) so that moving a job's
+//! inputs is weighed against running it where it was asked.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -207,11 +209,54 @@ pub struct Query {
     pub request_id: Uuid,
     /// What would run.
     pub route: Route,
+    /// What it would read, and how long the asking device last took for it.
+    pub work: Work,
+}
+
+/// The most distinct inputs one job names; past this its inputs travel as
+/// their total bytes alone.
+pub const MAX_WORK_INPUTS: usize = 64;
+
+/// What a route would read, and how long the device that asked last took
+/// for it: the cost of moving the work weighed against the cost of running
+/// it where it was asked.
+///
+/// An answering device says which of these it already holds, so an input it
+/// has is not weighed as moving; the device that asked names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Work {
+    /// The distinct inputs, by digest, each with its bytes; at most
+    /// [`MAX_WORK_INPUTS`], and their bytes are part of `input_bytes`.
+    pub inputs: Vec<([u8; 32], u64)>,
+    /// Every input's bytes, whether or not it was named above.
+    pub input_bytes: u64,
+    /// How long the device that asked last took for this action over
+    /// inputs like these, which offloading has to beat; `None` before it
+    /// has run it.
+    pub local_wall_ms: Option<u64>,
+}
+
+impl Work {
+    /// What runs where it was asked: reading nothing, never offloaded.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+}
+
+/// One device's answer to an offer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answer {
+    /// What it says of itself.
+    pub state: State,
+    /// The digest of each of the job's inputs it already holds, so moving
+    /// them is no part of the choice ([`Work::inputs`]).
+    pub holds: Vec<[u8; 32]>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Decline, Power, Query, Route, State};
+    use super::{Answer, Decline, Power, Query, Route, State, Work};
 
     fn worker() -> State {
         State {
@@ -268,10 +313,19 @@ mod tests {
             workspace: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
             request_id: uuid::Uuid::from_u128(7),
             route: Route::new("so.tilo.notes", "notes.root", "insert"),
+            work: Work {
+                inputs: vec![([3; 32], 4_000)],
+                input_bytes: 9_000,
+                local_wall_ms: Some(1_200),
+            },
         };
         let bytes = postcard::to_allocvec(&query).unwrap();
         assert_eq!(postcard::from_bytes::<Query>(&bytes).unwrap(), query);
-        let answer = postcard::to_allocvec(&worker()).unwrap();
-        assert_eq!(postcard::from_bytes::<State>(&answer).unwrap(), worker());
+        let answer = Answer {
+            state: worker(),
+            holds: vec![[3; 32]],
+        };
+        let bytes = postcard::to_allocvec(&answer).unwrap();
+        assert_eq!(postcard::from_bytes::<Answer>(&bytes).unwrap(), answer);
     }
 }

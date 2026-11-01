@@ -40,7 +40,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
-use neighbour_wire::offer::{Query, Route, State};
+use neighbour_wire::offer::{Answer, Query, Route, State, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -130,9 +130,10 @@ pub trait Workspaces: Send + Sync {
 /// the choices its person made for it. A plane with no `Offering` says its
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {
-    /// What this device says of running `route` in `workspace`: its own
-    /// state, never another device's.
-    fn report(&self, workspace: &str, route: &Route) -> State;
+    /// What this device says of running `route` in `workspace`, for `work`:
+    /// its own state and which of the job's inputs it already holds, never
+    /// another device's.
+    fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer;
 }
 
 /// A device's action plane: it serves the requests other devices of its
@@ -327,9 +328,11 @@ impl ActionPlane {
         participants
     }
 
-    /// Ask each of `targets` whether it would run `route` in `workspace`,
-    /// and rank what they answered ([`pick`](crate::placement::pick)): the
-    /// device to run it on, or — nobody willing — that it stays here.
+    /// Ask each of `targets` whether it would run `route` in `workspace` on
+    /// `work`, and rank what they answered
+    /// ([`pick`](crate::placement::pick)): the device to run it on, or —
+    /// nobody willing, or moving the inputs there no faster than the run here
+    /// — that it stays here.
     ///
     /// Every device is asked at once and given the whole of `within` to
     /// answer; one that does not is ranked as absent. Answers are complete
@@ -342,11 +345,13 @@ impl ActionPlane {
         targets: impl IntoIterator<Item = EndpointAddr>,
         workspace: &str,
         route: &Route,
+        work: &Work,
         within: Duration,
     ) -> tilo_actions::remote::Pending<crate::placement::Choice> {
         let (complete, answer) = tilo_actions::remote::pending();
         let workspace = workspace.to_owned();
         let route = route.clone();
+        let work = work.clone();
         let device = self.device();
         let asks = targets
             .into_iter()
@@ -354,12 +359,12 @@ impl ActionPlane {
             .map(|addr| {
                 let target = *addr.id.as_bytes();
                 let asker = self.device_at(endpoint, &addr, &workspace);
-                let route = route.clone();
+                let (route, work) = (route.clone(), work.clone());
                 (
                     target,
                     self.0
                         .runtime
-                        .spawn(async move { asker.consider(&route).await }),
+                        .spawn(async move { asker.consider(&route, &work).await }),
                 )
             })
             .collect::<Vec<_>>();
@@ -370,17 +375,17 @@ impl ActionPlane {
             for (target, mut ask) in asks {
                 let remaining = until.saturating_duration_since(Instant::now());
                 let answer = tokio::time::timeout(remaining, &mut ask).await;
-                let state = if let Ok(Ok(state)) = answer {
-                    (target, state)
+                let heard = if let Ok(Ok(heard)) = answer {
+                    (target, heard)
                 } else {
                     // A device still connecting when the round ends is away;
                     // nothing keeps its answer for a later round.
                     ask.abort();
-                    (target, State::unreachable())
+                    (target, away())
                 };
-                answers.push(state);
+                answers.push(heard);
             }
-            complete.complete(crate::placement::pick(answers));
+            complete.complete(crate::placement::pick(answers, &work));
         });
         answer
     }
@@ -388,7 +393,7 @@ impl ActionPlane {
     /// Answer one offer: what this device says of itself, or `None` when the
     /// device that asked may not be told — it is not in this workspace's
     /// roster, or this device does not hold the workspace.
-    fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<State> {
+    fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
         let now = SystemTime::now();
         let admitted = self.read_workspace(&query.workspace, |peer| {
             peer.permissions(remote, now).is_ok()
@@ -397,19 +402,27 @@ impl ActionPlane {
             return None;
         }
         let Some(offering) = self.0.offering.lock_recover().clone() else {
-            return Some(State {
-                online: true,
-                holds_workspace: true,
-                ..State::unreachable()
+            return Some(Answer {
+                state: State {
+                    online: true,
+                    holds_workspace: true,
+                    ..State::unreachable()
+                },
+                holds: Vec::new(),
             });
         };
-        let mut state = offering.report(&query.workspace, &query.route);
+        let mut answer = offering.report(&query.workspace, &query.route, &query.work);
         // What the plane knows better than the device's own report.
-        state.requester = false;
-        state.online = true;
-        state.holds_workspace = true;
-        state.latency_ms = 0;
-        Some(state)
+        answer.state.requester = false;
+        answer.state.online = true;
+        answer.state.holds_workspace = true;
+        answer.state.latency_ms = 0;
+        // Only the inputs the job named, so no answer carries more than the
+        // question did.
+        answer
+            .holds
+            .retain(|digest| query.work.inputs.iter().any(|(input, _)| input == digest));
+        Some(answer)
     }
 
     /// Answer one request: what the device's dispatcher made of it.
@@ -828,6 +841,15 @@ async fn await_answer<T: Send + 'static>(
     }
 }
 
+/// What a device that never answered is taken to have said: it is not
+/// there, and it holds none of the job's inputs.
+fn away() -> Answer {
+    Answer {
+        state: State::unreachable(),
+        holds: Vec::new(),
+    }
+}
+
 /// One other device, as an [`ActionHost`]: its actions through the same
 /// trait a local host's are used through.
 #[derive(Clone)]
@@ -966,26 +988,27 @@ impl Device {
             .map_err(|error| unavailable(&error.to_string()))
     }
 
-    /// Whether this device would run `route`: what it answered, with the
-    /// round trip this device measured, or — asked but silent — what a
-    /// device that is away is taken to have said.
-    async fn consider(&self, route: &Route) -> State {
+    /// Whether this device would run `route` on `work`: what it answered,
+    /// with the round trip this device measured, or — asked but silent —
+    /// what a device that is away is taken to have said.
+    async fn consider(&self, route: &Route, work: &Work) -> Answer {
         let query = Query {
             workspace: self.workspace.clone(),
             request_id: uuid::Uuid::new_v4(),
             route: route.clone(),
+            work: work.clone(),
         };
         let started = Instant::now();
-        let answer = async {
+        let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(query)).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
-            postcard::from_bytes::<State>(&answer).ok()
+            postcard::from_bytes::<Answer>(&answer).ok()
         };
-        let Some(mut state) = answer.await else {
-            return State::unreachable();
+        let Some(mut heard) = heard.await else {
+            return away();
         };
-        state.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
-        state
+        heard.state.latency_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        heard
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one

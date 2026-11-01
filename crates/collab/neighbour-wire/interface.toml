@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 25
+version = 26
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -610,6 +610,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Query" = "struct"
 "Query.request_id" = "#1 Uuid"
 "Query.route" = "#2 Route"
+"Query.work" = "#3 Work"
 "Query.workspace" = "#0 String"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
@@ -700,3 +701,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "VoiceParticipant.publishes" = "#3 bool"
 "VoiceParticipant.showing" = "#4 Showing"
 "VoiceParticipant.user_public_key" = "#1 [u8; 32]"
+"Work" = "struct"
+"Work.input_bytes" = "#1 u64"
+"Work.inputs" = "#0 Vec<([u8; 32], u64)>"
+"Work.local_wall_ms" = "#2 Option<u64>"

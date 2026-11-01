@@ -14,7 +14,7 @@ tilo_automerge_isolate::test_worker!();
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use neighbour_wire::offer::{Decline, Power, Route, State};
+use neighbour_wire::offer::{Answer, Decline, Power, Route, State, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::remote::TestHost;
@@ -42,9 +42,20 @@ async fn asked(
     targets: Vec<EndpointAddr>,
     within: Duration,
 ) -> tilo_peer_state::placement::Choice {
+    asked_about(plane, asker, targets, &work(), within).await
+}
+
+/// The choice a round about `work` came to, waited for.
+async fn asked_about(
+    plane: &ActionPlane,
+    asker: &Endpoint,
+    targets: Vec<EndpointAddr>,
+    work: &Work,
+    within: Duration,
+) -> tilo_peer_state::placement::Choice {
     tokio::time::timeout(
         PATIENCE,
-        plane.offers(asker, targets, WORKSPACE, &route(), within),
+        plane.offers(asker, targets, WORKSPACE, &route(), work, within),
     )
     .await
     .expect("the round finishes")
@@ -112,11 +123,11 @@ fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
 
 /// A device that answers offers with what the test tells it to say of
 /// itself.
-struct Reported(State);
+struct Reported(Answer);
 
 impl Offering for Reported {
-    fn report(&self, _workspace: &str, _route: &Route) -> State {
-        self.0
+    fn report(&self, _workspace: &str, _route: &Route, _work: &Work) -> Answer {
+        self.0.clone()
     }
 }
 
@@ -129,7 +140,7 @@ struct Engine {
 }
 
 impl Engine {
-    async fn serving(replica: Replica, key: SigningKey, reported: Option<State>) -> Self {
+    async fn serving(replica: Replica, key: SigningKey, reported: Option<Answer>) -> Self {
         let endpoint = endpoint(&key).await;
         let plane = ActionPlane::new(key.clone(), Arc::new(TestHost::new()));
         plane.hold(replica);
@@ -182,6 +193,32 @@ fn route() -> Route {
     Route::new(APP, "notes.root", "insert")
 }
 
+/// `state` as the answer a device sends, holding none of the job's inputs.
+fn answer(state: State) -> Answer {
+    Answer {
+        state,
+        holds: Vec::new(),
+    }
+}
+
+/// `state` as the answer of a device that already holds `idle`'s inputs.
+fn holding(state: State, inputs: &[([u8; 32], u64)]) -> Answer {
+    Answer {
+        state,
+        holds: inputs.iter().map(|(digest, _)| *digest).collect(),
+    }
+}
+
+/// The work an offer is about: one small input, and a run here it could
+/// beat.
+fn work() -> Work {
+    Work {
+        inputs: vec![([7; 32], 1_000)],
+        input_bytes: 1_000,
+        local_wall_ms: Some(10_000),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
     let root = SigningKey::from_bytes(&[0x51; 32]);
@@ -194,8 +231,8 @@ async fn the_device_that_reports_the_lowest_cost_wins_and_the_rest_say_why() {
 
     // The busy device holds the workspace but reports a full pipeline; the
     // idle one holds nothing to do.
-    let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(willing(750))).await;
-    let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(willing(0))).await;
+    let busy = Engine::serving(replica.clone(), busy.0.clone(), Some(answer(willing(750)))).await;
+    let idle = Engine::serving(replica.clone(), idle.0.clone(), Some(answer(willing(0)))).await;
     let asker = endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
     plane.hold(replica.clone());
@@ -244,7 +281,7 @@ async fn nobody_offering_leaves_the_run_where_it_was_asked() {
     // and runs nothing.
     let mut store_only = willing(0);
     store_only.store_role = true;
-    let store = Engine::serving(replica.clone(), store.0.clone(), Some(store_only)).await;
+    let store = Engine::serving(replica.clone(), store.0.clone(), Some(answer(store_only))).await;
     let asker = endpoint(&here.0).await;
     let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
 
@@ -324,7 +361,7 @@ async fn a_device_asked_from_outside_the_workspace_answers_nothing() {
     let peer = workspace(&member, &roster);
     let replica = Replica::new(peer);
 
-    let answering = Engine::serving(replica, member.0.clone(), Some(willing(0))).await;
+    let answering = Engine::serving(replica, member.0.clone(), Some(answer(willing(0)))).await;
     let asker = endpoint(&stranger.0).await;
     let plane = ActionPlane::new(stranger.0.clone(), Arc::new(TestHost::new()));
 
@@ -405,4 +442,97 @@ async fn a_device_with_nothing_to_say_offers_nothing() {
 
     quiet.close().await;
     asker.close().await;
+}
+
+/// A job whose inputs a device already holds goes there although another
+/// device answers cheaper, and a job nobody holds stays where it was asked:
+/// the bytes that would move decide before rank does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_jobs_inputs_decide_before_rank_does() {
+    let root = SigningKey::from_bytes(&[0x61; 32]);
+    let here = device(&root, 0x62);
+    let near = device(&root, 0x63);
+    let far = device(&root, 0x64);
+    let roster = vec![here.1.clone(), near.1.clone(), far.1.clone()];
+    let replica = Replica::new(workspace(&here, &roster));
+
+    // One big input, and a run here it would have to beat.
+    let mut heavy = work();
+    heavy.inputs = vec![([7; 32], 32_000_000)];
+    heavy.input_bytes = 32_000_000;
+    heavy.local_wall_ms = Some(1_000);
+
+    let near = Engine::serving(replica.clone(), near.0.clone(), Some(answer(willing(0)))).await;
+    let far = Engine::serving(
+        replica.clone(),
+        far.0.clone(),
+        Some(holding(willing(500), &heavy.inputs)),
+    )
+    .await;
+    let asker = endpoint(&here.0).await;
+    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
+    plane.hold(replica);
+
+    let choice = asked_about(
+        &plane,
+        &asker,
+        vec![near.addr(), far.addr()],
+        &heavy,
+        OFFER_DEADLINE,
+    )
+    .await;
+    assert_eq!(
+        choice.worker,
+        Some(far.device()),
+        "the device holding the input needs nothing moved: {choice}"
+    );
+    assert_eq!(
+        choice.transfer.map(|transfer| transfer.moving_bytes),
+        Some(0),
+        "an input the winner holds does not move: {choice}"
+    );
+    assert!(
+        !choice
+            .considered
+            .iter()
+            .find(|candidate| candidate.device == near.device())
+            .unwrap()
+            .worthwhile,
+        "the nearer device would have to receive all of it: {choice}"
+    );
+
+    near.close().await;
+    far.close().await;
+}
+
+/// A job heavy enough that moving it beats nothing stays where it was
+/// asked, even though a device offered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_whose_inputs_move_slower_than_it_runs_stays_here() {
+    let root = SigningKey::from_bytes(&[0x71; 32]);
+    let here = device(&root, 0x72);
+    let other = device(&root, 0x73);
+    let roster = vec![here.1.clone(), other.1.clone()];
+    let replica = Replica::new(workspace(&here, &roster));
+
+    let mut heavy = work();
+    heavy.inputs = vec![([7; 32], 64_000_000)];
+    heavy.input_bytes = 64_000_000;
+    heavy.local_wall_ms = Some(1_000);
+
+    let other = Engine::serving(replica, other.0.clone(), Some(answer(willing(0)))).await;
+    let asker = endpoint(&here.0).await;
+    let plane = ActionPlane::new(here.0.clone(), Arc::new(TestHost::new()));
+
+    let choice = asked_about(&plane, &asker, vec![other.addr()], &heavy, OFFER_DEADLINE).await;
+    assert!(
+        choice.is_local(),
+        "moving the inputs would be slower: {choice}"
+    );
+    assert!(
+        choice.to_string().contains("no faster than the run here"),
+        "{choice}"
+    );
+
+    other.close().await;
 }
