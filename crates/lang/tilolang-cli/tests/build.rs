@@ -133,6 +133,36 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     );
 }
 
+/// A package that reads the platform's published resources (the shell's quick settings read the
+/// device's) builds: the platform's apps are described from their surfaces, not looked for
+/// among the packages.
+#[test]
+fn a_package_that_uses_the_platforms_apps_builds() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in ["shell", "notes", "tasks", "chat"] {
+        copy_package(&packages().join(name), &source.join(name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("shell"),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let shell = apps.last().unwrap();
+    assert_eq!(shell.app, "so.tilo.shell");
+    assert!(shell.tapp.is_file());
+    assert!(
+        apps.iter()
+            .all(|app| app.app != tilolang_tilo::platform_apps::DEVICE_APP),
+        "the device is the platform's, not built here: {apps:?}"
+    );
+}
+
 fn collab_types_surface(bytes: &[u8]) -> collab_types::surface::SurfaceFile {
     collab_types::surface::SurfaceFile::parse(bytes).unwrap()
 }

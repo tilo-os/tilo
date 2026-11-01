@@ -1129,10 +1129,14 @@ fn shipped_dir() -> std::path::PathBuf {
 
 /// The shipped package in `dir`, built with the packages it uses, and its app id.
 fn shipped(dir: &std::path::Path) -> (String, Bundle) {
-    let dirs = tilolang::source::dependency_order(dir, &[])
+    // The platform's apps (the device, Settings) are described from their surfaces, not built.
+    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform's apps");
+    let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
+    let dirs = tilolang::source::dependency_order_with(dir, &[], &provided)
         .unwrap_or_else(|error| panic!("{}: the packages resolve: {error}", dir.display()));
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .unwrap_or_else(|error| panic!("{}: the packages compile: {error}", dir.display()));
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .unwrap_or_else(|error| panic!("{}: the packages compile: {error}", dir.display()));
     let (package, used) = built.split_last().expect("the package is built last");
     (
         package.compiled.meta.app.clone(),

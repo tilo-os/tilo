@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::{compile_dirs, dependency_order, write_ids};
+use tilolang::source::{compile_dirs, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -207,14 +207,30 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
 }
 
+/// The directories of the package in `dir` and the packages it uses, in the order they build:
+/// a package may also use the platform's apps (the device, Settings), which are described from
+/// the surfaces they publish rather than built.
+///
+/// # Errors
+/// A package it uses is found nowhere.
+pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let provided: Vec<String> = tilolang_tilo::platform_apps::platform_packages()?
+        .iter()
+        .map(|meta| meta.app.clone())
+        .collect();
+    tilolang::source::dependency_order_with(dir, search, &provided)
+}
+
 /// Compile the package in `options.dir` and those it uses, and stage and sign each as an app.
 ///
 /// # Errors
 /// A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
-    let dirs = dependency_order(&options.dir, &options.search)?;
-    let built = compile_dirs(&dirs, &[], &mut OsEntropy::default()).map_err(|e| e.to_string())?;
+    let platform = tilolang_tilo::platform_apps::platform_packages()?;
+    let dirs = package_dirs(&options.dir, &options.search)?;
+    let built =
+        compile_dirs(&dirs, &platform, &mut OsEntropy::default()).map_err(|e| e.to_string())?;
     for package in &built {
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
