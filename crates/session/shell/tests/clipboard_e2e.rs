@@ -4508,19 +4508,21 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
     );
 
     client.clear_keyboard_trace();
-    // Physical positions: code 21 is the US-Y / German-Z position; code 12
-    // becomes `?` under Shift in de(nodeadkeys); code 43 becomes apostrophe.
+    // A character names the key the session's keymap types it with
+    // (`compositor::keymap_typing`), so these are German keys: `z` is code 21
+    // (the US Y position), `ß` is code 12, which becomes `?` under Shift in
+    // de(nodeadkeys), and `#` is code 43, which becomes an apostrophe.
     // Holding modifiers as separate transitions proves the protocol does not
     // collapse Shift into a synthetic text event (which breaks selection in
     // Electron and all standard toolkits).
     for (key, down) in [
         ("Shift", true),
-        ("y", true),
-        ("y", false),
-        ("-", true),
-        ("-", false),
-        ("\\", true),
-        ("\\", false),
+        ("z", true),
+        ("z", false),
+        ("ß", true),
+        ("ß", false),
+        ("#", true),
+        ("#", false),
         ("Shift", false),
         ("Control", true),
         ("ArrowLeft", true),
