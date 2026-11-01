@@ -64,7 +64,7 @@ pub struct HistoryAgent {
     pub person: String,
 }
 
-/// A delegated agent on a room's roster, defined beside the history ids in
+/// A delegated agent on a workspace's roster, defined beside the history ids in
 /// the collaboration types so the session's services name it without the
 /// toolkit.
 pub use collab_types::history::RosterAgent;
@@ -96,7 +96,7 @@ impl AuthorDirectory {
         self.register(&principal_key(principal), author);
     }
 
-    /// Name the room's participants as its roster names them (participant
+    /// Name the workspace's participants as its roster names them (participant
     /// id, name): a change written under a participant's key, or under their
     /// handle, reads as theirs instead of as an unknown participant.
     pub fn register_roster<'a>(&mut self, people: impl IntoIterator<Item = (&'a str, &'a str)>) {
@@ -143,13 +143,13 @@ impl AuthorDirectory {
     }
 
     /// An empty directory that names every agent the session verified for
-    /// the rooms this thread's app is in ([`set_room_agents`]): what an app's
+    /// the workspaces this thread's app is in ([`set_workspace_agents`]): what an app's
     /// own history reads with.
     #[must_use]
-    pub fn with_room_agents() -> Self {
+    pub fn with_workspace_agents() -> Self {
         let mut directory = Self::new();
-        ROOM_AGENTS.with(|rooms| {
-            for agent in rooms.borrow().values().flatten() {
+        WORKSPACE_AGENTS.with(|workspaces| {
+            for agent in workspaces.borrow().values().flatten() {
                 directory.register_roster_agent(agent);
             }
         });
@@ -427,34 +427,34 @@ impl ResolveAuthor for AuthorDirectory {
 
 thread_local! {
     static THREAD_READER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-    /// The verified agents of each room this thread's app is in, as the
+    /// The verified agents of each workspace this thread's app is in, as the
     /// session last sent them.
-    static ROOM_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
+    static WORKSPACE_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-    /// Moves whenever [`ROOM_AGENTS`] is replaced, so a history view that
+    /// Moves whenever [`WORKSPACE_AGENTS`] is replaced, so a history view that
     /// named them knows to name them again.
-    static ROOM_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WORKSPACE_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Which replacement of this thread's room agents
-/// ([`set_room_agents`]) is current.
-pub(crate) fn room_agents_revision() -> u64 {
-    ROOM_AGENTS_REVISION.with(std::cell::Cell::get)
+/// Which replacement of this thread's workspace agents
+/// ([`set_workspace_agents`]) is current.
+pub(crate) fn workspace_agents_revision() -> u64 {
+    WORKSPACE_AGENTS_REVISION.with(std::cell::Cell::get)
 }
 
-/// Replace the verified agents of `room` this thread's app names in its
-/// history ([`AuthorDirectory::with_room_agents`]). Only the session's
+/// Replace the verified agents of `workspace` this thread's app names in its
+/// history ([`AuthorDirectory::with_workspace_agents`]). Only the session's
 /// context stream calls this, with what it verified.
-pub fn set_room_agents(room: &str, agents: Vec<RosterAgent>) {
-    ROOM_AGENTS.with(|rooms| {
-        let mut rooms = rooms.borrow_mut();
+pub fn set_workspace_agents(workspace: &str, agents: Vec<RosterAgent>) {
+    WORKSPACE_AGENTS.with(|workspaces| {
+        let mut workspaces = workspaces.borrow_mut();
         if agents.is_empty() {
-            rooms.remove(room);
+            workspaces.remove(workspace);
         } else {
-            rooms.insert(room.to_owned(), agents);
+            workspaces.insert(workspace.to_owned(), agents);
         }
     });
-    ROOM_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+    WORKSPACE_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
 /// The principal of the person this thread's app runs for: whose changes

@@ -45,19 +45,19 @@ pub struct ApplicationDefinition {
     /// hands it a file ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`]
     /// for a component that opens every file (a hex editor).
     pub opens: &'static [&'static str],
-    /// The app keeps one record per room, the room's own (a conversation
-    /// everyone in the room shares), rather than a record per window: every
-    /// window of the app in the room opens it, and the first creates it.
-    pub room_record: bool,
+    /// The app keeps one record per workspace, the workspace's own (a conversation
+    /// everyone in the workspace shares), rather than a record per window: every
+    /// window of the app in the workspace opens it, and the first creates it.
+    pub workspace_record: bool,
     /// The record a window opens when it names none is the person's own record of the
     /// workspace ([`RecordId::of_member`]) rather than the workspace's record of the app: what
     /// it keeps there (their mail) only their devices read. A person without a root identity
     /// is a member of no workspace and opens the workspace's record as before.
     pub member_record: bool,
-    /// The app's window shows before the room's record is read: a record this device holds
+    /// The app's window shows before the workspace's record is read: a record this device holds
     /// opens off the frame, and the component takes it in when it is decoded
     /// ([`HostContext::record_opening`]). Only for an app that
-    /// [keeps one record per room](Self::room_record).
+    /// [keeps one record per workspace](Self::workspace_record).
     pub opens_before_record: bool,
     pub create: ComponentFactory,
 }
@@ -83,7 +83,7 @@ impl ApplicationDefinition {
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
-    /// Explicit creation of the one room-scoped package-primary document.
+    /// Explicit creation of the one workspace-scoped package-primary document.
     PrimaryNew,
     Record {
         checkout: RecordCheckout,
@@ -144,7 +144,7 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
-    /// Where the app opens the records every app of the room opens, when
+    /// Where the app opens the records every app of the workspace opens, when
     /// the host keeps them ([`Self::provide_workspace_records`]).
     workspace: Option<crate::record::workspace::WorkspaceRecords>,
     /// The file areas the host gave it ([`Self::provide_files`]); the
@@ -643,7 +643,7 @@ impl HostContext {
         )
         .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
         // Another replica's change to the window's records (a collaborator's
-        // edit, a room's bot posting) wakes the window to show it.
+        // edit, a workspace's bot posting) wakes the window to show it.
         let wake_scope = WakeScope::new();
         records.wake_on_arrival(wake_scope.handle());
         Ok(Self {
@@ -821,15 +821,15 @@ impl HostContext {
         &self.record
     }
     /// The store the record is kept in, with the app's other records of
-    /// the same room: what an app holding records beside its own (the
+    /// the same workspace: what an app holding records beside its own (the
     /// parts of a chain) opens them in, so they sync on the same routes.
     pub fn records(&self) -> &RecordStore {
         &self.records
     }
-    /// The per-window records this app's windows kept in this room before it
-    /// [kept one record per room](ApplicationDefinition::keeps_room_record),
+    /// The per-window records this app's windows kept in this workspace before it
+    /// [kept one record per workspace](ApplicationDefinition::keeps_workspace_record),
     /// read-only and sorted by id ([`RecordStore::window_records`]). Only a
-    /// context of the room's own record answers: what the app adopts into
+    /// context of the workspace's own record answers: what the app adopts into
     /// it when it creates it. Any other context has none.
     pub fn window_records(&self) -> Vec<(RecordId, AutoCommit)> {
         if !self.record.id.is_package_primary() {
@@ -944,7 +944,7 @@ impl HostContext {
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
     }
-    /// Give the component the records every app of its room opens
+    /// Give the component the records every app of its workspace opens
     /// ([`crate::record::workspace`]), kept beside the record it shows.
     pub fn provide_workspace_records(
         &mut self,
@@ -952,7 +952,7 @@ impl HostContext {
     ) {
         self.workspace = Some(records);
     }
-    /// The records every app of the room opens, when the host keeps them.
+    /// The records every app of the workspace opens, when the host keeps them.
     pub fn workspace_records(&self) -> Option<&crate::record::workspace::WorkspaceRecords> {
         self.workspace.as_ref()
     }
@@ -1114,21 +1114,21 @@ impl ApplicationDefinition {
             .map(|id| RecordCheckout::new(id, self.record_kind.clone()))
     }
 
-    /// Whether the app keeps one record per room, its package primary,
-    /// rather than a record per window ([`Self::room_record`]).
-    pub fn keeps_room_record(&self) -> bool {
-        self.room_record
+    /// Whether the app keeps one record per workspace, its package primary,
+    /// rather than a record per window ([`Self::workspace_record`]).
+    pub fn keeps_workspace_record(&self) -> bool {
+        self.workspace_record
     }
 
     /// The launch target of an instance with no saved record: a new record
-    /// of its own, or the room's record (created on first use) for an app
-    /// that [keeps one](Self::keeps_room_record).
+    /// of its own, or the workspace's record (created on first use) for an app
+    /// that [keeps one](Self::keeps_workspace_record).
     ///
     /// # Errors
     /// Preserves an existing record's ownership, identity or storage failure.
     /// Only a missing primary record permits a new reservation.
     pub fn unsaved_target(&self, records: &RecordStore) -> Result<LaunchTarget, RecordOpenError> {
-        if !self.keeps_room_record() {
+        if !self.keeps_workspace_record() {
             return Ok(LaunchTarget::New);
         }
         let checkout = RecordCheckout::package_primary(self.record_kind.clone());
@@ -1296,7 +1296,7 @@ pub enum WindowRole {
     /// Its window announces the component's own app id, by which the
     /// compositor (on the private display it launched the surface on) floats
     /// it outside the workspace and shows it only while a text field is
-    /// focused. It is a session service started without a room, so it
+    /// focused. It is a session service started without a workspace, so it
     /// attaches to no workspace runtime. Its controls type into other apps'
     /// fields, so no headless drive may operate it.
     InputSurface,
@@ -1543,7 +1543,7 @@ impl AppComponent {
 
     /// Sample and deliver only after the caller has released its document loan.
     /// The same checked callback lifetime owns both the sample and the hook.
-    /// The changes the room refused and the record withdrew are delivered
+    /// The changes the workspace refused and the record withdrew are delivered
     /// with it. Returns whether the delivered status changed or a refusal
     /// arrived.
     pub(crate) fn project_record_save_status(&mut self) -> bool {
@@ -1568,7 +1568,7 @@ impl AppComponent {
                 }
                 for text in root.take_notices() {
                     if let Err(error) = binding.records.hold_notice(&binding.checkout.id, text) {
-                        tracing::warn!(%error, "a notice could not wait for the room");
+                        tracing::warn!(%error, "a notice could not wait for the workspace");
                     }
                 }
                 let said = binding.records.take_said(&binding.checkout.id);
@@ -2504,7 +2504,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
-            room_record: false,
+            workspace_record: false,
             member_record: false,
             opens_before_record: false,
             create: factory,
@@ -2555,7 +2555,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
-            room_record: false,
+            workspace_record: false,
             member_record: false,
             opens_before_record: false,
             create: factory,
@@ -2619,7 +2619,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                room_record: false,
+                workspace_record: false,
                 member_record: false,
                 opens_before_record: false,
                 create: factory,
@@ -2711,7 +2711,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                room_record: false,
+                workspace_record: false,
                 member_record: false,
                 opens_before_record: false,
                 create: factory,
@@ -2782,9 +2782,9 @@ mod portable_tests {
         }
         let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
         let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::ROOM)
+            .open(probe::APP, probe::WORKSPACE)
             .unwrap();
-        let views = Rc::new(InstanceViewStore::portable(cache, probe::ROOM).unwrap());
+        let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
         let definition = probe::definition(probe::probe_factory);
         let prepare = |instance_id| {
             HostContext::prepare(
@@ -2844,14 +2844,14 @@ mod portable_tests {
         let cache =
             crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
         let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::ROOM)
+            .open(probe::APP, probe::WORKSPACE)
             .unwrap();
         let definition = probe::definition(probe::probe_factory);
         let mut context = HostContext::prepare(
             &definition,
             HostContextInputs {
                 records,
-                views: Rc::new(InstanceViewStore::portable(cache, probe::ROOM).unwrap()),
+                views: Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap()),
                 device_id: probe::DEVICE.into(),
                 instance_id: 7,
                 permissions: probe::permissions(),
@@ -2903,10 +2903,10 @@ mod portable_tests {
         } = host;
         drop((records, owners, views));
         let mut owners = crate::record::RecordOwners::new(root.clone());
-        let records = owners.open(probe::APP, probe::ROOM).unwrap();
+        let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
         assert!(records.open_record(&checkout), "the record was saved");
         assert_eq!(probe::body(&records, &checkout), "initialized");
-        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::ROOM)
+        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::WORKSPACE)
             .unwrap()
             .load(7)
             .unwrap()
@@ -2920,9 +2920,9 @@ mod portable_tests {
         let cache =
             crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
         let records = crate::record::RecordOwners::portable(cache.clone())
-            .open(probe::APP, probe::ROOM)
+            .open(probe::APP, probe::WORKSPACE)
             .unwrap();
-        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::ROOM).unwrap());
+        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
         let definition = probe::definition(probe::probe_factory);
         let prepare = |views, permissions| {
             HostContext::prepare(
@@ -2943,7 +2943,7 @@ mod portable_tests {
             crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
         assert!(matches!(
             prepare(
-                Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()),
+                Rc::new(InstanceViewStore::portable(foreign, probe::WORKSPACE).unwrap()),
                 probe::permissions()
             ),
             Err(LaunchError::BindingMismatch)

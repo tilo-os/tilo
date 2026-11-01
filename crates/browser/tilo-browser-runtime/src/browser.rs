@@ -1225,7 +1225,7 @@ fn present_component(
     );
     let (checkout, named_new) = match &config.record {
         Some(existing)
-            if definition.keeps_room_record()
+            if definition.keeps_workspace_record()
                 && existing == RecordId::package_primary().as_str() =>
         {
             (
@@ -1242,7 +1242,7 @@ fn present_component(
             )),
             None,
         ),
-        None if config.new_document || definition.keeps_room_record() => (None, None),
+        None if config.new_document || definition.keeps_workspace_record() => (None, None),
         None => match record.try_open_record(&default) {
             Ok(_) => (Some(default), None),
             Err(ui::record::RecordOpenError::MissingRecord) => (None, Some(default.id)),

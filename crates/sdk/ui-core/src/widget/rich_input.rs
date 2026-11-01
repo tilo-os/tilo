@@ -1,6 +1,6 @@
 //! [`RichInput`]: a field to type rich text into, bound to a `RichText` value: a chat's
 //! composer (`rich_input(bind: draft)`). Its completion drawers are its own, the system's
-//! behaviour of every rich input, never declared by a view: `@` offers the people of the room,
+//! behaviour of every rich input, never declared by a view: `@` offers the people of the workspace,
 //! `:` the emoji, and the triggers the system gives sources for ([`RichInput::set_sources`]).
 //! What a drawer picks goes in as a reference, a run marked `mention` that the text's readers
 //! see as their own inline view of what it names, never as prose that happens to start with
@@ -49,7 +49,7 @@ pub struct RichInputProps {
     /// under "In this conversation". The system gives it to every rich input.
     pub speakers: Vec<Person>,
     /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
-    /// system gives it to every rich input; given no one, the drawer offers the room's roster.
+    /// system gives it to every rich input; given no one, the drawer offers the workspace's roster.
     pub people: Vec<Person>,
     /// Enter was pressed: what was written is done (a composer's message is sent). With it,
     /// Enter sends rather than breaking the line; Shift+Enter still breaks it.
@@ -97,7 +97,7 @@ pub struct RichInput {
 }
 
 /// The people of a rich input's `@` drawer: who spoke last, then who can read it, and what the
-/// room said each of them is when the drawer was last given them.
+/// workspace said each of them is when the drawer was last given them.
 #[derive(Default)]
 struct DrawerPeople {
     speakers: Vec<Person>,
@@ -120,7 +120,7 @@ impl DrawerPeople {
     }
 
     /// The `@` source, when it changed since it was last built: those who spoke last (up to
-    /// five), then the members who did not, each as the room says they are.
+    /// five), then the members who did not, each as the workspace says they are.
     fn source(&mut self, presence: &PresenceCtx) -> Option<CompletionSource> {
         if self.speakers.is_empty() && self.members.is_empty() {
             return None;
@@ -290,7 +290,7 @@ impl RichInput {
     }
 
     /// Mark what picks wrote, and report the value when it changed. A person picked from the
-    /// room's roster reads as their name.
+    /// workspace's roster reads as their name.
     fn settle(&mut self) {
         let picked: Vec<_> = self.picked.borrow_mut().drain(..).collect();
         for (range, reference) in picked {
@@ -508,7 +508,7 @@ impl Decorator for RichInput {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The room says what each of the drawer's people is (an agent is marked as one) with
+        // The workspace says what each of the drawer's people is (an agent is marked as one) with
         // the frame.
         if self.people.is_empty() && self.people_source.is_some() {
             self.people_source = None;

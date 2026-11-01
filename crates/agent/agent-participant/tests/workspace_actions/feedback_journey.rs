@@ -147,7 +147,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     )
     .await;
     let value = output.value.unwrap();
-    assert_eq!(value["record"]["roomId"], workspace.room);
+    assert_eq!(value["record"]["workspaceId"], workspace.room);
     assert_eq!(value["record"]["appId"], "so.tilo.chat");
     assert_eq!(value["record"]["recordId"], "");
     let receipt: ui::feedback::Receipt = serde_json::from_value(value["content"].clone()).unwrap();
@@ -636,7 +636,7 @@ async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serd
         if let ReceiptStatus::Completed { output } = result.status {
             let value = output.value.unwrap();
             if value["content"]["triage"][0]["update"]["status"] == "resolved" {
-                assert_eq!(value["record"]["roomId"], submission.destination.room);
+                assert_eq!(value["record"]["workspaceId"], submission.destination.room);
                 assert_eq!(value["record"]["appId"], "so.tilo.chat");
                 assert_eq!(value["record"]["recordId"], "");
                 return value;

@@ -76,7 +76,7 @@ pub(crate) fn start_application_launch(
             reason: "Opening an application requires the workspace action broker".into(),
         });
     };
-    let Some(room) = route
+    let Some(workspace) = route
         .filter(|route| !route.cluster_id.is_nil())
         .map(|route| route.cluster_id.to_string())
         .or_else(|| door.workspace())
@@ -97,7 +97,7 @@ pub(crate) fn start_application_launch(
         InvokeRequest {
             on_behalf_of,
             invocation: InvocationId::new(),
-            target: launch.target(&room),
+            target: launch.target(&workspace),
             argument: launch.argument(),
             context: None,
             confirmation: None,

@@ -199,7 +199,7 @@ impl App {
             }
             if manager.join_hold().is_some() {
                 // Joining, and the broker says what holds the join up: the
-                // room is not ready on this device yet, or the broker
+                // workspace is not ready on this device yet, or the broker
                 // cannot be reached. A join that is merely under way says
                 // nothing.
                 Some("history-sync-reconnecting")
@@ -227,18 +227,18 @@ impl App {
     /// route or attempting publication; the real broker still authorizes retry.
     pub(super) fn restore_failed_document_publications(&mut self) {
         let primary_failed = self.collaboration.manager.document_publication_failed();
-        let room_failed = self
+        let workspace_failed = self
             .collaboration
-            .room_manager
+            .workspace_manager
             .as_ref()
             .is_some_and(CollaborationManager::document_publication_failed);
         if primary_failed {
             self.restore_primary_publication_obligations();
         }
-        if (primary_failed || room_failed)
-            && let Some(room) = self.persistence.room_index.as_mut()
+        if (primary_failed || workspace_failed)
+            && let Some(workspace) = self.persistence.room_index.as_mut()
         {
-            room.advance_outbound(Vec::new());
+            workspace.advance_outbound(Vec::new());
         }
     }
 
@@ -449,8 +449,8 @@ impl App {
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
                 self.restore_primary_publication_obligations();
-                if let Some(room) = self.persistence.room_index.as_mut() {
-                    room.advance_outbound(Vec::new());
+                if let Some(workspace) = self.persistence.room_index.as_mut() {
+                    workspace.advance_outbound(Vec::new());
                 }
                 self.collaboration.manager.stop_after_publication_failure();
                 self.layout.layout_dirty = true;
@@ -511,9 +511,9 @@ impl App {
         self.needs_sync = true;
     }
 
-    /// The room's hosts have nothing of the on-demand record on `route`, or
+    /// The workspace's hosts have nothing of the on-demand record on `route`, or
     /// none is connected: every store a live owner reads from is told
-    /// ([`crate::record::RecordStore::note_room_answered`]).
+    /// ([`crate::record::RecordStore::note_workspace_answered`]).
     pub(super) fn record_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
         let Some(id) = route
             .record
@@ -523,7 +523,7 @@ impl App {
             return;
         };
         for store in &self.live_record_stores() {
-            store.note_room_answered(id.clone());
+            store.note_workspace_answered(id.clone());
         }
         self.needs_sync = true;
     }
@@ -577,10 +577,10 @@ impl App {
         decrypted_payload: Option<&[u8]>,
     ) {
         // Before the first record checkout the launcher's unqualified route
-        // carries room-index discovery, never the editable record document.
+        // carries workspace-index discovery, never the editable record document.
         if self.persistence.records.is_some()
-            && self.collaboration.room_manager.is_none()
-            && self.native_room_route.is_none()
+            && self.collaboration.workspace_manager.is_none()
+            && self.native_workspace_route.is_none()
         {
             if let Some(route) = self
                 .collaboration

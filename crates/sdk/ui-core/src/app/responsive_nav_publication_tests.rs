@@ -66,16 +66,16 @@ fn responsive_nav_factory(
 #[test]
 fn responsive_nav_publication_tracks_layout_model_and_revocation() {
     let mut definition = crate::application_test_support::definition(responsive_nav_factory);
-    definition.room_record = true;
+    definition.workspace_record = true;
     let temp = tempfile::tempdir().unwrap();
-    let room = uuid::Uuid::new_v4().to_string();
+    let workspace = uuid::Uuid::new_v4().to_string();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners.open(definition.app_id(), &room).unwrap();
+    let records = owners.open(definition.app_id(), &workspace).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
             temp.path().into(),
             "fixture-device",
-            &room,
+            &workspace,
         )
         .unwrap(),
     );

@@ -299,7 +299,7 @@ impl PresenceCtx {
     /// A name chip normally hangs above the thing it names. On the top row of
     /// a clipped area there is nothing above to hang it in, so the chip is cut
     /// in half by the clip — which is how a collaborator ends up labelled with
-    /// the bottom two pixels of their name. When `bounds` leaves no room above,
+    /// the bottom two pixels of their name. When `bounds` leaves no workspace above,
     /// the chip drops inside the object's top edge instead.
     ///
     /// Inside, it goes to the **right**, because an object that carries a
@@ -441,13 +441,13 @@ const TETHER_AFTER: f64 = 4.0;
 /// of the label spilling out of it.
 pub(crate) const PILL_PAD_X: f64 = 7.0;
 pub(crate) const PILL_PAD_Y: f64 = 1.5;
-/// Room the agent's processor glyph takes ahead of the label, at 1×.
+/// Workspace the agent's processor glyph takes ahead of the label, at 1×.
 const AGENT_GLYPH_W: f64 = 14.0;
 
 /// How much larger than the default the label paints: the theme's `sm`
 /// type step over the default `sm`, times the renderer's text scale. Every
 /// inset that frames a label is proportioned by this, so a 2× name gets 2×
-/// breathing room instead of being pinned into 1× pads; at 1× it is
+/// breathing workspace instead of being pinned into 1× pads; at 1× it is
 /// exactly 1, so no default metric moves. Reading the type step (not
 /// `Theme::text_scale`) catches every way type grows — `with_text_scale`,
 /// `with_ui_scale` (which doubles the type but leaves `text_scale` at 1)
@@ -546,7 +546,7 @@ const CHAT_PAD_X: f64 = 10.0;
 const CHAT_PAD_Y: f64 = 6.0;
 /// Gap between the name and the message inside a bubble.
 const CHAT_NAME_GAP: f64 = 1.0;
-/// Room after a message for the caret being typed at its end.
+/// Workspace after a message for the caret being typed at its end.
 const CARET_ROOM: f32 = 12.0;
 
 /// The size of the name tag of `peer`, or of the bubble carrying its message
@@ -680,7 +680,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
                 let next_y = if r.y1 + step <= vp.y1 {
                     r.y0 + step
                 } else {
-                    // Out of room going down — restart above and walk up.
+                    // Out of workspace going down — restart above and walk up.
                     let up = if r.y0 > py { above } else { r.y0 - step };
                     if up < vp.y0 {
                         break;
@@ -737,7 +737,7 @@ pub fn draw_peer_cursors(
     if peers.is_empty() {
         return painted;
     }
-    // Only a shown name or a message takes room beside a pointer; a still
+    // Only a shown name or a message takes workspace beside a pointer; a still
     // pointer whose name stepped aside leaves the place to others.
     let tagged: Vec<&PeerCursor> = peers
         .iter()
@@ -1027,11 +1027,11 @@ fn pointer_bounds(pos: (f64, f64)) -> Rect {
     arrow.union(agent).inflate(2.0, 2.0) + vello::kurbo::Vec2::new(pos.0, pos.1)
 }
 
-/// The arrow's extent from its tip, and the room its outline and shadow take.
+/// The arrow's extent from its tip, and the workspace its outline and shadow take.
 const ARROW_W: f64 = 12.0;
 const ARROW_H: f64 = 18.6;
 const ARROW_EDGE: f64 = 2.5;
-/// Room around a pill or tether for its stroke and shadow.
+/// Workspace around a pill or tether for its stroke and shadow.
 const FADE_EDGE: f64 = 8.0;
 
 /// Paint `draw` at `opacity`: directly when opaque, not at all when fully
@@ -1317,7 +1317,7 @@ fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f6
 }
 
 /// [`chip_size`] for a chip that has to fit inside `max_w`: the name is
-/// elided to the room left after the pads, so the chip never has to leave
+/// elided to the workspace left after the pads, so the chip never has to leave
 /// the surface to show its label. Returns the label to paint and the chip's
 /// size; a name that already fits comes back untouched.
 fn chip_fitting(
@@ -1608,7 +1608,7 @@ fn mist_tag(
     let label_style = theme.text(TextRole::Caption);
     // The band is fixed chrome, so — unlike a pill's — the tag's pad does
     // not grow with the type: in a 44 px band a scaled pad would leave the
-    // label no room at all.
+    // label no workspace at all.
     let pad = TAG_INSET;
     let max_tag_w = band.width() - TAG_INSET * 2.0;
     let budget = max_tag_w - pad * 2.0;
@@ -2120,8 +2120,8 @@ mod tests {
                 "the outline should still be drawn, got ({er},{eg},{eb})"
             );
         }
-        // phase: a_name_chip_with_no_room_above_it_comes_inside_the_object
-        // On the top row of a surface that clips its contents there is no room
+        // phase: a_name_chip_with_no_workspace_above_it_comes_inside_the_object
+        // On the top row of a surface that clips its contents there is no workspace
         // above an object for its name chip, and hanging one there anyway gets
         // it sliced by the clip — a collaborator labelled with the bottom two
         // pixels of their name. The chip has to come inside instead.
@@ -2171,8 +2171,8 @@ mod tests {
                 "the chip inside should be charlie's emerald, got ({cr},{cg},{cb})",
             );
         }
-        // phase: a_name_chip_with_room_above_it_still_hangs_above
-        // With room above, the chip still hangs above — the flip is a fallback,
+        // phase: a_name_chip_with_workspace_above_it_still_hangs_above
+        // With workspace above, the chip still hangs above — the flip is a fallback,
         // not a new default, or every labelled object would start covering itself.
         {
             let ctx = PresenceCtx::empty();
@@ -2295,12 +2295,12 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             ctx.set_own_identity(["me"]);
             ctx.set_display_name(UserId("peer@7".to_string()), "Bob");
-            // The frame a room sends: a pointer keyed by the room, the
+            // The frame a workspace sends: a pointer keyed by the workspace, the
             // same key the compositor overlay and broker use.
             let _ = ctx.apply_remote_presence(
                 "peer@7".to_string(),
                 crate::presence::PresenceKey::Workspace {
-                    id: "room-1".to_string(),
+                    id: "workspace-1".to_string(),
                 },
                 crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
             );
@@ -2311,7 +2311,7 @@ mod tests {
             );
             assert!(
                 !ctx.remote_cursors[0].painted_by_window(),
-                "fixture error: a room-keyed pointer is the compositor's to paint",
+                "fixture error: a workspace-keyed pointer is the compositor's to paint",
             );
 
             let mut scene = Scene::new();
@@ -2917,7 +2917,7 @@ mod tests {
         }
         // phase: pill_and_chip_side_insets_scale_with_the_label
         // The side insets frame the label at every magnification: a 2× label
-        // gets 2× pads (pill and chip alike), and the agent glyph's room grows
+        // gets 2× pads (pill and chip alike), and the agent glyph's workspace grows
         // with it, while the 1× pill keeps its exact default width.
         {
             let theme = Theme::dark();
@@ -2931,7 +2931,7 @@ mod tests {
             let (aw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
             assert!(
                 (aw - pw - AGENT_GLYPH_W).abs() < 1e-6,
-                "1x agent pill adds exactly the glyph room"
+                "1x agent pill adds exactly the glyph workspace"
             );
             let (ctw, _) = tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
             let (cw, _) = chip_size(&theme, &mut tr, "Alice");

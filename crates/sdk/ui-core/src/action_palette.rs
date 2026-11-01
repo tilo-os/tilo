@@ -585,7 +585,7 @@ impl ActionPalette {
                     })
             })
             .unwrap_or_default();
-        // Where the room's grants ask rather than the action, say so: the
+        // Where the workspace's grants ask rather than the action, say so: the
         // person is the one who decides.
         let asked = pending
             .ordinary
@@ -641,7 +641,7 @@ impl ActionPalette {
         self.open = false;
     }
 
-    /// Why the palette asks, when the room's grants ask rather than the
+    /// Why the palette asks, when the workspace's grants ask rather than the
     /// action itself: who decides, said to the person asked.
     #[must_use]
     pub fn asking_why(&self) -> Option<&str> {

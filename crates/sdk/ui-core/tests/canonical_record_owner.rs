@@ -11,13 +11,13 @@ fn target() -> RecordCheckout {
 }
 fn directory(
     state_root: &std::path::Path,
-    room: &str,
+    workspace: &str,
     want: &RecordCheckout,
 ) -> std::path::PathBuf {
     app_state::DocStore::workspace_record_dir_at(
         state_root,
         "so.tilo.test",
-        room,
+        workspace,
         &want.id.storage_key(),
     )
     .unwrap()
@@ -77,13 +77,13 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
         }
     }
 
-    // Case `one_owner_shares_changes_and_history_but_rooms_do_not_alias`.
+    // Case `one_owner_shares_changes_and_history_but_workspaces_do_not_alias`.
     {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
         let a = owners.open("so.tilo.test", "room-a").unwrap();
         let b = owners.open("so.tilo.test", "room-a").unwrap();
-        let other = owners.open("so.tilo.test", "room-b").unwrap();
+        let other = owners.open("so.tilo.test", "workspace-b").unwrap();
         let want = target();
         assert!(matches!(
             a.try_open_record(&want),

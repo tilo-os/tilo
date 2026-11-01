@@ -2,11 +2,11 @@
 //! participant — chat lines, cursor pills, people lists, the top bar,
 //! mentions — follows.
 //!
-//! Two people in a room may go by the same name. Each is then shown with a
-//! number, "Ada (1)" and "Ada (2)", and everyone in the room must see the
+//! Two people in a workspace may go by the same name. Each is then shown with a
+//! number, "Ada (1)" and "Ada (2)", and everyone in the workspace must see the
 //! same numbers, so they come from an order every replica shares: when each
-//! joined the room, as its membership records it, so a newcomer never takes
-//! an earlier member's number; then the participants' ids, which the room
+//! joined the workspace, as its membership records it, so a newcomer never takes
+//! an earlier member's number; then the participants' ids, which the workspace
 //! names identically on every machine — never the order this machine
 //! happened to hear of them. A
 //! name compares case- and whitespace-insensitively ("ada  lovelace" and
@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_sort::CompactSort as _;
 
-/// The numbers a room's participants are told apart by, resolved once from
+/// The numbers a workspace's participants are told apart by, resolved once from
 /// its roster and read for each label shown. Cheap to rebuild whenever the
 /// roster changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -40,9 +40,9 @@ impl ParticipantLabels {
     }
 
     /// [`Self::new`] for `people` as `(id, name, joined)`, `joined` being
-    /// when the room admitted them (any unit every replica shares, such as
+    /// when the workspace admitted them (any unit every replica shares, such as
     /// the admission's Unix time). Whoever joined first is numbered first;
-    /// those the room has no time for follow, by id.
+    /// those the workspace has no time for follow, by id.
     #[must_use]
     pub fn by_joining<'a>(
         people: impl IntoIterator<Item = (&'a str, &'a str, Option<u64>)>,
@@ -84,7 +84,7 @@ impl ParticipantLabels {
         self.numbered.get(id).map(|(_, number)| *number)
     }
 
-    /// `name` as `id` is shown: "Ada (2)" when the room has more than one
+    /// `name` as `id` is shown: "Ada (2)" when the workspace has more than one
     /// Ada, `name` itself otherwise. The number is only added while `name`
     /// is still the one that collided, so a caller holding a newer name than
     /// the roster's never shows a number that belongs to the old one.

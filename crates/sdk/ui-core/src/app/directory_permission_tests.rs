@@ -70,7 +70,7 @@ fn directory_permission_retained_clock_expiry_invalidates_actual_bound_revision(
         let grant = policy::Grant::new(
             "other",
             policy::Subject::person("fixture-user"),
-            TreePath::workspace(crate::permissions::LOCAL_ROOM).app("other"),
+            TreePath::workspace(crate::permissions::LOCAL_WORKSPACE).app("other"),
             KindSet::UNDOABLE,
             if restrict {
                 Answer::Deny
@@ -234,7 +234,7 @@ fn directory_filtered_cache_expired_restriction_restores_republished_action() {
     let restriction = policy::Grant::new(
         "restriction",
         policy::Subject::person("fixture-user"),
-        TreePath::workspace(crate::permissions::LOCAL_ROOM),
+        TreePath::workspace(crate::permissions::LOCAL_WORKSPACE),
         KindSet::ALL,
         Answer::Deny,
         policy::Subject::person("owner"),

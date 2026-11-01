@@ -803,7 +803,10 @@ fn workspaces_hold_references_and_discover_metadata_only() {
             .merge(&mut remote_workspace)
             .expect("workspace indexes merge like other collaboration documents");
         let mut set = RecordSet::in_memory().with_home("workspace-a");
-        assert_eq!(set.discover_room(&local_workspace), vec![remote.clone()]);
+        assert_eq!(
+            set.discover_workspace(&local_workspace),
+            vec![remote.clone()]
+        );
         assert_eq!(set.known_records(), vec![remote.clone()]);
         assert!(
             set.open_records().is_empty(),
@@ -811,7 +814,7 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         );
 
         assert!(index::unreference(&mut local_workspace, &remote.id));
-        assert!(set.discover_room(&local_workspace).is_empty());
+        assert!(set.discover_workspace(&local_workspace).is_empty());
         assert!(
             set.known_records().is_empty(),
             "revocation removes future discovery"
@@ -838,7 +841,7 @@ fn workspaces_hold_references_and_discover_metadata_only() {
         }
 
         let mut set = RecordSet::in_memory().with_home("workspace-a");
-        let found = set.discover_room(&workspace_doc);
+        let found = set.discover_workspace(&workspace_doc);
         assert_eq!(found.len(), MAX_DISCOVERED_RECORDS);
         assert!(found.iter().all(RecordCheckout::is_valid));
         assert!(set.open_records().is_empty());
@@ -866,11 +869,14 @@ fn workspaces_hold_references_and_discover_metadata_only() {
 
         let (workspace_b, _) = open_workspace(b);
         let mut set_b = RecordSet::open_in(Rc::clone(&documents), package, b);
-        assert!(set_b.discover_room(&workspace_b).is_empty());
+        assert!(set_b.discover_workspace(&workspace_b).is_empty());
 
         let (workspace_a_restarted, _) = open_workspace(a);
         let mut set_a = RecordSet::open_in(Rc::clone(&documents), package, a);
-        assert_eq!(set_a.discover_room(&workspace_a_restarted), vec![entry]);
+        assert_eq!(
+            set_a.discover_workspace(&workspace_a_restarted),
+            vec![entry]
+        );
         assert!(set_a.open_records().is_empty());
     }
 

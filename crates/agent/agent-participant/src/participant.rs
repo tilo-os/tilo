@@ -1910,7 +1910,7 @@ impl AgentParticipant {
         let workspace_record = self
             .catalogue
             .get(app_id)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_room_record);
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record);
         // A part of a chain is held beside its record, never opened: asked
         // for one, the agent opens the record that keeps it.
         let record = record

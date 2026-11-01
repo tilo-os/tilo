@@ -367,7 +367,7 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     // An app whose windows each show a resource of their own: one that keeps
     // a room record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
-    assert!(!catalogue.get(app).unwrap().keeps_room_record());
+    assert!(!catalogue.get(app).unwrap().keeps_workspace_record());
     let record = ui::record::RecordId::room_default().as_str().to_owned();
     assert!(
         rooms

@@ -1,4 +1,4 @@
-//! The remote renderer: a window's frames drawn by the room's render service
+//! The remote renderer: a window's frames drawn by the workspace's render service
 //! instead of a GPU in this process.
 //!
 //! The render worker's contract is unchanged — the main thread still lays
@@ -15,7 +15,7 @@
 //!
 //! Each window renders on a channel of its own, which the worker asks the
 //! compositor's render broker for (`tilo_render_protocol::broker`). When the
-//! service goes away (it crashed, or the room moved to another one), the
+//! service goes away (it crashed, or the workspace moved to another one), the
 //! window keeps showing its last frame, the worker asks for a new channel and
 //! the next frame is a whole one: the toolkit always has the full scene.
 
@@ -433,7 +433,7 @@ struct Buffers {
     list: Vec<ClientBuffer>,
 }
 
-/// A render worker that draws through the room's render service, with the
+/// A render worker that draws through the workspace's render service, with the
 /// same handle the in-process one has.
 ///
 /// # Errors

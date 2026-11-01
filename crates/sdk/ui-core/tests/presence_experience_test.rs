@@ -19,7 +19,7 @@ fn app() -> App {
 }
 
 #[test]
-fn room_arrivals_status_and_follow_reach_the_right_surface() {
+fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
     // Case `remote_arrival_on_tab_flags_the_right_nav_item`.
     // `peers_on(that tab)` returns them, the exact query the notes sidebar /
     // sheets tab strip use to paint "Alice is on the Contacts screen".
@@ -100,16 +100,16 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
 
     // Kept last: this case already fails at base in the local (macOS) run, and
     // running it last keeps the other cases observable.
-    // Case `room_status_arrives_with_honest_provenance_and_can_be_cleared`.
+    // Case `workspace_status_arrives_with_honest_provenance_and_can_be_cleared`.
     {
         let mut a = app();
-        let room = PresenceKey::Workspace {
-            id: "finance-room".into(),
+        let workspace = PresenceKey::Workspace {
+            id: "finance-workspace".into(),
         };
         let bob = UserId("bob".into());
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: bob.0.clone(),
-            key: room.clone(),
+            key: workspace.clone(),
             payload: PresencePayload::Status {
                 text: "Reconciling forecast against actuals".into(),
                 automatic: true,
@@ -118,7 +118,7 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
         let status = a
             .presence_ctx()
             .status_for(&bob, SystemTime::now())
-            .expect("status should be visible in the universal room model");
+            .expect("status should be visible in the universal workspace model");
         assert_eq!(status.text, "Reconciling forecast against actuals");
         assert!(matches!(
             status.origin,
@@ -127,7 +127,7 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: bob.0.clone(),
-            key: room,
+            key: workspace,
             payload: PresencePayload::Status {
                 text: String::new(),
                 automatic: false,

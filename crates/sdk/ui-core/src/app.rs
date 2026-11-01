@@ -556,7 +556,7 @@ pub struct App {
 
     collaboration: CollaborationRuntime,
     local_input_capture: local_input_capture::LocalInputCapture,
-    native_room_route: Option<crate::collaboration::RouteSpec>,
+    native_workspace_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
@@ -1649,9 +1649,9 @@ impl App {
     /// app closes, so the app's content stays findable whether or not it
     /// runs.
     ///
-    /// Any acknowledged primary route carries it, whatever keeps the room's
-    /// records: the broker files it under the app, room and record that
-    /// route certifies, so it needs no private window binding, which a room
+    /// Any acknowledged primary route carries it, whatever keeps the workspace's
+    /// records: the broker files it under the app, workspace and record that
+    /// route certifies, so it needs no private window binding, which a workspace
     /// whose records are sealed channels never hands out.
     fn publish_search_index(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.publish_search_index");
@@ -2041,14 +2041,14 @@ impl App {
     /// The server attributes the broadcast to this user's id automatically,
     /// so callers only specify what changed.
 
-    /// Publish the collaboration rail's current status through the real room
+    /// Publish the collaboration rail's current status through the real workspace
     /// presence path. `None` is an explicit clear. Only workspace keys are
     /// accepted, preventing an intention from being accidentally scoped to a
     /// single widget and disappearing as the participant navigates.
 
     /// Live-edit path (the late-join handshake still ships a full snapshot).
 
-    /// The room index is a distinct document from the live record.  Keep its
+    /// The workspace index is a distinct document from the live record.  Keep its
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
 
@@ -2068,11 +2068,11 @@ impl App {
     /// Lets integration tests drive the collab pump without a real winit
     /// event loop.
 
-    /// Apply a document envelope received on the unqualified room route.
+    /// Apply a document envelope received on the unqualified workspace route.
     /// The broker authenticated the route; discovery still validates and
     /// bounds its names before exposing them to the app.
 
-    /// Drain only document traffic on the room-index route. Actions and
+    /// Drain only document traffic on the workspace-index route. Actions and
     /// presence are record scoped, so an index update cannot alter the app's
     /// resource/action namespace or presentation state.
 

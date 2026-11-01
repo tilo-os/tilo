@@ -619,7 +619,7 @@ pub struct RecordSet {
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// Records the workspace's hosts sent everything they hold of
-    /// ([`RecordStore::note_room_answered`]), until something of them
+    /// ([`RecordStore::note_workspace_answered`]), until something of them
     /// arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// The windows that read this store's records
@@ -806,7 +806,7 @@ impl RecordSet {
     /// A removed/tombstoned index entry disappears from future discovery, but
     /// already-open data remains in memory: revocation stops future access;
     /// it cannot un-share bytes the process has already received.
-    pub fn discover_room(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
+    pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
         let found = index::discoverable_references(workspace);
         self.known = found
             .iter()
@@ -1992,7 +1992,7 @@ pub struct RecordRefusal {
 /// A record no host replicates is decided by nobody else: what is said of
 /// it is said at once. A replicated one holds each notice with the heads it
 /// was said at; the next publication carries them, and once the workspace
-/// answered every commit of the record ([`RecordStore::room_settled`]) the
+/// answered every commit of the record ([`RecordStore::workspace_settled`]) the
 /// notices are said. A refusal withdraws the changes, and a notice whose
 /// heads went with them is dropped: the refusal is said instead.
 #[derive(Debug, Default)]
@@ -2096,7 +2096,7 @@ pub enum RecordOpenError {
     /// ([`RecordId::arrives_on_demand`]) is not here yet: it was asked for,
     /// and the store wakes its readers when it arrives
     /// ([`RecordStore::wake_on_arrival`]) or when the workspace's hosts say they
-    /// have none of it ([`RecordStore::room_answered`]).
+    /// have none of it ([`RecordStore::workspace_answered`]).
     #[error("the record is on its way from the workspace")]
     Arriving,
     /// The record left this workspace (see [`transfer`]); its history stays, but
@@ -2817,7 +2817,7 @@ impl RecordStore {
     }
 
     /// Moves whenever the store is told something arrived for what follows
-    /// it: [`Self::note_kept`], [`Self::announce`], [`Self::note_room_answered`].
+    /// it: [`Self::note_kept`], [`Self::announce`], [`Self::note_workspace_answered`].
     #[must_use]
     pub fn kept_revision(&self) -> u64 {
         self.0.try_borrow().map_or(0, |set| set.kept.get())
@@ -3826,7 +3826,7 @@ impl RecordStore {
 
     /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
-    pub fn room_settled(&self, id: &RecordId) {
+    pub fn workspace_settled(&self, id: &RecordId) {
         if let Ok(mut set) = self.0.try_borrow_mut()
             && let Some(parked) = set.open.get_mut(id)
         {

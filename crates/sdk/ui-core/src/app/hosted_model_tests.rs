@@ -246,7 +246,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         required: vec![],
         optional: vec![],
         opens: &[],
-        room_record: false,
+        workspace_record: false,
         member_record: false,
         opens_before_record: false,
         create: owned_declared_directory_factory,
@@ -643,9 +643,9 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     assert_ne!(app.action_directory_revision(), page.revision);
 }
 
-/// Namesakes are numbered by when the room admitted them, as the roster
+/// Namesakes are numbered by when the workspace admitted them, as the roster
 /// says, not by id: a newcomer whose id sorts first still takes the next
-/// number, and nobody already in the room is renumbered.
+/// number, and nobody already in the workspace is renumbered.
 #[test]
 fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
     fn person(id: &str, joined_at: u64, is_self: bool) -> crate::collaboration::Collaborator {

@@ -259,7 +259,7 @@ impl Button {
     /// [`Self::on_effect`] for an effect whose scope is the person's own
     /// device and nothing shared: copying to their clipboard, applying their
     /// own appearance, starting a draft of their own. A room's grants have
-    /// nothing to consent to, so a guest presses it as the room's owner
+    /// nothing to consent to, so a guest presses it as the workspace's owner
     /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
     /// to make is decided as that change's own action.
     #[must_use]

@@ -219,7 +219,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         required: vec![],
         optional: vec![],
         opens: &[],
-        room_record: true,
+        workspace_record: true,
         member_record: false,
         opens_before_record: false,
         create,

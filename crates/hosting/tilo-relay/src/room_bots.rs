@@ -340,7 +340,7 @@ where
 #[must_use]
 pub fn room_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
-        Some(definition) if !definition.keeps_room_record() => {
+        Some(definition) if !definition.keeps_workspace_record() => {
             ui::record::RecordId::room_default().as_str().to_owned()
         }
         _ => String::new(),

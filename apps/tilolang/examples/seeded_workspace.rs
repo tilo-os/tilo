@@ -37,7 +37,7 @@ fn main() -> Result<(), String> {
     let mut doc = tilolang_tilo::bench::seeded_record(&packages, items)?;
     let data = std::path::absolute(out.join("data")).map_err(|e| e.to_string())?;
     let profile = ui::application::NativeProfile::open(&data, None).map_err(|e| e.to_string())?;
-    let landing = ui::record::transfer::install_room_document(
+    let landing = ui::record::transfer::install_workspace_document(
         profile.store(),
         &main.meta.app,
         "personal",

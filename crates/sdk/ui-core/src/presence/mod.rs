@@ -39,14 +39,14 @@ pub use render::{
     paint_reaction, paint_speaking_ring,
 };
 
-/// The scope this process should publish its presence under — the room
-/// it collaborates in, or `None` when it has no room. Read from
+/// The scope this process should publish its presence under — the workspace
+/// it collaborates in, or `None` when it has no workspace. Read from
 /// [`local_cluster_id`](crate::collaboration::local_cluster_id), the
 /// same value the routing address is built from, so the two cannot drift apart.
 ///
-/// `None` when the room is the nil uuid: that value addresses nobody
-/// (`CrdtRoute::is_addressable` rejects it — an unminted room would
-/// otherwise make every unconfigured machine share one room). Fail closed.
+/// `None` when the workspace is the nil uuid: that value addresses nobody
+/// (`CrdtRoute::is_addressable` rejects it — an unminted workspace would
+/// otherwise make every unconfigured machine share one workspace). Fail closed.
 pub fn local_workspace_key() -> Option<PresenceKey> {
     let cluster = crate::collaboration::local_cluster_id();
     if cluster.is_nil() {
@@ -95,14 +95,14 @@ pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-/// [`user_color`] as a colour: what a face of `user_id` wears when the room
+/// [`user_color`] as a colour: what a face of `user_id` wears when the workspace
 /// has not given them one ([`Face::colour`]).
 #[must_use]
 pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
     presence_colour(user_color(user_id))
 }
 
-/// The face of someone here whose colour the room has not settled yet:
+/// The face of someone here whose colour the workspace has not settled yet:
 /// grey, which the presence palette paints neutral
 /// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour
 /// they would then change from.
@@ -222,8 +222,8 @@ mod color_tests {
     }
 
     #[test]
-    fn a_room_assigns_distinct_agreed_stable_colours() {
-        // phase: a_room_never_puts_two_people_in_one_colour
+    fn a_workspace_assigns_distinct_agreed_stable_colours() {
+        // phase: a_workspace_never_puts_two_people_in_one_colour
         // The case the ring alone can't fix: `judy` hashes onto exactly the
         // pink `alice` is pinned to, so one of them has to move.
         {
@@ -234,11 +234,11 @@ mod color_tests {
              pick another colliding pair rather than deleting the test",
             );
 
-            let room = ["alice", "bob", "judy", "danah", "erin", "dana"];
-            let assigned = assign_peer_colors(&room, &[]);
-            assert_eq!(assigned.len(), room.len());
-            for (i, a) in room.iter().enumerate() {
-                for b in &room[i + 1..] {
+            let workspace = ["alice", "bob", "judy", "danah", "erin", "dana"];
+            let assigned = assign_peer_colors(&workspace, &[]);
+            assert_eq!(assigned.len(), workspace.len());
+            for (i, a) in workspace.iter().enumerate() {
+                for b in &workspace[i + 1..] {
                     assert_ne!(
                         assigned[*a], assigned[*b],
                         "{a} and {b} were given the same colour",
@@ -252,15 +252,15 @@ mod color_tests {
             assert_eq!(assigned["alice"], user_color("alice"));
             assert_eq!(assigned["bob"], user_color("bob"));
         }
-        // phase: every_machine_in_a_room_agrees_on_who_is_what_colour
+        // phase: every_machine_in_a_workspace_agrees_on_who_is_what_colour
         {
-            let room = ["alice", "bob", "judy"];
-            for me in room {
-                let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
+            let workspace = ["alice", "bob", "judy"];
+            for me in workspace {
+                let mut mine: Vec<&str> = workspace.iter().copied().filter(|u| *u != me).collect();
                 mine.push(me);
                 assert_eq!(
                     assign_peer_colors(&mine, &[]),
-                    assign_peer_colors(&room, &[]),
+                    assign_peer_colors(&workspace, &[]),
                     "the host running as {me} disagrees with the others",
                 );
             }
@@ -299,7 +299,7 @@ pub struct PresenceUser {
 }
 
 /// The kind of participant behind a live presence stream. This comes from
-/// the authenticated room context, never from a display-name convention.
+/// the authenticated workspace context, never from a display-name convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParticipantKind {
     #[default]
@@ -386,7 +386,7 @@ pub enum PointerOwner {
     /// kept here so "follow that peer" can read it via [`PresenceCtx::peer_pointer`].
     Desktop,
     /// In some other surface's content coordinates — the frame arrived (the
-    /// broker fans presence to every app in the room) but is not this
+    /// broker fans presence to every app in the workspace) but is not this
     /// process's to place. Makes the fan-out safe: exactly one of N apps
     /// answers "mine", the rest land here without consulting each other.
     OtherSurface,
@@ -495,18 +495,18 @@ pub struct PresenceCtx {
     /// What people are saying beside their pointers, and their reactions.
     pub chats: CursorChats,
     /// How available each person says they are in each workspace, and the
-    /// voice channel they are in there, keyed by the workspace's room and
-    /// the person: one person says it to each workspace on their own terms.
+    /// voice channel they are in there, keyed by the workspace and the
+    /// person: one person says it to each workspace on their own terms.
     availability: HashMap<(String, UserId), (crate::Availability, Option<String>)>,
-    /// The room of the workspace in front, which [`Self::availability_of`]
-    /// and [`Self::call_of`] read. A context that hears one room needs
-    /// none: what it heard is that room's.
-    room_in_front: Option<String>,
+    /// The workspace in front, which [`Self::availability_of`]
+    /// and [`Self::call_of`] read. A context that hears one workspace needs
+    /// none: what it heard is that workspace's.
+    workspace_in_front: Option<String>,
     /// Faces that bounce because their person waved at this one.
     bounces: HashMap<UserId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
-    /// Ephemeral visual relationships, keyed by `(room, follower)`. They
+    /// Ephemeral visual relationships, keyed by `(workspace, follower)`. They
     /// never affect document state or anyone's local viewport.
     following: HashMap<(PresenceKey, UserId), UserId>,
     pub remote_cursors: Vec<RemoteCursor>,
@@ -526,10 +526,10 @@ pub struct PresenceCtx {
     acting_for: HashMap<UserId, UserId>,
     /// The person (their user root) each participant here is a device of,
     /// where presence names devices rather than people (a browser page's
-    /// room) and the room's host paired them: what a person id from
+    /// workspace) and the workspace's host paired them: what a person id from
     /// elsewhere, a call's roster, is matched to the participant by.
     persons: HashMap<UserId, UserId>,
-    /// Short room-level intentions, separate from pointer/caret state. The
+    /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
@@ -570,13 +570,13 @@ pub struct PresenceCtx {
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
     own: std::collections::HashSet<UserId>,
-    /// Which participant in the room this session *is* — the `is_self` row
+    /// Which participant in the workspace this session *is* — the `is_self` row
     /// of `CollabEvent::Context`. Deliberately not in [`Self::names`]/
     /// [`Self::here`]/the pointer-caret stores, which describe *other*
     /// people (a row for yourself there is a pill over your own document).
-    /// `None` until the room has said.
+    /// `None` until the workspace has said.
     self_participant: Option<(UserId, String)>,
-    /// When the room admitted each participant, this session's own
+    /// When the workspace admitted each participant, this session's own
     /// included, Unix milliseconds, as the roster
     /// (`CollabEvent::Context`) records it. Who shares a name is numbered
     /// in this order.
@@ -707,7 +707,7 @@ impl PresenceCtx {
     }
 
     /// A pointer is in exactly one space, so a frame fanned to every app in
-    /// a room still has at most one willing to draw it.
+    /// a workspace still has at most one willing to draw it.
     pub fn pointer_owner_for(&self, key: &PresenceKey) -> PointerOwner {
         match key.pointer_space() {
             None => PointerOwner::Window,
@@ -730,22 +730,22 @@ impl PresenceCtx {
         self.refresh_labels();
     }
 
-    /// Clear the room-certified spelling of this session after a complete
+    /// Clear the workspace-certified spelling of this session after a complete
     /// roster replacement no longer contains an exact self row. Local
-    /// process identities remain in `own`; this only withdraws the room's
+    /// process identities remain in `own`; this only withdraws the workspace's
     /// authenticated answer.
     pub(crate) fn clear_self_participant(&mut self) {
         self.self_participant = None;
         self.refresh_labels();
     }
 
-    /// Which participant in the room this session is, if the room has said.
+    /// Which participant in the workspace this session is, if the workspace has said.
     pub fn self_id(&self) -> Option<&UserId> {
         self.self_participant.as_ref().map(|(id, _)| id)
     }
 
-    /// What the room calls this session's own participant. `None` for a
-    /// participant the room knows only as an address.
+    /// What the workspace calls this session's own participant. `None` for a
+    /// participant the workspace knows only as an address.
     pub fn self_name(&self) -> Option<&str> {
         self.self_participant
             .as_ref()
@@ -756,7 +756,7 @@ impl PresenceCtx {
     /// Whether `user_id` is this session's own participant. Checks
     /// `self_participant` before the declared list (which
     /// [`Self::set_own_identity`] replaces wholesale), and also matches the
-    /// room's *name* for this session — a locally-sent frame is stamped
+    /// workspace's *name* for this session — a locally-sent frame is stamped
     /// `Bob`, the announced row is `ada`; safe because a remote id is
     /// always `peer@<handle>`, never a bare name.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
@@ -1046,22 +1046,22 @@ impl PresenceCtx {
             .min()
     }
 
-    /// Name the room of the workspace in front: the one
+    /// Name the workspace in front: the one
     /// [`Self::availability_of`] and [`Self::call_of`] answer for.
-    pub fn set_room_in_front(&mut self, room: Option<String>) {
-        self.room_in_front = room;
+    pub fn set_workspace_in_front(&mut self, workspace: Option<String>) {
+        self.workspace_in_front = workspace;
     }
 
-    /// What `user` said in `room`, or, with no room named, in the room in
-    /// front ([`Self::set_room_in_front`]), else in the one room this
+    /// What `user` said in `workspace`, or, with no workspace named, in the workspace in
+    /// front ([`Self::set_workspace_in_front`]), else in the one workspace this
     /// context hears.
     fn said(
         &self,
-        room: Option<&str>,
+        workspace: Option<&str>,
         user: &UserId,
     ) -> Option<&(crate::Availability, Option<String>)> {
-        match room.or(self.room_in_front.as_deref()) {
-            Some(room) => self.availability.get(&(room.to_owned(), user.clone())),
+        match workspace.or(self.workspace_in_front.as_deref()) {
+            Some(workspace) => self.availability.get(&(workspace.to_owned(), user.clone())),
             None => self
                 .availability
                 .iter()
@@ -1069,23 +1069,23 @@ impl PresenceCtx {
         }
     }
 
-    /// How available `user` says they are in `room`; available until they
+    /// How available `user` says they are in `workspace`; available until they
     /// said.
-    pub fn availability_in(&self, room: &str, user: &UserId) -> crate::Availability {
-        self.said(Some(room), user)
+    pub fn availability_in(&self, workspace: &str, user: &UserId) -> crate::Availability {
+        self.said(Some(workspace), user)
             .map_or(crate::Availability::Available, |(state, _)| *state)
     }
 
-    /// The voice channel `user` says they are in, in `room`.
-    pub fn call_in(&self, room: &str, user: &UserId) -> Option<&str> {
-        self.said(Some(room), user)
+    /// The voice channel `user` says they are in, in `workspace`.
+    pub fn call_in(&self, workspace: &str, user: &UserId) -> Option<&str> {
+        self.said(Some(workspace), user)
             .and_then(|(_, call)| call.as_deref())
     }
 
-    /// Whether `user` has said how available they are in `room`.
+    /// Whether `user` has said how available they are in `workspace`.
     #[must_use]
-    pub fn has_availability_in(&self, room: &str, user: &UserId) -> bool {
-        self.said(Some(room), user).is_some()
+    pub fn has_availability_in(&self, workspace: &str, user: &UserId) -> bool {
+        self.said(Some(workspace), user).is_some()
     }
 
     /// How available `user` says they are in the workspace in front.
@@ -1236,7 +1236,7 @@ impl PresenceCtx {
         user_color(&user.0)
     }
 
-    /// When the room admitted `user`, as its roster records it; `None` when
+    /// When the workspace admitted `user`, as its roster records it; `None` when
     /// it has no time for them. People who share a name are numbered by it,
     /// so a newcomer never takes an earlier member's number.
     pub fn set_joined_at(&mut self, user: UserId, joined: Option<u64>) {
@@ -1267,7 +1267,7 @@ impl PresenceCtx {
     }
 
     /// Re-resolve who needs a number to be told apart, over every person
-    /// the room names including this session's own, and relabel the pills
+    /// the workspace names including this session's own, and relabel the pills
     /// of anyone whose label that changed.
     fn refresh_labels(&mut self) {
         let own = self
@@ -1299,14 +1299,14 @@ impl PresenceCtx {
         }
     }
 
-    /// The numbers people who share a name are told apart by in this room.
+    /// The numbers people who share a name are told apart by in this workspace.
     /// [`Self::display_name`] already applies them; this is for a caller
     /// that holds names of its own for the same participants.
     pub fn labels(&self) -> &ParticipantLabels {
         &self.labels
     }
 
-    /// Everyone the room names, this session's own participant included,
+    /// Everyone the workspace names, this session's own participant included,
     /// as they are shown, in an order every replica shares: who a people
     /// list or a mention picker offers.
     pub fn roster(&self) -> Vec<PresenceUser> {
@@ -1321,13 +1321,13 @@ impl PresenceCtx {
     }
 
     /// What this session's own participant is shown as, numbered like
-    /// anyone else's name; `None` until the room has named them.
+    /// anyone else's name; `None` until the workspace has named them.
     pub fn self_label(&self) -> Option<String> {
         self.self_name()?;
         self.self_id().map(|id| self.display_name(id))
     }
 
-    /// Seed the authenticated participant kind announced by the room. Both
+    /// Seed the authenticated participant kind announced by the workspace. Both
     /// the legacy boolean and the typed enum map to the same authenticated
     /// kind, so changing names never changes a participant's principal kind.
     pub fn set_participant_kind(
@@ -1380,7 +1380,7 @@ impl PresenceCtx {
     }
 
     /// Replace which person each participant here is a device of, as the
-    /// room's host paired them: `(participant, person)`. Where presence
+    /// workspace's host paired them: `(participant, person)`. Where presence
     /// already names people, there is nothing to pair.
     pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (UserId, UserId)>) {
         self.persons = pairs
@@ -1389,7 +1389,7 @@ impl PresenceCtx {
             .collect();
     }
 
-    /// The person participant `user` is a device of, when the room's host
+    /// The person participant `user` is a device of, when the workspace's host
     /// paired them; `None` where presence names the person itself.
     pub fn person_of(&self, user: &UserId) -> Option<&UserId> {
         self.persons.get(user)
@@ -1700,7 +1700,7 @@ impl PresenceCtx {
             alpha.clamp(0.0, 1.0),
         ];
         // A name handed in still carries the number its owner is told apart
-        // by, when it is the name the room knows them by.
+        // by, when it is the name the workspace knows them by.
         let label = display_name.map_or_else(
             || self.display_name(&uid),
             |name| {
@@ -1908,7 +1908,7 @@ impl PresenceCtx {
                 // Applying it must never synthesize a pointer, caret, or text
                 // selection for an actor that used no such input device. The
                 // resource key also selects exactly one app surface: presence
-                // is fanned across a room, but an action in Writer must not
+                // is fanned across a workspace, but an action in Writer must not
                 // paint an activity card in Files and every other window.
                 let belongs_here = match &key {
                     PresenceKey::Resource { app, id, kind } => {
@@ -1933,7 +1933,7 @@ impl PresenceCtx {
                 }
             }
             Status { text, automatic } => {
-                // Status is room presence, never document/widget presence.
+                // Status is workspace presence, never document/widget presence.
                 if matches!(key, PresenceKey::Workspace { .. }) {
                     let uid = UserId(user_id);
                     if text.trim().is_empty() {
@@ -1957,15 +1957,15 @@ impl PresenceCtx {
                 }
             }
             Availability { state, call } => {
-                // Room presence, like a status, said to that room.
-                if let PresenceKey::Workspace { id: room } = key {
+                // Workspace presence, like a status, said to that workspace.
+                if let PresenceKey::Workspace { id: workspace } = key {
                     let call = call.filter(|call| !call.trim().is_empty());
                     self.availability
-                        .insert((room, UserId(user_id)), (state, call));
+                        .insert((workspace, UserId(user_id)), (state, call));
                 }
             }
             Following { target } => {
-                // A follow relationship is only meaningful within a room.
+                // A follow relationship is only meaningful within a workspace.
                 // Reject narrower scopes rather than letting a document or
                 // widget frame imply control of that content.
                 if matches!(key, PresenceKey::Workspace { .. }) {
@@ -2062,7 +2062,7 @@ impl PresenceCtx {
         self.refresh_labels();
     }
 
-    /// Current status for a room participant. Inferred statuses apply their
+    /// Current status for a workspace participant. Inferred statuses apply their
     /// normal expiry even if a peer vanished without a clean disconnect.
     pub fn status_for(
         &self,
@@ -2341,54 +2341,54 @@ mod string_id_wrapper_tests {
             assert_eq!(ctx.peer_pointer("alice"), Some([120.0, 44.0]));
             assert_eq!(ctx.peer_pointer("nobody"), None);
         }
-        // phase: follow_relationship_is_room_scoped_ephemeral_and_releasable
+        // phase: follow_relationship_is_workspace_scoped_ephemeral_and_releasable
         {
             let mut ctx = PresenceCtx::empty();
-            let room = PresenceKey::Workspace {
+            let workspace = PresenceKey::Workspace {
                 id: "studio".into(),
             };
-            let other_room = PresenceKey::Workspace {
+            let other_workspace = PresenceKey::Workspace {
                 id: "elsewhere".into(),
             };
             ctx.apply_remote_presence(
                 "alice".into(),
-                room.clone(),
+                workspace.clone(),
                 PresencePayload::Following {
                     target: Some("bob".into()),
                 },
             );
             let relationships: Vec<_> = ctx
-                .following_in(&room)
+                .following_in(&workspace)
                 .into_iter()
                 .map(|(follower, target)| (follower.clone(), target.clone()))
                 .collect();
             assert_eq!(
                 relationships,
                 vec![(UserId("alice".into()), UserId("bob".into()))],
-                "observers learn only the follower-target relation in this room"
+                "observers learn only the follower-target relation in this workspace"
             );
-            assert!(ctx.following_in(&other_room).is_empty());
+            assert!(ctx.following_in(&other_workspace).is_empty());
 
             ctx.apply_remote_presence(
                 "alice".into(),
-                room.clone(),
+                workspace.clone(),
                 PresencePayload::Following { target: None },
             );
             assert!(
-                ctx.following_in(&room).is_empty(),
+                ctx.following_in(&workspace).is_empty(),
                 "stop clears the visual cue"
             );
 
             ctx.apply_remote_presence(
                 "alice".into(),
-                room.clone(),
+                workspace.clone(),
                 PresencePayload::Following {
                     target: Some("bob".into()),
                 },
             );
             ctx.unregister_peer("bob");
             assert!(
-                ctx.following_in(&room).is_empty(),
+                ctx.following_in(&workspace).is_empty(),
                 "disconnecting either endpoint removes the ephemeral relationship"
             );
         }
@@ -2608,7 +2608,7 @@ mod string_id_wrapper_tests {
         let ada = UserId("key-a".into());
         let other_ada = UserId("key-b".into());
         let agent = UserId("agent:claude".into());
-        // The room seen from Ada's machine: she is the self row.
+        // The workspace seen from Ada's machine: she is the self row.
         let mut mine = PresenceCtx::empty();
         mine.upsert_remote_cursor("key-b".into(), [1.0, 1.0], Some("ada"));
         mine.set_self_participant(ada.clone(), "Ada");
@@ -2666,8 +2666,10 @@ mod string_id_wrapper_tests {
         // reads) — but only one of them may paint it.
         {
             let mut ctx = PresenceCtx::empty();
-            let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
-            let key = PresenceKey::Workspace { id: room.into() };
+            let workspace = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+            let key = PresenceKey::Workspace {
+                id: workspace.into(),
+            };
 
             ctx.apply_remote_presence(
                 "peer@77".into(),
@@ -2790,7 +2792,9 @@ mod string_id_wrapper_tests {
         // A peer moving transport changes hands rather than keeping its first owner.
         {
             let mut ctx = PresenceCtx::empty();
-            let key = PresenceKey::Workspace { id: "room".into() };
+            let key = PresenceKey::Workspace {
+                id: "workspace".into(),
+            };
             ctx.apply_remote_presence(
                 "peer@77".into(),
                 key,
@@ -2901,15 +2905,15 @@ mod string_id_wrapper_tests {
 
 /// A session must not paint its own participant, and must go on
 /// painting everybody else. Both halves are asserted here: the second
-/// is the one that keeps a fix in this area from hiding the room.
+/// is the one that keeps a fix in this area from hiding the workspace.
 #[cfg(test)]
 mod own_identity_tests {
     use super::*;
     use crate::collaboration::PresencePayload;
 
-    fn room() -> PresenceKey {
+    fn workspace() -> PresenceKey {
         PresenceKey::Workspace {
-            id: "room-1".into(),
+            id: "workspace-1".into(),
         }
     }
 
@@ -2926,19 +2930,19 @@ mod own_identity_tests {
             let mut ctx = mine();
             ctx.apply_remote_presence(
                 "ada".into(),
-                room(),
+                workspace(),
                 PresencePayload::Pointer { x: 120.0, y: 90.0 },
             );
-            ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Caret { pos: 7 });
+            ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Caret { pos: 7 });
 
             assert!(
                 ctx.remote_cursors.is_empty(),
                 "painted a cursor pill for this session's own identity: {:?}",
                 ctx.remote_cursors,
             );
-            assert_eq!(ctx.pointer_for(&room(), &UserId("ada".into())), None);
-            assert_eq!(ctx.caret_for(&room(), &UserId("ada".into())), None);
-            assert!(ctx.peers_on(&room()).is_empty());
+            assert_eq!(ctx.pointer_for(&workspace(), &UserId("ada".into())), None);
+            assert_eq!(ctx.caret_for(&workspace(), &UserId("ada".into())), None);
+            assert!(ctx.peers_on(&workspace()).is_empty());
         }
         // phase: another_person_is_still_painted
         // The control. A second *person* is a second participant, and the
@@ -2948,16 +2952,23 @@ mod own_identity_tests {
             let mut ctx = mine();
             ctx.apply_remote_presence(
                 "peer@77".into(),
-                room(),
+                workspace(),
                 PresencePayload::Pointer { x: 12.0, y: 34.0 },
             );
-            ctx.apply_remote_presence("peer@77".into(), room(), PresencePayload::Caret { pos: 3 });
+            ctx.apply_remote_presence(
+                "peer@77".into(),
+                workspace(),
+                PresencePayload::Caret { pos: 3 },
+            );
 
             assert_eq!(
-                ctx.pointer_for(&room(), &UserId("peer@77".into())),
+                ctx.pointer_for(&workspace(), &UserId("peer@77".into())),
                 Some((12.0, 34.0))
             );
-            assert_eq!(ctx.caret_for(&room(), &UserId("peer@77".into())), Some(3));
+            assert_eq!(
+                ctx.caret_for(&workspace(), &UserId("peer@77".into())),
+                Some(3)
+            );
             assert_eq!(ctx.remote_cursors.len(), 1);
             assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
         }
@@ -2969,23 +2980,30 @@ mod own_identity_tests {
         // process and not the presence of a window.
         {
             let mut ctx = mine();
-            ctx.apply_remote_presence("agent".into(), room(), PresencePayload::Caret { pos: 11 });
-            assert_eq!(ctx.caret_for(&room(), &UserId("agent".into())), Some(11));
+            ctx.apply_remote_presence(
+                "agent".into(),
+                workspace(),
+                PresencePayload::Caret { pos: 11 },
+            );
+            assert_eq!(
+                ctx.caret_for(&workspace(), &UserId("agent".into())),
+                Some(11)
+            );
         }
         // phase: a_sibling_arriving_still_gets_the_document
         // `Arrived` is not only a thing to draw — it is how a joiner asks
-        // the room for the document, and a second window of the same app
+        // the workspace for the document, and a second window of the same app
         // depends on the answer. Suppressing the pill must not suppress
         // the handshake.
         {
             let mut ctx = mine();
             assert_eq!(
-                ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Arrived),
+                ctx.apply_remote_presence("ada".into(), workspace(), PresencePayload::Arrived),
                 RemotePresenceEffect::PeerArrived,
                 "a sibling that arrived must still be answered with state",
             );
             assert!(
-                ctx.peers_on(&room()).is_empty(),
+                ctx.peers_on(&workspace()).is_empty(),
                 "answering a sibling must not also list it as somebody else",
             );
         }
@@ -2996,7 +3014,7 @@ mod own_identity_tests {
             let mut ctx = PresenceCtx::empty();
             ctx.apply_remote_presence(
                 "ada".into(),
-                room(),
+                workspace(),
                 PresencePayload::Pointer { x: 1.0, y: 2.0 },
             );
             assert_eq!(ctx.remote_cursors.len(), 1);
@@ -3008,7 +3026,7 @@ mod own_identity_tests {
             assert!(!ctx.is_own_identity(""));
             ctx.apply_remote_presence(
                 String::new(),
-                room(),
+                workspace(),
                 PresencePayload::Pointer { x: 1.0, y: 2.0 },
             );
             assert_eq!(ctx.remote_cursors.len(), 1);
@@ -3024,7 +3042,7 @@ mod own_identity_tests {
             ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
             assert_eq!(ctx.remote_cursors.len(), 1);
         }
-        // phase: a_frame_stamped_with_the_rooms_name_for_this_session_is_still_its_own
+        // phase: a_frame_stamped_with_the_workspace_name_for_this_session_is_still_its_own
         {
             let mut ctx = PresenceCtx::empty();
             ctx.set_own_identity(["ada"]);
@@ -3032,7 +3050,7 @@ mod own_identity_tests {
             assert!(ctx.is_own_identity("Bob"));
             assert!(
                 !ctx.is_own_identity("Claude"),
-                "a peer the room happens to have named must stay a peer",
+                "a peer the workspace happens to have named must stay a peer",
             );
         }
     }
@@ -3067,7 +3085,7 @@ mod own_identity_tests {
             assert!(ctx.peer_view(&UserId("ada".into())).is_none());
         }
         // phase: knowing_which_participant_you_are_does_not_make_you_a_peer
-        // The room's answer to "which participant am I" arrives without making
+        // The workspace's answer to "which participant am I" arrives without making
         // this session a participant of its own presence store — a `names` entry
         // for it would paint a pill over its own document.
         {
@@ -3087,16 +3105,16 @@ mod own_identity_tests {
             // pill and the cursor stay suppressed.
             assert!(ctx.is_own_identity(&me.0));
             assert_eq!(
-                ctx.apply_remote_presence(me.0, room(), PresencePayload::Caret { pos: 4 }),
+                ctx.apply_remote_presence(me.0, workspace(), PresencePayload::Caret { pos: 4 }),
                 RemotePresenceEffect::None,
             );
             assert!(
-                ctx.peers_on(&room()).is_empty(),
-                "this session was listed as somebody else in its own room"
+                ctx.peers_on(&workspace()).is_empty(),
+                "this session was listed as somebody else in its own workspace"
             );
         }
         // phase: an_unnamed_own_participant_reports_no_name
-        // A participant the room has admitted but not named has an address and no
+        // A participant the workspace has admitted but not named has an address and no
         // name. Handing the address back as a name is how a routing hash ends up
         // rendered where a name belongs.
         {
@@ -3114,7 +3132,7 @@ mod own_identity_tests {
             assert!(!ctx.is_own_identity(""));
             assert!(!ctx.is_own_identity("  "));
         }
-        // phase: restating_the_published_identities_keeps_the_room_address
+        // phase: restating_the_published_identities_keeps_the_workspace_address
         {
             let mut ctx = PresenceCtx::empty();
             let me = UserId("peer@42".into());
@@ -3130,32 +3148,35 @@ mod own_identity_tests {
     #[test]
     fn pointer_position_eases_between_samples() {
         let t0 = crate::time::now();
-        let room = PresenceKey::Workspace { id: "r".into() };
+        let workspace = PresenceKey::Workspace { id: "r".into() };
         let peer = UserId("peer@7".into());
         let gap = Duration::from_millis(33);
         let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&room, peer.clone(), (0.0, 0.0), t0);
+        ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
         assert_eq!(
-            ctx.pointer_position_at(&room, &peer, t0),
+            ctx.pointer_position_at(&workspace, &peer, t0),
             Some((0.0, 0.0)),
             "a first sample is shown where it is: nowhere to glide from",
         );
         assert!(!ctx.pointers_easing(t0));
 
         let t1 = t0 + gap;
-        ctx.set_pointer_at(&room, peer.clone(), (33.0, 0.0), t1);
+        ctx.set_pointer_at(&workspace, peer.clone(), (33.0, 0.0), t1);
         assert_eq!(
-            ctx.pointer_for(&room, &peer),
+            ctx.pointer_for(&workspace, &peer),
             Some((33.0, 0.0)),
             "the store holds what was heard; only the paint glides",
         );
-        assert_eq!(ctx.pointer_position_at(&room, &peer, t1), Some((0.0, 0.0)));
+        assert_eq!(
+            ctx.pointer_position_at(&workspace, &peer, t1),
+            Some((0.0, 0.0))
+        );
         let (x, y) = ctx
-            .pointer_position_at(&room, &peer, t1 + gap / 2)
+            .pointer_position_at(&workspace, &peer, t1 + gap / 2)
             .expect("a pointer");
         assert!((x - 16.5).abs() < 0.01 && y.abs() < f32::EPSILON, "{x}");
         let (x, _) = ctx
-            .pointer_position_at(&room, &peer, t1 + gap / 4)
+            .pointer_position_at(&workspace, &peer, t1 + gap / 4)
             .expect("a pointer");
         assert!(
             (x - 33.0 * (0.25 * 0.25 * (3.0 - 2.0 * 0.25))).abs() < 0.05,
@@ -3166,7 +3187,7 @@ mod own_identity_tests {
             "mid-glide asks for frames"
         );
         assert_eq!(
-            ctx.pointer_position_at(&room, &peer, t1 + gap),
+            ctx.pointer_position_at(&workspace, &peer, t1 + gap),
             Some((33.0, 0.0)),
             "and lands as the next sample is due",
         );
@@ -3174,17 +3195,17 @@ mod own_identity_tests {
 
         // A sample arriving mid-glide starts from where the pointer shows.
         let t2 = t1 + gap / 2;
-        ctx.set_pointer_at(&room, peer.clone(), (66.0, 0.0), t2);
+        ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), t2);
         let (x, _) = ctx
-            .pointer_position_at(&room, &peer, t2)
+            .pointer_position_at(&workspace, &peer, t2)
             .expect("a pointer");
         assert!((x - 16.5).abs() < 0.01, "no jump back or ahead: {x}");
 
         // A restatement does not restart anything.
         let landed = t2 + POINTER_EASE_MAX;
-        ctx.set_pointer_at(&room, peer.clone(), (66.0, 0.0), landed);
+        ctx.set_pointer_at(&workspace, peer.clone(), (66.0, 0.0), landed);
         assert_eq!(
-            ctx.pointer_position_at(&room, &peer, landed),
+            ctx.pointer_position_at(&workspace, &peer, landed),
             Some((66.0, 0.0))
         );
         assert!(!ctx.pointers_easing(landed));
@@ -3192,10 +3213,10 @@ mod own_identity_tests {
         // After sitting still, the glide is capped rather than spread over
         // the whole pause.
         let later = landed + Duration::from_secs(2);
-        ctx.set_pointer_at(&room, peer.clone(), (100.0, 0.0), later);
+        ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), later);
         assert!(ctx.pointers_easing(later + POINTER_EASE_MAX / 2));
         assert_eq!(
-            ctx.pointer_position_at(&room, &peer, later + POINTER_EASE_MAX),
+            ctx.pointer_position_at(&workspace, &peer, later + POINTER_EASE_MAX),
             Some((100.0, 0.0)),
         );
     }
@@ -3205,16 +3226,16 @@ mod own_identity_tests {
     #[test]
     fn a_pointer_carried_with_its_tile_keeps_its_glide() {
         let t0 = crate::time::now();
-        let room = PresenceKey::Workspace { id: "r".into() };
+        let workspace = PresenceKey::Workspace { id: "r".into() };
         let peer = UserId("peer@7".into());
         let gap = Duration::from_millis(40);
         let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&room, peer.clone(), (100.0, 0.0), t0);
-        ctx.set_pointer_at(&room, peer.clone(), (140.0, 0.0), t0 + gap);
+        ctx.set_pointer_at(&workspace, peer.clone(), (100.0, 0.0), t0);
+        ctx.set_pointer_at(&workspace, peer.clone(), (140.0, 0.0), t0 + gap);
         // The tile scrolls 30 px left; nothing new was heard.
-        ctx.set_pointer_at(&room, peer.clone(), (110.0, 0.0), t0 + gap);
+        ctx.set_pointer_at(&workspace, peer.clone(), (110.0, 0.0), t0 + gap);
         let (x, _) = ctx
-            .pointer_position_at(&room, &peer, t0 + gap + gap / 2)
+            .pointer_position_at(&workspace, &peer, t0 + gap + gap / 2)
             .expect("a pointer");
         assert!(
             (x - 90.0).abs() < 0.01,
@@ -3223,10 +3244,10 @@ mod own_identity_tests {
 
         // A pointer that never moved is carried with no glide at all.
         let still = UserId("peer@8".into());
-        ctx.set_pointer_at(&room, still.clone(), (10.0, 10.0), t0);
-        ctx.set_pointer_at(&room, still.clone(), (40.0, 10.0), t0);
+        ctx.set_pointer_at(&workspace, still.clone(), (10.0, 10.0), t0);
+        ctx.set_pointer_at(&workspace, still.clone(), (40.0, 10.0), t0);
         assert_eq!(
-            ctx.pointer_position_at(&room, &still, t0),
+            ctx.pointer_position_at(&workspace, &still, t0),
             Some((40.0, 10.0))
         );
     }
@@ -3237,24 +3258,24 @@ mod own_identity_tests {
     #[test]
     fn quiet_pointer_is_retired_after_idle_and_returns_without_a_glide() {
         let t0 = crate::time::now();
-        let room = PresenceKey::Workspace { id: "r".into() };
+        let workspace = PresenceKey::Workspace { id: "r".into() };
         let peer = UserId("peer@7".into());
         let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&room, peer.clone(), (0.0, 0.0), t0);
+        ctx.set_pointer_at(&workspace, peer.clone(), (0.0, 0.0), t0);
         ctx.set_pointer_at(
-            &room,
+            &workspace,
             peer.clone(),
             (50.0, 0.0),
             t0 + Duration::from_millis(30),
         );
         let quiet = t0 + Duration::from_millis(30) + POINTER_IDLE;
         assert!(ctx.prune_pointers(quiet, POINTER_IDLE));
-        assert_eq!(ctx.pointer_position_at(&room, &peer, quiet), None);
+        assert_eq!(ctx.pointer_position_at(&workspace, &peer, quiet), None);
         assert!(!ctx.pointers_easing(quiet));
 
-        ctx.set_pointer_at(&room, peer.clone(), (500.0, 0.0), quiet);
+        ctx.set_pointer_at(&workspace, peer.clone(), (500.0, 0.0), quiet);
         assert_eq!(
-            ctx.pointer_position_at(&room, &peer, quiet),
+            ctx.pointer_position_at(&workspace, &peer, quiet),
             Some((500.0, 0.0))
         );
 
@@ -3264,7 +3285,7 @@ mod own_identity_tests {
         let mut ctx = PresenceCtx::default();
         ctx.apply_remote_presence_at(
             peer.0.clone(),
-            room.clone(),
+            workspace.clone(),
             crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
             t0,
         );
@@ -3276,12 +3297,12 @@ mod own_identity_tests {
     #[test]
     fn a_quiet_pointer_fades_out_just_before_it_is_retired() {
         let t0 = crate::time::now();
-        let room = PresenceKey::Workspace { id: "r".into() };
+        let workspace = PresenceKey::Workspace { id: "r".into() };
         let peer = UserId("peer@7".into());
         let mut ctx = PresenceCtx::default();
-        ctx.set_pointer_at(&room, peer.clone(), (10.0, 20.0), t0);
+        ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t0);
         let opacity = |ctx: &PresenceCtx, after: Duration, fade: Duration| {
-            ctx.pointer_opacity(&room, &peer, t0 + after, POINTER_IDLE, fade)
+            ctx.pointer_opacity(&workspace, &peer, t0 + after, POINTER_IDLE, fade)
         };
 
         let fade_starts = POINTER_IDLE.saturating_sub(POINTER_FADE);
@@ -3296,14 +3317,14 @@ mod own_identity_tests {
             "reduced motion: opaque until retired",
         );
         assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
-        assert_eq!(ctx.pointer_for(&room, &peer), None);
+        assert_eq!(ctx.pointer_for(&workspace, &peer), None);
         assert!(!ctx.pointers_fading(t0 + POINTER_IDLE, POINTER_IDLE, POINTER_FADE));
 
         // Heard from again: opaque once more.
         let t1 = t0 + POINTER_IDLE + Duration::from_secs(1);
-        ctx.set_pointer_at(&room, peer.clone(), (10.0, 20.0), t1);
+        ctx.set_pointer_at(&workspace, peer.clone(), (10.0, 20.0), t1);
         assert!(
-            (ctx.pointer_opacity(&room, &peer, t1, POINTER_IDLE, POINTER_FADE) - 1.0).abs()
+            (ctx.pointer_opacity(&workspace, &peer, t1, POINTER_IDLE, POINTER_FADE) - 1.0).abs()
                 < f32::EPSILON
         );
     }
@@ -3317,7 +3338,7 @@ mod own_identity_tests {
         {
             let t0 = crate::time::now();
             let horizon = Duration::from_secs(4);
-            let room = PresenceKey::Workspace { id: "r".into() };
+            let workspace = PresenceKey::Workspace { id: "r".into() };
             let block = PresenceKey::Widget {
                 path: vec![PathSegment::Index(0)],
             };
@@ -3326,34 +3347,34 @@ mod own_identity_tests {
 
             let mut ctx = PresenceCtx::default();
             ctx.set_display_name(claude.clone(), "Claude");
-            ctx.set_pointer_at(&room, claude.clone(), (1178.31, 582.0), t0);
+            ctx.set_pointer_at(&workspace, claude.clone(), (1178.31, 582.0), t0);
             ctx.set_caret(&block, claude.clone(), 12);
 
-            assert_eq!(ctx.pointer_for(&room, &claude), Some((1178.31, 582.0)));
+            assert_eq!(ctx.pointer_for(&workspace, &claude), Some((1178.31, 582.0)));
             assert!(
                 !ctx.prune_pointers(t0 + Duration::from_secs(1), horizon),
                 "a peer heard from a moment ago is not stale",
             );
             assert_eq!(
-                ctx.pointer_for(&room, &claude),
+                ctx.pointer_for(&workspace, &claude),
                 Some((1178.31, 582.0)),
                 "and is still painted",
             );
 
             // Somebody else keeps talking; the first one stops.
             let t1 = t0 + horizon + Duration::from_secs(1);
-            ctx.set_pointer_at(&room, bob.clone(), (300.0, 200.0), t1);
+            ctx.set_pointer_at(&workspace, bob.clone(), (300.0, 200.0), t1);
             assert!(
                 ctx.prune_pointers(t1, horizon),
                 "the one that went quiet is retired, which is a reason to repaint",
             );
             assert_eq!(
-                ctx.pointer_for(&room, &claude),
+                ctx.pointer_for(&workspace, &claude),
                 None,
                 "no cursor for a peer that has stopped saying where it is pointing",
             );
             assert_eq!(
-                ctx.pointer_for(&room, &bob),
+                ctx.pointer_for(&workspace, &bob),
                 Some((300.0, 200.0)),
                 "and the peer still talking is untouched - this retires one \
              pointer, not the scope",
@@ -3361,8 +3382,8 @@ mod own_identity_tests {
 
             // The peer did not leave.
             assert!(
-                ctx.peers_on(&room).contains(&claude),
-                "a peer that has gone quiet about pointing is still in the room",
+                ctx.peers_on(&workspace).contains(&claude),
+                "a peer that has gone quiet about pointing is still in the workspace",
             );
             assert_eq!(
                 ctx.caret_for(&block, &claude),
@@ -3372,12 +3393,12 @@ mod own_identity_tests {
             assert_eq!(
                 ctx.display_name(&claude),
                 "Claude",
-                "and the room still knows what to call it",
+                "and the workspace still knows what to call it",
             );
 
             // And it comes back the instant it says something again.
-            ctx.set_pointer_at(&room, claude.clone(), (10.0, 20.0), t1);
-            assert_eq!(ctx.pointer_for(&room, &claude), Some((10.0, 20.0)));
+            ctx.set_pointer_at(&workspace, claude.clone(), (10.0, 20.0), t1);
+            assert_eq!(ctx.pointer_for(&workspace, &claude), Some((10.0, 20.0)));
         }
         // phase: authenticated_participant_kind_survives_presence_and_clears_on_disconnect
         {
@@ -3400,7 +3421,7 @@ mod own_identity_tests {
         // widget-scoped one (a position in a document, not on the desktop) does not.
         {
             let t0 = crate::time::now();
-            let room = PresenceKey::Workspace { id: "r".into() };
+            let workspace = PresenceKey::Workspace { id: "r".into() };
             let block = PresenceKey::Widget {
                 path: vec![PathSegment::Index(0)],
             };
@@ -3408,10 +3429,10 @@ mod own_identity_tests {
             let bob = UserId("peer@2".into());
 
             let mut ctx = PresenceCtx::default();
-            ctx.set_pointer_at(&room, alice.clone(), (5.0, 6.0), t0);
+            ctx.set_pointer_at(&workspace, alice.clone(), (5.0, 6.0), t0);
             ctx.set_pointer_at(&block, bob.clone(), (7.0, 8.0), t0);
 
-            assert!(ctx.peers_on(&room).contains(&alice));
+            assert!(ctx.peers_on(&workspace).contains(&alice));
             assert!(
                 !ctx.peers_on(&block).contains(&bob),
                 "a pointer over a widget must not put a presence dot on it",
@@ -3449,14 +3470,16 @@ mod one_person_one_pointer_tests {
              painting it as well is the same person once per window",
             );
         }
-        // phase: a_room_scoped_pointer_still_belongs_to_the_desktop
-        // The room scope keeps the answer it always had, so the rule above cannot
+        // phase: a_workspace_scoped_pointer_still_belongs_to_the_desktop
+        // The workspace scope keeps the answer it always had, so the rule above cannot
         // be satisfied by making *nothing* the window's to paint.
         {
             let mut ctx = PresenceCtx::default();
             ctx.apply_remote_presence(
                 "peer@7".into(),
-                PresenceKey::Workspace { id: "room".into() },
+                PresenceKey::Workspace {
+                    id: "workspace".into(),
+                },
                 PresencePayload::Pointer { x: 10.0, y: 20.0 },
             );
             assert!(!ctx.remote_cursors[0].painted_by_window());
@@ -3486,7 +3509,9 @@ mod one_person_one_pointer_tests {
         {
             let mut ctx = PresenceCtx::default();
             let who = UserId("peer@7".into());
-            let first = PresenceKey::Workspace { id: "room".into() };
+            let first = PresenceKey::Workspace {
+                id: "workspace".into(),
+            };
             let second = PresenceKey::pointer_default();
 
             ctx.set_pointer(&first, who.clone(), (100.0, 200.0));
@@ -3510,20 +3535,22 @@ mod one_person_one_pointer_tests {
         // Moving one person's pointer must not take anybody else's with it.
         {
             let mut ctx = PresenceCtx::default();
-            let room = PresenceKey::Workspace { id: "room".into() };
+            let workspace = PresenceKey::Workspace {
+                id: "workspace".into(),
+            };
             let alice = UserId("peer@1".into());
             let bob = UserId("peer@2".into());
 
-            ctx.set_pointer(&room, alice.clone(), (10.0, 10.0));
-            ctx.set_pointer(&room, bob.clone(), (20.0, 20.0));
+            ctx.set_pointer(&workspace, alice.clone(), (10.0, 10.0));
+            ctx.set_pointer(&workspace, bob.clone(), (20.0, 20.0));
             ctx.set_pointer(&PresenceKey::pointer_default(), alice.clone(), (30.0, 30.0));
 
-            assert_eq!(ctx.pointer_for(&room, &bob), Some((20.0, 20.0)));
+            assert_eq!(ctx.pointer_for(&workspace, &bob), Some((20.0, 20.0)));
             assert_eq!(
                 ctx.pointer_for(&PresenceKey::pointer_default(), &alice),
                 Some((30.0, 30.0))
             );
-            assert_eq!(ctx.pointer_for(&room, &alice), None);
+            assert_eq!(ctx.pointer_for(&workspace, &alice), None);
         }
     }
 }

@@ -251,7 +251,9 @@ fn a_part_the_room_has_none_of_shows_unavailable_until_it_arrives() {
     assert_eq!(joined.held(), [1, 2]);
     assert!(list.row_state(0).is_pending());
 
-    joined.reader.note_room_answered(LogPart::chain().part(1));
+    joined
+        .reader
+        .note_workspace_answered(LogPart::chain().part(1));
     assert_eq!(joined.chain.waiting(1), Some(PartArrival::Unavailable));
     assert!(list.poll_changed());
     assert!(list.row_state(0).failure().is_some(), "said, not loading");
@@ -277,6 +279,8 @@ fn an_item_looked_for_past_an_unavailable_part_is_not_found() {
     let mut pager = ChainPager::new(joined.chain.clone());
     pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
     assert_eq!(pager.settle(), Paged::Opened(1));
-    joined.reader.note_room_answered(LogPart::chain().part(1));
+    joined
+        .reader
+        .note_workspace_answered(LogPart::chain().part(1));
     assert_eq!(pager.settle(), Paged::NotFound);
 }

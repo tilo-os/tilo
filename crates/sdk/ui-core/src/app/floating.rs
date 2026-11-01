@@ -993,7 +993,7 @@ impl App {
                     workspace_sync,
                     ..
                 } => {
-                    // A room that has not synced shows so in every empty
+                    // A workspace that has not synced shows so in every empty
                     // state, so what it shows changes with it.
                     if crate::workspace_sync::set(workspace_sync.clone()) {
                         self.layout.layout_dirty = true;
@@ -1131,7 +1131,7 @@ impl App {
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
         // A window still waiting for the shell's first word never gets
-        // it: what its room holds says it cannot arrive.
+        // it: what its workspace holds says it cannot arrive.
         if crate::workspace_sync::shell_lost() {
             self.layout.layout_dirty = true;
             self.layout.request_rebuild();

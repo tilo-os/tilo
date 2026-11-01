@@ -234,7 +234,7 @@ fn dropping_old_ticket_after_cache_eviction_cannot_settle_same_url_again() {
 
 /// A window's host serves every image store the window builds while its
 /// scope is entered, also one it builds long after it was constructed (a
-/// view part built once its room arrived): that store's pictures load
+/// view part built once its workspace arrived): that store's pictures load
 /// through the host, and show. A store built outside the window is not the
 /// host's, and a closed window's host is let go.
 #[test]

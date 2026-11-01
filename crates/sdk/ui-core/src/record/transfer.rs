@@ -587,7 +587,7 @@ pub fn install_as(
 /// # Errors
 /// An invalid package or workspace, an occupied workspace document, or storage
 /// failure.
-pub fn install_room_document(
+pub fn install_workspace_document(
     store: &Rc<dyn DurableStore>,
     package: &str,
     workspace: &str,

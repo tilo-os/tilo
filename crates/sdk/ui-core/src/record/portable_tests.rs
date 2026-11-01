@@ -90,7 +90,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
     let (_, heads) = store.replication_snapshot(&checkout.id).unwrap();
     let mut frontier = crate::state::DocumentFrontier::default();
     frontier.advance(heads);
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     commit("title", "shared");
     hold("Saved shared");
     assert!(
@@ -106,7 +106,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
         store.take_said(&checkout.id).is_empty(),
         "the workspace has not answered"
     );
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
     assert!(store.take_said(&checkout.id).is_empty(), "said once");
 
@@ -124,7 +124,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
         )
         .unwrap()
         .expect("withdrawn");
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert!(
         store.take_said(&checkout.id).is_empty(),
         "a refused change is never said done"

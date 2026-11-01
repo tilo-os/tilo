@@ -51,7 +51,7 @@ fn absent_existing_record_cannot_reach_a_default_new_factory() {
         required: vec![],
         optional: vec![],
         opens: &[],
-        room_record: false,
+        workspace_record: false,
         member_record: false,
         opens_before_record: false,
         create: |_, _, _| {

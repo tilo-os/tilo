@@ -798,7 +798,7 @@ fn create_window_render(
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    // Drawn by the room's render service: no device in this process.
+    // Drawn by the workspace's render service: no device in this process.
     if crate::render_thread::remote::requested() {
         match crate::render_thread::remote::spawn(
             window.clone(),
@@ -1276,7 +1276,7 @@ impl AppHandler {
         // after the wait.
         #[cfg(any(windows, target_os = "linux"))]
         {
-            // Drawn by the room's render service: the launch prepared its
+            // Drawn by the workspace's render service: the launch prepared its
             // connection, not a device (`startup::prepare_native_renderer`).
             if crate::render_thread::remote::requested() {
                 self.app.startup_renderer = None;
@@ -2747,7 +2747,7 @@ impl AppHandler {
             Some(culling) => &mut culling.scenes.layers,
             None => &mut scene,
         };
-        // An empty state waiting for its room's first sync turns a spinner
+        // An empty state waiting for its workspace's first sync turns a spinner
         // no widget's damage covers (`crate::workspace_sync`): a new pose damages
         // its slot, in scene pixels.
         let spinner_damage = crate::workspace_sync::take_spinner_damage();

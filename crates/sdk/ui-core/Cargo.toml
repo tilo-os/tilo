@@ -182,7 +182,7 @@ tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = tru
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
-# Frames drawn by the room's render service instead of a GPU in the app
+# Frames drawn by the workspace's render service instead of a GPU in the app
 # (`render_thread::remote`); its transport exists only on Linux, its vocabulary
 # everywhere.
 tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
@@ -278,7 +278,7 @@ unicode-linebreak = "0.1.5"
 # UAX #9 levels, for apps that lay out bidirectional text themselves (Ebook's
 # pages); cosmic-text uses the same crate. See text_break::bidi_info.
 unicode-bidi = "0.3.18"
-# Confusable skeletons: a bot's shown name that looks like a room member's
+# Confusable skeletons: a bot's shown name that looks like a workspace member's
 # is labelled with its service.
 unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose

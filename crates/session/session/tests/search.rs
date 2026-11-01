@@ -528,7 +528,7 @@ fn known_in(package: &str, room: &str) -> Vec<String> {
         return Vec::new();
     };
     let mut records = ui::record::RecordSet::in_memory().with_home(room);
-    records.discover_room(&index);
+    records.discover_workspace(&index);
     records
         .known_records()
         .iter()

@@ -281,7 +281,7 @@ fn only_the_creator_seeds_a_record() {
     // The workspace's own record (Chat's) is not handed over as a copy.
     for definition in tilo_agent_participant::component_apps()
         .into_iter()
-        .filter(|definition| !definition.keeps_room_record())
+        .filter(|definition| !definition.keeps_workspace_record())
     {
         let app = definition.app_id();
         let mut page = Replica::open(

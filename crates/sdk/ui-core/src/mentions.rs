@@ -546,7 +546,7 @@ pub struct Look<'a> {
     /// chat's part, published as the chat's items): its document.
     pub tree: Option<&'a AutoCommit>,
     /// Take what it holds as seen: the person is looking at it, or it is
-    /// what the room held before this device first followed it.
+    /// what the workspace held before this device first followed it.
     pub quiet: bool,
     /// How a reference in its text reads for the person told: what a notice's excerpt says of
     /// it ([`reading_nothing`] where nobody here can tell what they hold).

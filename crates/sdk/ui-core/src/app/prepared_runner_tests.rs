@@ -400,7 +400,7 @@ fn assert_saved_body(
     let path = app_state::DocStore::workspace_record_dir_at(
         &host.root(),
         APP,
-        ROOM,
+        WORKSPACE,
         &binding.checkout.id.storage_key(),
     )
     .unwrap()
@@ -542,7 +542,7 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
                 postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(saved.instance_id, 11);
             assert_eq!(saved.device_id, DEVICE);
-            assert_eq!(saved.workspace_id, ROOM);
+            assert_eq!(saved.workspace_id, WORKSPACE);
         }
     }
     // Case `prepared_native_close_retains_original_recovery_and_is_idempotent`.
@@ -751,7 +751,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             let path = app_state::DocStore::workspace_record_dir_at(
                 &host.root(),
                 APP,
-                ROOM,
+                WORKSPACE,
                 &checkout.id.storage_key(),
             )
             .unwrap()

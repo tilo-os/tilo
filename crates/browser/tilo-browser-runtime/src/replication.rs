@@ -172,7 +172,7 @@ pub(crate) struct Room {
     members: Option<std::collections::BTreeSet<String>>,
     /// How many commits of each record route this page published the room
     /// has not answered yet: once none is left, what the record's windows
-    /// said they did is said (`RecordStore::room_settled`).
+    /// said they did is said (`RecordStore::workspace_settled`).
     in_flight: HashMap<DocumentRoute, usize>,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
@@ -1094,15 +1094,15 @@ impl Room {
         self.compact(compactions);
         for route in opened {
             if route.cluster_id == self.uuid {
-                self.room_answered(&route, woken);
+                self.workspace_answered(&route, woken);
             }
         }
     }
 
     /// The host retains nothing of `route`, an on-demand record this page
     /// opened: each store holding it tells what reads it
-    /// ([`ui::record::RecordStore::note_room_answered`]).
-    fn room_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+    /// ([`ui::record::RecordStore::note_workspace_answered`]).
+    fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
@@ -1113,7 +1113,7 @@ impl Room {
                     .into_iter()
                     .find(|checkout| wire_record(&checkout.id) == route.record)
                 {
-                    store.note_room_answered(checkout.id);
+                    store.note_workspace_answered(checkout.id);
                     woken.insert(id);
                 }
             }
@@ -1160,7 +1160,7 @@ impl Room {
                     .into_iter()
                     .find(|checkout| wire_record(&checkout.id) == route.record)
                 {
-                    store.room_settled(&checkout.id);
+                    store.workspace_settled(&checkout.id);
                     woken.insert(id);
                 }
             }

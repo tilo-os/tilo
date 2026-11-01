@@ -1649,7 +1649,7 @@ pub(crate) fn discover_cached_bound_resources(
 
 /// Action-scoped authority shared by native and headless legacy and outer
 /// hosts, as the bound door decides it: the action `action` on `resource`
-/// runs when allowed; where the room's grants ask first it runs once the
+/// runs when allowed; where the workspace's grants ask first it runs once the
 /// person confirmed it (`confirmed`), and is
 /// [`tilo_actions::DoorError::ConfirmationRequired`] until then, so the
 /// window asks them, saying who decides. A plain quick control (a button's
@@ -2005,7 +2005,7 @@ pub(crate) struct OrdinaryConfirmation {
     snapshot: OrdinaryConfirmationSnapshot,
     pub(crate) context: tilo_actions::ActionContext,
     /// Why the person is asked when the action declares no confirmation of
-    /// its own: the room's grants ask first ([`Self::asking_first`]).
+    /// its own: the workspace's grants ask first ([`Self::asking_first`]).
     asked: Option<String>,
     /// Asked because the app asked for the person's pick to be confirmed
     /// ([`Self::confirming`]).
@@ -2933,7 +2933,7 @@ pub(crate) fn invoke_resource_action(
                     );
                     let direct = binding.permissions.borrow().standing().bounds.is_empty();
                     // Someone acting for the person does not get past an ask
-                    // here. Where the room's grants ask first, the person's
+                    // here. Where the workspace's grants ask first, the person's
                     // confirmation in the host is the answer; the broker took
                     // it before admitting what it delivers.
                     crate::permissions::admit_in_window(
@@ -3533,7 +3533,7 @@ pub(crate) struct RecordActionState {
             crate::undo::UndoStatus,
         ),
     >,
-    /// Changes the room refused and the record withdrew, not yet told to
+    /// Changes the workspace refused and the record withdrew, not yet told to
     /// the app that holds it ([`crate::record::RecordStore::take_refusals`]).
     pub(crate) refusals: Vec<crate::record::RecordRefusal>,
     /// What windows said they did, held until the workspace keeps it

@@ -1216,7 +1216,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let record_path = app_state::DocStore::workspace_record_dir_at(
             &host.root(),
             crate::support::application::APP,
-            crate::support::application::ROOM,
+            crate::support::application::WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -1835,7 +1835,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         let record_path = app_state::DocStore::workspace_record_dir_at(
             &child_host.root(),
             crate::support::application::APP,
-            crate::support::application::ROOM,
+            crate::support::application::WORKSPACE,
             &checkout.id.storage_key(),
         )
         .unwrap()
@@ -1931,7 +1931,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         let saved = owners
             .open(
                 crate::support::application::APP,
-                crate::support::application::ROOM,
+                crate::support::application::WORKSPACE,
             )
             .unwrap();
         saved.try_open_record(&checkout).unwrap();

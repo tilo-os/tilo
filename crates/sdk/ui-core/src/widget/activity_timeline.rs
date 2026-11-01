@@ -407,7 +407,7 @@ pub struct ActivityTimeline {
     /// their height under ([`crate::widget::EntryBody::height`]): rows are
     /// laid out by the theme-less accessors between frames.
     face_theme: Theme,
-    /// `RoomActivity` may supply its own Everyone/person selector; suppressing
+    /// The host's Activity view may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
     /// Calendar Today/Yesterday/This week/Earlier headings above bands.
@@ -1362,7 +1362,7 @@ impl ActivityTimeline {
         }
     }
 
-    /// Binary search over the cumulative tops rather than a scan, so a room
+    /// Binary search over the cumulative tops rather than a scan, so a workspace
     /// with thousands of groups costs the same per frame as one with twenty.
     fn visible_row_range(&self) -> std::ops::Range<usize> {
         let n = self.rows.len();
@@ -3108,7 +3108,7 @@ impl ActivityTimeline {
         }
 
         // The author pill is anchored right when this standalone widget owns
-        // people filtering. RoomActivity can supply that control itself.
+        // people filtering. The host's Activity view can supply that control itself.
         let author_label = if self.author_query.is_empty() {
             crate::i18n!("history-author-anyone")
         } else {
@@ -3824,7 +3824,7 @@ impl ActivityTimeline {
         }
     }
 
-    /// Paints only the lines the viewport can show, so a room with ten
+    /// Paints only the lines the viewport can show, so a workspace with ten
     /// thousand entries costs the same per frame as one with ten.
     fn draw_rows(
         &self,
@@ -5211,7 +5211,7 @@ mod tests {
 
         fn only_the_visible_window_of_a_huge_list_is_touched_per_frame() {
             // Paint and hit-test must look at the ~15 rows on screen, not all
-            // ten thousand, or a room-scale history drops frames.
+            // ten thousand, or a workspace-scale history drops frames.
             let entries: Vec<HistoryEntry> = (0u32..10_000)
                 .map(|i| {
                     entry(

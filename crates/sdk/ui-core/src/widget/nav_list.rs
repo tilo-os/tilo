@@ -319,7 +319,7 @@ pub struct NavArt {
 pub struct NavPerson {
     /// Who they are; their initials stand in for a picture.
     pub identity: String,
-    /// Their colour in the room, ringing the avatar.
+    /// Their colour in the workspace, ringing the avatar.
     pub colour: Color,
     /// They are speaking now.
     pub speaking: bool,

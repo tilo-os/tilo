@@ -20,7 +20,7 @@ use tilo_ui::widget::{AppModel, ModelPath};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
-pub const ROOM: &str = "A";
+pub const WORKSPACE: &str = "A";
 thread_local! {
     static CALLS: Cell<usize> = const { Cell::new(0) };
     static INITIALIZATIONS: Cell<usize> = const { Cell::new(0) };
@@ -261,7 +261,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         required: vec![],
         optional: vec![],
         opens: &[],
-        room_record: false,
+        workspace_record: false,
         member_record: false,
         opens_before_record: false,
         create,
@@ -328,8 +328,8 @@ impl ProbeHost {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut owners = owners(root.clone());
-        let records = owners.open(APP, ROOM).unwrap();
-        let views = Rc::new(InstanceViewStore::new(root, DEVICE, ROOM).unwrap());
+        let records = owners.open(APP, WORKSPACE).unwrap();
+        let views = Rc::new(InstanceViewStore::new(root, DEVICE, WORKSPACE).unwrap());
         Self {
             owners,
             records,
