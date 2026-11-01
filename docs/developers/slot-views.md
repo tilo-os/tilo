@@ -56,19 +56,22 @@ what made it and who, and it follows them to their other devices:
 { "bindings": { "window-menu": { "app": "so.tilo.example.menu", "view": "menu" } } }
 ```
 
-Bind it through the session's door, as a person, an agent or a script does:
+Bind it through the session's door, as an app, an agent or a script does:
 
-```sh
-tilo actions invoke settings:shell-views bind \
-  --args '{"slot": "window-menu", "app": "so.tilo.example.menu", "view": "menu"}'
+```rust
+let views = ui::collaboration::SessionResource::open("settings:shell-views")?;
+views.invoke(
+    "bind",
+    &json!({ "slot": "window-menu", "app": "so.tilo.example.menu", "view": "menu" }),
+)?;
 ```
 
 `"on": "native"` or `"on": "web"` binds the slot on one kind of device only,
 over the binding for every device. `reset` with a slot shows the shell's own
 view again:
 
-```sh
-tilo actions invoke settings:shell-views reset --args '{"slot": "window-menu"}'
+```rust
+views.invoke("reset", &json!({ "slot": "window-menu" }))?;
 ```
 
 The session starts the app you bound the way it starts its own panels (the
