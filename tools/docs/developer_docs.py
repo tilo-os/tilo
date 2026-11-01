@@ -229,7 +229,8 @@ def anchors_of(markdown: str) -> set[str]:
 
 
 class Linker:
-    def __init__(self, root: Path, manifest: Manifest, commit: str | None, tree: SourceTree | None = None):
+    def __init__(self, root: Path, manifest: Manifest, commit: str | None, tree: SourceTree | None = None,
+                 related_books_on_site: bool = True):
         self.root = root
         self.tree = tree or SourceTree(root)
         self.manifest = manifest
@@ -238,17 +239,17 @@ class Linker:
         self.routes: dict[str, str] = {}
         self.api_routes: dict[str, str] = {}
         for book in books:
+            on_site = related_books_on_site or book is manifest
             for page in book.pages:
                 if page.source in self.by_source:
                     raise DocsError(f"{page.source}: published by more than one book")
                 self.by_source[page.source] = page
-                # Only this book's pages get site addresses. A related book is
-                # listed so links into it are checked, but the export feeds one
-                # book of a site; an address in another book's base would point
-                # at a page that site does not serve.
-                if book is manifest:
+                # A related book is always read so links into it can be checked.
+                # It gets a site address only when the site publishes it too;
+                # otherwise the link points at the repository.
+                if on_site:
                     self.routes[page.source] = book.url(page)
-            if book is manifest:
+            if on_site:
                 self.api_routes.update({source: book.base + book.api_path for source in book.api_sources})
         self.ref = f"commit/{commit}" if commit else "branch/main"
         self.anchors: dict[str, set[str]] = {}
@@ -339,9 +340,10 @@ class Linker:
 
 
 def render_all(root: Path, commit: str | None, manifest_path: str = MANIFEST,
-               tree: SourceTree | None = None) -> tuple[Manifest, list[Rendered]]:
+               tree: SourceTree | None = None,
+               related_books_on_site: bool = True) -> tuple[Manifest, list[Rendered]]:
     manifest = load_manifest(root, manifest_path, tree)
-    linker = Linker(root, manifest, commit, tree)
+    linker = Linker(root, manifest, commit, tree, related_books_on_site)
     return manifest, [linker.render(page) for page in manifest.pages]
 
 
@@ -352,8 +354,8 @@ def front_matter(values: dict[str, object]) -> str:
 
 
 def export(root: Path, out: Path, commit: str | None, manifest_path: str = MANIFEST,
-           tree: SourceTree | None = None) -> None:
-    manifest, rendered = render_all(root, commit, manifest_path, tree)
+           tree: SourceTree | None = None, related_books_on_site: bool = True) -> None:
+    manifest, rendered = render_all(root, commit, manifest_path, tree, related_books_on_site)
     fail_on_problems(rendered)
     destination = out.resolve()
     books = [manifest, *(load_manifest(root, path, tree) for path in manifest.related_manifests)]
@@ -429,6 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     export_parser = commands.add_parser("export", help="write the pages and navigation for the site")
     export_parser.add_argument("--out", type=Path, required=True)
     export_parser.add_argument("--commit", help="pin repository links to this commit (default: HEAD)")
+    export_parser.add_argument(
+        "--related-books", choices=("site", "repository"), default="site",
+        help="address links into a related book on this site (default), or at the repository "
+             "when the site publishes only this book",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
@@ -444,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"developer docs OK ({count} pages, links resolved)")
         else:
             commit = tree.revision or args.commit or head_commit(root)
-            export(root, args.out, commit, args.manifest, tree)
+            export(root, args.out, commit, args.manifest, tree, args.related_books == "site")
             print(f"developer docs exported to {args.out}")
     except DocsError as error:
         print(f"developer docs: {error}", file=sys.stderr)

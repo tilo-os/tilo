@@ -158,20 +158,31 @@ class DeveloperDocsTests(unittest.TestCase):
                    MANIFEST.replace('base = "/docs/developers/"',
                                     'related_manifests = ["docs/development/pages.toml"]\nbase = "/docs/developers/"'))
 
-    def test_links_into_a_related_book_stay_in_the_repository(self) -> None:
-        # An export feeds one book of a site: a site address built from the
-        # other book's base names a route that site does not serve.
+    def test_books_link_to_each_other_without_source_tree_detours(self) -> None:
         self.second_book()
         self.start("[Development](../development/index.md)\n")
         page = (self.export() / "pages/index.md").read_text()
-        self.assertIn("(https://forge.example/tilo/tilo/src/commit/abc123/docs/development/index.md)", page)
+        self.assertIn("(/docs/development/)", page)
         out = self.root / "development-out"
         self.assertEqual(self.run_tool("--root", str(self.root), "--manifest",
                                       "docs/development/pages.toml", "export",
                                       "--out", str(out)), 0)
-        self.assertIn("(https://forge.example/tilo/tilo/src/branch/main/docs/developers/start.md)",
-                      (out / "pages/index.md").read_text())
+        self.assertIn("(/docs/developers/)", (out / "pages/index.md").read_text())
         self.assertIsNone(json.loads((out / "manifest.json").read_text())["api"])
+
+    def test_a_site_that_publishes_one_book_links_the_other_at_the_repository(self) -> None:
+        # The site serves this book only, so an address in the other book's
+        # base would be a dead route; --related-books repository keeps the
+        # link on the source tree.
+        self.second_book()
+        self.start("[Development](../development/index.md)\n")
+        out = self.root / "one-book-out"
+        self.assertEqual(self.run_tool("--root", str(self.root), "--manifest",
+                                      "docs/developers/pages.toml", "export",
+                                      "--related-books", "repository",
+                                      "--out", str(out)), 0)
+        self.assertIn("(https://forge.example/tilo/tilo/src/branch/main/docs/development/index.md)",
+                      (out / "pages/index.md").read_text())
 
     def test_default_check_checks_the_related_book_too(self) -> None:
         self.second_book()
