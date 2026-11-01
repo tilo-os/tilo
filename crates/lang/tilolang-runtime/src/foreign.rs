@@ -302,10 +302,14 @@ impl Decoder<'_> {
             | Ty::Length(_) => plain(json, ty),
             Ty::Option(inner) => match json {
                 Json::Null => Ok(Value::none()),
-                value => Ok(Value::some(self.down("", value, inner)?)),
+                value if tagged(value, "none").is_some() => Ok(Value::none()),
+                value => {
+                    let held = tagged(value, "some").unwrap_or(value);
+                    Ok(Value::some(self.down("", held, inner)?))
+                }
             },
             Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
-                let Some(items) = json.as_array() else {
+                let Some(items) = tagged(json, "list").unwrap_or(json).as_array() else {
                     return Err(format!("{json} is not a list"));
                 };
                 let mut values = Vec::with_capacity(items.len());
@@ -315,7 +319,7 @@ impl Decoder<'_> {
                 Ok(Value::List(values))
             }
             Ty::Tuple(items) => {
-                let Some(given) = json.as_array() else {
+                let Some(given) = tagged(json, "tuple").unwrap_or(json).as_array() else {
                     return Err(format!("{json} is not a tuple"));
                 };
                 if given.len() != items.len() {
@@ -418,11 +422,21 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
-        _ => json
+        _ => tagged(json, "principal")
+            .unwrap_or(json)
             .as_str()
             .map(|who| Value::Principal(crate::ids::Principal::new(who))),
     };
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
+}
+
+/// What `json` holds when it is the runtime's own encoding of a value tagged `tag`
+/// ([`crate::value::to_json`]: `{"list": [...]}`, `{"some": ...}`): an object of that one key.
+fn tagged<'a>(json: &'a Json, tag: &str) -> Option<&'a Json> {
+    match json {
+        Json::Object(fields) if fields.len() == 1 => fields.get(tag),
+        _ => None,
+    }
 }
 
 /// A reference to a resource of one of the union's types: the type the reading names, since an

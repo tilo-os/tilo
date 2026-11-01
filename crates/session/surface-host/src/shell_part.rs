@@ -687,6 +687,11 @@ pub struct SessionLink {
     /// it in.
     arrangement: RefCell<Option<ArrangementReading>>,
     arrangement_fresh: Cell<bool>,
+    /// The readings of the resources the places name, by their session id: each with its type
+    /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
+    readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
+    /// A reading arrived the origin has not handed the runtime yet.
+    readings_fresh: Cell<bool>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -1671,7 +1676,10 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get() || self.link.arrangement_fresh.get() || self.answered()
+        self.link.fresh.get()
+            || self.link.arrangement_fresh.get()
+            || self.link.readings_fresh.get()
+            || self.answered()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -1681,6 +1689,7 @@ impl Origin for SessionOrigin {
         };
         let wrote_arrangement = self.poll_arrangement(cx);
         polled.wrote |= wrote_arrangement;
+        polled.wrote |= self.poll_readings(cx);
         if !self.link.fresh.replace(false) {
             return polled;
         }
@@ -1770,6 +1779,8 @@ impl Origin for SessionOrigin {
 struct ShellPlatform {
     packages: Rc<Vec<Compiled>>,
     waker: Waker,
+    /// Where what the composed views change of other apps' resources goes.
+    link: Rc<SessionLink>,
 }
 
 impl Platform for ShellPlatform {
@@ -1779,6 +1790,9 @@ impl Platform for ShellPlatform {
                 tracing::error!(app = compiled.meta.app, %error, "a shell package did not load");
             }
         }
+        host.runtime().set_invoker(PlaceInvoker {
+            link: Rc::clone(&self.link),
+        });
         0
     }
 
@@ -1973,6 +1987,7 @@ impl ShellPart {
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
                 waker,
+                link: Rc::clone(&link),
             }),
             Rc::new(Person(person.to_owned())),
             Box::new(app_end),
@@ -2677,6 +2692,9 @@ impl ShellPart {
     }
 }
 
+mod readings;
+use readings::PlaceInvoker;
+
 #[cfg(test)]
 mod tests_support {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
@@ -2785,6 +2803,9 @@ mod tests_support {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod places;
 
 #[cfg(test)]
 mod surface_keys {
