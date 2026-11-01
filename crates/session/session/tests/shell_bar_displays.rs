@@ -39,7 +39,7 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: false,
-        shell_bar: true,
+        shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
         ..Options::default()
     }
 }

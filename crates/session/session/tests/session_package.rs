@@ -41,7 +41,10 @@ fn the_description_reads_as_the_session_package() {
             .unwrap_or_else(|| panic!("the package has no `{name}`"))
     };
     let overview = action("toggle_overview");
-    assert!(overview.params.is_empty(), "the chrome's action is a loose one");
+    assert!(
+        overview.params.is_empty(),
+        "the chrome's action is a loose one"
+    );
     let focus = action("focus");
     assert_eq!(
         focus.params[0].ty, "Window",
@@ -63,7 +66,8 @@ fn the_description_reads_as_the_session_package() {
 /// `so.tilo.device`'s, so the session's package describes none of them.
 #[test]
 fn the_session_package_describes_none_of_the_devices_resources() {
-    let text = std::fs::read_to_string(repo().join(session_package::PATH)).expect("the description");
+    let text =
+        std::fs::read_to_string(repo().join(session_package::PATH)).expect("the description");
     let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
     for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
         let described: Vec<&String> = addresses

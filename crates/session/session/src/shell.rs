@@ -1,7 +1,8 @@
-//! The shell on the native session: the tilolang shell package's top bar
-//! (`apps/tl/shell`), shown as a layer by a [`ShellPart`], kept in step with
-//! the session's desk (`crate::desk`) and asking the session's door for what
-//! the person presses.
+//! The shell on the native session: the tilolang shell package
+//! (`apps/tl/shell`) shown by a [`ShellPart`] per display — its top bar over
+//! the desktop, or the whole screen under the windows, which stand in its
+//! wells — kept in step with the session's desk (`crate::desk`) and asking the
+//! session's door for what the person presses.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,8 +10,9 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
+use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_service::Services;
-use tilo_surface_host::shell_part::{ArrangementReading, Ask};
+use tilo_surface_host::shell_part::{ArrangementReading, Ask, ShellLayer};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
@@ -87,6 +89,11 @@ pub(crate) struct Shell {
     /// The band the chrome leaves the bar, logical pixels: a window reaching into it covers a
     /// bar there.
     band: u32,
+    /// What each part stands as: the bar's band, or the whole screen.
+    layer: ShellLayer,
+    /// The wells the screen's views report, which the desktop places the windows at: `None`
+    /// for the bar, which has no windows of its own.
+    wells: Option<ui::widget::Wells>,
     /// The services' revision the platform readings were last read at: they are read again
     /// only when it moved.
     services_seen: Option<u64>,
@@ -96,12 +103,16 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
-    /// The shell's bar over every output of `compositor`, published on `doors`.
+    /// The shell over every output of `compositor` as `layer`, published on `doors`. The
+    /// whole screen's views report their wells to `wells`, the handle the window policy
+    /// places every window by ([`tilo_surface_host::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut Doors,
         desk: Desk,
         scale: f64,
+        layer: ShellLayer,
+        wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
     ) -> Result<Self, String> {
         let packages = compile()?;
@@ -123,6 +134,8 @@ impl Shell {
             person: String::new(),
             scale,
             band: band(),
+            layer,
+            wells,
             services_seen: None,
             theme,
         };
@@ -186,11 +199,12 @@ impl Shell {
                 // other display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
+            self.layer,
             // The bar's band, at rest: what the chrome leaves it.
             self.band,
             self.scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
-            None,
+            self.wells.clone(),
         );
         part.set_theme(self.theme.clone());
         part.set_display(Some((output.to_owned(), rect)));
@@ -554,6 +568,47 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
             .map_or_else(|_| Value::String(value.to_owned()), Value::Array),
         Some(ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret)
         | None => Value::String(value.to_owned()),
+    }
+}
+
+/// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
+/// whose band the screen's bar takes. It draws nothing and takes no pointer, and still answers
+/// the chords it answers anywhere, so a key the person presses does what it did.
+pub(crate) struct Aside<T>(pub(crate) T);
+
+impl<T: SurfaceHost> SurfaceHost for Aside<T> {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+        self.0.claim_key(key, locked, inhibited)
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.0.key(key);
+    }
+
+    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        self.0.outputs_changed(outputs);
+    }
+
+    fn cursor(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        // It keeps up with what it hears, and shows none of it.
+        self.0.prepare_frame();
+        false
     }
 }
 

@@ -485,6 +485,107 @@ fn the_part_stands_in_the_band_the_shell_records_dock_names() {
     assert_eq!(part.widgets.placement().size, (1280, 32));
 }
 
+/// The person's arrangement: one strip on the desk, its one place a foreign window's (no
+/// record), keyed `p1`.
+fn one_window_arrangement() -> ArrangementReading {
+    ArrangementReading {
+        workspaces: vec![ArrangementWorkspaceReading {
+            key: "w1".to_owned(),
+            name: "Desk".to_owned(),
+        }],
+        rows: vec![ArrangementRowReading {
+            key: "r1".to_owned(),
+            workspace: "w1".to_owned(),
+            name: "Main".to_owned(),
+            shell: String::new(),
+        }],
+        strips: vec![ArrangementStripReading {
+            key: "s1".to_owned(),
+            workspace: "w1".to_owned(),
+            row: "r1".to_owned(),
+            width: 600,
+            placed: true,
+            canvas_width: 600,
+            canvas_height: 400,
+            ..ArrangementStripReading::default()
+        }],
+        places: vec![ArrangementPlaceReading {
+            key: "p1".to_owned(),
+            strip: "s1".to_owned(),
+            shows: "Terminal".to_owned(),
+            ..ArrangementPlaceReading::default()
+        }],
+    }
+}
+
+/// A part standing as `layer`, its wells reporting to the handle it returns, over the
+/// arrangement of one foreign window.
+fn showing_one_window(layer: ShellLayer) -> (ShellPart, ui::widget::Wells) {
+    let wells = ui::widget::Wells::new();
+    let (mut part, link) = super::tests_support::part_as(layer, reading(), Some(wells.clone()));
+    link.publish_arrangement(one_window_arrangement());
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    (part, wells)
+}
+
+/// The whole screen shows the person's arrangement between the bar and the dock, under the
+/// preset switch, and a foreign window's place is a well reported to the window policy's
+/// handle, on the output under the bar.
+#[test]
+fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
+    let (mut part, wells) = showing_one_window(ShellLayer::Screen);
+    assert!(part.below_windows(), "the windows stand over the screen");
+    let labels = crate::Published::accessible_labels(&mut part);
+    for name in ["Notifications", "Strips", "Frames", "Spaces"] {
+        assert!(
+            labels.iter().any(|label| label == name),
+            "the screen shows {name}: {labels:?}"
+        );
+    }
+    let well = wells
+        .well("p1")
+        .unwrap_or_else(|| panic!("the window's place is a well: {labels:?}"));
+    assert!(
+        well.width() >= 1.0 && well.height() >= 1.0 && well.x0 >= 0.0 && well.y0 > 0.0,
+        "the well stands on the output, under the bar: {well:?}"
+    );
+
+    // The strips show each strip's own controls; the framed canvas shows none of them, and its
+    // entry (what typed text finds is placed on the canvas) instead.
+    assert!(
+        labels.iter().any(|label| label == "Bring forward"),
+        "the strips show their controls: {labels:?}"
+    );
+    // The preset switch shows the same place on the framed canvas, its well there.
+    click(&mut part, "Frames");
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        !labels.iter().any(|label| label == "Bring forward")
+            && labels.iter().any(|label| label == "Typed"),
+        "the canvas shows: {labels:?}; refused {:?}",
+        part.refusals()
+    );
+    assert!(
+        wells.well("p1").is_some_and(|well| well.width() >= 1.0),
+        "the place is a well on the canvas"
+    );
+}
+
+/// The bar shows none of the arrangement, and reports no well.
+#[test]
+fn the_bar_shows_none_of_the_arrangement() {
+    let (mut part, wells) = showing_one_window(ShellLayer::Bar);
+    assert!(!part.below_windows(), "the bar rides over the windows");
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        !labels.iter().any(|label| label == "Frames"),
+        "the bar shows no preset switch: {labels:?}"
+    );
+    assert!(wells.well("p1").is_none(), "the bar reports no well");
+}
+
 /// The overview over a window on each of `strips`, the first window's on the first strip.
 fn overview_with(strips: &[&str]) -> DeskReading {
     DeskReading {
@@ -661,6 +762,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             seed: true,
         },
+        ShellLayer::Bar,
         32,
         1.0,
         std::sync::Arc::new(|| {}),
