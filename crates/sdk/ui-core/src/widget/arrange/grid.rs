@@ -14,6 +14,10 @@ pub enum Columns {
     AtLeast(Length),
     /// This many.
     Fixed(u16),
+    /// This many, each never narrower than its content: a column keeps what it holds whole
+    /// and the grid overflows when the space does not hold it, rather than squeezing a cell
+    /// to a sliver of itself. What overflow the owner handles (a bar gives parts up).
+    FixedKeepingContent(u16),
 }
 
 pub struct GridLayout {
@@ -34,7 +38,7 @@ impl GridLayout {
     #[must_use]
     pub fn count_for(&self, width: f32, resolved: &Resolved) -> u16 {
         match self.columns {
-            Columns::Fixed(count) => count.max(1),
+            Columns::Fixed(count) | Columns::FixedKeepingContent(count) => count.max(1),
             Columns::AtLeast(min) => {
                 let found = columns_for(width, min.resolve(resolved.rem), resolved.gap(self.gap));
                 let kept = found.max(1).min(self.items.max(1));
@@ -61,12 +65,15 @@ impl Layout for GridLayout {
 
     fn container(&self, resolved: &Resolved) -> Style {
         let gap = length(resolved.gap(self.gap));
+        // A column that keeps its content takes at least its min-content width: the grid
+        // overflows rather than squeezing what a cell holds.
+        let min = match self.columns {
+            Columns::FixedKeepingContent(_) => taffy::style_helpers::min_content(),
+            Columns::Fixed(_) | Columns::AtLeast(_) => length(0.0_f32),
+        };
         Style {
             display: taffy::Display::Grid,
-            grid_template_columns: vec![repeat(
-                self.count.max(1),
-                vec![minmax(length(0.0_f32), fr(1.0_f32))],
-            )],
+            grid_template_columns: vec![repeat(self.count.max(1), vec![minmax(min, fr(1.0_f32))])],
             grid_auto_rows: vec![taffy::style_helpers::auto()],
             align_items: Some(if self.hug {
                 taffy::AlignItems::Start
@@ -130,6 +137,19 @@ impl Arranged<GridLayout> {
     pub fn columns(count: u16) -> Self {
         Self::with_layout(GridLayout {
             columns: Columns::Fixed(count),
+            gap: Rhythm::Sibling,
+            count: count.max(1),
+            items: usize::MAX,
+            hug: false,
+        })
+    }
+
+    /// A fixed number of columns, each never narrower than what it holds: the grid overflows
+    /// where the space does not hold its content, instead of squeezing a cell.
+    #[must_use]
+    pub fn columns_keeping_content(count: u16) -> Self {
+        Self::with_layout(GridLayout {
+            columns: Columns::FixedKeepingContent(count),
             gap: Rhythm::Sibling,
             count: count.max(1),
             items: usize::MAX,

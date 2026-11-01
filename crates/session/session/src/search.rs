@@ -74,7 +74,7 @@ pub trait AppActions {
 }
 
 /// What the session's search reaches beyond the desktop.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SearchOptions {
     /// The Tilo apps installed here, the machine's own and the apps a
     /// person can get, as they are now.
@@ -125,6 +125,10 @@ pub(crate) struct SessionSearch {
     notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
 }
 
+/// How many of the search's top results text typed on the canvas reads
+/// through: enough to find the one to place, no more work than that.
+const FIND: usize = 16;
+
 /// The resource of the section keeping search's history.
 pub(crate) const HISTORY: &str = "settings:settings.search_history";
 
@@ -139,7 +143,7 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 }
 
 /// An app's name as people know it.
-fn app_name(app: &str) -> String {
+pub(crate) fn app_name(app: &str) -> String {
     tilo_desktop_search::availability::name_for(app).map_or_else(|| app.to_owned(), str::to_owned)
 }
 
@@ -197,6 +201,59 @@ impl SessionSearch {
         });
         *self.own.borrow_mut() = published;
         *self.open_tabs.borrow_mut() = open_tabs;
+    }
+
+    /// The top `FIND` results of the one search the palette and an agent's
+    /// `tilo` tool run, over the sources the person has on, in the ranking's
+    /// order: what text typed on the canvas places (shell.md §8).
+    #[must_use]
+    pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let (settings, catalogue) = self.for_room("");
+        let kept = self.kept.borrow();
+        let mut sources: Vec<Box<dyn Source>> = vec![
+            Box::new(settings),
+            Box::new(catalogue),
+            Box::new(Rc::clone(&kept.host_apps)),
+            Box::new(Waiting::new("", self.notifications.borrow().clone())),
+            Box::new(Continue::new(
+                &self.places.borrow(),
+                "",
+                self.open_tabs.borrow().clone(),
+                app_name,
+            )),
+        ];
+        if let Some(content) = &kept.content {
+            sources.push(Box::new(Rc::clone(content)));
+        }
+        if let Some(files) = &kept.files {
+            sources.push(Box::new(Rc::clone(files)));
+        }
+        let mut published = vec![PublishedActions {
+            app: DESKTOP_APP.into(),
+            room: String::new(),
+            actions: self.own.borrow().clone(),
+        }];
+        if let Some(apps) = &self.apps {
+            sources.push(Box::new(Jobs(apps.jobs())));
+            published.extend(apps.published());
+        }
+        sources.push(Box::new(tilo_desktop_search::providers::Published(
+            published,
+        )));
+        let refs: Vec<&dyn Source> = sources.iter().map(|source| &**source).collect();
+        // The search over everything but the answers a query that is not a
+        // name gets (a sum, a web search): text typed on the canvas names a
+        // resource to place, never a sentence to search the web for.
+        let groups = tilo_desktop_search::search(needle, &refs, 0);
+        groups
+            .into_iter()
+            .flat_map(|group| group.results)
+            .take(FIND)
+            .collect()
     }
 
     /// A window was at `place`.
