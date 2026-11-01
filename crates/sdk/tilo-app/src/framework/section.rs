@@ -485,8 +485,8 @@ impl SettingsRecords {
     }
 
     /// The person's shared records held beside the sections
-    /// ([`Self::shared`]), as their routes sync them to the person's other
-    /// devices; none where no person is.
+    /// ([`Self::shared`]), which the runtime holds for the person; none
+    /// where no person is.
     #[must_use]
     pub fn history_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         self.person
@@ -496,7 +496,7 @@ impl SettingsRecords {
     }
 
     /// The person's shared record `P` (their accounts, their contacts),
-    /// held beside the sections and synced over its route
+    /// kept in the person's own scope
     /// ([`Self::history_owners`]), opened on first use; not published here.
     /// `None` where no person is.
     #[must_use]

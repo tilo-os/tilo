@@ -16,7 +16,8 @@ use std::rc::Rc;
 const PERSONAL_WORKSPACE: &str = "personal";
 /// Names the directory the launcher keeps the person's own records of an
 /// app in ([`crate::record::person`]): one per app, bound into its launches
-/// in every room, so a record of the person's is one record on the device.
+/// in every workspace, so a record of the person's is one record on the
+/// device.
 pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
 
@@ -899,7 +900,7 @@ impl ApplicationHost {
 
     /// Keep the person's own records ([`crate::record::person`]) in `store`
     /// rather than the host's: the directory a launcher shares between an
-    /// app's launches in every room.
+    /// app's launches in every workspace.
     pub fn keep_person_records_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
         self.person = RecordOwners::with_store(store);
     }

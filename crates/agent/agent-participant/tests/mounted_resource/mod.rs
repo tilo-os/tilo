@@ -21,7 +21,7 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
         replica.doc_mut(),
         &ui::record::person::record_id(&kind),
         &kind,
-        &collab_types::person_room_of(root).unwrap().to_string(),
+        ui::record::person::PERSONAL_SCOPE,
     );
     replica.save()
 }

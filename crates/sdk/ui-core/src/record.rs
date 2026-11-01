@@ -1730,19 +1730,21 @@ impl RecordOwners {
         self.open_with(package_id, workspace_id, true)
     }
 
-    /// The owner of `package_id`'s records in the person's own room `room`
-    /// ([`person`]). Unlike [`Self::open`] it never joins a native
-    /// component's construction: the person's records are opened beside the
-    /// component's own and are not the history it was launched to read.
+    /// The owner of `package_id`'s records of the person, kept in `scope`
+    /// ([`person`]: the person's own scope, or the workspace the app's own
+    /// records of a kind are kept in). Unlike [`Self::open`] it never joins a
+    /// native component's construction: the person's records are opened
+    /// beside the component's own and are not the history it was launched to
+    /// read.
     ///
     /// # Errors
-    /// Rejects an invalid package or room.
+    /// Rejects an invalid package or scope.
     pub fn open_person(
         &mut self,
         package_id: &str,
-        room: &str,
+        scope: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_with(package_id, room, false)
+        self.open_with(package_id, scope, false)
     }
 
     fn open_with(

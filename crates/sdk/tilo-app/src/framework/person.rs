@@ -2,7 +2,7 @@
 //! (what was watched, the words taught to the keyboard, where reading
 //! stopped), kept with its other records in the workspace it is open in,
 //! and the person's shared records another app keeps for all of theirs
-//! (their accounts, their contacts).
+//! (their accounts, their contacts), kept in the person's own scope.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -26,7 +26,9 @@ use ui_core::record::person::PersonRecords;
 /// so it reaches the person's other devices with the workspace. What was
 /// watched, the words taught to the keyboard, where reading stopped. Or
 /// one of the person's shared records another app keeps
-/// ([`tilo_resource::SharedRecord`]).
+/// ([`tilo_resource::SharedRecord`]). The shared ones belong to the person
+/// rather than to a workspace, so they are kept in the person's own scope and
+/// stay on this device until their personal store carries them.
 ///
 /// It is a resource like the app's own: its edits are its actions, applied
 /// by the replayable executor, attributed to the person, written into its
@@ -753,7 +755,8 @@ impl PersonState {
         })
     }
 
-    /// The routes of the open records, which the runtime syncs.
+    /// The routes of the open records, which the runtime syncs: a record
+    /// kept on this device only has none.
     pub(crate) fn owners(&self) -> Vec<HistoryOwner> {
         self.owners.borrow().clone()
     }

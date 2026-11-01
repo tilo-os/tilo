@@ -1,9 +1,10 @@
-//! The person's own records on the runtime's routes: a widget's records
-//! kept beside its document are published on their own route, in the
-//! person's room, and merged from the person's other devices.
+//! Records kept beside the one a window shows. An app's own records of a
+//! kind are each member's own in the workspace, published on their own route
+//! there and merged from that member's other devices; the person's shared
+//! records have no route and stay on the device.
 
 use super::*;
-use crate::record::person::{PersonRecords, StoredRecord};
+use crate::record::person::{PERSONAL_SCOPE, PersonRecords, StoredRecord};
 use crate::record::{RecordKind, RecordOwners};
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
@@ -11,15 +12,18 @@ use std::rc::Rc;
 
 const APP: &str = "so.tilo.test-person";
 const ROOT_KEY: [u8; 32] = [42; 32];
+const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000a5";
 
 fn person() -> crate::permissions::UserId {
     crate::permissions::UserId(hex::encode(ROOT_KEY))
 }
 
-/// One device's copy of the person's watched list.
+/// One device's copy of the member's watched list in the workspace.
 fn device() -> StoredRecord {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, APP, person())
+        .unwrap()
+        .in_workspace(WORKSPACE)
         .unwrap()
         .open_record(RecordKind::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -76,7 +80,8 @@ fn app_holding(record: &StoredRecord) -> App {
         }),
     );
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-    // The app shows a record of a shared room; the person's record is not in it.
+    // The app shows a record of a shared workspace; the record kept beside it
+    // is not in it.
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::record(APP, uuid::Uuid::new_v4(), "shown"),
         epoch: uuid::Uuid::new_v4(),
@@ -138,7 +143,7 @@ fn from_device(
 }
 
 #[test]
-fn a_persons_record_rides_its_own_route_in_their_room_and_converges_across_devices() {
+fn a_members_record_rides_its_own_route_in_the_workspace_and_converges_across_devices() {
     let laptop = device();
     let phone = device();
     watch(&laptop, "on-the-laptop");
@@ -147,13 +152,13 @@ fn a_persons_record_rides_its_own_route_in_their_room_and_converges_across_devic
     let mut phone_app = app_holding(&phone);
 
     // Each device publishes its record on the record's own route, in the
-    // person's room, never on the route of the record it shows.
+    // workspace, never on the route of the record it shows.
     laptop_app.publish_owned_documents();
     let sent = snapshots(&mut laptop_app);
     assert_eq!(sent.len(), 1, "{sent:?}");
     let (route, laptop_document) = sent.into_iter().next().unwrap();
     assert_eq!(route.app_id, APP);
-    assert_eq!(route.cluster_id, collab_types::person_room(&ROOT_KEY));
+    assert_eq!(route.cluster_id.to_string(), WORKSPACE);
     assert_eq!(route.record.as_deref(), Some(laptop.checkout().id.as_str()));
     assert_eq!(laptop.route(), Some(route.clone()));
     phone_app.publish_owned_documents();
@@ -194,7 +199,7 @@ fn a_persons_record_rides_its_own_route_in_their_room_and_converges_across_devic
 /// create the record on this device's first write knows what it holds
 /// instead of answering that the app named no kind.
 #[test]
-fn a_persons_record_route_joins_naming_the_records_kind() {
+fn a_members_record_route_joins_naming_the_records_kind() {
     let laptop = device();
     let app = app_holding(&laptop);
     let route = laptop.route().expect("the laptop's record route");
@@ -206,24 +211,57 @@ fn a_persons_record_route_joins_naming_the_records_kind() {
     );
 }
 
+/// The person's own records — their accounts, their contacts, what they
+/// watched — belong to them and to no workspace, and no route carries them
+/// yet: each device keeps its own until their personal store does.
 #[test]
-fn without_a_root_identity_the_persons_records_stay_on_the_device() {
+fn the_persons_records_stay_on_this_device() {
+    for author in [person(), crate::permissions::UserId("local".into())] {
+        let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let records = PersonRecords::open(&mut owners, APP, author).unwrap();
+        let record = records
+            .open_record(RecordKind::new("test.watched"), &|doc| {
+                doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        watch(&record, "kept-here");
+        assert_eq!(record.route(), None, "no route names a personal record");
+        assert!(record.content().is_none(), "and none carries its content");
+        let mut app = app_holding(&record);
+        app.publish_owned_documents();
+        assert!(app.document_routes.sent.is_empty());
+    }
+}
+
+/// The person's own scope is theirs alone: an app's record of a kind kept
+/// for one person is not the one kept for the workspace.
+#[test]
+fn the_persons_records_are_not_the_workspaces() {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-    let records =
-        PersonRecords::open(&mut owners, APP, crate::permissions::UserId("local".into())).unwrap();
-    assert_eq!(records.room(), None);
-    let record = records
-        .open_record(RecordKind::new("test.watched"), &|doc| {
-            doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        })
+    let personal = PersonRecords::open(&mut owners, APP, person())
+        .unwrap()
+        .open_record(RecordKind::new("test.watched"), &|_| Ok(()))
         .unwrap();
-    watch(&record, "kept-here");
-    assert_eq!(record.route(), None, "no route names a device-only record");
-    let mut app = app_holding(&record);
-    app.publish_owned_documents();
-    assert!(app.document_routes.sent.is_empty());
+    let in_workspace = PersonRecords::open(&mut owners, APP, person())
+        .unwrap()
+        .in_workspace(WORKSPACE)
+        .unwrap()
+        .open_record(RecordKind::new("test.watched"), &|_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        personal
+            .read(|doc| crate::record::home(doc))
+            .flatten()
+            .as_deref(),
+        Some(PERSONAL_SCOPE)
+    );
+    assert_ne!(
+        personal.checkout().id,
+        in_workspace.checkout().id,
+        "one id per kind and person, another in the workspace"
+    );
 }
 
 #[test]
@@ -280,13 +318,16 @@ fn a_device_that_was_away_catches_up_when_its_route_returns() {
 /// The same app open in a second window of the device, while the first
 /// holds the stored record: the second keeps an in-memory copy on the very
 /// same route, so what the person's host replays there — and what the first
-/// window publishes — reaches it too.
+/// window publishes — reaches it too. A route is what lets a copy follow a
+/// record, which a member's record in the workspace has.
 #[test]
 fn a_second_window_holding_an_in_memory_copy_hears_what_reaches_the_route() {
     let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
     let open = |store: &Rc<dyn durable_store::DurableStore>| {
         let mut owners = RecordOwners::with_store(Rc::clone(store));
         PersonRecords::open(&mut owners, APP, person())
+            .unwrap()
+            .in_workspace(WORKSPACE)
             .unwrap()
             .open_record(RecordKind::new("test.watched"), &|doc| {
                 doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -452,14 +493,13 @@ fn recording_window(
     (app, recording)
 }
 
-/// Another app reads the record its keeper owns: it joins the record's route
-/// to hear the person's other devices, and offers nothing there — not the
-/// in-memory replica's genesis, which opens it on join. A change offered
-/// there is one the identity service refuses to sign, and a refusal stops
-/// all of the app's collaboration.
+/// Another app holds the person's shared record its keeper keeps: one record,
+/// and only its keeper publishes it. A change another app offered on a route
+/// is one the identity service refuses to sign, and a refusal stops all of
+/// the app's collaboration.
 #[test]
 #[cfg(unix)]
-fn a_reader_of_another_apps_record_joins_its_route_and_publishes_nothing() {
+fn a_reader_of_another_apps_record_publishes_nothing() {
     let (owned, read) = owned_and_read("test.watched");
     assert!(owned.publishes(), "the keeper publishes its record");
     assert!(
@@ -471,54 +511,18 @@ fn a_reader_of_another_apps_record_joins_its_route_and_publishes_nothing() {
         owned.checkout().id,
         "one record, as every device derives it"
     );
-    let route = read.route().expect("a route in the person's room");
-    assert_eq!(route, owned.route().unwrap());
-
-    let (app, recording) = recording_window(APP, &read);
-    let recording = recording.lock().unwrap();
-    assert!(
-        recording.joins.contains(&route),
-        "the reader joins the record's route"
-    );
-    let offered = recording.writes.clone();
-    assert!(
-        offered.is_empty(),
-        "a reader offers no change on another app's route; it offered {offered:?}"
-    );
-    assert!(
-        app.document_routes
-            .owners
-            .iter()
-            .any(|entry| entry.route == route && !entry.publishes),
-        "the route is held for reading only"
-    );
+    assert_eq!(read.route(), None, "and no route carries it yet");
 }
 
-/// The reader still syncs: what the person's other devices send on the
-/// route is merged into its copy of the record.
-#[test]
-#[cfg(unix)]
-fn a_reader_of_another_apps_record_merges_what_its_route_delivers() {
-    let (_owned, read) = owned_and_read("test.watched");
-    let route = read.route().expect("a route in the person's room");
-    let (mut app, _recording) = recording_window(APP, &read);
-    let other_device = device();
-    watch(&other_device, "from-their-phone");
-    app.apply_signed_document_envelope(
-        &from_device(&route, other_device.document().unwrap()),
-        None,
-    );
-    assert_eq!(watched(&read), ["from-their-phone"]);
-}
-
-/// The app that keeps the record publishes it on its route: the rule is
-/// about who may sign a change on a route, not about the route.
+/// The app that keeps a record of a kind publishes it on the route it syncs
+/// on: the rule is about who may sign a change on a route, not about the
+/// route.
 #[test]
 #[cfg(unix)]
 fn an_app_publishes_the_record_it_keeps_on_its_route() {
-    let (owned, _read) = owned_and_read("test.watched");
-    let route = owned.route().expect("a route in the person's room");
-    let (_app, recording) = recording_window("so.tilo.test-record-owner", &owned);
+    let owned = device();
+    let route = owned.route().expect("a route in the workspace");
+    let (_app, recording) = recording_window(APP, &owned);
     assert_eq!(
         recording.lock().unwrap().writes.clone(),
         vec![route],

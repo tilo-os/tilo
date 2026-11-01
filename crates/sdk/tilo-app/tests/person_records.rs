@@ -323,9 +323,14 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     assert!(!read.editable());
     for copy in [&edited, &read] {
         assert_eq!(
-            copy.record().route().unwrap(),
-            owned.record().route().unwrap(),
+            copy.record().checkout().id,
+            owned.record().checkout().id,
             "every app's copy is the owner's record"
+        );
+        assert_eq!(
+            copy.record().route(),
+            None,
+            "the person's own record has no route: it stays on this device until their own store carries it"
         );
     }
 
