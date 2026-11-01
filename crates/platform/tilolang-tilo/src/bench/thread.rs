@@ -25,7 +25,7 @@ use super::{
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
-use crate::schema::{MergeKind, lookup};
+use crate::schema::MergeKind;
 
 /// The id of the one item of the root's list: the thread whose transcript the scenarios show.
 fn thread_id() -> String {
@@ -59,8 +59,8 @@ pub(super) fn filled(
     principals: &Principals,
     meta: &tilolang_runtime::meta::Meta,
 ) -> Result<DynRecord, String> {
-    let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
-    let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
+    let mut record = super::unwritten(ty, meta)?;
+    let schema = record.schema();
     let author = tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?;
     // What a record says in rich text it says there alone: a message with a rich text body
     // has no parts.
@@ -95,9 +95,6 @@ pub(super) fn filled(
             _ => {}
         }
     }
-    // A register of a type with no default (a time, a date, an identifier) reads as an error
-    // until it holds a value: the seed gives it one.
-    super::fill_registers(&mut record, &super::register_fields(meta, ty));
     Ok(record)
 }
 
@@ -114,8 +111,7 @@ pub(super) fn seeded(
 ) -> Result<Doc, String> {
     let principals = principals(packages);
     let meta = &packages.last().ok_or("no package")?.meta;
-    let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
-    let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
+    let mut root = super::unwritten(&shape.root_ty, meta)?;
     let mut item = filled(
         (&thread_id(), &list.item_ty),
         "Item 0",
@@ -142,7 +138,7 @@ pub(super) fn seeded(
     }
     let mut items = Collection::default();
     items.push(Id::from_raw(thread_id()), item);
-    let items = super::with_holders(list, items)?;
+    let items = super::with_holders(list, items, meta)?;
     match root.get_mut(&super::top_field(list)) {
         Some(DynValue::Collection(slot)) => *slot = items,
         _ => return Err("the list field is not a collection".into()),
