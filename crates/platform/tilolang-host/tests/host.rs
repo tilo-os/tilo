@@ -1130,7 +1130,13 @@ fn shipped_dir() -> std::path::PathBuf {
 /// The shipped package in `dir`, built with the packages it uses, and its app id.
 fn shipped(dir: &std::path::Path) -> (String, Bundle) {
     // The platform's apps (the device, Settings) are described from their surfaces, not built.
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform's apps");
+    // So are the native apps beside the packages (the session's `so.tilo.session`).
+    let mut platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's apps");
+    platform.extend(
+        tilolang_tilo::catalogue::native_apps(&tilolang::source::search_of(dir, &[]))
+            .expect("the native apps' surfaces read"),
+    );
     let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
     let dirs = tilolang::source::dependency_order_with(dir, &[], &provided)
         .unwrap_or_else(|error| panic!("{}: the packages resolve: {error}", dir.display()));

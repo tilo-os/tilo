@@ -207,14 +207,28 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
     move |error| format!("{}: {error}", path.display())
 }
 
-/// The directories of the package in `dir` and the packages it uses, in the order they build:
-/// a package may also use the platform's apps (the device, Settings), which are described from
-/// the surfaces they publish rather than built.
+/// The packages the package in `dir` may use that are described rather than built: the
+/// platform's apps (the device, Settings) and the native apps among the directories it is
+/// searched in (the session's `so.tilo.session`), each from the surface it publishes, as
+/// `tilolang describe` reads them.
+///
+/// # Errors
+/// A surface does not read.
+pub fn described_packages(dir: &Path, search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
+    let mut described = tilolang_tilo::platform_apps::platform_packages()?;
+    described.extend(tilolang_tilo::catalogue::native_apps(
+        &tilolang::source::search_of(dir, search),
+    )?);
+    Ok(described)
+}
+
+/// The directories of the package in `dir` and the packages it uses that are built, in the
+/// order they build ([`described_packages`] are not).
 ///
 /// # Errors
 /// A package it uses is found nowhere.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    let provided: Vec<String> = tilolang_tilo::platform_apps::platform_packages()?
+    let provided: Vec<String> = described_packages(dir, search)?
         .iter()
         .map(|meta| meta.app.clone())
         .collect();
@@ -227,10 +241,10 @@ pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, Stri
 /// A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
-    let platform = tilolang_tilo::platform_apps::platform_packages()?;
+    let described = described_packages(&options.dir, &options.search)?;
     let dirs = package_dirs(&options.dir, &options.search)?;
     let built =
-        compile_dirs(&dirs, &platform, &mut OsEntropy::default()).map_err(|e| e.to_string())?;
+        compile_dirs(&dirs, &described, &mut OsEntropy::default()).map_err(|e| e.to_string())?;
     for package in &built {
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());

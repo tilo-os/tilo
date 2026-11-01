@@ -140,7 +140,8 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
 fn a_package_that_uses_the_platforms_apps_builds() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("tl");
-    for name in ["shell", "notes", "tasks", "chat"] {
+    // With the session's description, a native app's directory beside them.
+    for name in ["shell", "notes", "tasks", "chat", "session"] {
         copy_package(&packages().join(name), &source.join(name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
