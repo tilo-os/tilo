@@ -263,8 +263,9 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
 }
 
 /// Run the queued control intents of a tree whose host keeps no resource
-/// tree of its own, such as the shell's own UI: an intent addressed to a
-/// `tilo.control:` handler ([`Button::on_effect`](super::Button::on_effect),
+/// tree of its own, such as the shell's own UI or a synthetic event a test
+/// sends: an intent addressed to a `tilo.control:` handler
+/// ([`Button::on_effect`](super::Button::on_effect),
 /// [`Button::on_view`](super::Button::on_view) and the other published
 /// controls) is delivered to the control that published it, as a resource
 /// host delivers an admitted invocation. Answers how many ran.
@@ -284,20 +285,33 @@ pub fn start_pending_control_invocations(
         let Some(invocation) = take_control_invocation(&mut *root) else {
             break;
         };
-        let Some(control) = invocation.address.resource.strip_prefix("tilo.control:") else {
+        // A published control's own action is the control's: the tree that holds it answers
+        // it. Its kind and payload come from the action the resource declares, so a segmented
+        // choice's select, a row's choose and a switch's set travel the way their widget
+        // reads them, not only a button's nullary invoke.
+        let Some(resource) = find_published(&*root, &invocation.address.resource) else {
             continue;
         };
-        if invocation.address.action != "invoke" {
+        let Some(kind) = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == invocation.address.action)
+            .map(|spec| spec.kind)
+        else {
             continue;
-        }
-        let Ok(payload) = serde_json::to_vec(control) else {
+        };
+        let Ok(encoded) = tilo_actions::door::encode_json(
+            &[resource],
+            &invocation.address,
+            &invocation.arguments,
+        ) else {
             continue;
         };
         let operation = ResourceOperation::local(
             tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            super::activation::NATIVE_INVOKE,
-            &payload,
+            kind,
+            &encoded.type_id,
+            &encoded.payload,
         );
         if matches!(
             start_operation(&mut *root, &operation, doc, path),
@@ -307,6 +321,26 @@ pub fn start_pending_control_invocations(
         }
     }
     started
+}
+
+/// Resource `id` as `widget`'s tree publishes it, without a document (a
+/// published control's own resource names its action and its kind).
+///
+/// A decorator that forwards the request to what it wraps (a `ControlRow`
+/// carrying a button) answers for its inner widget; a walk over the tree
+/// reaches the control that publishes it.
+fn find_published(widget: &(impl Widget + ?Sized), id: &str) -> Option<tilo_actions::ResourceSpec> {
+    let doc = automerge::AutoCommit::new();
+    if let Some(resource) = crate::resources::resources_for(widget, None, &doc)
+        .into_iter()
+        .find(|resource| resource.id.0 == id)
+    {
+        return Some(resource);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| find_published(child, id))
 }
 
 /// [`take_control_invocation`], with the effect invocation the intent

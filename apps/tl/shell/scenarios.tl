@@ -398,7 +398,6 @@ scenario "the traditional desktop" {
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
-    d.title = "Studio — Drafts"
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))

@@ -93,6 +93,14 @@ mod tests {
             .doc(&mut doc)
             .layout(&taffy, node);
         keys.send(&mut choice, &named_key(NamedKey::ArrowRight));
+        // The choice publishes its selection as its view action; the tree that holds it
+        // answers the press, as the window does after handling the key.
+        let mut tree: Box<dyn Widget> = Box::new(choice);
+        ui::widget::controls::start_pending_control_invocations(
+            tree.as_mut(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         let press = presses.take().expect("a segment action");
         assert!(
             press.effect

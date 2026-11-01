@@ -169,12 +169,7 @@ mod tests {
             let mut row = disk_row(&disk(), &control, false);
             let mut doc = AutoCommit::new();
 
-            assert!(row.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
+            crate::setup::destination::press(&mut row, &ui::a11y::Action::Activate, &mut doc);
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SelectDisk {
