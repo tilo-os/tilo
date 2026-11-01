@@ -69,7 +69,8 @@ pub struct QuickSettingsState {
     /// each frame from the shell's status bridge with no lock
     /// held across a draw; `None` fields until a reading lands.
     pub status: crate::status::SystemStatus,
-    /// `None` when fwupd is unavailable, otherwise the offered update count.
+    /// How many firmware updates the system service's `system-update`
+    /// reading offers; `None` when `fwupd` is unavailable.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
     pub vpns: Vec<os_actions::VpnConnectionInfo>,

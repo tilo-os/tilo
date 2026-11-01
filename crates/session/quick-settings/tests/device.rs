@@ -116,7 +116,16 @@ fn the_device_is_read_off_the_ui_thread_and_lands_in_the_panel() {
     desk.until("the lists opening reads", |state| {
         !state.bt_devices.is_empty() && !state.wifi_networks.is_empty()
     });
-    assert_eq!(desk.host.state().firmware_updates, Some(2));
+    assert!(
+        desk.host.state().firmware_updates.is_none(),
+        "the firmware count is the system service's to read, and none published"
+    );
+    desk.host.firmware(Some(2));
+    assert_eq!(
+        desk.host.state().firmware_updates,
+        Some(2),
+        "what the system service publishes is what the panel shows"
+    );
 
     desk.app
         .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Bluetooth))

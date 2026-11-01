@@ -35,7 +35,6 @@ enum Tier {
     Field(Reader),
     Wifi,
     Bt,
-    Firmware,
     WifiJoin,
 }
 
@@ -166,13 +165,6 @@ impl QsRefresh {
         }
     }
 
-    pub(crate) fn kick_firmware(&mut self) {
-        let reads = Arc::clone(&self.reads);
-        self.spawn(Tier::Firmware, move || {
-            QsReading::Firmware(reads.firmware_updates())
-        });
-    }
-
     /// Read the networks `NetworkManager` already knows, and the profiles it
     /// keeps. Never waits for a radio scan, which takes over ten seconds on
     /// some adapters: the tile's "connected to" must not depend on one.
@@ -291,7 +283,6 @@ impl QsRefresh {
                 QsReading::Field(field) => Tier::Field(field.reader()),
                 QsReading::WifiNetworks(_) => Tier::Wifi,
                 QsReading::BtDevices(_) => Tier::Bt,
-                QsReading::Firmware(_) => Tier::Firmware,
                 QsReading::WifiJoin(_) => Tier::WifiJoin,
                 QsReading::Wrote(_) => {
                     out.push(reading);
@@ -388,9 +379,6 @@ pub(crate) mod tests {
             Ok(())
         }
         fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
-            None
-        }
-        fn firmware_updates(&self) -> Option<usize> {
             None
         }
         fn availability(&self) -> QsActionAvailability {
@@ -669,10 +657,6 @@ pub(crate) mod tests {
         }
         fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             self.hit("bt_devices");
-            None
-        }
-        fn firmware_updates(&self) -> Option<usize> {
-            self.hit("firmware_updates");
             None
         }
         fn availability(&self) -> QsActionAvailability {

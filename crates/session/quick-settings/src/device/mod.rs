@@ -229,6 +229,14 @@ impl DeviceHost {
         self.feed();
     }
 
+    /// Land the firmware updates `fwupd` offers as the system service
+    /// counts them; `None` where it is not installed. The service owns the
+    /// count, so this is the panel's only firmware reading.
+    pub fn firmware(&self, offered: Option<usize>) {
+        self.0.state.borrow_mut().firmware_updates = offered;
+        self.feed();
+    }
+
     /// Land the session another of the person's devices hands this one, so
     /// the now-playing card offers to continue it here; `None` clears it.
     /// The offer shows at once, and stays until the person takes it or the
@@ -267,7 +275,6 @@ impl DeviceHost {
         if open && !was {
             let mut refresh = self.0.refresh.borrow_mut();
             refresh.kick_fast();
-            refresh.kick_firmware();
             // The Wi-Fi and Bluetooth tiles name what is connected, which
             // only these lists know.
             refresh.kick_wifi_networks();
@@ -419,7 +426,6 @@ impl DeviceHost {
                     apply::saved_networks(&mut state, reading.saved);
                 }
                 QsReading::BtDevices(reading) => apply::bluetooth(&mut state, reading),
-                QsReading::Firmware(updates) => state.firmware_updates = updates,
                 QsReading::WifiJoin(join) => told = apply::wifi_join(&mut state, join),
                 QsReading::Wrote(done) => {
                     drop(state);

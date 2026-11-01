@@ -192,9 +192,6 @@ impl DeviceReads for Machine {
     fn scanning_bluetooth(&self) -> Option<bool> {
         Some(self.0.lock().unwrap().scanning)
     }
-    fn firmware_updates(&self) -> Option<usize> {
-        Some(2)
-    }
     fn availability(&self) -> QsActionAvailability {
         QsActionAvailability::all()
     }

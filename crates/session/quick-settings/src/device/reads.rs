@@ -53,8 +53,6 @@ pub trait DeviceReads: Send + Sync {
     fn scanning_bluetooth(&self) -> Option<bool> {
         None
     }
-    /// How many firmware updates are offered; `None` without fwupd.
-    fn firmware_updates(&self) -> Option<usize>;
     /// Which controls the machine has hardware for, beyond what the other
     /// reads show.
     fn availability(&self) -> QsActionAvailability;
@@ -122,10 +120,6 @@ impl DeviceReads for OsReads {
 
     fn scanning_bluetooth(&self) -> Option<bool> {
         qs::log_get("scanning_bluetooth", qs::scanning_bluetooth())
-    }
-
-    fn firmware_updates(&self) -> Option<usize> {
-        qs::log_get("get_firmware_updates", qs::get_firmware_updates()).map(|updates| updates.len())
     }
 
     fn availability(&self) -> QsActionAvailability {
@@ -363,7 +357,6 @@ pub(crate) struct WifiReading {
 pub(crate) enum QsReading {
     Fast(Box<FastReading>),
     Field(FieldReading),
-    Firmware(Option<usize>),
     WifiNetworks(WifiReading),
     BtDevices(BluetoothReading),
     WifiJoin(WifiJoinResult),

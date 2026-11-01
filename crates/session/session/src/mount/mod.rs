@@ -15,6 +15,7 @@ pub mod drives;
 pub mod firstboot;
 pub(crate) mod overview;
 pub(crate) mod panel_power;
+pub(crate) mod panel_system;
 pub(crate) mod panels;
 pub(crate) mod power;
 pub(crate) mod quick_settings;

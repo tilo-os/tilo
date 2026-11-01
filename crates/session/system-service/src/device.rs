@@ -73,7 +73,12 @@ impl System for OsSystem {
     fn update(&self) -> Update {
         let live = crate::update::live_state();
         let staged = live.is_none() && crate::update::staged();
-        Update::of(staged, live.as_ref())
+        Update {
+            firmware: os_actions::get_firmware_updates()
+                .ok()
+                .map(|offered| offered.len()),
+            ..Update::of(staged, live.as_ref())
+        }
     }
 
     fn time(&self) -> Time {
