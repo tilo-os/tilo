@@ -15,7 +15,7 @@ use tilo_app_package::pack::SigningIdentity;
 
 /// The package in `dir` and the packages it uses, found in `search` (else among `dir`'s
 /// siblings), compiled in dependency order against what the platform and the native apps among
-/// them publish ([`tilolang_tilo::catalogue::published`]); and that published metadata. The one
+/// them publish ([`tilolang_tilo::catalogue::published_packages`]); and that published metadata. The one
 /// resolution `check`, `build`, `describe`, `dev` and `layout-check` share.
 ///
 /// # Errors
@@ -31,8 +31,9 @@ pub fn compile(
     ),
     tilolang::source::BuildError,
 > {
-    let published = tilolang_tilo::catalogue::published(&tilolang::source::search_of(dir, search))
-        .map_err(tilolang::source::BuildError::Read)?;
+    let published =
+        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, search))
+            .map_err(tilolang::source::BuildError::Read)?;
     let built = tilolang::source::compile_package(dir, search, &published, rng)?;
     Ok((built, published))
 }
@@ -42,7 +43,8 @@ pub fn compile(
 /// # Errors
 /// What is published does not read, or a package cannot be found or read.
 pub fn package_dirs(dir: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    let published = tilolang_tilo::catalogue::published(&tilolang::source::search_of(dir, search))?;
+    let published =
+        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, search))?;
     tilolang::source::dependency_order_with(dir, search, &tilolang::source::apps_of(&published))
 }
 

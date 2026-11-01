@@ -158,7 +158,7 @@ pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, Stri
 ///
 /// # Errors
 /// A platform surface or a native app's manifest or surface file does not read.
-pub fn published(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
+pub fn published_packages(search: &[PathBuf]) -> Result<Vec<PackageMeta>, String> {
     let mut out = crate::platform_apps::platform_packages()?;
     for native in native_apps(search)? {
         if !out.iter().any(|meta| meta.app == native.app) {

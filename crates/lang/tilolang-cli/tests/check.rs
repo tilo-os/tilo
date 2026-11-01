@@ -17,7 +17,9 @@ fn every_package_in_apps_tl_checks_clean() {
     let mut dirs: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_dir())
+        // A tilolang package is a directory of `.tl` files; a native app beside them (the
+        // session's committed `surface.toml`) is what packages `use`, not one to check.
+        .filter(|path| tilolang::source::source_paths(path).is_ok_and(|files| !files.is_empty()))
         .collect();
     dirs.sort();
     assert!(dirs.iter().any(|dir| dir.ends_with("shell")), "{dirs:?}");
