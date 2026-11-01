@@ -38,8 +38,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
-use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
-use crate::layout::{Strip, Tab, TileContent, WindowGroup};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -59,11 +59,6 @@ const TAB: &str = "tab";
 const RECORD: &str = "record";
 const ARRANGEMENT: &str = "arrangement";
 const PLACE: &str = "place";
-/// The desk's own document keeps the record each window shows and who made it
-/// beside its workspaces, at these root keys; the workspace in front is
-/// [`crate::desktop_doc::ACTIVE_KEY`].
-const WINDOW_RECORDS: &str = "window_records_v1";
-const WINDOW_AUTHORS: &str = "window_authors_v1";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -424,167 +419,56 @@ impl Parts {
 /// The shared desktop `doc` holds, now (`None`) or as of `heads`; `None`
 /// when it holds no workspace there.
 #[must_use]
-pub fn read(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
-    let at = At { doc, heads };
-    if is_the_desk_document(&at) {
-        return desk_of(&at);
+pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    if crate::desktop_doc::holds(doc) {
+        return desk_of(doc, heads);
     }
-    Parts::of(&at).assemble()
+    Parts::of(&At { doc, heads }).assemble()
 }
 
-/// Whether `at` reads the desk's own document ([`crate::desktop_doc`]), which
-/// keeps the workspace list among the desk's fields, rather than the record
-/// this module writes, which keeps every window as its own entry. A room's
-/// record is the record until a desk kept as one document is published over
-/// it, and every change after that builds on the document.
-fn is_the_desk_document<D: ReadDoc>(at: &At<'_, D>) -> bool {
-    matches!(
-        at.get(&ROOT, WORKSPACES),
-        Some((Value::Object(ObjType::List), _))
-    )
-}
-
-/// The desk that document holds at `at`'s heads, as [`read`] gives a record:
-/// the same workspaces, strips, windows, the record each window shows and who
-/// made each strip and opened each window.
-fn desk_of<D: ReadDoc>(at: &At<'_, D>) -> Option<SharedDesktop> {
-    let (_, list) = at.get(&ROOT, WORKSPACES)?;
+/// The desk the desk's own document ([`crate::desktop_doc`]) holds at
+/// `heads`, as [`read`] gives a record: read with the document's own reader,
+/// so a record that became the desk's document loses nothing of the desk.
+///
+/// A room's record is the record this module writes until a desk kept as one
+/// document is published over it, and every change after that builds on the
+/// document.
+fn desk_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    let desk = match heads {
+        Some(heads) => as_of(doc, heads),
+        None => doc.clone(),
+    };
     let mut tree = DesktopTree::default();
-    if let Some(active) = uint(at, &ROOT, crate::desktop_doc::ACTIVE_KEY) {
-        tree.active = WorkspaceId::from(active);
-    }
-    for entry in elements(at, &list) {
-        let Some(id) = uint(at, &entry, "id") else {
-            continue;
-        };
-        let name = at.text(&entry, "name").unwrap_or_default();
-        // A workspace is its room: a reader of this desk lands in the room
-        // it names, as the document's own reader does.
-        let room = at
-            .text(&entry, "room")
-            .and_then(|text| RoomId::parse(text.as_str()))
-            .filter(|room| !room.is_nil());
-        let mut workspace = match room {
-            Some(room) => Workspace::in_room(WorkspaceId::from(id), room, name),
-            None => Workspace::new(WorkspaceId::from(id), name),
-        };
-        workspace.strips = strips_of(at, &entry);
-        tree.workspaces.push(workspace);
-    }
+    crate::desktop_doc::rebuild(&desk, &mut tree);
     if tree.workspaces.is_empty() {
         return None;
     }
     Some(SharedDesktop {
         tree,
-        records: map_entries(at, WINDOW_RECORDS)
-            .into_iter()
-            .filter_map(|(tab, record)| Some((tab.parse().ok()?, record)))
-            .collect(),
-        authors: map_entries(at, WINDOW_AUTHORS)
-            .into_iter()
-            .filter_map(|(id, author)| Some((id.parse().ok()?, author)))
-            .collect(),
+        records: crate::desktop_doc::records(&desk),
+        authors: crate::desktop_doc::window_authors(&desk),
     })
 }
 
-/// The strips of a workspace entry, each with the windows on it.
-fn strips_of<D: ReadDoc>(at: &At<'_, D>, workspace: &ObjId) -> Vec<Strip> {
-    let Some((_, list)) = at.get(workspace, STRIPS) else {
-        return Vec::new();
-    };
-    let mut strips = Vec::new();
-    for entry in elements(at, &list) {
-        let Some(id) = uint(at, &entry, "id") else {
+/// `doc`'s changes up to `heads` as a document of their own, so that the
+/// desk's own reader can read the desk as it was then.
+fn as_of(doc: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit {
+    let mut wanted: Vec<automerge::Change> = Vec::new();
+    let mut pending: Vec<ChangeHash> = heads.to_vec();
+    let mut seen: HashSet<ChangeHash> = HashSet::new();
+    while let Some(hash) = pending.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let Some(change) = doc.get_change_by_hash(&hash) else {
             continue;
         };
-        let mut strip = Strip::new(StripId(id), at.text(&entry, NAME).unwrap_or_default());
-        if let Some((_, groups)) = at.get(&entry, crate::desktop_doc::GROUPS_KEY) {
-            for group in elements(at, &groups) {
-                if let Some(folded) = group_of(at, &group) {
-                    strip.window_groups.push(folded);
-                }
-            }
-        }
-        strips.push(strip);
+        pending.extend(change.deps().iter().copied());
+        wanted.push(change);
     }
-    strips
-}
-
-/// One group entry as the desk keeps it: its windows, in order. How wide it
-/// is and which window is in front are the device's, and this reader wants
-/// none of them.
-fn group_of<D: ReadDoc>(at: &At<'_, D>, entry: &ObjId) -> Option<WindowGroup> {
-    let id = uint(at, entry, "id")?;
-    let mut tabs = Vec::new();
-    if let Some((_, list)) = at.get(entry, "tabs") {
-        for tab in elements(at, &list) {
-            if let Some(tab) = tab_of(at, &tab) {
-                tabs.push(tab);
-            }
-        }
-    }
-    Some(WindowGroup {
-        id,
-        active_tab: tabs.first().map_or(0, |tab| tab.id),
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    })
-}
-
-fn tab_of<D: ReadDoc>(at: &At<'_, D>, entry: &ObjId) -> Option<Tab> {
-    let id = uint(at, entry, "id")?;
-    let title = at.text(entry, "title").unwrap_or_default();
-    let tile = match at.get(entry, "tile_json") {
-        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
-            ScalarValue::Bytes(blob) => serde_json::from_slice::<TileContent>(blob).ok()?,
-            _ => return None,
-        },
-        _ => return None,
-    };
-    Some(Tab {
-        id,
-        title,
-        tile,
-        app_title: at.text(entry, "app_title"),
-    })
-}
-
-fn uint<D: ReadDoc>(at: &At<'_, D>, obj: &ObjId, key: &str) -> Option<u64> {
-    match at.get(obj, key)? {
-        (Value::Scalar(scalar), _) => match scalar.as_ref() {
-            ScalarValue::Uint(value) => Some(*value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The map objects of a list, in order: a list of entries, each a map of its
-/// own fields.
-fn elements<D: ReadDoc>(at: &At<'_, D>, list: &ObjId) -> Vec<ObjId> {
-    let length = match at.heads {
-        Some(heads) => at.doc.length_at(list, heads),
-        None => at.doc.length(list),
-    };
-    (0..length)
-        .filter_map(|index| match at.get(list, index) {
-            Some((Value::Object(ObjType::Map), id)) => Some(id),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Every text entry of the map `ROOT[key]`, by key.
-fn map_entries<D: ReadDoc>(at: &At<'_, D>, key: &str) -> Vec<(String, String)> {
-    let Some((Value::Object(ObjType::Map), map)) = at.get(&ROOT, key) else {
-        return Vec::new();
-    };
-    at.keys(&map)
-        .into_iter()
-        .filter_map(|entry| Some((entry.clone(), at.text(&map, &entry)?)))
-        .collect()
+    let mut out = AutoCommit::new();
+    let _ = tilo_automerge::ApplyIncoming::apply_incoming(&mut out, wanted);
+    out
 }
 
 /// `desktop` as [`read`] gives it back: only what the record keeps, so a

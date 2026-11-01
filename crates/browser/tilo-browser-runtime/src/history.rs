@@ -230,11 +230,15 @@ impl PageHistory {
     }
 
     /// The room's replicated copy of the desk's document when the page has
-    /// one, else this profile's own.
+    /// one, else this profile's own, as the desk's own document either way:
+    /// a room whose desktop older peers still write entry by entry reads as
+    /// the one document, with the author and time of every change it made.
     fn desk_document(&self) -> AutoCommit {
-        self.peer
+        let document = self
+            .peer
             .and_then(crate::replication::desktop_history)
-            .unwrap_or_else(|| self.document.borrow().clone())
+            .unwrap_or_else(|| self.document.borrow().clone());
+        crate::desktop::as_desk_document(&document, &self.author)
     }
 
     fn bound(&self, tree: &DesktopTree, workspace: WorkspaceId) -> Vec<(String, RecordCheckout)> {
@@ -498,13 +502,15 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
         tree.workspaces.iter().find(|w| w.id == workspace)?;
-        let mut desktop = tree.clone();
-        desktop.active = workspace;
         // The desk's history is the desk's document: every change in it, by
         // the person who made it, as native reads the same document.
         let mut document = self.desk_document();
         self.authors = history_log::authors_of(&mut document);
-        Some(ActivitySnapshot::of_desktop(desktop, document))
+        let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), document);
+        // The workspace the pane was opened on, not the one the desk has in
+        // front.
+        snapshot.desktop.active = workspace;
+        Some(snapshot)
     }
 
     fn record_histories(

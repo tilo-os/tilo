@@ -25,7 +25,7 @@ use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::automerge::AutoCommit;
+use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::permissions::{SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
@@ -1960,11 +1960,27 @@ fn stored_records(
     (bound, unbound)
 }
 
-/// The room's desk document as this profile keeps it, opening whatever an
-/// older build kept for it: the desk's own document, or the desktop it stored
-/// as JSON beside a log of its changes, read into the document once with the
-/// author and time of every change it made
-/// ([`tilo_desktop_surface::history_log::desk_document`]).
+/// The desk as the desk's own document: `document` when it already is one,
+/// else the record older builds wrote it as — every window an entry of its
+/// own — read into the document with the author and time of every change it
+/// made ([`tilo_desktop_surface::history_log::desk_document`]).
+pub(crate) fn as_desk_document(document: &AutoCommit, author: &str) -> AutoCommit {
+    if tilo_desktop_model::desktop_doc::holds(document) {
+        return document.clone();
+    }
+    let mut log = document.clone();
+    tilo_desktop_surface::history_log::desk_document(
+        &mut log,
+        None,
+        ui::automerge::ActorId::from(author.as_bytes()),
+        ui::time::unix_now_i64(),
+    )
+}
+
+/// The desk document this profile keeps, opening whatever an older build kept
+/// for it: the desk's own document, the record a room's desktop was written
+/// to before it was one document, or the desktop an older build stored as
+/// JSON beside a log of its changes.
 fn open_desk(
     store: &dyn DurableStore,
     key: &StorageKey,
@@ -1979,9 +1995,11 @@ fn open_desk(
     let Some(stored) = stored else {
         return AutoCommit::new();
     };
-    if let Ok(document) = AutoCommit::load(&stored.bytes)
-        && tilo_desktop_model::desktop_doc::holds(&document)
-    {
+    if let Ok(loaded) = AutoCommit::load(&stored.bytes) {
+        let mut document = as_desk_document(&loaded, author);
+        if !document.base_heads().is_empty() {
+            let _ = store.write(key, WriteOp::Replace(document.save()), None);
+        }
         return document;
     }
     let old: Option<tilo_desktop_model::ownership::SharedDesktop> =
@@ -1994,10 +2012,10 @@ fn open_desk(
         .filter(|stored| !stored.bytes.is_empty())
         .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
         .unwrap_or_default();
-    let document = tilo_desktop_surface::history_log::desk_document(
+    let mut document = tilo_desktop_surface::history_log::desk_document(
         &mut log,
         old.as_ref(),
-        automerge::ActorId::from(author.as_bytes()),
+        ui::automerge::ActorId::from(author.as_bytes()),
         ui::time::unix_now_i64(),
     );
     if document.base_heads().is_empty() {

@@ -155,15 +155,15 @@ pub fn desk_document(
     let names = names_in(log);
     // The names go in with the first change they name: written before one,
     // they would be a change of the desk of their own, at no time at all.
-    let mut named = false;
+    let mut wrote_names = false;
     for change in log.get_changes(&[]) {
         let Some(desktop) = shared_record::read(log, Some(&[change.hash()])) else {
             continue;
         };
         doc.set_actor(actor_of(&change));
-        if !named && !names.is_empty() {
+        if !wrote_names && !names.is_empty() {
             desktop_doc::set_author_names(&mut doc, &names);
-            named = true;
+            wrote_names = true;
         }
         desktop_doc::write_shared(&mut doc, &desktop.tree, &desktop.records, &desktop.authors);
         doc.commit_with(CommitOptions::default().with_time(change.timestamp()));
@@ -445,6 +445,67 @@ mod tests {
         let mut unknown = ui::AuthorDirectory::new();
         register_authors(&mut unknown, &authors, &|_| None);
         assert_eq!(unknown.resolve("aa").name, key, "nobody to name them by");
+    }
+
+    /// Two peers each change the desk and merge: each reads the one desk
+    /// with both changes, and the pane lists each change by the person who
+    /// made it.
+    #[test]
+    fn a_merged_desk_lists_both_peers_changes_by_name() {
+        let mut minter = IdMinter::new(7);
+        let notes = app(&mut minter, "Notes");
+        let tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
+        let mut doc = AutoCommit::new();
+        desktop_doc::seed(&mut doc, &tree);
+        commit(&mut doc, "Ada", 1_000);
+        let mut peer = doc.fork();
+
+        let mut mine = tree.clone();
+        mine.workspaces[0].name = "Studio · mine".into();
+        desktop_doc::seed(&mut doc, &mine);
+        commit(&mut doc, "Ada", 2_000);
+
+        let mut theirs = tree.clone();
+        let sheets = app(&mut minter, "Sheets");
+        theirs.workspaces[0].strips[0]
+            .window_groups
+            .push(tilo_desktop_model::WindowGroup {
+                id: minter.mint(),
+                active_tab: sheets.id,
+                tabs: vec![sheets],
+                width: tilo_desktop_model::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        desktop_doc::seed(&mut peer, &theirs);
+        commit(&mut peer, "Grace", 3_000);
+
+        doc.merge_incoming(&mut peer).expect("merged");
+        peer.merge_incoming(&mut doc).expect("merged");
+        for desk in [doc, peer] {
+            let mut snapshot = ActivitySnapshot::of_desktop(tree.clone(), desk);
+            let authors = authors_of(&mut snapshot.doc);
+            let mut pane = RoomActivityPane::new();
+            register_authors(pane.authors_mut(), &authors, &|_| None);
+            pane.begin_view(snapshot.active.raw());
+            pane.refresh(&mut snapshot);
+            let listed: Vec<(String, String)> = pane
+                .entries()
+                .iter()
+                .map(|entry| (entry.author.name.clone(), entry.summary.clone()))
+                .collect();
+            assert_eq!(listed.len(), 2, "{listed:?}");
+            assert!(
+                listed
+                    .iter()
+                    .any(|(author, summary)| author == "Grace" && summary.contains("Sheets")),
+                "the window the other peer opened is theirs: {listed:?}"
+            );
+            assert!(
+                listed.iter().any(|entry| entry.0 == "Ada"),
+                "the person's own change is theirs: {listed:?}"
+            );
+        }
     }
 
     #[test]
