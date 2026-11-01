@@ -9,7 +9,7 @@ export interface DesktopNavigationSnapshot {
   generation: string;
   /** `app`: the package id the window shows, as links name it; null for a window that shows no app of its own. The Activity app (`so.tilo.activity`) is one such window. */
   entries: Array<{route: DesktopRoute; app: string | null; label: string; stripLabel: string; workspaceLabel: string}>;
-  workspaces: Array<{id: string; label: string; room: string; owner: string | null; strips: Array<{id: string; label: string}>}>;
+  workspaces: Array<{id: string; label: string; workspace: string; owner: string | null; strips: Array<{id: string; label: string}>}>;
   /** What `launch` can open. */
   applications: Array<{id: string; label: string}>;
   activeWorkspace: string;

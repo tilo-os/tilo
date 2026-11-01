@@ -46,6 +46,19 @@ test('shared resource resolves only through its admitted record and current publ
   } finally { actions.dispose(); }
 });
 
+test('a locator names the admitted workspace the page holds, not another', async () => {
+  const origin = 'https://ada.tilo.cloud';
+  const locator = {origin, workspace: room, hostDevice: host, provider};
+  const {actions} = endpoints(() => ({revision: 'r1', rows: [row], locator}));
+  try {
+    const scope = {origin, workspace: room, hostDevice: host};
+    const resolved = await resolveResourceReference({reference, provider, actions, current: () => true, scope});
+    assert.equal(resolved.resource.id, resource.id);
+    await assert.rejects(resolveResourceReference({reference, provider, actions, current: () => true,
+      scope: {...scope, workspace: 'another-workspace'}}), /locator changed/);
+  } finally { actions.dispose(); }
+});
+
 test('revocation, wrong records and bounded lookup failure never resolve or invoke', async () => {
   for (const page of [
     {revision: 'r2', rows: []},

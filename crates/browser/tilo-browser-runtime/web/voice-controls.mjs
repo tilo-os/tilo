@@ -169,7 +169,7 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
   const stamped = status => ({...status, revision: revisionOf(status)});
   return {
     async execute(request) {
-      if (request.app !== 'so.tilo.chat' || request.room !== workspace || request.command?.version !== 1) throw new Error('unsupported local media route');
+      if (request.app !== 'so.tilo.chat' || request.workspace !== workspace || request.command?.version !== 1) throw new Error('unsupported local media route');
       const command = request.command.command;
       const route = key(request);
       const rosters = () => rostersOf(voice.calls, request.app, request.record);

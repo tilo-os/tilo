@@ -13,7 +13,7 @@ function fixture() {
   const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
     async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
   const controls = createVoiceControls({voice, workspace: 'room-1', gesture: () => true});
-  const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
+  const request = command => ({app: 'so.tilo.chat', workspace: 'room-1', record: '', command: {version: 1, intent: 0, command}});
   return {voice, controls, request, operations, opened, state};
 }
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
@@ -39,7 +39,7 @@ test('leave supersedes a delayed call lookup and cannot reopen capture', async (
 });
 test('foreign routes, absent calls and unmute without activation fail closed', async () => {
   const f = fixture();
-  await assert.rejects(f.controls.execute({...f.request({op: 'status'}), room: 'other'}), /route/);
+  await assert.rejects(f.controls.execute({...f.request({op: 'status'}), workspace: 'other'}), /route/);
   const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'absent'}));
   assert.equal(refused.state, 'ended');
   assert.equal(refused.issue, 'transport_failed');
@@ -217,7 +217,7 @@ test('a watch answers when someone joins the workspace\'s call, and holds while 
     // Ana joins the standup while the watch is held.
     if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, participants: [{user: ana}]}];
   }});
-  const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
+  const request = command => ({app: 'so.tilo.chat', workspace: 'room-1', record: '', command: {version: 1, intent: 0, command}});
   const seen = await controls.execute(request({op: 'status'}));
   assert.equal(seen.revision, revisionOf(seen));
   const answered = await controls.execute(request({op: 'watch', revision: seen.revision}));
