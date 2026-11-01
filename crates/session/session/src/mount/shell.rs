@@ -281,10 +281,8 @@ impl Shell {
     fn anchor(&self, tab: TabId, named: Option<(f64, f64)>) -> Option<Anchor> {
         let corner = named.or_else(|| {
             self.handle
-                .shown_tabs()
-                .into_iter()
-                .find(|(shown, _)| *shown == tab)
-                .map(|(_, at)| (at.x0, at.y0))
+                .window_rect(tab)
+                .map(|window| (window.x0, window.y0))
         })?;
         Some(Anchor {
             x: corner.0,
