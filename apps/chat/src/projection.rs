@@ -1,4 +1,4 @@
-//! The chat record as the window and the agents read it: the room's
+//! The chat record as the window and the agents read it: the workspace's
 //! channels and messages in the shapes [`crate::model`] draws, and the
 //! composers' drafts, which are rich text in the document.
 
@@ -74,7 +74,7 @@ impl Chat {
             .collect()
     }
 
-    /// The people and agents in the room.
+    /// The people and agents in the workspace.
     #[must_use]
     pub fn user_rows(&self) -> Vec<User> {
         self.people

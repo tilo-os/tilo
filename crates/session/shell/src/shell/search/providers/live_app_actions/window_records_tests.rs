@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use automerge::AutoCommit;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 use super::{LiveAppActionsProvider, PROVIDER_ID};
 use crate::shell::chrome_state::ChromeState;
@@ -142,27 +141,11 @@ impl Broker {
             .await
             .expect("handoff");
         let (reader, writer) = tokio::io::split(stream);
-        let network = Box::new(capnp_rpc::twoparty::VatNetwork::new(
-            futures_util::io::BufReader::new(reader.compat()),
-            futures_util::io::BufWriter::new(writer.compat_write()),
-            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            capnp::message::ReaderOptions::default(),
-        ));
-        let mut rpc = capnp_rpc::RpcSystem::new(network, None);
-        let client = runtime_collab::CollabClient::from_raw(
-            rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server),
-        );
-        let driver = tokio::task::spawn_local(async move {
-            let _ = rpc.await;
-        });
-        (client, driver)
+        let (client, carry) = runtime_collab::CollabClient::over(reader, writer);
+        (client, tokio::task::spawn_local(carry))
     }
 
     /// The window opens `record` and publishes its one action, titled for it.
-    #[expect(
-        clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
-    )]
     async fn open(
         &self,
         window: &runtime_collab::CollabClient,
@@ -192,7 +175,7 @@ impl Broker {
             input: runtime_collab::ExportedInput::None,
         };
         channel
-            .publish_actions(APP, &[action])
+            .publish_actions(&[action])
             .await
             .expect("the window publishes for its record");
         channel

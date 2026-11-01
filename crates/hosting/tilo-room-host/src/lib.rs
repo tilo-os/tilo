@@ -15,10 +15,10 @@
 )]
 
 pub mod app_serving;
+pub mod attach;
 #[doc(hidden)]
 pub mod authority_epoch;
 pub mod compaction;
-pub mod federation;
 #[doc(hidden)]
 pub mod handshake;
 pub mod host;

@@ -23,6 +23,9 @@ cargo build "${cargo_args[@]}" -p imager --bin imager --features installation
 # retain 7-8 GiB and Cargo runs them concurrently even though they are never
 # installed in a release package.
 cargo build "${cargo_args[@]}" -p shell --bin shell --no-default-features
+# The native session a login starts, beside the shell it replaces while the
+# shell is still shipped.
+cargo build "${cargo_args[@]}" -p tilo-session --bin tilo-session
 
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 if [[ -n ${TILO_CARGO_TARGET:-} ]]; then

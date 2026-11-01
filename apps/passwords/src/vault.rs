@@ -185,10 +185,7 @@ pub(crate) enum Request {
     Save,
     Generate,
     SetKind(SecretItemKind),
-    CopyIdentity,
     CopySecret,
-    RevealSecret,
-    CopyOrigins,
     Delete,
     ConfirmDelete,
     CloseDialog,
@@ -201,7 +198,6 @@ pub(crate) enum Request {
     ConfirmBackup,
     Restore,
     ConfirmRestore,
-    Revoke(String),
     ReviewAccess {
         proposal: String,
         lifetime: String,
@@ -1806,10 +1802,7 @@ impl Core {
             Request::Save => self.save_draft(),
             Request::Generate => self.generate_password(),
             Request::SetKind(kind) => self.set_kind(kind),
-            Request::CopyIdentity => self.copy_identity(),
             Request::CopySecret => self.copy_secret(),
-            Request::RevealSecret => self.reveal_secret(),
-            Request::CopyOrigins => self.copy_origins(),
             Request::Delete => self.request_delete(),
             Request::ConfirmDelete => self.confirm_delete(),
             Request::CloseDialog => self.close_dialog(),
@@ -1822,9 +1815,6 @@ impl Core {
             Request::ConfirmBackup => self.begin_encrypted_backup(),
             Request::Restore => self.request_restore(),
             Request::ConfirmRestore => self.apply_encrypted_restore(),
-            Request::Revoke(id) => {
-                let _ = self.revoke(&id);
-            }
             Request::ReviewAccess { proposal, lifetime } => {
                 if self
                     .app_proposals
@@ -1951,11 +1941,23 @@ impl Core {
                 open(self, item)?;
                 self.copy_secret();
             }
+            PasswordsEffect::CopyIdentity { item } => {
+                open(self, item)?;
+                self.copy_identity();
+            }
+            PasswordsEffect::CopyOrigins { item } => {
+                open(self, item)?;
+                self.copy_origins();
+            }
             PasswordsEffect::Reveal { item } => {
                 open(self, item)?;
                 if self.revealed.is_none() {
                     self.reveal_secret();
                 }
+            }
+            PasswordsEffect::Hide { item } => {
+                open(self, item)?;
+                self.hide_revealed();
             }
             PasswordsEffect::Delete { item } => self.delete(&SecretId(item))?,
             PasswordsEffect::Favorite { item, favorite } => {

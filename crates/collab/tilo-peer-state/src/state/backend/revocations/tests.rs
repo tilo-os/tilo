@@ -21,7 +21,7 @@ fn roster(
     super::super::roster::restore_legacy(
         peer.certificates(),
         Vec::new(),
-        peer.authority(),
+        &peer.owner_certificates()[0],
         now_ns(now),
     )
     .unwrap()
@@ -41,13 +41,7 @@ fn revocations_preserves_independent_verified_union_and_earliest_floor() {
     enrollment
         .insert(signed(member.device_public_key, 20, &root))
         .unwrap();
-    let union = restore_legacy(
-        stored.clone(),
-        &enrollment,
-        &roster,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
+    let union = restore_legacy(stored.clone(), &enrollment, &roster).unwrap();
     drop(stored);
     drop(enrollment);
     assert_eq!(union.iter().count(), 2);
@@ -70,7 +64,7 @@ fn revocations_preserves_independent_verified_union_and_earliest_floor() {
 }
 
 #[test]
-fn revocations_rejects_mismatched_root_signature_and_pinned_authority() {
+fn revocations_rejects_mismatched_root_and_bad_signature() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let roster = roster(&peer, now);
     let empty = RevocationList::new();
@@ -79,21 +73,14 @@ fn revocations_rejects_mismatched_root_signature_and_pinned_authority() {
     let mismatch = [signed(member.device_public_key, 1, &other)];
     let mut forged = [signed([99; 32], 1, &root)];
     forged[0].signature[0] ^= 1;
-    let revoked = [signed(peer.authority().device_public_key, 1, &root)];
     for (entries, expected) in [
         (&mismatch[..], RestoreRevocationsError::RootMismatch),
         (
             &forged[..],
             RestoreRevocationsError::Signature(RevocationError::BadSignature),
         ),
-        (&revoked[..], RestoreRevocationsError::AuthorityRevoked),
     ] {
-        let result = restore_legacy(
-            entries.to_vec(),
-            &empty,
-            &roster,
-            peer.authority().device_public_key,
-        );
+        let result = restore_legacy(entries.to_vec(), &empty, &roster);
         assert!(matches!(result, Err(error) if error == expected));
     }
 }
@@ -112,13 +99,7 @@ fn revocations_restores_growing_real_tables() {
         .collect::<Vec<_>>();
     let empty = RevocationList::new();
     for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-        let value = restore_legacy(
-            entries[..count].to_vec(),
-            &empty,
-            &roster,
-            peer.authority().device_public_key,
-        )
-        .unwrap();
+        let value = restore_legacy(entries[..count].to_vec(), &empty, &roster).unwrap();
         assert_eq!(value.iter().count(), count);
     }
 }

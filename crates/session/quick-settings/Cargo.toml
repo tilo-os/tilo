@@ -6,13 +6,18 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "tilo-quick-settings"
+path = "src/main.rs"
+
 [features]
 # The radio dispatcher fixture and the panel's test hooks, for the shell's
 # tests that drive the panel inside a whole chrome.
 test-support = []
 
 [dependencies]
-# The client side of the session audio helper's lines, for what plays.
+# The sound the audio service reads and publishes, and the client side of
+# its lines for what plays.
 audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
@@ -26,9 +31,19 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+image = { workspace = true, features = ["png"] }
+tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
+# The session that starts the panel, and the headless presentation it runs.
+tilo-session = { path = "../session" }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# What an external reader asks the panel's accessibility tree over AT-SPI2,
+# and the buses and processes the test reads it across.
+atspi-proxies = { version = "0.13.0", default-features = false, features = ["wrappers", "tokio"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+zbus = { workspace = true, features = ["tokio"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

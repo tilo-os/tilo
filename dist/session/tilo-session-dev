@@ -180,4 +180,8 @@ SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner
 [ -x "$SESSION_RUNNER" ] || die "the package-owned lifecycle runner is missing"
 TILO_DEV_SESSION_ATTESTATION="$ATTEST_DIR/active"
 export TILO_DEV_SESSION_ATTESTATION
-exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"
+# The arguments the production wrapper passes a shell build: this entry's
+# target is built from the shell crate, whose host declaration and first-boot
+# preparation a developer session needs exactly as a packaged login does.
+exec "$SESSION_RUNNER" "$TARGET_REAL" \
+    --host-desktop-session --firstboot --backend drm "$@"

@@ -1,8 +1,8 @@
 //! Transport-neutral payloads exchanged between collaboration brokers.
 //!
-//! App-to-broker RPC uses Cap'n Proto, while broker-to-broker replication
-//! uses the peer transport.  These types are the semantic hand-off between
-//! them: peer messages no longer embed a serialized legacy UI request.
+//! App-to-broker RPC uses the shared postcard wire, while broker-to-broker
+//! replication uses the peer transport.  These types are the semantic hand-off
+//! between them: peer messages no longer embed a serialized legacy UI request.
 
 use serde::{Deserialize, Serialize};
 

@@ -661,7 +661,8 @@ mod tests {
                 })
                 .collect();
             for hold in holds {
-                hold.join()
+                let _held = hold
+                    .join()
                     .unwrap()
                     .expect("every launch holds its runtime");
             }

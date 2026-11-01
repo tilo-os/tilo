@@ -5,7 +5,7 @@ use super::*;
 use crate::standalone::RuntimeActionHost;
 use serde_json::json;
 use tilo_action_broker::{
-    collab_broker_capnp::CapnpBrokerState,
+    collab_app_broker::AppBrokerState,
     peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyTime},
     services::{LaunchableApplication, LauncherServices},
     test_support::{Workspace as TestWorkspace, WorkspaceId as TestWorkspaceId, WorkspaceTree},
@@ -87,7 +87,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let (joined, directory) = Joined::test_hosting(placed).await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
-        tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
+        tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::in_room(TestWorkspaceId(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
     let room = workspace.room().to_string();
@@ -106,7 +106,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         time: origin.capture().unwrap(),
     }));
     services.launcher = Some(launcher.clone());
-    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+    let (broker, turn) = AppBrokerState::test_broker_with_authority_and_invoke_turn(
         membership.authority(),
         services,
     );
@@ -179,7 +179,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
 async fn custody_the_runtime_no_longer_holds_ends_the_run() {
     let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(room).await;
-    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let run = joined

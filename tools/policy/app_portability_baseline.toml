@@ -1,8 +1,9 @@
 # Platform code that apps and the SDK's portable crates still contain
-# (tools/policy/check_app_portability.py, rules in app_portability_rules.toml).
-# Keyed package -> rule -> count. Counts may only fall: lower an entry when you
-# remove sites (the check prints the tightened table); never add one. A new app
-# or rule starts at zero.
+# (the `portability` gate in `tilo-app check --lint --all`, rules in
+# app_portability_rules.toml). Keyed package -> rule -> count. Counts may
+# only fall: lower an entry when you remove sites (`tilo-app check --lint
+# --all --print-baseline` prints the tightened table); never add one. A new
+# app or rule starts at zero.
 
 [apps.agent]
 D1 = 2

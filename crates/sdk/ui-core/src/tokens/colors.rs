@@ -1025,6 +1025,21 @@ impl Colors {
         oklch(g.l + step * t, chroma, hue)
     }
 
+    /// `ground` lifted `t` surface steps with `tint` of the accent washed
+    /// into it (up to `tint` 0.25: a hover or a press may carry a trace of
+    /// the person's colour, a selected row keeps its own tier). The lift's
+    /// lightness is [`Self::lift_on`]'s; the wash is the accent laid over
+    /// it at `tint` opacity and composited, so ink still reads on it.
+    #[must_use]
+    pub fn lift_tinted_on(&self, ground: Color, t: f32, tint: f32) -> Color {
+        let lift = self.lift_on(ground, t);
+        let tint = tint.clamp(0.0, 0.25);
+        if tint <= 0.0 {
+            return lift;
+        }
+        composite(self.intent.accent.with_alpha(tint), lift)
+    }
+
     /// The selected row's lift on `ground`: a fifth past one surface step
     /// ([`SELECTED_LIFT_T`]), faintly the accent hue (neutral under
     /// [`Emphasis::Inverted`]).

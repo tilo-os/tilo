@@ -61,7 +61,7 @@ pub enum PresenceKey {
 /// was drawn once per open window. With the space carried, at most one
 /// receiver can answer "that is my space".
 ///
-/// **Variant order is a wire contract.** Cap'n Proto carries the postcard key
+/// **Variant order is a wire contract.** The wire carries the postcard key
 /// bytes opaquely and peer replication forwards the same bytes, so reordering
 /// silently misreads every pointer scope rather than failing to build.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -192,8 +192,8 @@ impl PresenceKey {
     /// in, or `None` for a key that is not a pointer scope at all. Two
     /// older spellings still mean "desktop": [`PresenceKey::Workspace`],
     /// the session's own desktop pointer republished per room, and
-    /// [`Self::pointer_default`], the tag the keyless capnp `publishCursor`
-    /// path was re-keyed to.
+    /// [`Self::pointer_default`], the tag a keyless pointer publish was
+    /// re-keyed to.
     pub fn pointer_space(&self) -> Option<PointerSpace> {
         match self {
             PresenceKey::Pointer { space } => Some(space.clone()),
@@ -222,8 +222,7 @@ impl PresenceKey {
 
     /// The canonical `PresenceKey` used to attribute a pointer publish that
     /// carries no explicit scope — the broker synthesises this well-known
-    /// routing tag for the capnp `publishCursor(x, y)` path, which accepts
-    /// no key of its own. Chosen as `Widget { path: [] }`: the empty widget
+    /// routing tag for a pointer publish that carries no key of its own. Chosen as `Widget { path: [] }`: the empty widget
     /// path is unambiguously the "app root" scope (no live widget can
     /// occupy it), and its postcard encoding is stable and doesn't depend
     /// on a string tag that could drift.

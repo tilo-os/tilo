@@ -172,7 +172,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace().expect("workspace").id.0,
+            tree.active_workspace().expect("workspace").id.0.to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )
@@ -241,7 +241,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace().expect("workspace").id.0,
+            tree.active_workspace().expect("workspace").id.0.to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )

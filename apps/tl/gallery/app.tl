@@ -49,6 +49,7 @@ type Gallery {
     controls: Collection<Controls>
     media: Collection<Media>
     places: Collection<Places>
+    chrome: Collection<ShellParts>
 }
 
 root Gallery
@@ -88,6 +89,9 @@ view gallery(g: Gallery) {
             }
             for x in g.places {
                 ui.ListRow(x.title, item: x, icon: .map_pin)
+            }
+            for x in g.chrome {
+                ui.ListRow(x.title, item: x, icon: .monitor)
             }
         }
     }

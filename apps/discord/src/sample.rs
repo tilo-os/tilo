@@ -1,4 +1,4 @@
-//! What the capture scenarios show: a room bridged to a small server, with
+//! What the capture scenarios show: a workspace bridged to a small server, with
 //! channels, categories and two linked accounts. Never written into a real
 //! workspace — a capture cannot wait for the bridge to observe a server, so
 //! the scene is written as the record's start instead.

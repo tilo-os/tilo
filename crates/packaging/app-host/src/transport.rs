@@ -1,15 +1,11 @@
-//! Cap'n Proto transport over Unix-domain stream sockets. Spawns one
-//! tokio task per accepted connection; each connection runs a
-//! `capnp-rpc` system that vends the [`crate::service::AppHostServer`]
-//! capability as the bootstrap.
+//! The app-host socket: one tokio task per accepted connection, each
+//! serving [`crate::service::AppHostServer`] over [`crate::wire`].
 
 use std::path::Path;
 use std::sync::Arc;
 
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-
-use crate::app_host_capnp::app_host;
 
 /// After the `QAH1` marker: a big-endian `u32` length, then the launcher's
 /// JSON handoff.
@@ -36,7 +32,7 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
-/// capnp-rpc system + service instance backed by the shared package store
+/// service instance backed by the shared package store
 /// and its `catalog`.
 pub async fn serve(
     listener: UnixListener,
@@ -61,14 +57,12 @@ pub async fn serve(
     }
 }
 
-/// Handle one accepted Unix stream as a capnp-rpc session.
-// This future is driven via `tokio::task::spawn_local` in `serve` and is
-// never meant to cross a thread: capnp-rpc's `RpcSystem` future is
-// inherently non-`Send` (the same non-atomic `capnp::capability::Rc`
-// design as `service::AppHostServer`'s methods).
+/// Handle one accepted Unix stream.
+// Driven via `tokio::task::spawn_local` in `serve`; its calls share the
+// connection's `Rc` host and never cross a thread.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc's RpcSystem future runs on a single-threaded LocalSet and is never Send by design"
+    reason = "the connection's calls run on a single-threaded LocalSet"
 )]
 pub async fn handle_connection(
     mut stream: tokio::net::UnixStream,
@@ -104,9 +98,9 @@ pub async fn handle_connection(
             .await?
             .map_err(Into::into);
     }
-    let service = AppHostServer::new(store, catalog, max_store_bytes);
-    let client: app_host::Client = capnp_rpc::new_client(service);
-    runtime_portal::serve_connected_io(stream, client.client)
+    let service = std::rc::Rc::new(AppHostServer::new(store, catalog, max_store_bytes));
+    let (reader, writer) = stream.into_split();
+    crate::wire::serve(service, reader, writer)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+        .map_err(Into::into)
 }

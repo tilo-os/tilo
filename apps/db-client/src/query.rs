@@ -2,14 +2,12 @@
 //! last run. The editor and the result share the tab's height and a person
 //! moves the divider between them.
 
-use std::cell::Cell as Flag;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{Dimension, NodeId, TaffyTree};
 use ui::TextRole;
-use ui::framework::TextControl;
+use ui::framework::{Actions, TextControl};
 use ui::theme::Theme;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{AppModel, ModelPath};
@@ -19,7 +17,7 @@ use ui::widget::{
 use winit::event::WindowEvent;
 
 use crate::i18n::t;
-use crate::link::{Intent, Link};
+use crate::link::Link;
 use crate::model::QueryResult;
 use crate::record::Workspace as Record;
 use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
@@ -110,31 +108,36 @@ impl ui::widget::Decorator for EditorPane {
 /// dropdown goes back to its label.
 struct StarterQueries {
     menu: Dropdown,
-    /// A starter was just chosen.
-    chosen: Rc<Flag<bool>>,
 }
 
 impl StarterQueries {
-    fn new(link: &Link) -> Self {
+    fn new(actions: Option<&Actions<Record>>) -> Self {
         let names: Vec<String> = sample::starter_queries()
             .iter()
             .map(|(name, _)| (*name).to_owned())
             .collect();
-        let chosen = Rc::new(Flag::new(false));
-        let pick_link = link.clone();
-        let pick_flag = Rc::clone(&chosen);
         let state = ui::LocalState::new(String::new());
-        let menu = Dropdown::from_state(names.clone(), &state)
+        let reset = state.clone();
+        let mut menu = Dropdown::from_state(names, &state)
             .with_id("db.query.snippets")
             .with_accessible_name(t("db-starter-queries"))
-            .with_placeholder(&t("db-starter-queries"))
-            .on_change(move |name| {
-                if let Some(index) = names.iter().position(|candidate| candidate == name) {
-                    pick_link.ask(Intent::LoadSnippet(index));
-                    pick_flag.set(true);
-                }
-            });
-        Self { menu, chosen }
+            .with_placeholder(&t("db-starter-queries"));
+        if let Some(actions) = actions
+            && let Some(pick) =
+                actions.edit_binding_with(Record::paths().sql, move |path, name: String| {
+                    let (_, sql) = sample::starter_queries()
+                        .iter()
+                        .find(|(candidate, _)| *candidate == name)
+                        .ok_or_else(|| format!("there is no starter query `{name}`"))?;
+                    // The menu is a command, not a setting: it goes back to
+                    // its label once the starter is in the editor.
+                    reset.set(String::new());
+                    Ok(path.replace(*sql))
+                })
+        {
+            menu = menu.on_action(pick);
+        }
+        Self { menu }
     }
 }
 
@@ -147,13 +150,6 @@ impl ui::widget::Decorator for StarterQueries {
 
     fn inner_mut(&mut self) -> &mut Dropdown {
         &mut self.menu
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.chosen.take() {
-            self.menu.set_selected("");
-        }
-        Widget::sync(&mut self.menu, state, path);
     }
 
     /// The menu is as wide as a utility panel, not the whole toolbar.
@@ -177,10 +173,10 @@ impl ui::widget::Decorator for StarterQueries {
 }
 
 /// The starter queries. Run is the window bar's.
-fn toolbar(link: &Link) -> Row {
+fn toolbar(actions: Option<&Actions<Record>>) -> Row {
     Row::new()
         .no_wrap()
-        .push(Box::new(StarterQueries::new(link)))
+        .push(Box::new(StarterQueries::new(actions)))
 }
 
 /// What the strip above the result says.
@@ -293,12 +289,12 @@ impl ui::widget::Decorator for ResultsPane {
 }
 
 /// The whole tab: the toolbar over the editor and its result.
-pub fn query_pane(link: &Link) -> Element {
+pub fn query_pane(link: &Link, actions: Option<&Actions<Record>>) -> Element {
     Box::new(
         Column::new()
             .with_no_padding()
             .with_fill_remaining_height()
-            .push(Box::new(toolbar(link)))
+            .push(Box::new(toolbar(actions)))
             .push(Box::new(
                 ResizableSplit::new(
                     EditorPane::new(link),

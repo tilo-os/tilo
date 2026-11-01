@@ -279,6 +279,26 @@ fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
 }
 
 #[test]
+fn a_paired_device_is_forgotten_from_its_own_button() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("bluetooth");
+    click(&mut app, "qs-bluetooth-forget-00:1B:66:D4:E5:F6");
+    assert!(host.ran().is_empty(), "a pairing is not dropped unasked");
+    assert!(
+        app.confirm_asked().is_some(),
+        "the person agrees to forget it"
+    );
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::ForgetBluetooth {
+            address: "00:1B:66:D4:E5:F6".into(),
+        }],
+        "the device's own button forgets it"
+    );
+}
+
+#[test]
 fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
@@ -294,6 +314,44 @@ fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
             },
             QsEffect::RemoveCopy { copy: "a1".into() },
         ]
+    );
+}
+
+#[test]
+fn a_hidden_network_is_joined_by_the_name_and_password_typed_in_its_form() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let (mut app, row) = hosted("wifi");
+    click(&mut app, "qs-wifi-hidden");
+    assert_eq!(
+        row.ran(),
+        [QsEffect::AskHiddenNetwork],
+        "the row asks for the name and password"
+    );
+
+    let (mut app, host) = hosted("wifi-hidden");
+    let field = |app: &mut HeadlessApp<QuickSettingsApp>, prefix: &str| {
+        app.harness()
+            .targets()
+            .into_keys()
+            .find(|name| name.starts_with(prefix) && name.ends_with(char::is_numeric))
+            .unwrap_or_else(|| panic!("the {prefix} field"))
+    };
+    let name = field(&mut app, "qs-hidden-network-name-");
+    app.harness().click_named(&name).unwrap();
+    app.harness().type_text("Basement");
+    app.settle();
+    let password = field(&mut app, "qs-hidden-network-password-");
+    assert_ne!(password, name, "the name and the password are two fields");
+    app.harness().click_named(&password).unwrap();
+    app.harness().type_text("hunter22");
+    click(&mut app, "qs-hidden-network-connect");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::ConnectHiddenWifi {
+            network: "Basement".into(),
+            password: "hunter22".into(),
+        }]
     );
 }
 

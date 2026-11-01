@@ -26,8 +26,9 @@ pub trait Backend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError>;
 
     /// When the backend next wants [`Backend::render`] called with no event
-    /// to bring it (an output whose frame is due).
-    fn next_deadline(&self) -> Option<std::time::Instant> {
+    /// to bring it: an output with something new to show that cannot take a
+    /// frame yet. Nothing owed, nothing due: the compositor sleeps.
+    fn next_deadline(&self, _state: &State) -> Option<std::time::Instant> {
         None
     }
 
@@ -42,9 +43,36 @@ pub trait Backend {
     /// ignore them.
     fn set_input_config(&mut self, _state: &mut State, _config: InputConfig) {}
 
+    /// Apply the person's typing and pointing assists to the backend's
+    /// devices, now and as they are plugged in. Backends whose input comes
+    /// already shaped (a host window, a test) ignore them.
+    fn set_assists(&mut self, _state: &mut State, _assists: &crate::Assists) {}
+
     /// Keep the person's display configuration for outputs that appear
     /// later (the compositor applies it to the present ones).
     fn set_display_config(&mut self, _config: &crate::config::DisplayConfig) {}
+
+    /// What each output's sink and the pipeline driving it can do beyond
+    /// what the output reports: a built-in panel, HDR and adaptive sync, the
+    /// colour profiles on offer, why a connected display is dark. Backends
+    /// without hardware of their own have nothing to add.
+    fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
+        Vec::new()
+    }
+
+    /// The HDR signal `output` is being driven with, or `None` for an
+    /// ordinary SDR one: colour-managed clients learn it through
+    /// `wp_color_management_output_v1`, so an HDR app knows the volume it
+    /// renders into. Backends that drive no HDR signal have none.
+    fn output_hdr(&self, _output: &smithay::output::Output) -> Option<crate::config::Hdr> {
+        None
+    }
+
+    /// How this backend drives its outputs (`drm-kms`, `headless`), as
+    /// Settings names it when it explains a display.
+    fn describe(&self) -> &'static str {
+        "unknown"
+    }
 
     /// Add an output the backend simulates. Backends with real outputs find
     /// them themselves and refuse.
@@ -56,6 +84,15 @@ pub trait Backend {
         Err(BackendError(format!(
             "{}: this backend's outputs are its devices",
             config.name
+        )))
+    }
+
+    /// Drop the output named `name` the backend simulates, as pulling its
+    /// cable does: it leaves the layout and clients stop seeing it.
+    /// Backends with real outputs watch for that themselves and refuse.
+    fn remove_output(&mut self, _state: &mut State, name: &str) -> Result<(), BackendError> {
+        Err(BackendError(format!(
+            "{name}: this backend's outputs are its devices"
         )))
     }
 
@@ -141,8 +178,22 @@ pub trait Backend {
         )))
     }
 
+    /// What `target` shows now, drawn to fit `max` and read back as rows of
+    /// R, G, B, A (see [`crate::capture::read_back_scaled`]): a frame of the
+    /// stream a wireless display is sent.
+    fn read_back_scaled(
+        &mut self,
+        _state: &mut State,
+        _target: &crate::capture::Target,
+        _max: (u32, u32),
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        Err(crate::capture::CaptureError::Backend(BackendError(
+            "this backend does not read frames back".into(),
+        )))
+    }
+
     /// The last frame drawn on the output named `name`.
-    fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
+    fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(
             "{name}: this backend does not read frames back"
         )))

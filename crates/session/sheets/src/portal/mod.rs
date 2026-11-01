@@ -12,7 +12,9 @@
 //! (agents may decline, but never allow). Anything typed stays out of what
 //! the shell is asked: typing (by key or by the `type` actions, whose text
 //! is a secret parameter) goes to the shell through the seat, and a secret
-//! prompt's fields are kept in buffers the shell owns and wipes.
+//! prompt's fields are kept in buffers the shell owns and wipes. Every
+//! effect names the request it answers, so an answer that arrives after
+//! another question opened is refused rather than answering that one.
 //!
 //! Keys: Up and Down (and Tab) move between the choices, Enter answers (or
 //! turns to the next page of a review), Left and Right page a review,
@@ -46,52 +48,79 @@ pub struct PortalSheet {}
 #[resource(kind = "portal-sheet.question", label = "System question")]
 impl PortalSheet {}
 
-/// What the sheet asks of the shell.
+/// What the sheet asks of the shell. Every effect names the request
+/// ([`Dialog::handle`]) it answers, so one that arrives after another
+/// question opened is refused instead of answering the wrong one.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "so.tilo.portal-sheet.answer")]
 pub enum PortalEffect {
     /// Highlight one of the sheet's choices
     #[effect(own_device, kind = "read")]
     Select {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The choice, counted from zero")]
         index: u32,
     },
     /// Tick or untick one of the sheet's rows: a device, or a yes-or-no field of a draft
     #[effect(own_device)]
     Toggle {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The row, counted from zero")]
         index: u32,
     },
     /// Tick or untick Remember
     #[effect(own_device)]
-    Remember,
+    Remember {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Choose the icon a launcher shows
     #[effect(own_device)]
     Icon {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The icon, counted from zero")]
         index: u32,
     },
     /// Bind the highlighted shortcut to keys
     #[effect(own_device)]
     Bind {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The keys as pressed, modifiers first, for example CTRL+SHIFT+KEYK")]
         keys: String,
     },
     /// Clear the highlighted shortcut
     #[effect(own_device)]
-    Unbind,
+    Unbind {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Turn to the next page of the review
     #[effect(own_device, kind = "read")]
-    Next,
+    Next {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Turn back a page of the review
     #[effect(own_device, kind = "read")]
-    Back,
+    Back {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Answer the question with what the sheet shows
     #[effect(own_device, attended)]
-    Confirm,
+    Confirm {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Answer the question with one of its answers
     #[effect(own_device, attended)]
     Answer {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The answer, counted from zero")]
         index: u32,
     },
@@ -99,6 +128,8 @@ pub enum PortalEffect {
     /// answer or a draft's text
     #[effect(own_device)]
     Type {
+        #[param("The request it answers")]
+        handle: String,
         #[param("name, answer, or draft-N for the draft's field N")]
         field: String,
         #[param(secret, "The field's whole text")]
@@ -107,6 +138,8 @@ pub enum PortalEffect {
     /// Type into one of the secret prompt's fields
     #[effect(own_device)]
     TypeSecret {
+        #[param("The request it answers")]
+        handle: String,
         #[param("The field, counted from zero")]
         field: u32,
         #[param(secret, "The field's whole value")]
@@ -114,22 +147,54 @@ pub enum PortalEffect {
     },
     /// Answer with what was typed into the secret prompt
     #[effect(own_device, attended)]
-    Submit,
+    Submit {
+        #[param("The request it answers")]
+        handle: String,
+    },
     /// Decline the question
     #[effect(own_device, idempotent)]
-    Cancel,
+    Cancel {
+        #[param("The request it answers")]
+        handle: String,
+    },
+}
+
+impl PortalEffect {
+    /// The request this effect answers.
+    pub fn handle(&self) -> &str {
+        match self {
+            Self::Select { handle, .. }
+            | Self::Toggle { handle, .. }
+            | Self::Remember { handle }
+            | Self::Icon { handle, .. }
+            | Self::Bind { handle, .. }
+            | Self::Unbind { handle }
+            | Self::Next { handle }
+            | Self::Back { handle }
+            | Self::Confirm { handle }
+            | Self::Answer { handle, .. }
+            | Self::Type { handle, .. }
+            | Self::TypeSecret { handle, .. }
+            | Self::Submit { handle }
+            | Self::Cancel { handle } => handle,
+        }
+    }
 }
 
 /// What the sheet shows: plain data the shell keeps current.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dialog {
-    /// The request; a new one starts the sheet afresh.
+    /// The request; a new one starts the sheet afresh, and every
+    /// [`PortalEffect`] answers by naming it.
     pub handle: String,
     pub title: String,
     /// Who asks, or what it is about (the app, the drive, the action).
     pub heading: String,
     /// What the person reviews: this page of it, when it is paged.
     pub detail: String,
+    /// A code to read out or compare, shown large above the detail: a
+    /// pairing's passkey or PIN.
+    pub code: Option<String>,
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
@@ -408,14 +473,14 @@ impl PortalSeat {
             self.dialog.borrow().as_ref().map(|d| &d.handle) != dialog.as_ref().map(|d| &d.handle);
         if fresh {
             self.forget();
+            // What was asked for the last question answers nothing now.
+            self.asked.borrow_mut().clear();
             if let Some(Dialog {
                 body: Body::Secret(prompt),
                 ..
             }) = &dialog
             {
-                *self.secrets.borrow_mut() = prompt
-                    .fields
-                    .iter()
+                *self.secrets.borrow_mut() = (0..secret_fields(prompt))
                     .map(|_| Arc::new(Mutex::new(String::new())))
                     .collect();
             }
@@ -521,7 +586,8 @@ impl PortalSeat {
         }
     }
 
-    /// Ask `effect` as a press in the sheet would: for a host test.
+    /// Ask `effect` as a press in the sheet would, without the door's
+    /// check that it names the request that is up: for a host test.
     pub fn press(&self, effect: PortalEffect) {
         self.asked.borrow_mut().push(effect);
     }
@@ -529,11 +595,15 @@ impl PortalSeat {
     /// Take `effect` from the sheet's door. Typing stays in the seat and
     /// is never asked; a secret prompt answered through the door is
     /// answered with what its buffers hold, checked as the prompt checks
-    /// it.
+    /// it. An effect that names a request that is not the one up is
+    /// refused: it was pressed while another question was.
     fn take(&self, effect: PortalEffect) -> Result<(), String> {
         let dialog = self.dialog();
+        if dialog.as_ref().map(|dialog| dialog.handle.as_str()) != Some(effect.handle()) {
+            return Err(t("portal-request-gone"));
+        }
         match effect {
-            PortalEffect::Type { field, text } => {
+            PortalEffect::Type { field, text, .. } => {
                 let field = dialog
                     .as_ref()
                     .and_then(|dialog| typed_field(dialog, &field))
@@ -544,7 +614,7 @@ impl PortalSeat {
                 self.retype();
                 return Ok(());
             }
-            PortalEffect::TypeSecret { field, value } => {
+            PortalEffect::TypeSecret { field, value, .. } => {
                 let value = zeroize::Zeroizing::new(value);
                 let buffer = matches!(
                     dialog,
@@ -566,7 +636,7 @@ impl PortalSeat {
                 self.retype();
                 return Ok(());
             }
-            PortalEffect::Submit => {
+            PortalEffect::Submit { .. } => {
                 if let Some(
                     shown @ Dialog {
                         body: Body::Secret(prompt),
@@ -589,7 +659,7 @@ impl PortalSeat {
                     }
                 }
             }
-            PortalEffect::Remember => {
+            PortalEffect::Remember { .. } => {
                 if let Some(Dialog {
                     body:
                         Body::Secret(Prompt {
@@ -615,6 +685,17 @@ impl PortalSeat {
             shown.update(|shown| shown.typed = shown.typed.wrapping_add(1));
         }
         self.presentation.wake();
+    }
+}
+
+/// How many secrets the sheet asks for `prompt`: one buffer is lent per
+/// field, so this is what the view builds rather than what the question
+/// listed. A SIM locked by wrong PINs asks for its PUK and the new PIN
+/// typed twice, however the question words the two it reads back.
+fn secret_fields(prompt: &Prompt) -> usize {
+    match prompt.kind {
+        PromptKind::SimPuk { .. } => 3,
+        PromptKind::Fields | PromptKind::SimPin { .. } => prompt.fields.len(),
     }
 }
 

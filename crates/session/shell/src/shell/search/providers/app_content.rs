@@ -30,10 +30,10 @@ use ui::search::index_publication::IndexEntry;
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::collab_broker_capnp::{
+use crate::shell::collab_app_broker::{
     PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
+use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,

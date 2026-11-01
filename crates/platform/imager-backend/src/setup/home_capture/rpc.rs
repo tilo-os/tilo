@@ -1120,15 +1120,7 @@ fn read_media_payload(
             )?)))
         }
         (ReadMediaPurpose::BootPending, ORIGINAL_COMPLETE | ORIGINAL_EXTRACT_COMPLETED) => {
-            let mut length = [0; 4];
-            input.read_exact(&mut length)?;
-            let length = usize::try_from(u32::from_be_bytes(length))
-                .map_err(|_| io::ErrorKind::InvalidData)?;
-            if length == 0 || length > ORIGINAL_SECRET_BOUND {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            let mut secret = Zeroizing::new(vec![0; length]);
-            input.read_exact(&mut secret)?;
+            let secret = Zeroizing::new(worker::read_frame(input, ORIGINAL_SECRET_BOUND)?);
             let operation = if tag == ORIGINAL_COMPLETE {
                 super::super::read_media::BootMediaOperation::CompleteOriginal
             } else {

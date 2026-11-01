@@ -17,8 +17,8 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
     app
 }
 
-/// [`projection`] over `room`, its messages included.
-fn projection_of(room: &crate::testing::Room, identity: LocalIdentity) -> ChatApp {
+/// [`projection`] over `workspace`, its messages included.
+fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity) -> ChatApp {
     let me = identity.id.clone();
     let mut app = ChatApp::new(
         identity,
@@ -26,8 +26,8 @@ fn projection_of(room: &crate::testing::Room, identity: LocalIdentity) -> ChatAp
         tilo_content::ContentStore::memory(),
     );
     app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
-    app.attach_room(room);
-    app.sync(&room.chat, &ROOT);
+    app.attach_workspace(workspace);
+    app.sync(&workspace.chat, &ROOT);
     app
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -100,7 +100,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     assert!(app.call_allows(crate::call::CallAction::Join));
     assert!(
         !app.call_allows(crate::call::CallAction::Speak),
-        "the live room role still gates publication"
+        "the live workspace role still gates publication"
     );
 }
 
@@ -396,8 +396,8 @@ fn semantic_component_harness(
     component_mount(&cache, "author", 1)
 }
 
-/// One mount of the room's Chat, as the browser runtime makes it: the first
-/// creates the room's chat, a later one opens it.
+/// One mount of the workspace's Chat, as the browser runtime makes it: the first
+/// creates the workspace's chat, a later one opens it.
 fn component_mount(
     cache: &ui::portable_storage::PortableStorage,
     author: &str,
@@ -407,27 +407,33 @@ fn component_mount(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    component_mount_in_room(cache, author, instance, "room")
+    component_mount_in_workspace(cache, author, instance, "workspace")
 }
 
-fn component_mount_in_room(
+fn component_mount_in_workspace(
     cache: &ui::portable_storage::PortableStorage,
     author: &str,
     instance: u64,
-    room: &str,
+    workspace: &str,
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    component_mount_as(cache, author, instance, room, ui::permissions::Role::Owner)
+    component_mount_as(
+        cache,
+        author,
+        instance,
+        workspace,
+        ui::permissions::Role::Owner,
+    )
 }
 
 fn component_mount_as(
     cache: &ui::portable_storage::PortableStorage,
     author: &str,
     instance: u64,
-    room: &str,
+    workspace: &str,
     role: ui::permissions::Role,
 ) -> (
     ui::headless::FrameHarness,
@@ -442,9 +448,10 @@ fn component_mount_as(
     let cache = cache.clone();
     let definition = crate::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
-        .open(definition.app_id(), room)
+        .open(definition.app_id(), workspace)
         .unwrap();
-    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
+    let views =
+        Rc::new(ui::application_view::InstanceViewStore::portable(cache, workspace).unwrap());
     let permissions = ui::permissions::SharedPermissions::new(
         ui::permissions::PermissionContext::member(author, role),
     );
@@ -651,7 +658,7 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     };
     let cache = PortableStorage::new("component-profile", "component-device").unwrap();
     let definition = crate::definition();
-    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
@@ -667,16 +674,17 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         .hydrate(
             StorageKey::Primary {
                 package: definition.app_id().into(),
-                workspace: room.into(),
+                workspace: workspace.into(),
             },
             doc.save(),
             Some(actor.to_bytes().to_vec()),
         )
         .unwrap();
     let records = RecordOwners::portable(cache.clone())
-        .open(definition.app_id(), room)
+        .open(definition.app_id(), workspace)
         .unwrap();
-    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
+    let views =
+        Rc::new(ui::application_view::InstanceViewStore::portable(cache, workspace).unwrap());
     let permissions = ui::permissions::SharedPermissions::new(
         ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
     );
@@ -792,7 +800,7 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
             assert_eq!(crate::testing::top_level_in(&records, "c_chat"), before + 1);
             assert!(
                 !crate::projection::has_draft(doc, "c_chat"),
-                "the draft is the writer's own, never the room's"
+                "the draft is the writer's own, never the workspace's"
             );
         })
         .unwrap();
@@ -932,7 +940,7 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
     frame.close_components();
 }
 
-/// The browser demo: a visitor and an agent mount of one room. The agent
+/// The browser demo: a visitor and an agent mount of one workspace. The agent
 /// finds the visitor's message among the chat's messages, reads it, and
 /// replies and records its work in one call to the record's `record-work`;
 /// its reply is an agent's, by name.
@@ -1065,7 +1073,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     agent.close_components();
 }
 
-/// Joining a room's call is for whoever may read the room and speaking in
+/// Joining a workspace's call is for whoever may read the workspace and speaking in
 /// it for whoever may write there, as Chat's own call controls say: a
 /// member joins, mutes and leaves through the call row's actions with no
 /// confirmation, and only a member who may write unmutes.
@@ -1109,7 +1117,7 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
         );
         assert!(
             !matches!(unmute, Err(tilo_actions::DoorError::ConfirmationRequired)),
-            "{role:?}: unmuting is not asked of the room"
+            "{role:?}: unmuting is not asked of the workspace"
         );
         assert_eq!(
             unmute.is_ok(),
@@ -1194,8 +1202,9 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     use ui::native_media::{Command, Snapshot, State};
     let cache =
         ui::portable_storage::PortableStorage::new("browser-media-controls", "device").unwrap();
-    let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    let (mut frame, records, checkout) = component_mount_in_room(&cache, "author", 1, room);
+    let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let (mut frame, records, checkout) =
+        component_mount_in_workspace(&cache, "author", 1, workspace);
     let mut lane = MediaLane::default();
     let before = records.replication_snapshot(&checkout.id).unwrap().0;
     let address = ui::bound_dispatch::BoundActionAddress {
@@ -1211,7 +1220,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
         .find(|request| matches!(request.command.command, Command::Join { .. }))
         .expect("the actual shared action enters the browser media lane");
     assert_eq!(joining.app, "so.tilo.chat");
-    assert_eq!(joining.room, room);
+    assert_eq!(joining.room, workspace);
     assert_eq!(joining.record, "", "Chat uses its package-primary route");
     assert_eq!(joining.instance, "1");
     let mut live = Snapshot::unavailable();
@@ -1327,8 +1336,12 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             "device",
         )
         .unwrap();
-        let (mut frame, records, _) =
-            component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
+        let (mut frame, records, _) = component_mount_in_workspace(
+            &cache,
+            "author",
+            1,
+            "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
+        );
         let share = BoundActionAddress {
             instance_id: 1,
             address: crate::parts::ChatPart::SHARE_RESOURCE.on(crate::testing::chain()),
@@ -1398,7 +1411,7 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
     let cache =
         ui::portable_storage::PortableStorage::new("catalogue-media-retirement", "device").unwrap();
     let (mut frame, _, _) =
-        component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
+        component_mount_in_workspace(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
     frame
         .invoke_bound_action(
             &BoundActionAddress {

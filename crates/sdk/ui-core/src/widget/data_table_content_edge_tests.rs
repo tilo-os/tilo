@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::data_table::tests::answer_row_actions;
 use automerge::AutoCommit;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -342,8 +343,10 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     ])
     .with_row_key(|row: &Item| u64::from(*row.name.as_bytes().last().unwrap()))
     .selectable(true)
-    .on_check(move |row, on| seen.borrow_mut().push((row, on)))
-    .on_activate(move |_| activated.set(activated.get() + 1));
+    .on_check_view("table.check", move |row, on| {
+        seen.borrow_mut().push((row, on))
+    })
+    .on_activate_view("table.open", move |_| activated.set(activated.get() + 1));
     table.set_rows(items(2));
     let mut harness = crate::headless::FrameHarness::new(
         crate::State::new(),
@@ -396,7 +399,9 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         name_col(),
     ])
     .selectable(true)
-    .on_check(move |row, on| seen.borrow_mut().push((row, on)));
+    .on_check_view("table.check", move |row, on| {
+        seen.borrow_mut().push((row, on))
+    });
     table.set_rows(items(2));
     let (tree, node) = settle(&mut table, 400.0, 300.0);
     let theme = Theme::dark();
@@ -419,6 +424,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         &button(ElementState::Pressed, MouseButton::Left),
         false,
     );
+    answer_row_actions(&mut table);
     assert_eq!(*checks.borrow(), [(1, true)]);
     let mut state = crate::state::State::new();
     assert!(table.perform_action(
@@ -427,6 +433,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         &mut crate::widget::Edits::lend(&mut state.doc),
         &state.root,
     ));
+    answer_row_actions(&mut table);
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     assert!(!table.perform_action(
         &crate::a11y::Action::ToggleCheck,
@@ -511,7 +518,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
     let mut table = DataTable::new(vec![name_col()])
         .selectable(true)
         .with_viewport(200.0, 40.0)
-        .on_row_click(move |row, _, _| c.borrow_mut().push(row))
+        .on_row_click_view("table.click", move |row, _, _| c.borrow_mut().push(row))
         .on_row_drag_begin(move |_, _, _| d.set(d.get() + 1));
     table.set_rows(items(50));
     let (tree, node) = settle(&mut table, 300.0, 400.0);
@@ -550,6 +557,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         true,
     );
     assert_eq!(table.selected_rows(), [1, 2, 3]);
+    answer_row_actions(&mut table);
     clicks.borrow_mut().clear();
     // A plain press on row 2 that drags: the three go.
     let y = row(&table, 2);
@@ -576,6 +584,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         false,
     );
     assert_eq!(table.selected_rows(), [1, 2, 3]);
+    answer_row_actions(&mut table);
     assert!(clicks.borrow().is_empty(), "a drag is no click");
     // A plain press that does not move is a click on its row.
     send(&mut table, &tree, node, &at(60.0, y), false);
@@ -594,6 +603,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         false,
     );
     assert_eq!(table.selected_rows(), [2]);
+    answer_row_actions(&mut table);
     assert_eq!(*clicks.borrow(), [2]);
 }
 

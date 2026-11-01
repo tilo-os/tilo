@@ -48,6 +48,9 @@ impl DesktopSurface {
     /// before the bars take the frame's slots.
     pub(super) fn offer_window_shares(&mut self) {
         if !self.tiles.draws_embeds() {
+            // Nothing is shared from a desktop that cannot show the shares'
+            // views: no window offers the sharing row.
+            self.shared.borrow_mut().window_offers.clear();
             return;
         }
         window_share::set_drawn(true);
@@ -100,7 +103,51 @@ impl DesktopSurface {
             &window_share::shared(),
             &mut self.live_shares.offered,
         );
+        // A window's own menu offers the same share row its bar does.
+        self.shared.borrow_mut().window_offers.clone_from(&windows);
         self.live_shares.windows = windows;
+    }
+
+    /// Ask the sharing app for window `tab`'s share row: share it with its
+    /// workspace's people, or stop sharing it. Whether it was asked: false
+    /// when the app lists no such window, or already does what is asked.
+    pub(super) fn ask_window_share(&self, tab: tilo_desktop_model::TabId, share: bool) -> bool {
+        let shared = window_share::shared();
+        let Some(window) = self
+            .live_shares
+            .windows
+            .iter()
+            .find(|window| window.tab == tab)
+            .cloned()
+        else {
+            return false;
+        };
+        let wanted = if share {
+            host::SHARE_ITEM
+        } else {
+            host::STOP_ITEM
+        };
+        if host::menu_item(&window, &shared).id != wanted {
+            // Already shared, or already not.
+            return false;
+        }
+        let asks = host::asks(
+            vec![(tab, wanted.to_owned())],
+            &self.live_shares.windows,
+            &shared,
+        );
+        let asked = !asks.is_empty();
+        for ask in asks {
+            if matches!(ask, Ask::Share(_)) {
+                // The sharing app asks where, in front.
+                self.shared
+                    .borrow_mut()
+                    .queue
+                    .push(Admitted::Open(window_share::SHARING_APP.to_owned()));
+            }
+            window_share::deliver_ask(ask);
+        }
+        asked
     }
 
     /// Hand the sharing app what the windows' menus asked of it. Whether

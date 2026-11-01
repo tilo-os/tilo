@@ -55,6 +55,12 @@ impl<R: Resource> BarActions<R> {
         }
     }
 
+    /// The window's dispatcher, which these entries are submitted through.
+    #[must_use]
+    pub fn dispatcher(&self) -> &Dispatcher<R> {
+        &self.dispatcher
+    }
+
     /// The entry that submits `submit` (a verb, a field edit), named and
     /// pictured as its action is declared; a field edit, declared by no
     /// verb, has neither and is named by the app. Disabled where the

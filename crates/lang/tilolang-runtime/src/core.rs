@@ -113,8 +113,9 @@ pub struct Core {
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
     /// Whether the invocation being made is a `try`'s, whose failure the program handles.
     pub trying: std::cell::Cell<bool>,
-    /// The resources of apps this runtime does not hold that programs read, as they print.
-    pub foreign: RefCell<crate::reads::Foreign>,
+    /// The resources of apps this runtime does not run: how they print, and their readings, as
+    /// the host gives them.
+    pub foreign: RefCell<crate::foreign::Foreign>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
@@ -222,7 +223,7 @@ impl Core {
             invoker: RefCell::new(None),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
-            foreign: RefCell::new(crate::reads::Foreign::default()),
+            foreign: RefCell::new(crate::foreign::Foreign::default()),
             seen_writes: RefCell::new(Vec::new()),
         });
         // The types the host provides to every module, such as `Invocation`.

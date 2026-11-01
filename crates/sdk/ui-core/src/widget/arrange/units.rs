@@ -273,6 +273,13 @@ impl Fit {
             style.flex_grow = weight;
             style.flex_shrink = 1.0;
             style.flex_basis = length(0.0_f32);
+            // Its share is all it takes: content longer than the share scrolls or overflows
+            // inside it (a scrolling middle between a bar and a dock), and never pushes the
+            // container past the room it was given. A `min` written on it still holds.
+            match main {
+                Axis::Inline => style.min_size.width = length(0.0_f32),
+                Axis::Block => style.min_size.height = length(0.0_f32),
+            }
         }
         let bounds = |sizing: Sizing| {
             (

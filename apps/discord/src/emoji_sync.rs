@@ -12,7 +12,7 @@
 //! changes nothing: it runs whenever the workspace's emoji change and
 //! whenever Discord reports the server's layout (on every start, and when
 //! its emoji or the bot's roles change), which is how emoji the server had
-//! no room or permission for arrive once it does.
+//! no workspace or permission for arrive once it does.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,7 +24,7 @@ use ui::tilo_resource::{self, JsonSchema};
 use crate::emoji::discord_name;
 use crate::record::{Guild, MappedKind, Mapping};
 
-/// One workspace emoji as the room's host hands it to the bridge: its name
+/// One workspace emoji as the workspace's host hands it to the bridge: its name
 /// and the content address of its picture, which the host keeps in its
 /// content store for the worker to upload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

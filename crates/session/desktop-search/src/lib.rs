@@ -19,6 +19,7 @@
 //!   it runs, its category and the words people know it by.
 //! - [`usage`] and [`preferences`]: what the person chose before, and the
 //!   sources they switched off; the host keeps both.
+//! - [`i18n`]: the palette's own copy, in the desktop's language.
 //! - Features `settings` and `catalogue` (native): Settings' pages and the
 //!   apps a person can get, from their own crates' indexes.
 
@@ -28,7 +29,7 @@ pub mod availability;
 pub mod content_index;
 #[cfg(feature = "indexes")]
 pub mod files_index;
-mod i18n;
+pub mod i18n;
 #[cfg(feature = "indexes")]
 pub mod indexed;
 pub mod lazy;
@@ -44,9 +45,10 @@ pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
 pub use model::{
-    ActionTarget, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION, OPEN_ANCHOR, Source, Target, search,
+    ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION,
+    OPEN_ANCHOR, SHOW_COLLABORATORS, Source, Target, WORKSPACE_COMMAND_PREFIX, search,
 };
-pub use palette::{DesktopSearch, SearchData};
+pub use palette::{DesktopSearch, Reach, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;

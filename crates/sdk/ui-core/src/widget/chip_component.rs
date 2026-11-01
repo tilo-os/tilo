@@ -50,7 +50,7 @@ impl Described for Chip {
             Event::View(intent) => chip.on_view(intent.sender()),
         };
         if let Some(mut run) = remove.handler() {
-            chip = chip.on_remove(move || run());
+            chip = chip.on_remove_view(move || run());
         }
         chip
     }

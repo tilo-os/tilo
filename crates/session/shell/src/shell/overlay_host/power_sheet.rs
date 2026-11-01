@@ -43,6 +43,9 @@ impl ShellOverlayHost {
         self.layers.power_menu.seat().set_offers(Offers {
             user_switching: policy.offers(os_actions::SessionAction::SwitchUser),
             host_power: policy.offers(os_actions::SessionAction::ShutDown),
+            // The lock screen is the compositor's own, and it says on its
+            // face when no password can be checked here.
+            locking: true,
             hangs_from: f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
         });
         self.layers.power_menu.open();

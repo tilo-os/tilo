@@ -5,21 +5,15 @@
     reason = "heatmap layout and colour interpolation are bounded numeric operations"
 )]
 
-use crate::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -81,85 +75,60 @@ impl Default for HeatmapStyle {
     }
 }
 
-pub struct Heatmap {
+pub struct HeatmapMarks {
     rows: Vec<String>,
     columns: Vec<String>,
     cells: Vec<HeatmapCell>,
     style: HeatmapStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<usize>,
-    activated: Option<String>,
+    frame: PlotFrame<usize>,
 }
+
+/// A matrix of cells coloured along a theme ramp.
+pub type Heatmap = Plot<HeatmapMarks>;
 
 impl Heatmap {
     pub fn new(rows: Vec<String>, columns: Vec<String>, cells: Vec<HeatmapCell>) -> Self {
-        Self {
+        Plot::from_marks(HeatmapMarks {
             rows,
             columns,
             cells,
             style: HeatmapStyle::default(),
-            title: String::new(),
-            height: 340.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(340.0, 100.0),
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: HeatmapStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(100.0);
-        self
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self.cells.iter().position(|cell| cell.id == id);
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(rect) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.cells.get(index))
-            .and_then(|cell| self.cell_rect(cell))
-        {
-            self.inspection.pointer = rect.center();
-        }
-        self.inspection.hovered.is_some()
+        let cell = self.marks.cells.iter().position(|cell| cell.id == id);
+        self.inspect_item(cell)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl HeatmapMarks {
     fn grid_rect(&self) -> Rect {
         let left = if self.style.show_axis_labels {
             92.0
         } else {
             12.0
         };
-        let top = 18.0
-            + if self.title.is_empty() { 0.0 } else { 34.0 }
-            + if self.style.show_axis_labels {
+        let top =
+            18.0 + if self.frame.title.is_empty() {
+                0.0
+            } else {
+                34.0
+            } + if self.style.show_axis_labels {
                 26.0
             } else {
                 0.0
             };
         Rect::new(
-            self.rect.x0 + left,
-            self.rect.y0 + top,
-            self.rect.x1 - 12.0,
-            self.rect.y1 - 14.0,
+            self.frame.rect.x0 + left,
+            self.frame.rect.y0 + top,
+            self.frame.rect.x1 - 12.0,
+            self.frame.rect.y1 - 14.0,
         )
     }
     fn cell_rect(&self, cell: &HeatmapCell) -> Option<Rect> {
@@ -201,27 +170,26 @@ impl Heatmap {
     }
 }
 
-impl InteractiveChart for Heatmap {
+impl PlotMarks for HeatmapMarks {
     type Hover = usize;
-    fn inspection(&mut self) -> &mut ChartInspection<usize> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "Heatmap";
+    const LABEL: &'static str = "Heatmap";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self.cells.iter().position(|cell| {
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<usize> {
+        self.cells.iter().position(|cell| {
             self.cell_rect(cell)
-                .is_some_and(|rect| rect.contains(self.inspection.pointer))
-        });
+                .is_some_and(|rect| rect.contains(point))
+        })
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(cell) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.cells.get(index))
-        else {
-            return false;
-        };
-        self.activated = Some(cell.id.clone());
-        true
+    fn activation(&self, &index: &usize) -> Option<String> {
+        Some(self.cells.get(index)?.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
         let placed = self.cells.iter().map(|cell| self.cell_rect(cell).is_some());
@@ -233,22 +201,41 @@ impl InteractiveChart for Heatmap {
     fn anchor(&self, &index: &usize) -> Option<Point> {
         Some(self.cell_rect(self.cells.get(index)?)?.center())
     }
-}
-
-impl Widget for Heatmap {
-    crate::widget::chart_navigation::chart_leaf!();
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.cells
+            .iter()
+            .filter(|cell| cell.row < self.rows.len() && cell.column < self.columns.len())
+            .map(|cell| {
+                let row = self.rows.get(cell.row).map_or("", String::as_str);
+                let column = self.columns.get(cell.column).map_or("", String::as_str);
+                PlotItem::new(
+                    &cell.id,
+                    if cell.label.is_empty() {
+                        format!("{row}, {column}")
+                    } else {
+                        cell.label.clone()
+                    },
+                    if cell.detail.is_empty() {
+                        format!("Value {}", cell.value)
+                    } else {
+                        cell.detail.clone()
+                    },
+                    cell.id.clone(),
+                )
+            })
+            .collect()
+    }
 
     #[allow(
         clippy::too_many_lines,
         reason = "matrix cells, axes and inspector share one retained paint pass"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.follow_keyboard_anchor();
         let low = self
@@ -264,7 +251,14 @@ impl Widget for Heatmap {
             .missing_color
             .unwrap_or(theme.tokens.colors.border_standard);
         let (min, max) = self.range();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         if self.style.show_axis_labels {
             let grid = self.grid_rect();
             let column_width = grid.width()
@@ -291,7 +285,7 @@ impl Widget for Heatmap {
                     scene,
                     label,
                     theme.tokens.colors.text_dim,
-                    transform * Affine::translate((self.rect.x0 + 12.0, y - 6.0)),
+                    transform * Affine::translate((self.frame.rect.x0 + 12.0, y - 6.0)),
                     Some(70.0),
                     &theme.text(TextRole::Caption),
                 );
@@ -317,7 +311,7 @@ impl Widget for Heatmap {
                 None,
                 &RoundedRect::from_rect(rect, self.style.corner_radius),
             );
-            if self.inspection.hovered == Some(index) {
+            if self.frame.inspection.hovered == Some(index) {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
@@ -347,7 +341,7 @@ impl Widget for Heatmap {
                 );
             }
         }
-        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(cell) = self.cells.get(index)
         {
             let row = self.rows.get(cell.row).map_or("", String::as_str);
@@ -367,68 +361,12 @@ impl Widget for Heatmap {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 130.0,
                 (&title, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .cells
-            .iter()
-            .filter(|cell| cell.row < self.rows.len() && cell.column < self.columns.len())
-            .map(|cell| {
-                let row = self.rows.get(cell.row).map_or("", String::as_str);
-                let column = self.columns.get(cell.column).map_or("", String::as_str);
-                AccessNode::new(Role::Button)
-                    .with_action_target(&cell.id)
-                    .with_name(if cell.label.is_empty() {
-                        format!("{row}, {column}")
-                    } else {
-                        cell.label.clone()
-                    })
-                    .with_description(if cell.detail.is_empty() {
-                        format!("Value {}", cell.value)
-                    } else {
-                        cell.detail.clone()
-                    })
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Heatmap"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            self.cells.iter().map(|cell| &cell.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "Heatmap"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -443,15 +381,16 @@ mod tests {
                 vec!["B".into()],
                 vec![HeatmapCell::new("x", 0, 0, 3.0)],
             );
-            let range = heatmap.range();
+            let range = heatmap.marks.range();
             assert!(range.1 > range.0);
         }
 
         fn invalid_coordinates_have_no_rect() {
             let mut heatmap = Heatmap::new(vec!["A".into()], vec!["B".into()], vec![]);
-            heatmap.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+            heatmap.marks.frame.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
             assert!(
                 heatmap
+                    .marks
                     .cell_rect(&HeatmapCell::new("x", 2, 0, 1.0))
                     .is_none()
             );

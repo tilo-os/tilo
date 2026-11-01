@@ -68,11 +68,11 @@ fn right_click(app: &mut TestApp<ChatShell>, row: vello::kurbo::Rect) {
     app.settle();
 }
 
-/// The room's channels are the shell's sidebar: choosing one opens it, a
+/// The workspace's channels are the shell's sidebar: choosing one opens it, a
 /// right click on a channel or a category asks for its menu, and its
 /// Rename names it in place there.
 #[test]
-fn the_rooms_channels_are_the_shells_sidebar() {
+fn the_workspaces_channels_are_the_shells_sidebar() {
     let mut app = TestApp::<ChatShell>::capture(Some("channels")).unwrap();
     app.harness().resize((1280, 720)).unwrap();
     app.settle();
@@ -217,7 +217,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
         .submission(
             "0123456789abcdef0123456789abcdef".into(),
             ui::feedback::Destination {
-                room: "room".into(),
+                room: "workspace".into(),
                 provider: "demo-chat".into(),
                 channel: channel.id,
             },
@@ -464,7 +464,7 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
 }
 
 #[test]
-fn a_new_room_record_opens_with_chat_and_voice_and_nothing_else() {
+fn a_new_workspace_record_opens_with_chat_and_voice_and_nothing_else() {
     let app = TestApp::<ChatShell>::new().unwrap();
     let state = app.state();
     assert_eq!(state.people.len(), 1, "only its creator");
@@ -647,8 +647,14 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     for id in ["join-call", "leave-call", "mute", "unmute", "call-status"] {
         assert!(lounge.iter().any(|action| action == id), "{id}: {lounge:?}");
     }
+    // `read-workspace` reads the chat of the workspace the window is already
+    // in; every other action that names a workspace would be Chat making one.
+    let named = root
+        .iter()
+        .map(String::as_str)
+        .filter(|action| action.contains("workspace") && *action != "read-workspace");
     assert!(
-        !root.iter().any(|action| action.contains("workspace")),
+        named.count() == 0,
         "Chat runs in a workspace and makes none: {root:?}"
     );
 }
@@ -806,7 +812,7 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
             assert_eq!(
                 state.channel_rows().len(),
                 2,
-                "the first-run room: #chat and #voice"
+                "the first-run workspace: #chat and #voice"
             );
         } else {
             assert!(
@@ -838,7 +844,7 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     let mut composer = TestApp::<ChatShell>::capture(Some("composer")).unwrap();
     assert!(
         !composer.read_document(|doc| crate::projection::has_draft(doc, "c_crit")),
-        "a draft is never the room's"
+        "a draft is never the workspace's"
     );
     let draft = composer
         .with_chat(|chat| chat.composer_main.value())
@@ -847,7 +853,7 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
 }
 
 /// What one person types is theirs: it is in their own record on each of
-/// their devices, and never in another person's composer or in the room.
+/// their devices, and never in another person's composer or in the workspace.
 #[test]
 fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
     let ada = "ad".repeat(32);
@@ -855,9 +861,9 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
     let mut laptop = TestApp::<ChatShell>::for_person(&ada).unwrap();
     let mut phone = TestApp::<ChatShell>::for_person(&ada).unwrap();
     let mut bobs = TestApp::<ChatShell>::for_person(&bob).unwrap();
-    let mut room = laptop.peer_document();
-    bobs.merge_peer(&mut room).unwrap();
-    phone.merge_peer(&mut room).unwrap();
+    let mut workspace = laptop.peer_document();
+    bobs.merge_peer(&mut workspace).unwrap();
+    phone.merge_peer(&mut workspace).unwrap();
     let channel = laptop
         .with_chat(|chat| chat.active_channel.clone())
         .unwrap();
@@ -871,9 +877,9 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
     });
     laptop.harness().relayout();
 
-    // Bob shares the room and sees none of it.
-    let mut room = laptop.peer_document();
-    bobs.merge_peer(&mut room).unwrap();
+    // Bob shares the workspace and sees none of it.
+    let mut workspace = laptop.peer_document();
+    bobs.merge_peer(&mut workspace).unwrap();
     bobs.harness().relayout();
     let bobs_composer = bobs
         .with_chat(|chat| {
@@ -886,11 +892,11 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
         "Ada's typing never shows in Bob's composer"
     );
     assert!(
-        !room
+        !workspace
             .save()
             .windows(b"hello from Ada".len())
             .any(|w| w == b"hello from Ada"),
-        "the room's record carries none of it"
+        "the workspace's record carries none of it"
     );
 
     // Ada's phone has it, once her own record reaches it.
@@ -921,7 +927,7 @@ fn a_commenter_files_feedback_and_a_viewer_cannot() {
             .channels
             .iter()
             .find(|(_, channel)| channel.kind == crate::model::ChannelKind::Text)
-            .map(|(id, _)| (id.as_str().to_owned(), "room".to_owned()))
+            .map(|(id, _)| (id.as_str().to_owned(), "workspace".to_owned()))
             .expect("the chat has a text channel");
         ui::feedback::Submission {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -1024,7 +1030,7 @@ fn a_handed_over_file_posts_as_a_file() {
     );
 }
 
-/// A message another replica posts (a room's bot bridging Discord, another
+/// A message another replica posts (a workspace's bot bridging Discord, another
 /// member's device) shows in a window that is only being watched: its
 /// arrival in the window's store wakes the window, so the window's own
 /// frames show it, with no input and no frame forced to sync.

@@ -93,19 +93,8 @@ impl ReadRequest {
     }
 }
 
-/// A resource as an answer names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Shown {
-    /// How a program writes it: `@notes.Note:root-1/notes:n2`.
-    pub literal: String,
-    pub app: String,
-    /// Its type's name.
-    pub ty: String,
-    /// Its id ([`ResourceRef::id_string`]).
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-}
+/// A resource as an answer names it, and the readings of those this runtime does not hold.
+pub use crate::foreign::{Foreign, Shown, is_foreign};
 
 /// One match of a grep.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -910,30 +899,6 @@ impl Runtime {
     }
 }
 
-/// Results a value carries that `show` prints for the resources of apps the runtime does not
-/// hold: their literal and title.
-#[derive(Debug, Default)]
-pub struct Foreign {
-    by_key: BTreeMap<String, Shown>,
-}
-
-impl Foreign {
-    /// The key of a foreign resource: its type (`app#Type`) and id.
-    fn key(target: &ResourceRef) -> String {
-        format!("{}@{}", target.ty, target.id_string())
-    }
-
-    pub(crate) fn get(&self, target: &ResourceRef) -> Option<&Shown> {
-        self.by_key.get(&Self::key(target))
-    }
-}
-
-/// Whether `target` is a resource of an app this runtime does not hold.
-#[must_use]
-pub fn is_foreign(target: &ResourceRef) -> bool {
-    target.ty.contains('#')
-}
-
 impl Core {
     /// The value standing for `shown` here: a resource of this runtime when it holds `shown`'s
     /// app, else a foreign one that prints as its literal and title.
@@ -958,10 +923,7 @@ impl Core {
         else {
             return trap(format!("`{}` is no resource id", shown.id));
         };
-        self.foreign
-            .borrow_mut()
-            .by_key
-            .insert(Foreign::key(&target), shown.clone());
+        self.foreign.borrow_mut().show(&target, shown.clone());
         Ok(Value::Ref(RefValue {
             target: Rc::new(target),
             author: Some(author),

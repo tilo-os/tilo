@@ -23,9 +23,6 @@ mod support;
 
 #[path = "accessibility_geometry.rs"]
 mod accessibility_geometry;
-#[cfg(unix)]
-#[path = "agent_edit_is_its_own_undo_boundary.rs"]
-mod agent_edit_is_its_own_undo_boundary;
 #[path = "app_widget.rs"]
 mod app_widget;
 #[path = "block_editor_markdown.rs"]
@@ -39,8 +36,6 @@ mod block_editor_wrapping;
 mod coedit_keystone;
 #[path = "colorpicker_hex_input.rs"]
 mod colorpicker_hex_input;
-#[path = "command_palette_test.rs"]
-mod command_palette_test;
 #[path = "component_text_input.rs"]
 mod component_text_input;
 #[path = "container_update_forwarding.rs"]

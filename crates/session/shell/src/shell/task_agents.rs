@@ -82,7 +82,7 @@ impl MintedTaskAgent {
     /// What the agent joins with: the device's certificate and the task
     /// delegation, proved by the task key's signature over the room's join
     /// bytes. The desktop's agent door joins its connection's run with it
-    /// ([`tilo_action_broker::collab_broker_capnp::TaskRunHost`]).
+    /// ([`tilo_action_broker::collab_app_broker::TaskRunHost`]).
     ///
     /// # Errors
     /// The presentation could not be encoded.

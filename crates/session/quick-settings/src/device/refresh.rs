@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::reads::{
-    DeviceReads, Failure, FastReading, QsField, QsReading, ReadBack, Reader, WifiJoinResult,
-    WriteDone,
+    BluetoothReading, DeviceReads, Failure, FastReading, QsField, QsReading, ReadBack, Reader,
+    WifiJoinResult, WifiReading, WriteDone,
 };
 
 /// What wakes the session's loop when a worker is done.
@@ -173,13 +173,16 @@ impl QsRefresh {
         });
     }
 
-    /// Read the networks `NetworkManager` already knows. Never waits for a
-    /// radio scan, which takes over ten seconds on some adapters: the tile's
-    /// "connected to" must not depend on one.
+    /// Read the networks `NetworkManager` already knows, and the profiles it
+    /// keeps. Never waits for a radio scan, which takes over ten seconds on
+    /// some adapters: the tile's "connected to" must not depend on one.
     pub(crate) fn kick_wifi_networks(&mut self) {
         let reads = Arc::clone(&self.reads);
         self.spawn(Tier::Wifi, move || {
-            QsReading::WifiNetworks(reads.wifi_networks())
+            QsReading::WifiNetworks(WifiReading {
+                networks: reads.wifi_networks(),
+                saved: reads.saved_networks(),
+            })
         });
     }
 
@@ -191,13 +194,22 @@ impl QsRefresh {
             if let Err(error) = reads.scan_wifi() {
                 tracing::warn!(target: "tilo::os_actions", op = "scan_wifi", %error, "Wi-Fi scan failed");
             }
-            QsReading::WifiNetworks(reads.wifi_networks())
+            QsReading::WifiNetworks(WifiReading {
+                networks: reads.wifi_networks(),
+                saved: reads.saved_networks(),
+            })
         });
     }
 
     pub(crate) fn kick_bt_devices(&mut self) {
         let reads = Arc::clone(&self.reads);
-        self.spawn(Tier::Bt, move || QsReading::BtDevices(reads.bt_devices()));
+        self.spawn(Tier::Bt, move || {
+            QsReading::BtDevices(BluetoothReading {
+                paired: reads.bt_devices(),
+                nearby: reads.nearby_bluetooth(),
+                scanning: reads.scanning_bluetooth(),
+            })
+        });
     }
 
     /// Join without ever waiting on `NetworkManager` on the session's
@@ -341,7 +353,6 @@ pub(crate) mod tests {
     use crate::DisplayBrightness;
     use crate::actions::QsActionAvailability;
     use crate::device::reads::FieldReading;
-    use media::audio::default_node::VolumeState;
     use os_actions as qs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -356,12 +367,6 @@ pub(crate) mod tests {
         }
         fn displays(&self) -> Vec<DisplayBrightness> {
             Vec::new()
-        }
-        fn output_device(&self) -> bool {
-            false
-        }
-        fn volume(&self) -> Option<VolumeState> {
-            None
         }
         fn bluetooth(&self) -> Option<bool> {
             None
@@ -399,7 +404,7 @@ pub(crate) mod tests {
         fn scan_wifi(&self) -> Result<(), String> {
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             None
         }
         fn firmware_updates(&self) -> Option<usize> {
@@ -647,17 +652,6 @@ pub(crate) mod tests {
             self.hit("displays");
             Vec::new()
         }
-        fn output_device(&self) -> bool {
-            self.hit("output_device");
-            true
-        }
-        fn volume(&self) -> Option<VolumeState> {
-            self.hit("volume");
-            Some(VolumeState {
-                level: 0.5,
-                muted: false,
-            })
-        }
         fn bluetooth(&self) -> Option<bool> {
             self.hit("bluetooth");
             Some(true)
@@ -710,7 +704,7 @@ pub(crate) mod tests {
             self.hit("scan_wifi");
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             self.hit("bt_devices");
             None
         }
@@ -750,7 +744,7 @@ pub(crate) mod tests {
             "Wi-Fi is taken from the radio snapshot, not a network list: {calls:?}"
         );
 
-        let expected: [(QsField, &[&str]); 9] = [
+        let expected: [(QsField, &[&str]); 8] = [
             (QsField::Wifi, &["radios"]),
             (QsField::Airplane, &["radios"]),
             (QsField::Mobile, &["radios"]),
@@ -759,7 +753,6 @@ pub(crate) mod tests {
             (QsField::Power, &["power"]),
             (QsField::Vpn, &["vpns"]),
             (QsField::Brightness, &["brightness", "displays"]),
-            (QsField::Volume, &["volume"]),
         ];
         for (field, reads) in expected {
             r.kick_field(field);

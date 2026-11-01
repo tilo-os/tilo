@@ -943,13 +943,16 @@ mod tests {
 
     #[test]
     fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
-        for theme in [
-            Theme::dark(),
-            Theme::dark().with_ui_scale(1.5),
-            Theme::light().with_ui_scale(1.5),
-            Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
-            Theme::dark().with_text_scale(2.0),
+        let dark: fn() -> Theme = Theme::dark;
+        let light: fn() -> Theme = Theme::light;
+        for (base, ui_scale, text_scale) in [
+            (dark, 1.0, 1.0),
+            (dark, 1.5, 1.0),
+            (light, 1.5, 1.0),
+            (dark, 1.5, 1.5),
+            (dark, 1.0, 2.0),
         ] {
+            let theme = base().with_ui_scale(ui_scale).with_text_scale(text_scale);
             let mut screen = CalcScreen::default();
             let mut text = TextRenderer::new();
             // The live desktop's renderer carries the reader's text scale;

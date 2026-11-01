@@ -24,15 +24,15 @@ impl ResourceApp for NotesShell {
     const ICON: Option<&'static str> = Some("notes");
     const OPENS: &'static [&'static str] = &["text/markdown", "text/x-markdown"];
     const ARGUMENTS: usize = 1;
-    /// One notebook per room, not one per window. A notebook is a
-    /// collection every window of Notes in the room shows (the sidebar is
+    /// One notebook per workspace, not one per window. A notebook is a
+    /// collection every window of Notes in the workspace shows (the sidebar is
     /// its pages), so a new window, or Notes reopened after its windows
     /// closed, must show the pages already written there: with a record
     /// per window each new window started on an empty notebook, and the
     /// pages came back only by restoring the very window that wrote them.
-    /// A room is the unit of collaboration, so its collaborators share the
+    /// A workspace is the unit of collaboration, so its collaborators share the
     /// notebook too. Notes from before this keep their per-window records;
-    /// the room's notebook adopts them when it is created ([`Self::seed`]).
+    /// the workspace's notebook adopts them when it is created ([`Self::seed`]).
     const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
@@ -97,8 +97,8 @@ impl ResourceApp for NotesShell {
         ]
     }
 
-    /// The room's notebook starts with the pages of the notebooks Notes
-    /// kept per window before it kept one per room, on this device, in
+    /// The workspace's notebook starts with the pages of the notebooks Notes
+    /// kept per window before it kept one per workspace, on this device, in
     /// record order ([`crate::adopt`]). Those records are left as they were.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Notebook>> {
         crate::adopt::adoption(

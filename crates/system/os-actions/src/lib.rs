@@ -1,15 +1,20 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
 //! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
-//! Both needed the same brightnessctl/powerprofilesctl bindings and network and
-//! Bluetooth clients, and
+//! Both needed the same hardware controls and network and Bluetooth clients, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
 //!
 //! Design notes:
 //!
-//! - Every helper checks the binary's presence first via `which` and returns a clear
+//! - A control that has a D-Bus owner goes through it, never through the owner's CLI:
+//!   `tilo-nm` for networking, `tilo-bluez` for Bluetooth, `tilo-power-mgmt` for power
+//!   profiles, logind, the power-supply class and `UPower`, `tilo-media` for the audio graph.
+//!   The few remaining subprocesses are the ones with no library behind them
+//!   (`brightnessctl`, `wpctl`, `fwupdmgr`, `iw`'s station dump, `pw-cli`'s client stop),
+//!   plus `systemctl` starting the charge-cap service.
+//! - Every CLI helper checks the binary's presence first via `which` and returns a clear
 //!   `"<binary> not installed"` error otherwise, so the QS panel and Settings app stay
-//!   functional on machines missing a daemon (e.g. no `power-profiles-daemon`).
+//!   functional on machines missing a tool.
 //! - [`std::process::Command`] (sync) is deliberate: both call sites are user-driven (slider
 //!   drag, toggle click), so getter calls happen only on rising-edge open — no tokio needed.
 //! - Parsers are extracted into private free functions so they're unit-testable against
@@ -39,6 +44,7 @@
 
 pub mod backlight_events;
 pub mod battery;
+pub mod bluetooth;
 pub mod bluez;
 pub mod brightness;
 pub mod bus_follow;
@@ -78,6 +84,11 @@ pub use battery::{
     ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
     power_devices, set_charge_limit, set_charge_limit_checked,
 };
+pub use bluetooth::{
+    BluetoothHandoffTarget, BtDeviceInfo, NearbyBtDevice, bt_connect, bt_disconnect,
+    forget_bluetooth, get_bluetooth, inspect_bluetooth_handoff_target, list_bt_devices,
+    nearby_bluetooth, pair_bluetooth_handoff, scan_bluetooth, scanning_bluetooth, set_bluetooth,
+};
 pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
     SOFTWARE_DIM_FLOOR, SessionDisplays, software_luminance, step_together,
@@ -112,17 +123,18 @@ pub use modem::{
 pub use network::{
     CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectionPolicyPatch,
     ConnectionProfileSettings, ConnectivityState, EnterpriseEapMethod, EnterpriseWifiConfiguration,
-    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, IpConfiguration, LinkKind,
-    LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration, RadioState, SavedNetworkProfile,
-    VpnConnectionInfo, WifiNetworkInfo, WifiSecurity, WiredInfo, captive_portal_uri,
-    check_connectivity_now, configure_connection_policy, configure_connection_policy_patch,
-    configure_hotspot, configure_ipv4, connect_enterprise_wifi, connect_wifi,
-    connection_diagnostics, connection_profile_settings, delete_vpn_connection,
-    delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile, get_connectivity,
-    get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
+    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, HotspotDetails,
+    InterfaceTraffic, IpConfiguration, LinkKind, LinkStatus, MacPolicy, MeteredPolicy,
+    ProxyConfiguration, RadioState, SavedNetworkProfile, VpnConnectionInfo, WifiNetworkInfo,
+    WifiSecurity, WiredInfo, captive_portal_uri, check_connectivity_now,
+    configure_connection_policy, configure_connection_policy_patch, configure_hotspot,
+    configure_ipv4, connect_enterprise_wifi, connect_wifi, connection_diagnostics,
+    connection_profile_settings, delete_vpn_connection, delete_vpn_connection_uuid,
+    disconnect_wifi, forget_network_profile, get_connectivity, get_link_status, get_radio_state,
+    get_wifi, get_wired, hotspot_details, import_vpn_config, inspect_certificate,
     link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
-    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, scan_wifi,
-    set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
+    list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, read_interface_traffic,
+    scan_wifi, set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
     set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wifi_radio, set_wired,
     wifi_change_outcome, wifi_from_radios, wireless_link_quality_pct,
 };
@@ -313,6 +325,31 @@ pub trait Dispatcher {
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         bluez::disconnect_address(address)
     }
+    /// Look for Bluetooth devices in reach, or stop looking.
+    ///
+    /// # Errors
+    ///
+    /// An adapter that cannot be reached.
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        bluetooth::scan_bluetooth(on)
+    }
+    /// Pair the device at `address`, trusting it and connecting it. What it
+    /// asks to compare is a question its pairing agent asks the person.
+    ///
+    /// # Errors
+    ///
+    /// An address `BlueZ` does not know, or what it refused.
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::pair_bluetooth_handoff(address)
+    }
+    /// Forget the device at `address`: its bond, its keys and its trust.
+    ///
+    /// # Errors
+    ///
+    /// An address `BlueZ` does not know, or what it refused.
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::forget_bluetooth(address)
+    }
     /// Enable or disable wired (ethernet) networking.
     ///
     /// # Errors
@@ -366,6 +403,37 @@ pub trait Dispatcher {
     /// Returns an error message if the network is unreachable, the credentials are rejected, or
     /// the underlying call fails.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
+    /// Connect to `ssid`, which broadcasts no name, using `password` for
+    /// secured networks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the credentials are rejected or the
+    /// underlying call fails.
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        let _ = (ssid, password);
+        Err("joining a network with a hidden name is not supported by this dispatcher".into())
+    }
+    /// Forget the saved network `profile` (`NetworkManager`'s UUID): its
+    /// name and its password.
+    ///
+    /// # Errors
+    ///
+    /// A profile `NetworkManager` does not know, or what it refused.
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        let _ = profile;
+        Err("forgetting saved networks is not supported by this dispatcher".into())
+    }
+    /// Whether the saved network `profile` connects on its own when it is in
+    /// reach.
+    ///
+    /// # Errors
+    ///
+    /// A profile `NetworkManager` does not know, or what it refused.
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        let _ = (profile, on);
+        Err("saved network autoconnect is not supported by this dispatcher".into())
+    }
     /// Switch the active power profile.
     ///
     /// # Errors
@@ -461,6 +529,15 @@ impl Dispatcher for RealDispatcher {
     }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         network::connect_wifi(ssid, password)
+    }
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        network_settings::connect_hidden_wifi(ssid, password)
+    }
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        network::forget_network_profile(profile)
+    }
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        network::set_network_autoconnect(profile, on)
     }
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String> {
         power::set_power_profile(profile)

@@ -69,6 +69,10 @@ pub fn u32_of_f64(value: f64) -> u32 {
     value as u32
 }
 
+pub fn u64_of_f64(value: f64) -> u64 {
+    value as u64
+}
+
 pub fn u32_of_usize(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }

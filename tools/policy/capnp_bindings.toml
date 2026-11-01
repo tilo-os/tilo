@@ -4,20 +4,6 @@
 # by the regeneration, never by hand.
 
 [[crate]]
-path = "crates/packaging/app-host"
-src_prefix = "schema"
-schemas = ["schema/app-host.capnp"]
-schema_sha256 = "34c916573dd7a7bbc3b947902d85dbde55130b31054f5be94d57036b63486afb"
-bindings_sha256 = "efda1d119557ae5c80d17a7b45c879606d0e5b20cb58878b4ec729cd9a6dabed"
-
-[[crate]]
-path = "crates/runtime/runtime-collab"
-src_prefix = "schema"
-schemas = ["schema/collab.capnp"]
-schema_sha256 = "9fb2948acb759c9fd8aa22f6fa2091866ad93dff472adc04251483fc7ed4b1a6"
-bindings_sha256 = "fc1da9f16ebb0622908251842fb0b6ecae1df0e2f31111330cd8c576c810e9d6"
-
-[[crate]]
 path = "crates/runtime/tilo-fs-client"
 src_prefix = "schema"
 schemas = ["schema/fs.capnp", "schema/blobs.capnp"]

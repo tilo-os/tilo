@@ -323,6 +323,10 @@ fn validate(id: &str) -> Result<(), String> {
     }
 }
 
+/// The cache's answer while the host has not yet acknowledged a write: the
+/// bytes are queued, which is "saving", not a failure.
+pub const PENDING_ACKNOWLEDGEMENT: &str = "persistence pending host acknowledgement";
+
 #[derive(Clone, Debug)]
 pub struct CachedBytes {
     pub bytes: Vec<u8>,
@@ -791,7 +795,7 @@ impl PortableStorage {
             Err(entry
                 .error
                 .clone()
-                .unwrap_or_else(|| "persistence pending host acknowledgement".into()))
+                .unwrap_or_else(|| PENDING_ACKNOWLEDGEMENT.to_owned()))
         }
     }
 }

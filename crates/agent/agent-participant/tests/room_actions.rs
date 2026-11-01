@@ -76,7 +76,8 @@ use tilo_actions::{
     remote::{Confirmation, ReceiptStatus},
 };
 use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed, record_provider};
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};

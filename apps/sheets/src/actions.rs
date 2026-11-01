@@ -78,7 +78,7 @@ pub enum SheetsEffect {
     },
     /// Import Excel workbook from content
     ///
-    /// Adds every sheet of an `.xlsx` workbook the room holds as content (an
+    /// Adds every sheet of an `.xlsx` workbook the workspace holds as content (an
     /// attachment, a shared file, an export), with its formulas, money,
     /// percent and date formats and hidden sheets; a new workbook's untouched
     /// blank sheet gives way to them. The same content imported again is

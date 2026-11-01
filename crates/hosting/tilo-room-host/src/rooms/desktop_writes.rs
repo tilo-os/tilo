@@ -172,7 +172,10 @@ impl Rooms {
         let state = self.room(room).await.map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         let now = SystemTime::now();
-        let member = governed.peer().permissions(author, now)?;
+        let member = governed
+            .peer()
+            .permissions(author, now)
+            .map_err(|error| error.to_string())?;
         let mutation = match governed.readable_mutation(&envelope).await? {
             Readable::Whole(mutation) => mutation,
             Readable::Partial => return Ok(()),

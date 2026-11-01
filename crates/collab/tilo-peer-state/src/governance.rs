@@ -1,12 +1,9 @@
 //! Owner-neutral transactions over the canonical room governance document.
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use ed25519_dalek::SigningKey;
 use web_time::SystemTime;
 
-use crate::state::{
-    GovernedIdentity, RedemptionReceipt, delete_member_joined, put_member, put_member_joined_once,
-};
+use crate::state::{GovernedIdentity, RedemptionReceipt, put_member, put_member_joined_once};
 
 /// How many later redemption receipts one governed identity row keeps beside
 /// its first (`GovernedIdentity::admission`).
@@ -34,12 +31,6 @@ fn retain_latest_admissions(admissions: &mut Vec<RedemptionReceipt>) {
 pub enum AdmissionOutcome {
     Applied { changes: Vec<Vec<u8>> },
     AlreadyApplied,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GovernanceOutcome {
-    Applied { changes: Vec<Vec<u8>> },
-    Unchanged,
 }
 
 /// Apply certificate, role and immutable redemption receipt to the caller's
@@ -181,19 +172,17 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?;
     // An agent identity stays bound to its delegation whatever else it
     // redeems: the delegation's window and withdrawal still apply.
-    let (revocations, mut admission, mut admissions, workspace_delegations, delegate) = prior
-        .map_or_else(
-            || (Vec::new(), None, Vec::new(), Vec::new(), None),
-            |identity| {
-                (
-                    identity.revocations,
-                    identity.admission,
-                    identity.admissions,
-                    identity.workspace_delegations,
-                    identity.delegate,
-                )
-            },
-        );
+    let (revocations, mut admission, mut admissions, delegate) = prior.map_or_else(
+        || (Vec::new(), None, Vec::new(), None),
+        |identity| {
+            (
+                identity.revocations,
+                identity.admission,
+                identity.admissions,
+                identity.delegate,
+            )
+        },
+    );
     if admission.is_none() {
         admission = Some(receipt.on_row());
     } else {
@@ -205,7 +194,6 @@ pub fn admit_invited_member(
         revocations,
         admission,
         admissions,
-        workspace_delegations,
         delegate,
     };
     candidate
@@ -265,211 +253,6 @@ fn member_display_name<'a>(
     preferred.unwrap_or("Guest")
 }
 
-/// Record a verified workspace delegation in the governed room document.
-///
-/// The change is made under `document`'s actor, which the caller sets
-/// ([`crate::room_host_actor`]).
-///
-/// # Errors
-///
-/// Returns an error if the delegation does not verify against `authority` or the
-/// document cannot be updated.
-pub fn install_workspace_delegation(
-    document: &mut AutoCommit,
-    authority: &tilo_user_identity::DeviceCert,
-    delegation: crate::join::WorkspaceDelegation,
-    authority_key: &SigningKey,
-    now: SystemTime,
-) -> Result<GovernanceOutcome, String> {
-    validate_authority(document, authority, authority_key)?;
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX);
-    crate::join::verify_workspace_delegation(
-        &delegation,
-        authority,
-        &tilo_user_identity::RevocationList::new(),
-        now_ns,
-    )?;
-    let mut candidate = document.clone();
-    let before = candidate.get_heads();
-    let (_, identities) = candidate
-        .get(ROOT, "peer_identities_v1")
-        .map_err(|error| error.to_string())?
-        .ok_or("governed identities missing")?;
-    let authority_id = hex::encode(authority.device_public_key);
-    let bytes = candidate
-        .get(&identities, &authority_id)
-        .map_err(|error| error.to_string())?
-        .and_then(|(value, _)| match value {
-            automerge::Value::Scalar(value) => match value.as_ref() {
-                automerge::ScalarValue::Bytes(bytes) => Some(bytes.clone()),
-                _ => None,
-            },
-            automerge::Value::Object(_) => None,
-        })
-        .ok_or("authority identity is absent from governed roster")?;
-    let mut identity: GovernedIdentity =
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    if identity.device_cert != *authority {
-        return Err("governed authority certificate mismatch".into());
-    }
-    if identity.workspace_delegations.contains(&delegation) {
-        return Ok(GovernanceOutcome::Unchanged);
-    }
-    identity.workspace_delegations.push(delegation);
-    identity
-        .workspace_delegations
-        .sort_by_key(|item| (item.delegate.device_public_key, item.nonce));
-    candidate
-        .put(
-            &identities,
-            authority_id,
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
-            ),
-        )
-        .map_err(|error| error.to_string())?;
-    candidate.commit();
-    finish(document, candidate, &before)
-}
-
-/// Change a governed collaborator's role in the room document.
-///
-/// The change is made under `document`'s actor, which the caller sets
-/// ([`crate::room_host_actor`]).
-///
-/// # Errors
-///
-/// Returns an error if the user is the owner or not a governed member, or the document
-/// cannot be updated.
-pub fn set_member_role(
-    document: &mut AutoCommit,
-    authority: &tilo_user_identity::DeviceCert,
-    user_public_key: [u8; 32],
-    role: crate::join::MemberRole,
-    authority_key: &SigningKey,
-) -> Result<GovernanceOutcome, String> {
-    validate_authority(document, authority, authority_key)?;
-    if user_public_key == authority.user_public_key {
-        return Err("owner role cannot be changed through member governance".into());
-    }
-    let governance = crate::room::governance_of(Some(document));
-    if !governance.identities.values().any(|bytes| {
-        serde_json::from_slice::<GovernedIdentity>(bytes).is_ok_and(|identity| {
-            identity.device_cert.user_public_key == user_public_key && identity.has_admission()
-        })
-    }) {
-        return Err("member is absent from governed admission history".into());
-    }
-    let mut candidate = document.clone();
-    let before = candidate.get_heads();
-    let members = candidate
-        .get(ROOT, "members")
-        .map_err(|error| error.to_string())?
-        .ok_or("governed members missing")?
-        .1;
-    put_member(&mut candidate, &members, user_public_key, role.into())?;
-    candidate.commit();
-    finish(document, candidate, &before)
-}
-
-/// Remove a governed collaborator from the room document.
-///
-/// The change is made under `document`'s actor, which the caller sets
-/// ([`crate::room_host_actor`]).
-///
-/// # Errors
-///
-/// Returns an error if the user is the owner or not a governed member, or the document
-/// cannot be updated.
-pub fn remove_member(
-    document: &mut AutoCommit,
-    authority: &tilo_user_identity::DeviceCert,
-    user_public_key: [u8; 32],
-    authority_key: &SigningKey,
-) -> Result<GovernanceOutcome, String> {
-    validate_authority(document, authority, authority_key)?;
-    if user_public_key == authority.user_public_key {
-        return Err("workspace owner cannot be removed".into());
-    }
-    let mut candidate = document.clone();
-    let (_, members) = candidate
-        .get(ROOT, "members")
-        .map_err(|error| error.to_string())?
-        .ok_or("governed members missing")?;
-    let (_, grants) = candidate
-        .get(ROOT, "grants")
-        .map_err(|error| error.to_string())?
-        .ok_or("governed grants missing")?;
-    let person = hex::encode(user_public_key);
-    let member = candidate
-        .get(&members, person.as_str())
-        .map_err(|error| error.to_string())?
-        .is_some();
-    let personal = crate::room::policy::legacy(&candidate)
-        .grants
-        .iter()
-        .filter(|grant| grant.subject == tilo_action_policy::Subject::Person(person.clone()))
-        .map(|grant| grant.id.as_str().to_owned())
-        .collect::<Vec<_>>();
-    if !member && personal.is_empty() {
-        return Ok(GovernanceOutcome::Unchanged);
-    }
-    let before = candidate.get_heads();
-    if member {
-        candidate
-            .delete(&members, person.as_str())
-            .map_err(|error| error.to_string())?;
-        delete_member_joined(&mut candidate, &person)?;
-    }
-    for id in personal {
-        candidate
-            .delete(&grants, id.as_str())
-            .map_err(|error| error.to_string())?;
-    }
-    candidate.commit();
-    finish(document, candidate, &before)
-}
-
-fn validate_authority(
-    document: &AutoCommit,
-    authority: &tilo_user_identity::DeviceCert,
-    authority_key: &SigningKey,
-) -> Result<(), String> {
-    if authority_key.verifying_key().to_bytes() != authority.device_public_key {
-        return Err("governance writer is not pinned authority".into());
-    }
-    if crate::room::governance_of(Some(document)).owner.as_deref()
-        != Some(&hex::encode(authority.user_public_key))
-    {
-        return Err("governance authority is not the structural owner".into());
-    }
-    Ok(())
-}
-
-fn finish(
-    document: &mut AutoCommit,
-    mut candidate: AutoCommit,
-    before: &[automerge::ChangeHash],
-) -> Result<GovernanceOutcome, String> {
-    crate::room::media::refresh_authorization(document, &mut candidate)
-        .map_err(|error| error.to_string())?;
-    let changes = candidate
-        .get_changes(before)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect::<Vec<_>>();
-    if changes.is_empty() {
-        return Ok(GovernanceOutcome::Unchanged);
-    }
-    *document = candidate;
-    Ok(GovernanceOutcome::Applied { changes })
-}
-
 #[cfg(test)]
 mod display_name_tests {
     use super::*;
@@ -477,6 +260,7 @@ mod display_name_tests {
         InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
         verify_join_proof,
     };
+    use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
     fn cert(label: &str) -> DeviceCert {
@@ -496,9 +280,7 @@ mod display_name_tests {
         InviteGrant {
             workspace_id: 7,
             room: "room".into(),
-            authority: authority.clone(),
             issuer: authority,
-            delegation: None,
             role: MemberRole::Editor,
             nonce: [0; 16],
             recipient_user_public_key: recipient,
@@ -593,9 +375,7 @@ mod display_name_tests {
             InviteGrant {
                 workspace_id: 7,
                 room: peer.room().into(),
-                authority: peer.authority().clone(),
-                issuer: peer.authority().clone(),
-                delegation: None,
+                issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [53; 16],
                 recipient_user_public_key: None,
@@ -656,6 +436,7 @@ mod retention_tests {
         sign_join_proof, verify_join_proof,
     };
     use crate::{NeighbourMsg, StatePeer};
+    use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
     fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
@@ -685,9 +466,7 @@ mod retention_tests {
             InviteGrant {
                 workspace_id: 7,
                 room: peer.room().into(),
-                authority: peer.authority().clone(),
-                issuer: peer.authority().clone(),
-                delegation: None,
+                issuer: peer.owner_certificates()[0].clone(),
                 role: MemberRole::Editor,
                 nonce: [nonce; 16],
                 recipient_user_public_key: Some(cert.user_public_key),

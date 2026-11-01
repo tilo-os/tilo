@@ -12,11 +12,17 @@
 view desk(d: Desk) {
     let s = shell
     layers {
-        stack(gap: .tight) {
+        stack(gap: .tight, fill) {
             if bar_shows(s, d) {
                 bar_on_edge(s, d)
             }
-            surface_or_rest(d)
+            if d.here == "none" or d.here == "desk" {
+                at_rest(d)
+            } else {
+                scroll(fill) {
+                    surface(d)
+                }
+            }
         }
         if dock_shows(s, d) {
             if s.dock_edge == .bottom {
@@ -90,15 +96,6 @@ view top_bar(d: Desk) {
         traditional_bar(d)
     } else {
         bar(d)
-    }
-}
-
-/// What stands under the bar: the desk at rest, or the surface the person is in.
-view surface_or_rest(d: Desk) {
-    if d.here == "none" or d.here == "desk" {
-        at_rest(d)
-    } else {
-        surface(d)
     }
 }
 

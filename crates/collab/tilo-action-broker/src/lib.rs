@@ -2,9 +2,10 @@
 pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
+mod broker_error;
 pub mod channel_encryption;
+pub mod collab_app_broker;
 pub mod collab_broker;
-pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_history;
 pub mod collab_inbound;
@@ -20,6 +21,8 @@ pub mod record_content;
 pub mod route;
 pub mod services;
 pub mod task_runs;
+
+pub use broker_error::{BrokerError, BrokerErrorKind};
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]

@@ -114,6 +114,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Sets one of the device's settings the shell's Quick Settings shows, by the setting's \
          key and the value: `(key, value)`.",
     ),
+    (
+        "session.tray",
+        "Opens or closes a running application's tray item, by its key: its window, or its \
+         menu when the item is one.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
@@ -134,6 +139,44 @@ pub const KINDS: &[OriginKind] = &[
                 "clock",
                 "Text",
                 "The time of day in the person's style, to the minute.",
+            ),
+            field(
+                "timer",
+                "Text",
+                "The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or \
+                 `Stopwatch` when the app named none; empty when none floats.",
+            ),
+            field(
+                "timer_left",
+                "Text",
+                "What the timer reads: what it has left, or what the stopwatch has run.",
+            ),
+            field(
+                "timer_paused",
+                "Bool",
+                "Whether the timer or stopwatch is paused.",
+            ),
+            field(
+                "timer_stopwatch",
+                "Bool",
+                "Whether the running activity is a stopwatch rather than a timer.",
+            ),
+            field(
+                "ask",
+                "Text",
+                "The question the session puts to the person about themselves; empty when none \
+                 waits.",
+            ),
+            field("ask_detail", "Text", "What answering the question brings."),
+            field(
+                "ask_answer",
+                "Text",
+                "The question's answer, as its button says it.",
+            ),
+            field(
+                "ask_open",
+                "Bool",
+                "Whether the question stands open on the person's avatar.",
             ),
             field(
                 "weekday",
@@ -223,6 +266,11 @@ pub const KINDS: &[OriginKind] = &[
                 "windows",
                 "Collection<session.window>",
                 "The windows of every strip of the workspace in front, most recently used first.",
+            ),
+            field(
+                "tray",
+                "Collection<session.tray_item>",
+                "The running applications' tray items, in the order they registered.",
             ),
         ],
     },
@@ -505,6 +553,21 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "Who they are, by their live presence's id."),
             field("name", "Text", "Their name here."),
+        ],
+    },
+    OriginKind {
+        name: "session.tray_item",
+        doc: "A running application's tray item: what the bar shows, and what a press on it \
+              reaches.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "The item's key, which a press on it names."),
+            field("title", "Text", "The app's own words for it."),
+            field(
+                "menu",
+                "Bool",
+                "Whether choosing it opens its menu rather than its window.",
+            ),
         ],
     },
     OriginKind {

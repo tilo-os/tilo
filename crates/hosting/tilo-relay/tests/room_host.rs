@@ -51,6 +51,7 @@ async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -238,7 +239,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         tilo_clock::unix_now_ns(),
     )
     .unwrap();
-    assert_eq!(verified.grant().authority, laptop.cert);
+    assert_eq!(verified.grant().issuer, laptop.cert);
     let bobs_endpoint = device_endpoint(&bobs_phone).await;
     let admission = WorkspaceJoinClient::new(bobs_endpoint.clone())
         .redeem_hint(
@@ -254,7 +255,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let WorkspaceHostTrust::InteractiveOwner(trust) = admission.trust else {
         panic!("a device host is the room's own governor, not a certified host");
     };
-    assert_eq!(trust.authority(), &laptop.cert);
+    assert_eq!(trust.host(), &laptop.cert);
 
     // Bob's phone reaches the room on the laptop, by the trust the join
     // gave it, and nothing else of the laptop's.
@@ -390,6 +391,7 @@ async fn a_router_built_before_any_room_refuses_until_its_host_is_installed() {
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
+        None,
     )
     .await
     .unwrap();

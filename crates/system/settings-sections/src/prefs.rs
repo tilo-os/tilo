@@ -1403,7 +1403,11 @@ tilo_resource::json_model!(CustomTheme);
     reason = "each bool is an independent appearance switch, not one combined state"
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = AppearancePrefs::valid, check_reads = "sunrise sunset", defaults)]
+#[model(
+    check = AppearancePrefs::valid,
+    check_reads = "sunrise sunset ui_face accent translucency",
+    defaults
+)]
 pub struct AppearancePrefs {
     /// Light, dark, or automatic: light by day and dark by night.
     #[serde(default = "default_mode")]
@@ -1494,6 +1498,26 @@ pub struct AppearancePrefs {
     /// device again replaces a language chosen before.
     #[serde(default)]
     pub language: Option<String>,
+    /// The interface face, by any family name a theme may name (`Default`,
+    /// `Hyperlegible`, `Noto Sans`); `None` follows the theme's own. The
+    /// face is a role of the theme, so this only says the person would
+    /// rather have theirs than the one the theme chose. Written even when
+    /// `None` (as `null`), so following the theme again replaces a face
+    /// chosen before.
+    #[serde(default)]
+    pub ui_face: Option<String>,
+    /// The accent, by a name the presence palette gives a hue (`violet`,
+    /// `teal`); `None` follows the theme's own. Written even when `None` (as
+    /// `null`), like `ui_face`.
+    #[serde(default)]
+    pub accent: Option<String>,
+    /// How much of the theme's translucency to keep: `1` as the theme sets
+    /// it, `0` floating chrome opaque; `None` follows the theme. The
+    /// accessibility option that makes panels opaque still wins. Written
+    /// even when `None` (as `null`), like `ui_face`.
+    #[serde(default)]
+    #[model(range = 0.0..=1.0)]
+    pub translucency: Option<f64>,
 }
 
 /// What the desktop shows while the person has chosen nothing: the built-in
@@ -1570,6 +1594,9 @@ impl Default for AppearancePrefs {
             forced_colors: false,
             distinct_letters: None,
             language: None,
+            ui_face: None,
+            accent: None,
+            translucency: None,
         }
     }
 }
@@ -1619,8 +1646,26 @@ impl AppearancePrefs {
         ui::theme::ThemeLayerStack {
             distribution_defaults: device.distribution_defaults.clone(),
             user_theme: self.user_document(),
+            finish: self.finish(),
             window: ui::WindowAppearance::default(),
             accessibility,
+        }
+    }
+
+    /// The person's own face, accent and share of the theme's translucency.
+    fn finish(&self) -> ui::theme::FinishLayer {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a translucency is a factor in 0..=1; f32 holds it exactly enough"
+        )]
+        let translucency = self.translucency.map(|value| value as f32);
+        ui::theme::FinishLayer {
+            ui_face: self.ui_face.clone(),
+            accent: self
+                .accent
+                .as_deref()
+                .and_then(ui::tokens::PresenceHue::from_id),
+            translucency,
         }
     }
 
@@ -1992,7 +2037,31 @@ impl AppearancePrefs {
     /// What the appearance section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
         time_of_day(&self.sunrise, "the start of day")?;
-        time_of_day(&self.sunset, "the start of night")
+        time_of_day(&self.sunset, "the start of night")?;
+        ui::theme::FinishLayer {
+            ui_face: self.ui_face.clone(),
+            accent: None,
+            translucency: None,
+        }
+        .validate()
+        .map_err(|error| ui::tilo_resource::Refusal::new(format!("the interface face: {error}")))?;
+        if let Some(accent) = &self.accent
+            && ui::tokens::PresenceHue::from_id(accent).is_none()
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{accent}` is not an accent colour"
+            )));
+        }
+        if let Some(translucency) = self.translucency {
+            let band = f64::from(settings_store::appearance::TRANSLUCENCY_MIN)
+                ..=f64::from(settings_store::appearance::TRANSLUCENCY_MAX);
+            if !band.contains(&translucency) {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "translucency is between none and the theme's own",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

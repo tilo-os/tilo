@@ -16,8 +16,14 @@ class CaptureBuildPhases(unittest.TestCase):
             log = root / 'cargo.jsonl'
             cargo = root / 'cargo'
             cargo.write_text('#!/usr/bin/python3\nimport json,os,sys\n'
+                             'args = sys.argv[1:]\n'
+                             '# The build script asks Cargo about the workspace before it builds\n'
+                             '# (the engines no crate depends on); answer that, record the builds.\n'
+                             'if args[:1] == ["metadata"]:\n'
+                             ' print(json.dumps({"packages": [], "workspace_members": []}))\n'
+                             ' sys.exit(0)\n'
                              'with open(os.environ["CAPTURE_PHASE_TEST_LOG"],"a") as out:\n'
-                             ' out.write(json.dumps(sys.argv[1:])+"\\n")\n')
+                             ' out.write(json.dumps(args)+"\\n")\n')
             cargo.chmod(0o700)
             result = subprocess.run(['bash', str(REPO / 'apps/imager/packaging/package-capture-service.sh'),
                                      *(['--with-writer'] if with_writer else []),
@@ -27,8 +33,19 @@ class CaptureBuildPhases(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual(len(calls), 2)
-            thin, tools = calls
+            self.assertEqual(len(calls), 3)
+            engines, thin, tools = calls
+            # The engines' check binaries go first, in the same graph (same
+            # packages and features), because Cargo cannot order the engine
+            # library an app links by name behind that app's package.
+            engine_bins = [engines[i + 1] for i, value in enumerate(engines) if value == '--bin']
+            self.assertTrue(engine_bins)
+            self.assertTrue(all(binary.endswith('-check') for binary in engine_bins), engine_bins)
+            self.assertEqual(engines[:4], ['build', '--locked', '--profile', 'thin-app'])
+            self.assertEqual(engines[engines.index('--features') + 1],
+                             thin[thin.index('--features') + 1])
+            self.assertEqual([engines[i + 1] for i, value in enumerate(engines) if value == '-p'],
+                             [thin[i + 1] for i, value in enumerate(thin) if value == '-p'])
             self.assertEqual(thin[:4], ['build', '--locked', '--profile', 'thin-app'])
             features = thin[thin.index('--features') + 1].split(',')
             self.assertIn('imager/thin', features)

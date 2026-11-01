@@ -228,24 +228,18 @@ impl ContentLane {
 
     /// Wake `wake`'s owner when the store has something for the route.
     pub fn attach(&self, wake: crate::WakeHandle) {
-        if let Ok(mut slot) = self.wake.lock() {
-            *slot = Some(wake);
-        }
+        *self.wake.lock_recover() = Some(wake);
     }
 
     fn wake(&self) {
-        if let Ok(slot) = self.wake.lock()
-            && let Some(wake) = slot.as_ref()
-        {
+        if let Some(wake) = self.wake.lock_recover().as_ref() {
             wake.wake();
         }
     }
 
     fn want(&self, hash: &str) {
         let asked = {
-            let Ok(mut state) = self.state.lock() else {
-                return;
-            };
+            let mut state = self.state.lock_recover();
             if state.wanted.insert(hash.to_owned()) {
                 state.asks.push(hash.to_owned());
                 true
@@ -259,15 +253,16 @@ impl ContentLane {
     }
 
     fn offer(&self, hash: &str, bytes: Vec<u8>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.offers.push((hash.to_owned(), bytes));
-        }
+        self.state
+            .lock_recover()
+            .offers
+            .push((hash.to_owned(), bytes));
         self.wake();
     }
 
     /// Where a want of `hash` stands, while it is wanted.
     fn standing(&self, hash: &str) -> Option<ContentState> {
-        let state = self.state.lock().ok()?;
+        let state = self.state.lock_recover();
         state.wanted.contains(hash).then(|| {
             state
                 .standing
@@ -279,9 +274,7 @@ impl ContentLane {
 
     /// The requests to send on the record's route now.
     pub fn take_requests(&self) -> LaneRequests {
-        let Ok(mut state) = self.state.lock() else {
-            return LaneRequests::default();
-        };
+        let mut state = self.state.lock_recover();
         LaneRequests {
             wants: std::mem::take(&mut state.asks),
             offers: std::mem::take(&mut state.offers),
@@ -290,31 +283,26 @@ impl ContentLane {
 
     /// Put back a request the route could not take yet.
     pub fn retry_want(&self, hash: String) {
-        if let Ok(mut state) = self.state.lock() {
-            state.asks.push(hash);
-        }
+        self.state.lock_recover().asks.push(hash);
     }
 
     /// Put back an offer the route could not take yet.
     pub fn retry_offer(&self, hash: String, bytes: Vec<u8>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.offers.push((hash, bytes));
-        }
+        self.state.lock_recover().offers.push((hash, bytes));
     }
 
     /// Content arrived on the record's route. The store keeps it on its
     /// next read.
     pub fn arrive(&self, hash: String, bytes: Vec<u8>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.arrived.push((hash, bytes));
-        }
+        self.state.lock_recover().arrived.push((hash, bytes));
         arrived_somewhere();
     }
 
     /// The record's host said where a want of `hash` stands. A window
     /// waiting for the content looks again: what it shows follows.
     pub fn stands(&self, hash: String, standing: ContentState) {
-        if let Ok(mut state) = self.state.lock() {
+        {
+            let mut state = self.state.lock_recover();
             if !state.wanted.contains(&hash) || standing == ContentState::Resolved {
                 return;
             }
@@ -324,14 +312,12 @@ impl ContentLane {
     }
 
     fn take_arrived(&self) -> Vec<(String, Vec<u8>)> {
-        self.state
-            .lock()
-            .map(|mut state| std::mem::take(&mut state.arrived))
-            .unwrap_or_default()
+        std::mem::take(&mut self.state.lock_recover().arrived)
     }
 
     fn settled(&self, hash: &str) {
-        if let Ok(mut state) = self.state.lock() {
+        {
+            let mut state = self.state.lock_recover();
             state.wanted.remove(hash);
             state.standing.remove(hash);
         }

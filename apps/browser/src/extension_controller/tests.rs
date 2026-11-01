@@ -488,7 +488,8 @@ fn invoke_operation(
     let encoded = spec
         .build_json(&serde_json::Map::new())
         .map_err(|error| format!("{error:?}"))?;
-    let effect = crate::effects::BrowserEffect::from_payload(&encoded.payload)?;
+    let effect = crate::effects::BrowserEffect::from_payload(&encoded.payload)
+        .map_err(|error| error.to_string())?;
     run(effect.operation())
 }
 

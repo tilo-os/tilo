@@ -18,6 +18,9 @@ path = "src/main.rs"
 # An answer is checked against the vocabulary and the validator an action's
 # result already goes through, not a second copy of either.
 tilo-actions = { path = "../../collab/actions" }
+# The request and answer shapes of the one single-shot call, shared with the
+# gateway, the host and the moderation judge rather than copied here.
+agent-provider-config = { path = "../../agent/provider-config" }
 # The HTTP client the run reaches its endpoints through: Tilo's one TLS and
 # trust source, never a second one of this tool's own.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "blocking"] }

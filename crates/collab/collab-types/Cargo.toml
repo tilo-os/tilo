@@ -26,6 +26,7 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # Sorts without a copy of std's sort per call site (presence colours).
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }

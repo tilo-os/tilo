@@ -128,12 +128,6 @@ fn project<'a, R: RoomRead, D: Decode>(
             work.tree_entry::<Vec<u8>, ()>()?;
             admissions.insert(bytes);
         }
-        let mut delegations = BTreeSet::new();
-        for delegation in &row.workspace_delegations {
-            let bytes = work.encoded(delegation)?;
-            work.tree_entry::<Vec<u8>, ()>()?;
-            delegations.insert(bytes);
-        }
         for entry in &row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
                 return Err(policy(MediaPolicyError::Binding));
@@ -151,8 +145,8 @@ fn project<'a, R: RoomRead, D: Decode>(
             expires_at_ns: row.device_cert.expires_at_ns,
             signature: row.device_cert.signature,
         };
-        work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
-        rows.insert(device, (cert, admissions, delegations));
+        work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>)>()?;
+        rows.insert(device, (cert, admissions));
         Ok(())
     })
     .map_err(visit_error)?;

@@ -225,6 +225,13 @@ pub trait CollabTransport: Send {
         true
     }
 
+    /// Whether this app is a surface of the desktop it speaks to, rather than
+    /// an app of a document: what it offers lives with that desktop, so no
+    /// document history custodies its actions.
+    fn hosts_surface(&mut self) -> bool {
+        false
+    }
+
     /// Release native capture turns after the owner applies its drained batch.
     fn finish_event_batch(&mut self) {}
 

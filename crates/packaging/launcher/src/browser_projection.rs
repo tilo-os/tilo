@@ -59,6 +59,16 @@ fn private(file: &File, directory: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether an ancestor of the projection may be walked: the runner's own or
+/// root's, and not writable by group or other — unless it is sticky and
+/// outside the home, where no other account can move or replace the entries
+/// this walk follows. A test environment's temporary root is such a
+/// directory, and inside a user namespace it reads as the runner's own.
+fn ancestor_holds(owner: u32, mode: u32, inside_home: bool) -> bool {
+    (owner == 0 || owner == uid())
+        && (mode & 0o022 == 0 || (mode & libc::S_ISVTX != 0 && !inside_home))
+}
+
 /// Walk every component without following a link, retaining the final directory.
 fn held_root(path: &Path, home: &Path) -> io::Result<File> {
     let base = home.join(".local/state/tilo/browser-continuity");
@@ -107,16 +117,7 @@ fn held_root(path: &Path, home: &Path) -> io::Result<File> {
         held = child(&held, name, true)?;
         traversed.push(name);
         let metadata = held.metadata()?;
-        if metadata.uid() != 0 && metadata.uid() != uid() {
-            return Err(invalid());
-        }
-        // Root-owned sticky ancestors permit private temporary test homes, but
-        // no grant subtree or user-controlled ancestor may be writable by others.
-        if metadata.mode() & 0o022 != 0
-            && !(metadata.uid() == 0
-                && metadata.mode() & libc::S_ISVTX != 0
-                && !traversed.starts_with(home))
-        {
+        if !ancestor_holds(metadata.uid(), metadata.mode(), traversed.starts_with(home)) {
             return Err(invalid());
         }
         if traversed.starts_with(&base) {

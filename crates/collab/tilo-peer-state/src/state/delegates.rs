@@ -41,35 +41,28 @@ pub struct GovernedDelegateRow {
 }
 
 /// Why an agent identity does not act at a given time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DelegateInactive {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DelegateInactive {
     /// The governor withdrew it.
+    #[error("the delegate was withdrawn")]
     Withdrawn,
     /// The delegation is not the certificate root's, or is outside its
     /// validity window.
+    #[error("the delegate's delegation is not current")]
     Delegation,
     /// The delegation names another device.
+    #[error("the delegate's delegation names another device")]
     OtherDevice,
     /// The delegation does not name this room.
+    #[error("the delegate is not delegated this room")]
     OtherRoom,
     /// A bot row without its installation, an installation that is not the
     /// delegation's, or an agent row carrying one.
+    #[error("the delegation does not match its installation")]
     Mismatch,
     /// The installation names another installer than the delegation's root.
+    #[error("the bot's installer did not sign its delegation")]
     InstallerMismatch,
-}
-
-impl std::fmt::Display for DelegateInactive {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Withdrawn => "the delegate was withdrawn",
-            Self::Delegation => "the delegate's delegation is not current",
-            Self::OtherDevice => "the delegate's delegation names another device",
-            Self::OtherRoom => "the delegate is not delegated this room",
-            Self::Mismatch => "the delegation does not match its installation",
-            Self::InstallerMismatch => "the bot's installer did not sign its delegation",
-        })
-    }
 }
 
 impl GovernedDelegateRow {
@@ -233,8 +226,7 @@ impl PeerGovernanceMut<'_> {
             return Err("the delegation is not an agent's".into());
         }
         self.peer.require_governance_writer(key, now)?;
-        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN
-            && cert.user_public_key != self.peer.core.authority.user_public_key
+        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN && cert.user_public_key != self.peer.core.owner
         {
             return Err("only the room owner's agents are admitted".into());
         }
@@ -281,7 +273,6 @@ impl PeerGovernanceMut<'_> {
                 revocations: vec![],
                 admission: None,
                 admissions: vec![],
-                workspace_delegations: vec![],
                 delegate: Some(row),
             },
             Some(prior) if prior.device_cert != cert => {

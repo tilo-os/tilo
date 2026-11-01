@@ -31,6 +31,10 @@ const PRESENCE_BATCH_KIND: u8 = 12;
 /// Discriminant of [`EnvelopeV2::CodedDelta`], a state frame.
 const CODED_DELTA_KIND: u8 = 13;
 
+/// Why a session refuses a retired unsigned action delivery: the same
+/// refusal a delivery without its device's signature gets.
+pub const UNSIGNED_DELIVERY_REFUSAL: &str = "unsigned action delivery refused";
+
 mod delta;
 mod presence;
 pub use delta::{
@@ -61,7 +65,11 @@ pub enum EnvelopeV2 {
         room: Uuid,
         capability: ActionCapability,
     },
-    Directed(DirectedAction),
+    /// Retired: an action a source device sent unsigned, before a delivery
+    /// carried its signature. Kept in its place so bytes from a build that
+    /// still sends one decode here; nothing constructs it, and a session
+    /// refuses it ([`EnvelopeV2::retired_unsigned_action`]).
+    RetiredDirected(DirectedAction),
     Unavailable {
         room: Uuid,
         request_id: Uuid,
@@ -69,9 +77,10 @@ pub enum EnvelopeV2 {
         invocation: Option<InvocationId>,
         reason: UnavailableReason,
     },
-    /// Relay-attested source identity, derived only from the mutual handshake.
-    /// A receiving broker still revalidates room/action permission on admission.
-    Delivered {
+    /// Retired: [`Self::RetiredDirected`] with the source user the relay
+    /// attested. A relay's word is not the sending device's signature, so a
+    /// session refuses it as unsigned.
+    RetiredDelivered {
         action: DirectedAction,
         source_user: [u8; 32],
     },
@@ -82,17 +91,21 @@ pub enum EnvelopeV2 {
         room: Uuid,
         host: Uuid,
     },
-    CertifiedDelivered {
+    /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
+    /// The certificate names a device; it does not sign this action, so a
+    /// session refuses it as unsigned.
+    RetiredCertifiedDelivered {
         action: DirectedAction,
         source_certificate: Vec<u8>,
     },
     /// A private action its source device signed; the host checks the
-    /// signature against the authenticated session's device and routes it
-    /// like [`Self::Directed`].
+    /// signature against the authenticated session's device and routes it.
+    /// The only way an action travels: no relay forwards one it cannot
+    /// attribute to a device.
     SignedDirected(SignedDirectedAction),
-    /// [`Self::CertifiedDelivered`] carrying the source's signed bytes
-    /// unchanged; the target verifies the signature against the
-    /// certificate's device key.
+    /// [`Self::SignedDirected`] carrying the source's signed bytes unchanged,
+    /// with the certificate of the device that signed: the target verifies
+    /// the signature against that certificate's device key.
     CertifiedSignedDelivered {
         action: SignedDirectedAction,
         source_certificate: Vec<u8>,
@@ -124,6 +137,21 @@ pub enum EnvelopeV2 {
 }
 
 impl EnvelopeV2 {
+    /// The action a retired unsigned delivery carries, if this is one.
+    ///
+    /// The three retired variants predate signed deliveries. Nothing
+    /// constructs them; a session that receives one refuses it with
+    /// [`UNSIGNED_DELIVERY_REFUSAL`], exactly as it refuses an action that
+    /// arrived without its device's signature.
+    pub fn retired_unsigned_action(&self) -> Option<&DirectedAction> {
+        match self {
+            Self::RetiredDirected(action)
+            | Self::RetiredDelivered { action, .. }
+            | Self::RetiredCertifiedDelivered { action, .. } => Some(action),
+            _ => None,
+        }
+    }
+
     pub fn unavailable(action: &DirectedAction, reason: UnavailableReason) -> Self {
         Self::Unavailable {
             room: action.room,
@@ -151,13 +179,10 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     } else {
         MAX_PRIVATE_BYTES
     };
-    // Delivered appends a certified 32-byte root; reserve it at ingress so a
-    // legal Directed frame cannot disconnect its target during re-encoding.
-    let reserved = usize::from(matches!(
-        envelope,
-        EnvelopeV2::Directed(_) | EnvelopeV2::SignedDirected(_)
-    ))
-    .saturating_mul(32);
+    // A delivery appends a certified 32-byte root; reserve it at ingress so a
+    // legal signed action cannot disconnect its target during re-encoding.
+    let reserved =
+        usize::from(matches!(envelope, EnvelopeV2::SignedDirected(_))).saturating_mul(32);
     if payload.len().saturating_add(reserved) > limit {
         return Err(postcard::Error::SerializeBufferFull);
     }
@@ -440,7 +465,7 @@ fn coded_delta(payload: &[u8]) -> Result<EnvelopeV2, FrameError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peer_actions::ActionMessage;
+    use crate::peer_actions::{ActionMessage, ActionSignatureError};
 
     fn keystroke(signature: [u8; 64]) -> Envelope {
         Envelope::Delta {
@@ -654,7 +679,9 @@ mod tests {
                 [vec![2], room_wire.clone(), vec![0]].concat(),
             ),
             (
-                EnvelopeV2::Directed(DirectedAction {
+                // A retired unsigned delivery keeps the bytes it had: an old
+                // build's frame decodes here and is then refused.
+                EnvelopeV2::RetiredDirected(DirectedAction {
                     room,
                     request_id,
                     source: [1; 32],
@@ -690,7 +717,7 @@ mod tests {
                 .concat(),
             ),
             (
-                EnvelopeV2::Delivered {
+                EnvelopeV2::RetiredDelivered {
                     action: DirectedAction {
                         room,
                         request_id,
@@ -722,6 +749,83 @@ mod tests {
             assert_eq!(encode(&frame).unwrap(), expected);
             assert_eq!(decode(&payload).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn a_retired_certified_delivery_keeps_its_bytes() {
+        let room = Uuid::from_u128(7);
+        let request_id = Uuid::from_u128(8);
+        let room_wire = [vec![16], vec![0; 15], vec![7]].concat();
+        let request_wire = [vec![16], vec![0; 15], vec![8]].concat();
+        let frame = EnvelopeV2::RetiredCertifiedDelivered {
+            action: DirectedAction {
+                room,
+                request_id,
+                source: [1; 32],
+                target: [2; 32],
+                message: ActionMessage::CatalogueRefresh { scope: None },
+            },
+            source_certificate: vec![0xff, 0x01],
+        };
+        let payload = [
+            vec![8],
+            room_wire,
+            request_wire,
+            vec![1; 32],
+            vec![2; 32],
+            vec![28],
+            br#"{"type":"catalogue_refresh"}"#.to_vec(),
+            vec![2, 0xff, 0x01],
+        ]
+        .concat();
+        assert_eq!(
+            encode(&frame).unwrap(),
+            [
+                u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec(),
+                payload.clone(),
+            ]
+            .concat()
+        );
+        assert_eq!(decode(&payload).unwrap(), frame);
+    }
+
+    #[test]
+    fn every_retired_delivery_names_the_action_it_carries() {
+        let room = Uuid::from_u128(7);
+        let action = DirectedAction {
+            room,
+            request_id: Uuid::from_u128(8),
+            source: [1; 32],
+            target: [2; 32],
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        for frame in [
+            EnvelopeV2::RetiredDirected(action.clone()),
+            EnvelopeV2::RetiredDelivered {
+                action: action.clone(),
+                source_user: [3; 32],
+            },
+            EnvelopeV2::RetiredCertifiedDelivered {
+                action: action.clone(),
+                source_certificate: Vec::new(),
+            },
+        ] {
+            assert_eq!(frame.retired_unsigned_action(), Some(&action));
+        }
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let mut own = action;
+        own.source = key.verifying_key().to_bytes();
+        let signed = SignedDirectedAction::sign(&own, 1, &key).unwrap();
+        assert!(
+            EnvelopeV2::SignedDirected(signed)
+                .retired_unsigned_action()
+                .is_none()
+        );
+        assert!(
+            EnvelopeV2::EnableActions { room }
+                .retired_unsigned_action()
+                .is_none()
+        );
     }
 
     #[test]
@@ -848,7 +952,7 @@ mod tests {
     #[test]
     fn private_codec_rejects_oversize_and_trailing_bytes() {
         assert!(decode(&[0, 6, 1]).is_err());
-        let frame = EnvelopeV2::Directed(DirectedAction {
+        let action = DirectedAction {
             room: Uuid::from_u128(7),
             request_id: Uuid::from_u128(8),
             source: [1; 32],
@@ -856,7 +960,17 @@ mod tests {
             message: ActionMessage::Catalogue {
                 catalogue: serde_json::json!({"version":1,"surfaces":[],"private": "x".repeat(MAX_PRIVATE_BYTES)}),
             },
-        });
-        assert!(encode(&frame).is_err());
+        };
+        assert!(
+            !action.wire_fits(),
+            "an action over the private bound is never sent"
+        );
+        let device = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut action = action;
+        action.source = device.verifying_key().to_bytes();
+        assert_eq!(
+            SignedDirectedAction::sign(&action, 1, &device),
+            Err(ActionSignatureError::Encoding)
+        );
     }
 }

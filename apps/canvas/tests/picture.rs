@@ -506,7 +506,14 @@ fn exports_are_written_where_the_caller_names() {
             json!({"path": "halves.png"}).as_object().unwrap(),
         )
         .unwrap_err();
-        assert!(error.contains("absolute"), "{action}: {error}");
+        assert!(
+            matches!(
+                &error,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{action}: {error}"
+        );
     }
     for (action, path) in [("export", "/tmp/x.gif"), ("export-svg", "/tmp/x.png")] {
         assert!(

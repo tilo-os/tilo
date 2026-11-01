@@ -1697,7 +1697,7 @@ mod tests {
         };
         let effect = match WordProcessorEffect::decode(id, &args) {
             Ok(effect) => effect,
-            Err(error) => return invalid(error),
+            Err(error) => return invalid(error.to_string()),
         };
         let Some(built) = effect.edit(view, doc, &tilo_content::ContentStore::memory()) else {
             return spec(&root(view, doc), id).build_json(&args).unwrap();

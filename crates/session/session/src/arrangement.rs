@@ -30,6 +30,7 @@ use tilo_desktop_model::{
     CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
+use tilo_surface_host::Published;
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::state::UndoLog;
 
@@ -766,11 +767,11 @@ impl Arrangement {
     /// the desk's own, and so is which of them is in front on this device;
     /// the rows, strips and places are the record's.
     fn place(&self) {
-        let (names, shown) = self.handle.read(|tree| {
-            let names: BTreeMap<u64, String> = tree
+        let (held, shown) = self.handle.read(|tree| {
+            let held: BTreeMap<u64, tilo_desktop_model::Workspace> = tree
                 .workspaces
                 .iter()
-                .map(|workspace| (workspace.id.0, workspace.name.clone()))
+                .map(|workspace| (workspace.id.0, workspace.clone()))
                 .collect();
             let shown = (
                 tree.active,
@@ -778,10 +779,21 @@ impl Arrangement {
                 tree.active_group.clone(),
                 tree.outputs.clone(),
             );
-            (names, shown)
+            (held, shown)
         });
         let strips = own_arrangement::read(&self.doc);
-        let mut tree = strips.to_tree(|id| names.get(&id.0).cloned());
+        let mut tree = strips.to_tree(|id| held.get(&id.0).map(|workspace| workspace.name.clone()));
+        // A workspace the desk holds stays the desk's: its room, who may do
+        // what in it, its shortcuts and the rest are never the arrangement's.
+        // Only its rows, strips and places are the record's.
+        for workspace in &mut tree.workspaces {
+            if let Some(kept) = held.get(&workspace.id.0) {
+                let mut kept = kept.clone();
+                kept.strips = std::mem::take(&mut workspace.strips);
+                kept.arrangement = std::mem::take(&mut workspace.arrangement);
+                *workspace = kept;
+            }
+        }
         // Which workspace and strip are in front is this device's, and
         // survives the record's change.
         let (active, active_strip, active_group, outputs) = shown;
@@ -973,7 +985,7 @@ fn place_at(
     ) {
         Ok(true)
     } else {
-        Err("that place or strip is taken".into())
+        Err("that workspace is not on this desk, or that place or strip is taken".into())
     }
 }
 
@@ -1159,10 +1171,13 @@ fn placing_actions() -> Vec<ActionSpec> {
             "place",
             "Put a resource on the canvas as one of its views",
             vec![
+                // A workspace's id is its room's, across all of u64: text, as
+                // the arrangement record names it, where an integer stops at
+                // i64.
                 required(
                     "workspace",
-                    ParamType::Integer,
-                    "The workspace whose canvas it stands on",
+                    ParamType::Text,
+                    "The workspace whose canvas it stands on, by its id",
                 ),
                 required("row", ParamType::Integer, "The row it stands in"),
                 required("strip", ParamType::Integer, "The strip it stands in"),
@@ -1175,7 +1190,7 @@ fn placing_actions() -> Vec<ActionSpec> {
                 optional("height", ParamType::Integer, "Its height in canvas pixels"),
             ],
             |args| ArrangementAction::Place {
-                workspace: count(args, "workspace"),
+                workspace: id_text(args, "workspace"),
                 row: count(args, "row"),
                 strip: count(args, "strip"),
                 place: count(args, "place"),
@@ -1279,6 +1294,14 @@ fn count(args: &ActionArgs, name: &str) -> u64 {
         .cast_unsigned()
 }
 
+/// An id given as text: one no workspace has (`0`) when it is not a number,
+/// which the action then refuses as naming no workspace.
+fn id_text(args: &ActionArgs, name: &str) -> u64 {
+    args.text(name)
+        .and_then(|id| id.trim().parse().ok())
+        .unwrap_or_default()
+}
+
 fn text(args: &ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
@@ -1322,7 +1345,7 @@ impl ArrangementDoor {
     }
 }
 
-impl crate::Published for ArrangementDoor {
+impl Published for ArrangementDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         resources()
     }

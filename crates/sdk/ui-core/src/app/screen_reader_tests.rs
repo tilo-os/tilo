@@ -297,6 +297,65 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
     }
 }
 
+/// A widget that paints its own subtree and says so: its node carries the
+/// live region as a child, as a card's footer sits under its dialog, with no
+/// widget of its own to walk to.
+struct CardWithFooter {
+    text: Rc<RefCell<String>>,
+}
+impl Widget for CardWithFooter {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+    fn name(&self) -> &'static str {
+        "card-with-footer"
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let text = self.text.borrow().clone();
+        let footer = crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+            .with_name(text)
+            .with_live(crate::a11y::Politeness::Polite);
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
+                .with_name("Card")
+                .with_children(vec![footer]),
+        )
+    }
+}
+
+#[test]
+fn a_live_region_inside_a_widgets_own_subtree_is_announced() {
+    let text = Rc::new(RefCell::new("Thumbs up".to_string()));
+    let card = CardWithFooter {
+        text: Rc::clone(&text),
+    };
+    let (mut app, rec) = app_with_reader_over(Box::new(card));
+
+    // Seed the snapshot so only the change is asserted.
+    app.scan_live_regions();
+    rec.0.borrow_mut().reset();
+
+    *text.borrow_mut() = "Pizza".to_string();
+    app.scan_live_regions();
+    assert_eq!(
+        rec.0.borrow().last(),
+        Some("Pizza"),
+        "the footer the card paints under its dialog is announced as it changes"
+    );
+
+    rec.0.borrow_mut().reset();
+    app.scan_live_regions();
+    assert!(
+        rec.0.borrow().spoken().is_empty(),
+        "unchanged live text is not re-announced"
+    );
+}
+
 fn app_with_focused_input(initial: &str) -> (App, SharedRecorder, NodeId) {
     let rec = SharedRecorder::default();
     let input = crate::widget::TextInput::local().with_initial_value(initial);

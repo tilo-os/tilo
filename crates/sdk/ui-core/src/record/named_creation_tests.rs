@@ -221,7 +221,7 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     let wrong_kind =
         RecordCheckout::new(fixture.checkout.id.clone(), RecordKind::new("other.kind"));
     foreign.create_record(&wrong_kind).unwrap();
-    foreign.flush();
+    foreign.flush().unwrap();
     drop(foreign);
     drop(other_owners);
     let mut restored = RecordOwners::new(other_directory.path().to_owned());

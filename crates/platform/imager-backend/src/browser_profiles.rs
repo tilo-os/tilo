@@ -12,8 +12,8 @@ use super::browser_inventory::{
     BrowserKind, Capability, Installation, Measure, ProfileInventory, ServiceInventory,
     WebsiteInventory,
 };
-use super::browser_selection::pinned::PinnedDirectory;
 use super::nofollow::metadata_nofollow;
+use crate::migration_directory::PinnedDirectory;
 
 const MAX_PROFILE_DIRECTORIES: usize = 128;
 const MAX_INI: u64 = 64 * 1024;

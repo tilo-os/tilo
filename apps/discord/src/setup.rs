@@ -1,13 +1,13 @@
 //! Bridging a server from the app: the sheet that takes the bot's token,
-//! finds the servers the bot is in, and asks the room's host to run the
+//! finds the servers the bot is in, and asks the workspace's host to run the
 //! Discord Bridge for the chosen one.
 //!
-//! It is the room operator's command-line setup (`--discord-token-file`,
+//! It is the workspace operator's command-line setup (`--discord-token-file`,
 //! `--bot "so.tilo.bots.discord-bridge guild=…"`) given from inside the
-//! room, through the room's own governance actions on its host: the token
+//! workspace, through the workspace's own governance actions on its host: the token
 //! with `set-connector-secret`, kept in the host's secret store for the
 //! connector and nowhere else, then the bridge with `request-bot` and the
-//! server as its inputs. The host decides both against the room's rules on
+//! server as its inputs. The host decides both against the workspace's rules on
 //! who may add bots, and its follower starts the bridge once both are in.
 
 use std::cell::RefCell;
@@ -27,9 +27,9 @@ use crate::record::Guild;
 
 /// The bridge bot's entry in the registry's directory.
 pub const BRIDGE_ENTRY: &str = "so.tilo.bots.discord-bridge";
-/// The version the room asks for: the most recently released one.
+/// The version the workspace asks for: the most recently released one.
 pub const BRIDGE_VERSION: &str = "newest";
-/// The room's governance verbs this uses.
+/// The workspace's governance verbs this uses.
 const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
 const REQUEST_BOT: &str = "request-bot";
 /// Where Discord lists the servers a bot is in.
@@ -55,7 +55,7 @@ pub enum Step {
     Finding,
     /// Choosing one of them.
     Choose(Vec<Server>),
-    /// Asking the room's host to run the bridge for this server.
+    /// Asking the workspace's host to run the bridge for this server.
     Asking(Server),
     /// The host took both; the bridge starts there.
     Asked(Server),
@@ -139,13 +139,13 @@ pub async fn find_servers(token: String) -> Result<Vec<Server>, FindError> {
     parse_servers(&body).ok_or(FindError::Unreadable)
 }
 
-/// The two governance invocations that bridge `server` in `room`: the
+/// The two governance invocations that bridge `server` in `workspace`: the
 /// token for the connector, then the bridge with the server as its inputs.
 #[must_use]
-pub fn bridge_requests(room: &str, token: &str, server: &Server) -> [InvokeRequest; 2] {
+pub fn bridge_requests(workspace: &str, token: &str, server: &Server) -> [InvokeRequest; 2] {
     let invoke = |verb: &str, argument: serde_json::Map<String, serde_json::Value>| InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, verb),
+        target: RemoteActionTarget::room_governance(workspace, verb),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -230,10 +230,10 @@ impl Setup {
         servers.into_iter().find(|server| server.id == chosen)
     }
 
-    /// Send the bridge's two requests for `server` in `room` through the
-    /// room's actions; the sheet follows their answers.
-    pub fn bridge(&self, room: &str, token: &str, server: Server) {
-        let asked = bridge_requests(room, token, &server).map(|request| {
+    /// Send the bridge's two requests for `server` in `workspace` through the
+    /// workspace's actions; the sheet follows their answers.
+    pub fn bridge(&self, workspace: &str, token: &str, server: Server) {
+        let asked = bridge_requests(workspace, token, &server).map(|request| {
             self.remote
                 .invoke_with_id(request.invocation, request.target, request.argument, None)
         });
@@ -303,7 +303,7 @@ fn failure(answer: &Answer) -> Option<String> {
 }
 
 /// Answer the setup's effects, `None` for the others: finding the servers
-/// is a job on the app's runtime; bridging sends the room's requests.
+/// is a job on the app's runtime; bridging sends the workspace's requests.
 pub fn answer(
     setup: &Setup,
     effect: &DiscordEffect,
@@ -331,14 +331,14 @@ pub fn answer(
             guild,
             server,
         } => {
-            let room = cx.document().and_then(|doc| ui::record::room_scope(&doc));
-            let Some(room) = room else {
-                let why = CATALOG.t("discord-setup-no-room");
+            let workspace = cx.document().and_then(|doc| ui::record::room_scope(&doc));
+            let Some(workspace) = workspace else {
+                let why = CATALOG.t("discord-setup-no-workspace");
                 setup.step.set(Step::Failed(why.clone()));
                 return Some(Err(why));
             };
             setup.bridge(
-                &room,
+                &workspace,
                 token,
                 Server {
                     id: guild.clone(),
@@ -599,7 +599,7 @@ mod tests {
             id: "123456789012345678".into(),
             name: "Garden club".into(),
         };
-        let [secret, bridge] = bridge_requests("room-1", " a.b.c ", &server);
+        let [secret, bridge] = bridge_requests("workspace-1", " a.b.c ", &server);
         assert_eq!(secret.target.address.action, SET_CONNECTOR_SECRET);
         assert_eq!(bridge.target.address.action, REQUEST_BOT);
         let InvokeArgument::Json(secret) = secret.argument else {

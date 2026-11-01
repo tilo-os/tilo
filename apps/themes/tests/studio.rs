@@ -409,7 +409,7 @@ fn customizing_writes_the_theme_on_its_first_edit() {
 #[test]
 fn the_bars_theme_commands_duplicate_and_delete() {
     let id = Id::from_raw(SCENARIO_THEME);
-    let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
+    let mut app = TestApp::<App>::drive("editor").expect("the scenario stages");
     let themes = app.state().themes.len();
     app.harness()
         .press_window_action("Duplicate")
@@ -432,7 +432,7 @@ fn the_bars_theme_commands_duplicate_and_delete() {
     );
     drop(app);
 
-    let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
+    let mut app = TestApp::<App>::drive("editor").expect("the scenario stages");
     app.harness()
         .press_window_action("Delete theme")
         .expect("the bar offers Delete theme");

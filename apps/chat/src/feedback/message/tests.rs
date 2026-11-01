@@ -204,12 +204,12 @@ fn members_react_to_a_report_as_to_any_message() {
 }
 
 #[test]
-fn a_bot_reading_the_room_reads_the_report_as_its_message() {
+fn a_bot_reading_the_workspace_reads_the_report_as_its_message() {
     let (doc, submission) = picked(true);
     let chat = crate::projection::read(&doc);
     let message = crate::feedback::message_id(&submission.id);
     let none = crate::messages::Messages::default();
-    let read = crate::effects::read_room(&chat, &none, Some(&message), None);
+    let read = crate::effects::read_workspace(&chat, &none, Some(&message), None);
     let found = &read["messages"][0];
     assert_eq!(found["id"], message.as_str());
     let value = &found["value"];
@@ -220,7 +220,7 @@ fn a_bot_reading_the_room_reads_the_report_as_its_message() {
             .starts_with("1. The \u{201C}Save\u{201D} button in Files")
     );
     let latest =
-        crate::effects::read_room(&chat, &none, None, Some(&submission.destination.channel));
+        crate::effects::read_workspace(&chat, &none, None, Some(&submission.destination.channel));
     assert!(
         latest["messages"]
             .as_array()

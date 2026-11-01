@@ -292,6 +292,27 @@ impl NotificationPolicy {
 mod tests {
     use super::*;
 
+    /// The Do Not Disturb switch quick settings and the person's settings
+    /// both write is one saved key, and the policy the session judges each
+    /// arrival by reads it back.
+    #[test]
+    fn the_do_not_disturb_switch_is_one_saved_key_the_policy_reads_back() {
+        use crate::SettingsSource as _;
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::Store::open(root.path()).unwrap();
+        let read_back = |store: &crate::Store| {
+            NotificationPolicy::load_in(store as &dyn crate::SettingsSource).do_not_disturb
+        };
+        store
+            .update_section(SECTION, NotificationPolicy::do_not_disturb_values(true))
+            .unwrap();
+        assert!(read_back(&store));
+        store
+            .update_section(SECTION, NotificationPolicy::do_not_disturb_values(false))
+            .unwrap();
+        assert!(!read_back(&store));
+    }
+
     #[test]
     fn focus_priority_and_mutes_follow_user_policy() {
         {

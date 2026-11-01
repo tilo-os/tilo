@@ -1052,7 +1052,7 @@ fn composer(
         .with_accessible_name(CATALOG.t("messages-compose"))
         .with_placeholder(CATALOG.t("messages-compose"))
         .disabled(!enabled)
-        .on_change(move |text| kept.keep_draft(text));
+        .on_change_view(move |text| kept.keep_draft(text));
     if enabled {
         let chosen = selection.choice.clone();
         let operation = sending.operation.clone();

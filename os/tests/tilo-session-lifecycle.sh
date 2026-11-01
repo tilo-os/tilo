@@ -118,10 +118,18 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
   echo 'the dev image ships user-unit drop-ins that change the production sandbox' >&2
   exit 1
 fi
-grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
-  "$repo/os/usr/share/wayland-sessions/shell.desktop"
-grep -Fqx 'Exec=/usr/libexec/tilo-session --native --backend drm' \
+grep -Fqx 'Name=Tilo' \
   "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
+grep -Fqx 'X-Tilo-Session-Default=true' \
+  "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
+# A login with no flag runs the native session; the old shell is still
+# offered, sorting after it, behind its own flag.
+grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
+  "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
+grep -Fqx 'Name=Tilo (old shell)' \
+  "$repo/os/usr/share/wayland-sessions/shell.desktop"
+grep -Fqx 'Exec=/usr/libexec/tilo-session --shell --backend drm' \
+  "$repo/os/usr/share/wayland-sessions/shell.desktop"
 [ "$(ls "$repo/os/usr/share/wayland-sessions" | tr '\n' ' ')" = 'shell.desktop tilo-session.desktop ' ] || {
   echo 'the image must ship exactly the shell and native login sessions' >&2
   exit 1
@@ -164,6 +172,9 @@ exit 0
 SH
 cat >"$fake_shell" <<'SH'
 #!/bin/bash
+# Both compositor binaries run this one body; its name is what tells them
+# apart in the log.
+name=$(basename "$0")
 if [ "${1:-}" = --verify-collaboration-identity ]; then
   printf 'verify\n' >>"$TILO_SESSION_TEST_LOG"
   count_file="$TILO_SESSION_TEST_LOG.verify-count"
@@ -192,7 +203,7 @@ assert os.stat(path).st_mode & 0o777 == 0o600
 PYTHON
 fi
 printf '%s\n' "${TILO_FRAME_CPU_TRACE:-disabled}" >>"$TILO_SESSION_TEST_LOG.cpu-paths"
-printf 'desktop %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+printf '%s %s\n' "$name" "$*" >>"$TILO_SESSION_TEST_LOG"
 runs_file="$TILO_SESSION_TEST_LOG.runs"
 runs=0
 [ ! -f "$runs_file" ] || runs=$(cat "$runs_file")
@@ -207,7 +218,7 @@ printf 'control=%s\nfirst-use=%s\n' "${TILO_TEST_CONTROL:-}" "${TILO_TEST_CONTRO
   >"$TILO_SESSION_TEST_LOG.control"
 printf 'state=%s\ndata=%s\nconfig=%s\n' "${XDG_STATE_HOME:-}" "${XDG_DATA_HOME:-}" "${XDG_CONFIG_HOME:-}" \
   >"$TILO_SESSION_TEST_LOG.xdg"
-printf 'desktop-output %s trace=%s\n' "$*" "${TILO_FRAME_TRACE:-}"
+printf '%s-output %s trace=%s\n' "$name" "$*" "${TILO_FRAME_TRACE:-}"
 if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
   case "${TILO_SESSION_LOGOUT_REQUEST:-}" in
     /*) ;;
@@ -221,7 +232,7 @@ if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
 fi
 if [ "${TILO_SESSION_HOLD:-0}" = 1 ] \
    || { [ "${TILO_SESSION_HOLD_FIRST:-0}" = 1 ] && [ "$runs" = 1 ]; }; then
-  trap 'printf "desktop-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
+  trap 'printf "%s-term\n" "$name" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
   printf '%s\n' "$runs" >"$TILO_SESSION_TEST_LOG.holding"
   while :; do sleep 1; done
 fi
@@ -232,12 +243,7 @@ if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
 fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
-cat >"$fake_native" <<'SH'
-#!/bin/bash
-printf 'native %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
-printf 'native-output %s\n' "$*"
-exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
-SH
+cp "$fake_shell" "$fake_native"
 chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell" "$fake_native"
 tilo_stage_script "$wrapper" "$test_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
@@ -251,13 +257,13 @@ grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
 grep -Fqx "readonly NATIVE_SESSION_BIN=$fake_native" "$test_wrapper"
 
-# --native runs the native session in place of the shell, under the same
-# target and environment, with the remaining arguments and a flight record.
+# A login with no flag runs the native session, under the lifecycle target and
+# environment, with the remaining arguments and a flight record.
 native_log="$tmp/native-log"
 set +e
 XDG_STATE_HOME="$tmp/native-state" XDG_RUNTIME_DIR="$runtime_dir" \
   TILO_SESSION_TEST_LOG="$native_log" TILO_SESSION_DESKTOP_STATUS=3 \
-  "$test_wrapper" --native --backend drm >"$tmp/native-stdout"
+  "$test_wrapper" --backend drm >"$tmp/native-stdout"
 status=$?
 set -e
 [ "$status" = 3 ]
@@ -266,16 +272,17 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
-native --backend drm
+native-session --backend drm
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 EOF
 cmp "$tmp/native-expected" "$native_log"
-grep -Fqx 'native-output --backend drm' "$tmp/native-stdout"
+native_trace="$tmp/native-state/tilo/session-logs/frame-trace.csv"
+grep -Fqx "native-session-output --backend drm trace=$native_trace" "$tmp/native-stdout"
 native_flight="$tmp/native-state/tilo/session-logs/latest.log"
 head -n 1 "$native_flight" | grep -Fq " shell=$fake_native"
-grep -Fqx 'native-output --backend drm' "$native_flight"
+grep -Fqx "native-session-output --backend drm trace=$native_trace" "$native_flight"
 tail -n 1 "$native_flight" | grep -Eq '^tilo-flight-record-v1 end=.* status=3 '
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A missing native binary ends the login before any target starts.
@@ -290,12 +297,41 @@ tilo_stage_script "$wrapper" "$missing_wrapper" \
 set +e
 XDG_STATE_HOME="$tmp/native-state" XDG_RUNTIME_DIR="$runtime_dir" \
   TILO_SESSION_TEST_LOG="$tmp/missing-native-log" \
-  "$missing_wrapper" --native --backend drm 2>"$tmp/missing-native-err"
+  "$missing_wrapper" --backend drm 2>"$tmp/missing-native-err"
 status=$?
 set -e
 [ "$status" = 1 ]
 grep -Fq "$tmp/no-native-session is missing or not executable" "$tmp/missing-native-err"
 [ ! -e "$tmp/missing-native-log" ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+
+# An entry written before the flip still names the native session, which stays
+# the default.
+: >"$native_log"
+rm -f "$native_log".control "$native_log".cpu-paths "$native_log".runs "$native_log".xdg
+set +e
+XDG_STATE_HOME="$tmp/native-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$native_log" TILO_SESSION_DESKTOP_STATUS=3 \
+  "$test_wrapper" --native --backend drm >/dev/null
+status=$?
+set -e
+[ "$status" = 3 ]
+cmp "$tmp/native-expected" "$native_log"
+
+# The old shell stays reachable: asking for it runs that compositor under the
+# same target, and the flight record names it as the session's shell.
+shell_log="$tmp/shell-log"
+set +e
+XDG_STATE_HOME="$tmp/shell-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$shell_log" TILO_SESSION_DESKTOP_STATUS=4 \
+  "$test_wrapper" --shell --backend drm >"$tmp/shell-stdout"
+status=$?
+set -e
+[ "$status" = 4 ]
+grep -Fqx 'shell --backend drm' "$shell_log"
+shell_trace="$tmp/shell-state/tilo/session-logs/frame-trace.csv"
+grep -Fqx "shell-output --backend drm trace=$shell_trace" "$tmp/shell-stdout"
+head -n 1 "$tmp/shell-state/tilo/session-logs/latest.log" | grep -Fq " shell=$fake_shell"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 # Successful verification starts the desktop, preserves its exit status, and
@@ -312,9 +348,9 @@ grep -Fqx disabled "$log.cpu-paths"
 [ ! -e "$flight_dir/frame-cpu-path" ]
 # The compositor's output still reaches the journal (the wrapper's stdout),
 # and the flight record keeps it with a start and an end record.
-grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$tmp/stdout"
+grep -Fqx "native-session-output --backend drm trace=$flight_dir/frame-trace.csv" "$tmp/stdout"
 head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
-grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
+grep -Fqx "native-session-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
 tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ "$(stat -c %a "$flight_dir")" = 700 ]
 # The log events, kept apart from the measurement stream, are bracketed by
@@ -357,9 +393,9 @@ set -e
 # Other images set no control socket.
 grep -Fqx 'control=' "$tmp/slow-log.control"
 grep -Fqx 'first-use=' "$tmp/slow-log.control"
-grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
+grep -Fqx "native-session-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
 head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
-grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
+grep -Fqx "native-session-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A login names no XDG base directories (neither PAM nor the user manager
@@ -428,8 +464,8 @@ XDG_STATE_HOME="$tmp/full-state" XDG_RUNTIME_DIR="$runtime_dir" \
 status=$?
 set -e
 [ "$status" = 6 ] || { cat "$tmp/full-stderr" >&2; exit 1; }
-grep -Fqx "desktop-output --backend drm trace=$full_dir/frame-trace.csv" "$tmp/full-stdout"
-grep -Fqx 'desktop --backend drm' "$tmp/full-log"
+grep -Fqx "native-session-output --backend drm trace=$full_dir/frame-trace.csv" "$tmp/full-stdout"
+grep -Fqx 'native-session --backend drm' "$tmp/full-log"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state
@@ -446,7 +482,7 @@ if [ -s "$held_log.holder" ]; then
 fi
 [ "$held_status" = 9 ]
 # Asked to finish, the recorder still publishes the output it relayed.
-grep -Fqx "desktop-output --backend headless trace=$tmp/held-state/tilo/session-logs/frame-trace.csv" \
+grep -Fqx "native-session-output --backend headless trace=$tmp/held-state/tilo/session-logs/frame-trace.csv" \
   "$tmp/held-state/tilo/session-logs/latest.log"
 tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no restart_request=no$'
@@ -455,7 +491,7 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
-desktop --backend drm
+native-session --backend drm
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
@@ -473,7 +509,7 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
-desktop --backend drm
+native-session --backend drm
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
@@ -514,7 +550,7 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
-desktop --backend drm
+native-session --backend drm
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
@@ -534,10 +570,10 @@ for _ in $(seq 1 500); do
 done
 # The desktop log precedes the TERM handler; the holding marker follows it.
 [ -s "$log.holding" ]
-grep -Fq 'desktop --backend drm' "$log"
+grep -Fq 'native-session --backend drm' "$log"
 kill -TERM "$session_pid"
 wait "$session_pid" || [ "$?" = 143 ]
-grep -Fqx 'desktop-term' "$log"
+grep -Fqx 'native-session-term' "$log"
 [ "$(grep -Fc 'systemctl --user stop tilo-graphical-session.target' "$log")" = 1 ]
 
 # A desktop restart (SIGUSR1) stops the compositor and starts it again in the
@@ -573,9 +609,9 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
-desktop --backend drm
-desktop-term
-desktop --backend drm
+native-session --backend drm
+native-session-term
+native-session --backend drm
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES

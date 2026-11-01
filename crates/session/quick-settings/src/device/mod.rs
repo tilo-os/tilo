@@ -1,16 +1,16 @@
 //! The device behind the panel: the [`PanelHost`] a desktop lends the panel
 //! to read this machine and carry out its effects.
 //!
-//! [`DeviceHost`] reads battery, network, radios, Bluetooth, the levels and
-//! the power mode through `os-actions` (and the audio graph through
-//! `tilo-media`), follows the media players through the session's audio
-//! helper, and carries out each [`QsEffect`] through the same. Nothing it
-//! does waits on the device: reads and writes run on workers that wake the
-//! session when they are done, and the session lands them on its own
-//! thread with [`DeviceHost::pump`]. The effects only the desktop can carry
-//! out (Settings, the lock screen, the power menu, notifications, the
-//! clipboard history, the device fabric's rows) come back to the session
-//! as [`SessionRequest`]s.
+//! [`DeviceHost`] reads battery, network, radios, Bluetooth and the power
+//! mode through `os-actions`, follows the media players through the
+//! session's audio helper, and is handed the sound the audio service reads
+//! ([`DeviceHost::sound`]), whose actions every sound change becomes.
+//! Nothing it does waits on the device: reads and writes run on workers
+//! that wake the session when they are done, and the session lands them on
+//! its own thread with [`DeviceHost::pump`]. The effects only the desktop
+//! can carry out (Settings, the lock screen, the power menu, notifications,
+//! the clipboard history, the device fabric's rows, the sound) come back to
+//! the session as [`SessionRequest`]s.
 //!
 //! Its seams are the reads ([`DeviceReads`]), the dispatcher
 //! ([`os_actions::Dispatcher`]), the person's settings ([`Preferences`])
@@ -21,6 +21,7 @@ mod apply;
 mod players;
 mod reads;
 mod refresh;
+mod sound;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -216,6 +217,43 @@ impl DeviceHost {
         *self.0.players.borrow_mut() = Some(players);
     }
 
+    /// Land the sound the audio service reads: which outputs there are and
+    /// which plays, the level and mute, and the microphone. The audio
+    /// service owns the graph, so this is the panel's only sound reading.
+    pub fn sound(&self, sound: &audio::sound::Sound) {
+        sound::land(&mut self.0.state.borrow_mut(), sound);
+        if let Some(players) = self.0.players.borrow_mut().as_mut() {
+            players.set_outputs(sound::destinations(sound));
+        }
+        self.feed_now_playing();
+        self.feed();
+    }
+
+    /// Land the session another of the person's devices hands this one, so
+    /// the now-playing card offers to continue it here; `None` clears it.
+    /// The offer shows at once, and stays until the person takes it or the
+    /// session hands over another.
+    pub fn handoff(&self, offer: Option<crate::MediaOffer>) {
+        if let Some(players) = self.0.players.borrow_mut().as_mut() {
+            players.set_offer(offer);
+        }
+        self.feed_now_playing();
+        self.feed();
+    }
+
+    /// What plays here in front, when another of the person's devices can
+    /// continue it: what the session hands over when one of their devices is
+    /// pressed. `None` when nothing plays, or the player has no app or no
+    /// source to send.
+    #[must_use]
+    pub fn playing_source(&self) -> Option<crate::PlayingSource> {
+        self.0
+            .players
+            .borrow()
+            .as_ref()
+            .and_then(|players| players.playing_source(Instant::now()))
+    }
+
     /// The host as the panel takes it ([`crate::prepare`]).
     #[must_use]
     pub fn panel(&self) -> Rc<dyn PanelHost> {
@@ -237,6 +275,12 @@ impl DeviceHost {
         }
         if !open {
             self.0.wifi_scanned_at.set(None);
+            if self.0.state.borrow().bt_scanning
+                && let Err(error) = self.run_effect(QsEffect::ScanBluetooth { on: false })
+            {
+                // Nobody is looking at the devices in reach any more.
+                tracing::warn!(%error, "Bluetooth did not stop looking for devices");
+            }
         }
         self.feed_now_playing();
     }
@@ -360,9 +404,9 @@ impl DeviceHost {
             match reading {
                 QsReading::Fast(reading) => apply::fast(&mut state, *reading),
                 QsReading::Field(reading) => apply::field(&mut state, reading),
-                QsReading::WifiNetworks(result) => {
+                QsReading::WifiNetworks(reading) => {
                     state.wifi_scanning = false;
-                    match result {
+                    match reading.networks {
                         Ok(networks) => {
                             state.wifi_scan_error = None;
                             apply::wifi_networks(&mut state, networks);
@@ -372,9 +416,9 @@ impl DeviceHost {
                             state.wifi_scan_error = Some(error);
                         }
                     }
+                    apply::saved_networks(&mut state, reading.saved);
                 }
-                QsReading::BtDevices(Some(devices)) => apply::bt_devices(&mut state, devices),
-                QsReading::BtDevices(None) => {}
+                QsReading::BtDevices(reading) => apply::bluetooth(&mut state, reading),
                 QsReading::Firmware(updates) => state.firmware_updates = updates,
                 QsReading::WifiJoin(join) => told = apply::wifi_join(&mut state, join),
                 QsReading::Wrote(done) => {
@@ -402,6 +446,7 @@ impl DeviceHost {
         match done.read_back {
             ReadBack::Field(field) => refresh.kick_field(field),
             ReadBack::Accessories => refresh.kick_bt_devices(),
+            ReadBack::Networks => refresh.kick_wifi_networks(),
         }
     }
 
@@ -556,49 +601,95 @@ impl DeviceHost {
                 );
             }
             LevelChange::Volume(level) => {
-                // A positive change unmutes a muted output; otherwise the
-                // slider moves while the sound stays off.
-                let previous = state.status.volume;
-                let level = apply::level_of(*level);
-                let was_muted = previous.is_some_and(|now| now.muted);
-                let unmute = previous.is_some_and(|now| level > 0.0 && level >= now.level);
-                state.status.volume = Some(media::audio::default_node::VolumeState {
-                    level,
-                    muted: was_muted && !unmute,
-                });
+                // The audio service owns the level and the mute: the slider
+                // shows where it was let go until the service's reading
+                // replaces it, and the service decides what raising it out
+                // of silence means.
+                apply::show_level(&mut state, change);
                 drop(state);
-                let pct = level * 100.0;
-                self.write(
-                    "set_volume",
-                    Failure::Value(t("host-qs-change-failed-volume")),
-                    ReadBack::Field(QsField::Volume),
-                    move |d| {
-                        d.set_volume(pct)?;
-                        if was_muted && unmute {
-                            d.set_mute(false)?;
-                        }
-                        Ok(())
-                    },
-                );
+                self.ask(QsEffect::SetVolume { level: *level });
             }
         }
         Ok(())
     }
 
+    /// Show `muted` on the slider, and say whether there was a sound to show
+    /// it on.
+    fn show_muted(&self, muted: bool) -> bool {
+        let mut state = self.0.state.borrow_mut();
+        let Some(volume) = state.status.volume.as_mut() else {
+            return false;
+        };
+        volume.muted = muted;
+        true
+    }
+
     fn set_muted(&self, muted: bool) {
+        if self.show_muted(muted) {
+            self.ask(QsEffect::SetMuted { muted });
+        }
+    }
+
+    /// Show `muted` on the microphone's row, and say whether there was a
+    /// microphone to show it on.
+    fn show_input_muted(&self, muted: bool) -> bool {
+        let mut state = self.0.state.borrow_mut();
+        let Some(microphone) = state.microphone.as_mut() else {
+            return false;
+        };
+        microphone.muted = muted;
+        true
+    }
+
+    fn set_input_muted(&self, muted: bool) {
+        if self.show_input_muted(muted) {
+            self.ask(QsEffect::SetInputMuted { muted });
+        }
+    }
+
+    /// Show where the person put the microphone's level until the audio
+    /// service's reading replaces it.
+    fn set_input_level(&self, level: f64) {
         {
             let mut state = self.0.state.borrow_mut();
-            let Some(volume) = state.status.volume.as_mut() else {
+            if let Some(microphone) = state.microphone.as_mut() {
+                microphone.level = apply::level_of(level);
+            }
+        }
+        self.ask(QsEffect::SetInputVolume { level });
+    }
+
+    /// Show where the person put one application's level until the audio
+    /// service's reading replaces it.
+    fn set_stream_level(&self, stream: u32, level: f64) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Some(shown) = state
+                .sound_streams
+                .iter_mut()
+                .find(|shown| shown.node == stream)
+            {
+                shown.level = apply::level_of(level);
+            }
+        }
+        self.ask(QsEffect::SetStreamVolume { stream, level });
+    }
+
+    /// Show `muted` on one application's row, and ask for it: a stream the
+    /// service no longer lists has nothing to mute.
+    fn set_stream_muted(&self, stream: u32, muted: bool) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            let Some(shown) = state
+                .sound_streams
+                .iter_mut()
+                .find(|shown| shown.node == stream)
+            else {
                 return;
             };
-            volume.muted = muted;
+            shown.muted = muted;
         }
-        self.write(
-            "set_mute",
-            Failure::Value(t("host-qs-change-failed-volume")),
-            ReadBack::Field(QsField::Volume),
-            move |d| d.set_mute(muted),
-        );
+        self.ask(QsEffect::SetStreamMuted { stream, muted });
     }
 
     fn accessory(&self, address: &str, connect: bool) {
@@ -671,6 +762,16 @@ impl DeviceHost {
             .borrow_mut()
             .kick_wifi_join(network, password, move |ssid, password| {
                 dispatcher.connect_wifi(ssid, password)
+            });
+    }
+
+    fn join_hidden_wifi(&self, network: String, password: Option<String>) {
+        let dispatcher = Arc::clone(&self.0.dispatcher);
+        self.0
+            .refresh
+            .borrow_mut()
+            .kick_wifi_join(network, password, move |ssid, password| {
+                dispatcher.connect_hidden_wifi(ssid, password)
             });
     }
 
@@ -772,8 +873,23 @@ impl DeviceHost {
             QsEffect::SetMuted { muted } => self.set_muted(muted),
             QsEffect::ToggleMuted => {
                 let muted = !state().volume_muted();
-                self.set_muted(muted);
+                if self.show_muted(muted) {
+                    self.ask(QsEffect::ToggleMuted);
+                }
             }
+            QsEffect::SetInputVolume { level } => self.set_input_level(level),
+            QsEffect::SetInputMuted { muted } => self.set_input_muted(muted),
+            QsEffect::ToggleInputMuted => {
+                let muted = !state()
+                    .microphone
+                    .as_ref()
+                    .is_some_and(|microphone| microphone.muted);
+                if self.show_input_muted(muted) {
+                    self.ask(QsEffect::ToggleInputMuted);
+                }
+            }
+            QsEffect::SetStreamVolume { stream, level } => self.set_stream_level(stream, level),
+            QsEffect::SetStreamMuted { stream, muted } => self.set_stream_muted(stream, muted),
             QsEffect::JoinWifi { network } => {
                 {
                     let mut state = state();
@@ -801,8 +917,61 @@ impl DeviceHost {
                 self.join_wifi(network, Some(password));
             }
             QsEffect::CancelWifiPassword => state().wifi_password = None,
+            QsEffect::AskHiddenNetwork => {
+                state().wifi_hidden = Some(crate::HiddenNetworkPrompt::new());
+            }
+            QsEffect::CancelHiddenNetwork => state().wifi_hidden = None,
+            QsEffect::ConnectHiddenWifi { network, password } => {
+                if network.is_empty() {
+                    return Err("a network whose name is hidden still has a name".into());
+                }
+                {
+                    let mut state = state();
+                    let prompt = state
+                        .wifi_hidden
+                        .get_or_insert_with(crate::HiddenNetworkPrompt::new);
+                    prompt.ssid.clone_from(&network);
+                    prompt.connecting = true;
+                    prompt.error = None;
+                    state.wifi_joining = Some(network.clone());
+                }
+                self.join_hidden_wifi(network, (!password.is_empty()).then_some(password));
+            }
+            QsEffect::SetNetworkAutoconnect { profile, on } => self.write(
+                "set_network_autoconnect",
+                Failure::Refreshing(t("host-qs-change-failed-wifi")),
+                ReadBack::Networks,
+                move |d| d.set_network_autoconnect(&profile, on),
+            ),
+            QsEffect::ForgetNetwork { profile } => self.write(
+                "forget_network",
+                Failure::Refreshing(t("host-qs-change-failed-wifi")),
+                ReadBack::Networks,
+                move |d| d.forget_network(&profile),
+            ),
             QsEffect::ConnectBluetooth { address } => self.accessory(&address, true),
             QsEffect::DisconnectBluetooth { address } => self.accessory(&address, false),
+            QsEffect::ScanBluetooth { on } => {
+                state().bt_scanning = on;
+                self.write(
+                    "scan_bluetooth",
+                    Failure::State(t("host-qs-change-failed-bluetooth")),
+                    ReadBack::Accessories,
+                    move |d| d.scan_bluetooth(on),
+                );
+            }
+            QsEffect::PairBluetooth { address } => self.write(
+                "pair_bluetooth",
+                Failure::Refreshing(t("host-qs-change-failed-bluetooth")),
+                ReadBack::Accessories,
+                move |d| d.pair_bluetooth(&address),
+            ),
+            QsEffect::ForgetBluetooth { address } => self.write(
+                "forget_bluetooth",
+                Failure::Refreshing(t("host-qs-change-failed-bluetooth")),
+                ReadBack::Accessories,
+                move |d| d.forget_bluetooth(&address),
+            ),
             effect @ (QsEffect::ShowControl { .. }
             | QsEffect::HideControl { .. }
             | QsEffect::MoveControl { .. }
@@ -823,7 +992,8 @@ impl DeviceHost {
             | QsEffect::PreviousTrack
             | QsEffect::NextTrack
             | QsEffect::Seek { .. }
-            | QsEffect::ChoosePlayer { .. }) => {
+            | QsEffect::ChoosePlayer { .. }
+            | QsEffect::ResumePlayback { .. }) => {
                 self.0
                     .players
                     .borrow_mut()
@@ -839,6 +1009,7 @@ impl DeviceHost {
             effect @ (QsEffect::HandOffBluetooth { .. }
             | QsEffect::PressDevice { .. }
             | QsEffect::RouteSound { .. }
+            | QsEffect::RouteStream { .. }
             | QsEffect::PasteCopy { .. }
             | QsEffect::PinCopy { .. }
             | QsEffect::RemoveCopy { .. }
@@ -861,6 +1032,13 @@ impl DeviceHost {
     /// Read what the page or section the panel shows lists.
     fn follow_showing(&self) {
         let section = self.0.showing.borrow().section;
+        if section != Some(QsSection::Bluetooth) && self.0.state.borrow().bt_scanning {
+            // Nobody is looking at the devices in reach any more: the radio
+            // stops looking for them.
+            if let Err(error) = self.run_effect(QsEffect::ScanBluetooth { on: false }) {
+                tracing::warn!(%error, "Bluetooth did not stop looking for devices");
+            }
+        }
         let mut refresh = self.0.refresh.borrow_mut();
         match section {
             // The first scan starts at the next pump; the section keeps
@@ -973,6 +1151,14 @@ impl Dispatcher for ValidatedQsActions<'_> {
         self.inner.connect_wifi(ssid, password)
     }
 
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        self.inner.forget_network(profile)
+    }
+
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        self.inner.set_network_autoconnect(profile, on)
+    }
+
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
         self.inner.set_bluetooth(enabled)
     }
@@ -983,6 +1169,18 @@ impl Dispatcher for ValidatedQsActions<'_> {
 
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         self.inner.disconnect_bluetooth(address)
+    }
+
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        self.inner.scan_bluetooth(on)
+    }
+
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.pair_bluetooth(address)
+    }
+
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.forget_bluetooth(address)
     }
 
     fn set_wired(&self, enabled: bool) -> Result<(), String> {

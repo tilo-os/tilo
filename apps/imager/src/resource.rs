@@ -467,7 +467,14 @@ mod tests {
         for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
             let error =
                 ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
-            assert!(error.contains("absolute"), "{error}");
+            assert!(
+                matches!(
+                    &error,
+                    ui::tilo_resource::EffectDecodeError::Argument { source, .. }
+                        if source.to_string().contains("absolute")
+                ),
+                "{error}"
+            );
         }
         assert!(
             ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
@@ -968,7 +975,7 @@ mod tests {
     /// Without the installation the imager is the write wizard alone: it
     /// takes no installation switch and offers only the wizard's scenarios.
     #[test]
-    #[cfg(not(feature = "installation"))]
+    #[cfg(not(any(feature = "installation", feature = "destination")))]
     fn without_the_installation_the_imager_is_the_write_wizard() {
         assert!(<ImagerShell as ResourceApp>::FLAGS.is_empty());
         assert_eq!(<ImagerShell as ResourceApp>::scenarios(), WIZARD_SCENARIOS);

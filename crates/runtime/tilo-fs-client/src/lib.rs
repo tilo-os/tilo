@@ -262,8 +262,9 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, the server
-    /// rejects the request, or the connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if `path` doesn't exist or the server
+    /// rejects the request, and [`NotAvailable::ConnectionFailed`] if the
+    /// connection drops before a reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -287,9 +288,9 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if `path` isn't a directory, an
-    /// entry's name isn't valid UTF-8, or the connection drops before a
-    /// reply arrives.
+    /// Returns [`NotAvailable::Refused`] if `path` isn't a directory or an
+    /// entry's name isn't valid UTF-8, and [`NotAvailable::ConnectionFailed`]
+    /// if the connection drops before a reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -313,12 +314,13 @@ impl FsClient {
         Ok(out)
     }
 
-    /// Stat a single path; a missing path surfaces as [`NotAvailable::Capnp`].
+    /// Stat a single path; a missing path surfaces as [`NotAvailable::Refused`].
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist or the
-    /// connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if `path` doesn't exist, and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -334,9 +336,10 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if the server rejects the request
-    /// (e.g. a path component exists and isn't a directory) or the
-    /// connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if the server rejects the request
+    /// (e.g. a path component exists and isn't a directory), and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -352,9 +355,9 @@ impl FsClient {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, a directory
-    /// at `path` isn't empty, or the connection drops before a reply
-    /// arrives.
+    /// Returns [`NotAvailable::Refused`] if `path` doesn't exist or a
+    /// directory at `path` isn't empty, and [`NotAvailable::ConnectionFailed`]
+    /// if the connection drops before a reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -388,8 +391,9 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
-    /// the connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if the handle is no longer valid, and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -421,8 +425,8 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if any underlying [`Self::read_at`]
-    /// call fails.
+    /// Returns the error of the first underlying [`Self::read_at`] call that
+    /// fails.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -444,8 +448,9 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if the handle isn't writable or the
-    /// connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if the handle isn't writable, and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -500,8 +505,9 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if the server rejects the flush or
-    /// the connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if the server rejects the flush, and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
@@ -522,8 +528,9 @@ impl FileHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
-    /// the connection drops before a reply arrives.
+    /// Returns [`NotAvailable::Refused`] if the handle is no longer valid, and
+    /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
+    /// reply arrives.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"

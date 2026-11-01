@@ -498,7 +498,6 @@ impl Hosted {
         // What a hit's address names opens at its resource; the entries carry the package's
         // `open`.
         let deltas = self.search_index.publish(state, entries);
-        let app_id = self.spec.app.clone();
         for delta in deltas {
             let Some(bytes) = delta.encode() else {
                 continue;
@@ -506,7 +505,6 @@ impl Hosted {
             self.record
                 .manager_mut()
                 .send(collaboration::CollabRequest::PublishSearchIndex {
-                    app_id: app_id.clone(),
                     delta_json: bytes,
                 });
         }
@@ -654,12 +652,10 @@ impl Hosted {
             }
             HandoffRequest::OwnerView { .. } => return,
         };
-        let app_id = self.record.route().app_id.clone();
         if let Err(error) = self
             .record
             .manager_mut()
             .try_send(CollabRequest::ReportHandoff {
-                app_id,
                 message: report.encode(),
             })
         {
@@ -751,7 +747,7 @@ impl Hosted {
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
         {
             let effect = <HostEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             let first = host.next_ticket();
             let output = host
                 .answer(effect, Some(&caller))
@@ -772,7 +768,7 @@ impl Hosted {
             // A search hit, or an agent's `open`: the window shows what it names.
             let OpenEffect::Open { anchor } =
                 <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                    .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+                    .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(anchor);
             return Ok(tilo_actions::ActionOutput::default());
         }
@@ -879,10 +875,7 @@ impl Hosted {
                 if self
                     .record
                     .manager_mut()
-                    .send(CollabRequest::PublishActionSurface {
-                        app_id: self.spec.app.clone(),
-                        delta,
-                    })
+                    .send(CollabRequest::PublishActionSurface { delta })
                 {
                     self.published = Some((Vec::new(), state));
                     self.published_from = None;
@@ -911,10 +904,7 @@ impl Hosted {
             || self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
@@ -967,10 +957,7 @@ impl Hosted {
             && !self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.

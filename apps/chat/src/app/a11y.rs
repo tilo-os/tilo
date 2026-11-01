@@ -112,7 +112,7 @@ impl ChatApp {
             })
             .collect::<Vec<_>>();
         // The place of the earlier messages says what it shows: a part on its
-        // way, or that the room's hosts have none of it.
+        // way, or that the workspace's hosts have none of it.
         let earlier = self
             .scrollback
             .pager

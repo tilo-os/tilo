@@ -221,6 +221,9 @@ pub struct Derived<R> {
 #[derive(Clone)]
 struct Place {
     id: String,
+    /// `id` is the whole published address, not a name among its siblings
+    /// beneath the record ([`Derived::addressed`]).
+    addressed: bool,
     /// The field of the record it is an item of (`blocks`), published as
     /// `<record kind>/<field>/<id>`; `None` for `<record kind>/derived/<id>`.
     field: Option<String>,
@@ -254,11 +257,20 @@ enum Offer {
     /// Made by a function of its caller's value, which cannot be compared:
     /// equal to no other.
     Asking,
+    /// An operation stated for the row as it stands now, with its own label
+    /// and availability ([`Derived::with_operation`]): compared by what it
+    /// states, so an unchanged one is the resource published last.
+    Stated {
+        id: String,
+        label: String,
+        availability: tilo_actions::Availability,
+    },
 }
 
 impl PartialEq for Place {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
+            && self.addressed == other.addressed
             && self.field == other.field
             && self.label == other.label
             && self.kind == other.kind
@@ -288,7 +300,11 @@ impl Place {
         parent: &str,
         vocabulary: &'static crate::Vocabulary,
     ) -> tilo_actions::ResourceSpec {
-        let id = format!("{parent}/{}", self.id);
+        let id = if self.addressed {
+            self.id.clone()
+        } else {
+            format!("{parent}/{}", self.id)
+        };
         // Built only when a verb is bound here: a long list of derived
         // places offering effects alone stays cheap to publish.
         let declarations = if self.actions.is_empty() {
@@ -299,7 +315,13 @@ impl Place {
         let kind = self.kind.as_deref().unwrap_or("derived");
         let mut child = tilo_actions::ResourceSpec::new(
             &id,
-            format!("{}.{kind}", vocabulary.kind),
+            // A kind that names its own namespace already is the whole kind;
+            // a bare one (`book`) sits under the record's.
+            if kind.contains('.') {
+                kind.to_owned()
+            } else {
+                format!("{}.{kind}", vocabulary.kind)
+            },
             &self.label,
         );
         for bound in &self.actions {
@@ -341,6 +363,7 @@ impl<R> Derived<R> {
         Self {
             place: Place {
                 id: label.clone(),
+                addressed: false,
                 field: None,
                 label,
                 kind: None,
@@ -361,10 +384,26 @@ impl<R> Derived<R> {
     }
 
     /// What kind of thing it is among the record's derived resources
-    /// (`folder`, `tag`), published as `<record kind>.<kind>`.
+    /// (`folder`, `tag`), published as `<record kind>.<kind>`; a kind that
+    /// names its own namespace (`music.track`) is published as it is.
     #[must_use]
     pub fn of_kind(mut self, kind: impl Into<String>) -> Self {
         self.place.kind = Some(kind.into());
+        self
+    }
+
+    /// Offer `spec`, an operation of the row as the row stands now: its
+    /// label follows what it shows (`Play`/`Pause`), and one that cannot
+    /// act offers its reason ([`tilo_actions::ActionSpec::unavailable`]).
+    /// [`Self::with_effect`] offers the effect as its declaration reads.
+    #[must_use]
+    pub fn with_operation(mut self, spec: tilo_actions::ActionSpec) -> Self {
+        self.place.offers.push(Offer::Stated {
+            id: spec.id.clone(),
+            label: spec.label.clone(),
+            availability: spec.contract.availability.clone(),
+        });
+        self.place.effects.push(spec);
         self
     }
 
@@ -401,6 +440,17 @@ impl<R> Derived<R> {
     #[must_use]
     pub fn identified(mut self, id: impl Into<String>) -> Self {
         self.place.id = id.into();
+        self
+    }
+
+    /// Publish it under `id` as a whole rather than as a name among the
+    /// record's derived resources: for a row that already has an address of
+    /// its own, which a search hit, a script or an agent names as it was
+    /// named before (`music.track:<id>`).
+    #[must_use]
+    pub fn addressed(mut self, id: impl Into<String>) -> Self {
+        self.place.id = id.into();
+        self.place.addressed = true;
         self
     }
 

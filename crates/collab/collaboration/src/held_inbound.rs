@@ -15,7 +15,7 @@ use super::{
 /// side is gone.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn deliver_waiting(
     route: &SdkRoute,
@@ -60,7 +60,7 @@ pub(super) async fn deliver_waiting(
 /// it is refused. `false` once the app side is gone.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &InboundBridge) -> bool {
     let op = OpKey::of(&arrived.envelope);
@@ -91,7 +91,7 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
 /// once. What history no longer has is said, by op, and forgotten.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn deliver_owed(route: &SdkRoute, inbound_tx: &InboundBridge) -> bool {
     let pages = route

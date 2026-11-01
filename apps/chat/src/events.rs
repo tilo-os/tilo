@@ -696,7 +696,7 @@ impl ChatApp {
     }
 
     /// Right-click opens a context menu for the message under the cursor,
-    /// else for the room. The sidebar's rows ask for theirs through the
+    /// else for the workspace. The sidebar's rows ask for theirs through the
     /// shell ([`crate::sidebar`]).
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
@@ -710,9 +710,9 @@ impl ChatApp {
                 return;
             }
             _ if self.keeps_layout() => Some(self.context_menu(
-                MenuTarget::Room,
+                MenuTarget::Workspace,
                 self.last_mouse,
-                MenuAction::for_room().to_vec(),
+                MenuAction::for_workspace().to_vec(),
             )),
             _ => None,
         };
@@ -771,7 +771,7 @@ impl ChatApp {
             Hit::AddChannel { category } if self.keeps_layout() => {
                 self.on_hit_add_channel(&category);
             }
-            Hit::AddCategory if self.keeps_layout() => self.on_hit_add_to_room(),
+            Hit::AddCategory if self.keeps_layout() => self.on_hit_add_to_workspace(),
             Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(msg, anchor),
@@ -976,7 +976,7 @@ impl ChatApp {
             self.reset_timeline_to_latest();
             self.focus = Focus::Main;
             // Navigation is the user-visible read boundary. Other controls in
-            // an already-open room must not append a second MarkRead action
+            // an already-open workspace must not append a second MarkRead action
             // after their own canonical action or obscure it in history.
             self.mark_active_read(doc);
         }
@@ -989,12 +989,12 @@ impl ChatApp {
         ));
     }
 
-    /// The window bar's Create: what can be made in the room.
-    fn on_hit_add_to_room(&mut self) {
+    /// The window bar's Create: what can be made in the workspace.
+    fn on_hit_add_to_workspace(&mut self) {
         self.menu = Some(self.context_menu(
-            MenuTarget::Room,
+            MenuTarget::Workspace,
             self.last_mouse,
-            MenuAction::for_room().to_vec(),
+            MenuAction::for_workspace().to_vec(),
         ));
     }
 
@@ -1214,9 +1214,9 @@ impl ChatApp {
         self.close_emoji_picker();
     }
 
-    /// Join the room's voice channel; if it has none, make one to start the
+    /// Join the workspace's voice channel; if it has none, make one to start the
     /// call in so the header "Call" button is never a dead end (a text-only
-    /// room can still huddle).
+    /// workspace can still huddle).
     /// The header Call button. A click while the call is expanded collapses
     /// it — a button-only toggle; everything else is the published
     /// `start-call` effect's own path.
@@ -1371,7 +1371,7 @@ impl ChatApp {
                 }
                 _ => {}
             },
-            MenuTarget::Room => match action {
+            MenuTarget::Workspace => match action {
                 MenuAction::NewCategory => {
                     self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category());
                 }
@@ -1479,7 +1479,7 @@ impl ChatApp {
         self.sidebar_rename = match target {
             MenuTarget::Channel(id) => Some(crate::sidebar::channel_place(&id)),
             MenuTarget::Category(id) => Some(crate::sidebar::category_place(&id)),
-            MenuTarget::Message(_) | MenuTarget::Room | MenuTarget::CallParticipant(_) => None,
+            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallParticipant(_) => None,
         };
     }
 
@@ -1512,7 +1512,7 @@ impl ChatApp {
                     }),
                 );
             }
-            MenuTarget::Message(_) | MenuTarget::Room | MenuTarget::CallParticipant(_) => {}
+            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallParticipant(_) => {}
         }
         self.reload(doc);
     }
@@ -1788,7 +1788,7 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    /// When the room refused a message this window had already shown as
+    /// When the workspace refused a message this window had already shown as
     /// sent (and withdrew it), say so under the composer and put its text
     /// back there to send again.
     pub(crate) fn settle_refused_post(&mut self) {
@@ -1812,7 +1812,7 @@ impl ChatApp {
             && self.composer_main.value().trim().is_empty()
         {
             // The draft is the person's own record (or this device's), not
-            // the room's document: no room edit carries it.
+            // the workspace's document: no workspace edit carries it.
             let mut own = ui::tilo_resource::Doc::new();
             self.composer_main.ensure_draft(&own);
             self.composer_main
@@ -2008,21 +2008,21 @@ impl ChatApp {
             // A drop hands over more than an attachment may be, so a file
             // too large for it is too large to share.
             ui::portal::NotRead::TooLarge => self
-                .room_refuses_file(size)
+                .workspace_refuses_file(size)
                 .unwrap_or_else(|| TOO_BIG_TO_SHARE.to_owned()),
         };
         self.attachment_status = Some(format!("Not shared: {name}: {reason}"));
     }
 
-    /// Why the room's host would not take a file of `size` bytes from this
+    /// Why the workspace's host would not take a file of `size` bytes from this
     /// person now, in plain words; `None` when it would. A file posted past
     /// what the host takes would stay on this device alone, so it is not
     /// posted at all.
-    pub(crate) fn room_refuses_file(&self, size: u64) -> Option<String> {
-        let files = self.room_files;
+    pub(crate) fn workspace_refuses_file(&self, size: u64) -> Option<String> {
+        let files = self.workspace_files;
         if files.largest > 0 && size > files.largest {
             return Some(format!(
-                "the file is too big; this room takes files up to {}",
+                "the file is too big; this workspace takes files up to {}",
                 ui::format::memory(files.largest)
             ));
         }
@@ -2044,7 +2044,7 @@ impl ChatApp {
             .fold(0, u64::saturating_add);
         (shared.saturating_add(size) > files.member_hourly).then(|| {
             format!(
-                "you've reached this room's limit of {} of files an hour; try again later",
+                "you've reached this workspace's limit of {} of files an hour; try again later",
                 ui::format::memory(files.member_hourly)
             )
         })
@@ -2154,7 +2154,7 @@ impl ChatApp {
             self.attachment_status = Some("Attachment import cancelled: permission changed".into());
             return;
         }
-        if let Some(reason) = self.room_refuses_file(size) {
+        if let Some(reason) = self.workspace_refuses_file(size) {
             self.attachment_status = Some(format!("Not shared: {reason}"));
             return;
         }

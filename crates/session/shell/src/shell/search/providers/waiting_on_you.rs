@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_desktop::notifications::{Addressed, HistoryActivation, Notification};
-use ui::widget::command_palette::RowFace;
+use ui::RowFace;
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use crate::shell::i18n::t;

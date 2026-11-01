@@ -1,15 +1,19 @@
-//! Typed client for the launcher-issued `app-host` capability.
+//! Typed client for the launcher-issued `app-host` connection.
 //!
 //! The Store worker is synchronous, so this wrapper owns a current-thread
-//! runtime and `LocalSet` while keeping one Cap'n Proto connection alive for
-//! its whole lifetime. It never reaches for a host path or executable.
+//! runtime and `LocalSet` while keeping one connection alive for its whole
+//! lifetime. It never reaches for a host path or executable.
 
-pub use crate::app_host_capnp::CatalogueRefusal as WireCatalogueRefusal;
-use crate::app_host_capnp::{
-    FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
-    app_host,
-};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::future::Future;
+use std::rc::Rc;
+
 use crate::install::InstallExpectation;
+use crate::wire::{
+    Action, Answer, Call, Catalogue, Expected, FlatpakVerb, Operation, RemoteVerb, Reply, Resource,
+    WirePinning,
+};
 
 mod pending;
 use package_store::InstalledPackage;
@@ -17,9 +21,9 @@ pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
 /// Why the host refused a catalogue read: the one thing the Store decides
-/// what to say from. It travels typed on the wire (`CatalogueRefusal`), so a
+/// what to say from. It travels typed on the wire, so a
 /// reworded detail never changes how the Store handles it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Refusal {
     /// The system's interface declaration cannot be read: the system needs
     /// an update before any repository can be judged.
@@ -30,31 +34,6 @@ pub enum Refusal {
     TimedOut,
     /// A device-provided Flatpak repository has no OCI summary yet.
     DeviceRepositoryStale,
-}
-
-impl Refusal {
-    /// This refusal as the wire carries it.
-    #[must_use]
-    pub fn to_wire(self) -> WireCatalogueRefusal {
-        match self {
-            Self::SystemUpdateNeeded => WireCatalogueRefusal::SystemUpdateNeeded,
-            Self::Expired => WireCatalogueRefusal::Expired,
-            Self::TimedOut => WireCatalogueRefusal::TimedOut,
-            Self::DeviceRepositoryStale => WireCatalogueRefusal::DeviceRepositoryStale,
-        }
-    }
-
-    /// The refusal the wire names; `None` for `none`.
-    #[must_use]
-    pub fn from_wire(wire: WireCatalogueRefusal) -> Option<Self> {
-        match wire {
-            WireCatalogueRefusal::None => None,
-            WireCatalogueRefusal::SystemUpdateNeeded => Some(Self::SystemUpdateNeeded),
-            WireCatalogueRefusal::Expired => Some(Self::Expired),
-            WireCatalogueRefusal::TimedOut => Some(Self::TimedOut),
-            WireCatalogueRefusal::DeviceRepositoryStale => Some(Self::DeviceRepositoryStale),
-        }
-    }
 }
 
 /// Why a catalogue read gave no rows.
@@ -100,28 +79,6 @@ impl From<&str> for CatalogueError {
     fn from(error: &str) -> Self {
         Self::Failed(error.to_owned())
     }
-}
-
-/// The refusal a catalogue read's results name, if any.
-fn catalogue_refusal(
-    refusal: Result<WireCatalogueRefusal, capnp::NotInSchema>,
-    detail: Result<capnp::text::Reader<'_>, capnp::Error>,
-) -> Option<CatalogueError> {
-    // A refusal this client does not know is a host from another runtime
-    // version, which the interface check keeps from happening; read it as
-    // a failure rather than as rows.
-    let refusal = match refusal {
-        Ok(wire) => Refusal::from_wire(wire)?,
-        Err(unknown) => {
-            return Some(CatalogueError::Failed(format!(
-                "the app host refused the read for a reason this Store does not know ({unknown})"
-            )));
-        }
-    };
-    Some(CatalogueError::Refused {
-        refusal,
-        detail: text_result(detail).unwrap_or_default(),
-    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,10 +184,75 @@ pub struct FlatpakStatus {
     pub remotes: String,
 }
 
+/// The calls in flight on one connection, answered by its reader task.
+struct Connection {
+    writer: tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>,
+    waiting: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answer, String>>>>,
+    next: Cell<u64>,
+    closed: Cell<bool>,
+}
+
+impl Connection {
+    #[allow(
+        clippy::future_not_send,
+        reason = "the connection is shared by Rc on its current-thread runtime"
+    )]
+    fn call(
+        self: &Rc<Self>,
+        request: Operation,
+    ) -> impl Future<Output = Result<Answer, String>> + use<> {
+        let connection = Rc::clone(self);
+        async move {
+            if connection.closed.get() {
+                return Err(DISCONNECTED.to_owned());
+            }
+            let id = connection.next.get();
+            connection.next.set(id.wrapping_add(1));
+            let (answer, answered) = tokio::sync::oneshot::channel();
+            connection.waiting.borrow_mut().insert(id, answer);
+            {
+                use tokio::io::AsyncWriteExt as _;
+                let mut writer = connection.writer.lock().await;
+                let sent = async {
+                    crate::wire::FRAMING
+                        .write_value_async(&mut *writer, &Call { id, request })
+                        .await?;
+                    writer.flush().await?;
+                    Ok::<_, wire_frame::FrameError>(())
+                }
+                .await;
+                if let Err(error) = sent {
+                    connection.waiting.borrow_mut().remove(&id);
+                    return Err(format!("app-host: {error}"));
+                }
+            }
+            answered.await.map_err(|_| DISCONNECTED.to_owned())?
+        }
+    }
+
+    #[allow(
+        clippy::future_not_send,
+        reason = "the connection is shared by Rc on its current-thread runtime"
+    )]
+    async fn read_replies(self: Rc<Self>, mut reader: tokio::net::unix::OwnedReadHalf) {
+        while let Ok(Some(Reply { id, answer })) =
+            crate::wire::FRAMING.read_value_async(&mut reader).await
+        {
+            if let Some(waiting) = self.waiting.borrow_mut().remove(&id) {
+                let _ = waiting.send(answer);
+            }
+        }
+        self.closed.set(true);
+        self.waiting.borrow_mut().clear();
+    }
+}
+
+const DISCONNECTED: &str = "the app host connection has ended";
+
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
     local: tokio::task::LocalSet,
-    client: app_host::Client,
+    connection: Rc<Connection>,
 }
 
 impl BlockingClient {
@@ -239,58 +261,80 @@ impl BlockingClient {
     /// # Errors
     ///
     /// Returns an error when the runtime or launcher-issued service cannot be opened.
+    #[cfg(unix)]
     pub fn from_service() -> Result<Self, String> {
-        Self::connect(|| {
-            runtime_portal::try_open_service::<app_host::Client>("app-host")
-                .map_err(|error| error.to_string())
-        })
+        use std::os::fd::FromRawFd as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The launcher hands the process one connection; a second owner would
+        // interleave frames and close the descriptor twice.
+        static CLAIMED: AtomicBool = AtomicBool::new(false);
+        let fd = runtime_portal::service_fd(runtime_portal::runtime_request::SERVICE)
+            .ok_or_else(|| "the app host was not handed to this app".to_owned())?;
+        if CLAIMED.swap(true, Ordering::SeqCst) {
+            return Err("the app host connection is already in use".to_owned());
+        }
+        // SAFETY: `service_fd` verified the descriptor is open, the launcher
+        // gave it to this process alone, and `CLAIMED` makes this its one owner.
+        Self::from_connected_fd(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
     }
 
-    /// Open an explicitly owned connected capability in a test host.
-    #[cfg(all(unix, feature = "test-support"))]
+    /// Open an explicitly owned connection (a test host).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime cannot start or `fd` is no socket.
+    #[cfg(unix)]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
-        use std::os::fd::IntoRawFd as _;
-        Self::connect(move || {
-            runtime_portal::open_service_on_fd::<app_host::Client>(fd.into_raw_fd())
-                .map_err(|error| error.to_string())
-        })
-    }
-
-    fn connect(open: impl FnOnce() -> Result<app_host::Client, String>) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("create app-host runtime: {e}"))?;
         let local = tokio::task::LocalSet::new();
-        let client = local.block_on(&runtime, async { open() })?;
+        let stream = std::os::unix::net::UnixStream::from(fd);
+        stream
+            .set_nonblocking(true)
+            .map_err(|e| format!("app-host connection: {e}"))?;
+        let connection = local.block_on(&runtime, async {
+            let stream = tokio::net::UnixStream::from_std(stream)
+                .map_err(|e| format!("app-host connection: {e}"))?;
+            let (reader, writer) = stream.into_split();
+            let connection = Rc::new(Connection {
+                writer: tokio::sync::Mutex::new(writer),
+                waiting: RefCell::default(),
+                next: Cell::new(0),
+                closed: Cell::new(false),
+            });
+            tokio::task::spawn_local(Rc::clone(&connection).read_replies(reader));
+            Ok::<_, String>(connection)
+        })?;
         Ok(Self {
             runtime,
             local,
-            client,
+            connection,
         })
     }
 
-    fn wait<T>(
-        &self,
-        future: impl core::future::Future<Output = Result<T, capnp::Error>>,
-    ) -> Result<T, String> {
+    fn wait(&self, request: Operation) -> Result<Answer, String> {
         self.local
-            .block_on(&self.runtime, future)
-            .map_err(|e| e.to_string())
+            .block_on(&self.runtime, self.connection.call(request))
+    }
+
+    fn read(&self, resource: Resource) -> Result<Answer, String> {
+        self.wait(Operation::Read(resource))
+    }
+
+    fn invoke(&self, action: Action) -> Result<Answer, String> {
+        self.wait(Operation::Invoke(action))
     }
 
     /// Review immutable file bytes using the host's current trusted attestors.
     pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
-        let mut request = self.client.review_local_request();
-        request.get().set_tapp_bytes(bytes);
-        let response = self.wait(request.send().promise)?;
-        let result = response.get().map_err(|e| e.to_string())?;
-        let json = result
-            .get_review_json()
-            .map_err(|e| e.to_string())?
-            .to_str()
-            .map_err(|e| e.to_string())?;
-        serde_json::from_str(json).map_err(|e| e.to_string())
+        match self.read(Resource::LocalReview {
+            tapp_bytes: bytes.to_vec(),
+        })? {
+            Answer::Review(json) => serde_json::from_str(&json).map_err(|e| e.to_string()),
+            other => Err(unexpected(&other)),
+        }
     }
 
     /// Install exactly the immutable archive/root previously reviewed.
@@ -299,14 +343,11 @@ impl BlockingClient {
         bytes: &[u8],
         review: &crate::local_package::LocalReview,
     ) -> Result<PackageId, String> {
-        let mut request = self.client.install_local_request();
-        let mut p = request.get();
-        p.set_tapp_bytes(bytes);
-        p.set_reviewed_root(&review.root);
-        p.set_reviewed_archive_hash(&review.archive_hash);
-        let response = self.wait(request.send().promise)?;
-        let result = response.get().map_err(|e| e.to_string())?;
-        parse_id(result.get_id().map_err(|e| e.to_string())?)
+        installed(self.invoke(Action::InstallLocal {
+            tapp_bytes: bytes.to_vec(),
+            reviewed_root: review.root.clone(),
+            reviewed_archive_hash: review.archive_hash.clone(),
+        })?)
     }
 
     /// Install a verified package through the privileged host service.
@@ -315,24 +356,11 @@ impl BlockingClient {
         bytes: &[u8],
         expected: &InstallExpectation,
     ) -> Result<PackageId, String> {
-        let mut request = self.client.install_request();
-        {
-            let mut p = request.get();
-            p.set_tapp_bytes(bytes);
-            p.set_pinning(WirePinning::Tried);
-            p.set_expected_root(expected.package_root.as_bytes());
-            p.set_expected_publisher(&expected.publisher);
-            p.set_expected_app_id(&expected.app_id);
-            p.set_expected_version(&expected.version);
-            p.set_expected_size_bytes(expected.size_bytes);
-        }
-        let response = self.wait(request.send().promise)?;
-        let bytes = response
-            .get()
-            .map_err(|e| e.to_string())?
-            .get_id()
-            .map_err(|e| e.to_string())?;
-        parse_id(bytes)
+        installed(self.invoke(Action::Install {
+            tapp_bytes: bytes.to_vec(),
+            pinning: WirePinning::Tried,
+            expected: Expected::from(expected),
+        })?)
     }
 
     /// Install the exact signed catalogue offer through the shared installer.
@@ -341,24 +369,10 @@ impl BlockingClient {
         registry: &str,
         expected: &InstallExpectation,
     ) -> Result<PackageId, String> {
-        let mut request = self.client.install_offer_request();
-        {
-            let mut params = request.get();
-            params.set_registry(registry);
-            params.set_app_id(&expected.app_id);
-            params.set_version(&expected.version);
-            params.set_expected_root(expected.package_root.as_bytes());
-            params.set_expected_publisher(&expected.publisher);
-            params.set_expected_size_bytes(expected.size_bytes);
-        }
-        let response = self.wait(request.send().promise)?;
-        parse_id(
-            response
-                .get()
-                .map_err(|error| error.to_string())?
-                .get_id()
-                .map_err(|error| error.to_string())?,
-        )
+        installed(self.invoke(Action::InstallOffer {
+            registry: registry.to_owned(),
+            expected: Expected::from(expected),
+        })?)
     }
 
     /// List the packages the host service can launch: the user's, and the
@@ -377,14 +391,7 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service cannot launch the package.
     pub fn launch(&self, id: PackageId) -> Result<String, String> {
-        let mut request = self.client.launch_request();
-        request.get().set_id(id.as_bytes());
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_status(),
-        )
+        text(self.invoke(Action::Launch { id: *id.as_bytes() })?)
     }
 
     /// Update the retention pin for an installed package.
@@ -393,16 +400,11 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service cannot update the package pin.
     pub fn pin(&self, id: PackageId, pinned: bool) -> Result<(), String> {
-        if pinned {
-            let mut request = self.client.pin_request();
-            request.get().set_id(id.as_bytes());
-            self.wait(request.send().promise)?;
-        } else {
-            let mut request = self.client.unpin_request();
-            request.get().set_id(id.as_bytes());
-            self.wait(request.send().promise)?;
-        }
-        Ok(())
+        self.invoke(Action::SetPinned {
+            id: *id.as_bytes(),
+            pinned,
+        })
+        .map(drop)
     }
 
     /// Remove an installed package.
@@ -411,10 +413,7 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service cannot remove the package.
     pub fn remove(&self, id: PackageId) -> Result<(), String> {
-        let mut request = self.client.remove_request();
-        request.get().set_id(id.as_bytes());
-        self.wait(request.send().promise)?;
-        Ok(())
+        self.invoke(Action::Remove { id: *id.as_bytes() }).map(drop)
     }
 
     /// Launch an installed desktop application.
@@ -423,14 +422,9 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service cannot launch the desktop application.
     pub fn launch_desktop(&self, desktop_id: &str) -> Result<String, String> {
-        let mut request = self.client.launch_desktop_request();
-        request.get().set_desktop_id(desktop_id);
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_status(),
-        )
+        text(self.invoke(Action::LaunchDesktop {
+            desktop_id: desktop_id.to_owned(),
+        })?)
     }
 
     /// Run a Flatpak lifecycle operation through the host service.
@@ -444,23 +438,15 @@ impl BlockingClient {
         app_id: &str,
         reference: Option<&[u8]>,
     ) -> Result<String, String> {
-        let mut request = self.client.flatpak_request();
-        {
-            let mut p = request.get();
-            p.set_action(match action {
-                FlatpakAction::Install => WireFlatpakAction::Install,
-                FlatpakAction::Update => WireFlatpakAction::Update,
-                FlatpakAction::Remove => WireFlatpakAction::Remove,
-            });
-            p.set_app_id(app_id);
-            p.set_reference(reference.unwrap_or_default());
-        }
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_status(),
-        )
+        text(self.invoke(Action::Flatpak {
+            verb: match action {
+                FlatpakAction::Install => FlatpakVerb::Install,
+                FlatpakAction::Update => FlatpakVerb::Update,
+                FlatpakAction::Remove => FlatpakVerb::Remove,
+            },
+            app_id: app_id.to_owned(),
+            reference: reference.unwrap_or_default().to_vec(),
+        })?)
     }
 
     /// The person's app repositories, as `app repo list --json` prints them.
@@ -485,17 +471,10 @@ impl BlockingClient {
     /// installation, as its JSON catalogue entry (`null` when none is offered).
     /// The caller owns parsing, so this client stays free of the installer.
     pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
-        let mut request = self.client.runtime_offer_request();
-        request.get().set_registry(registry);
-        request.get().set_runtime(runtime);
-        let response = self.wait(request.send().promise)?;
-        let json = response
-            .get()
-            .map_err(|error| error.to_string())?
-            .get_offer()
-            .map_err(|error| error.to_string())?
-            .to_string()
-            .map_err(|error| error.to_string())?;
+        let json = text(self.read(Resource::RuntimeOffer {
+            registry: registry.to_owned(),
+            runtime: runtime.to_owned(),
+        })?)?;
         if json.len() > 256 * 1024 {
             return Err("runtime offer exceeds the response limit".into());
         }
@@ -528,18 +507,11 @@ impl BlockingClient {
         app_id: &str,
         branch: &str,
     ) -> Result<String, String> {
-        let mut request = self.client.flatpak_install_remote_request();
-        request.get().set_remote(remote);
-        request.get().set_app_id(app_id);
-        request.get().set_branch(branch);
-        let response = self.wait(request.send().promise)?;
-        response
-            .get()
-            .map_err(|e| e.to_string())?
-            .get_status()
-            .map_err(|e| e.to_string())?
-            .to_string()
-            .map_err(|e| e.to_string())
+        text(self.invoke(Action::FlatpakInstallRemote {
+            remote: remote.to_owned(),
+            app_id: app_id.to_owned(),
+            branch: branch.to_owned(),
+        })?)
     }
 
     /// Read host Flatpak state without executing tools in the app sandbox.
@@ -552,20 +524,15 @@ impl BlockingClient {
 
     /// Enable or disable an existing repository in this account's scope.
     pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
-        let mut request = self.client.remote_request();
-        request.get().set_action(if enabled {
-            WireRemoteAction::Enable
-        } else {
-            WireRemoteAction::Disable
-        });
-        request.get().set_name(name);
-        request.get().set_url("");
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|error| error.to_string())?
-                .get_status(),
-        )
+        text(self.invoke(Action::Remote {
+            verb: if enabled {
+                RemoteVerb::Enable
+            } else {
+                RemoteVerb::Disable
+            },
+            name: name.to_owned(),
+            url: String::new(),
+        })?)
     }
 
     /// Add or remove a user Flatpak remote through the host service.
@@ -574,36 +541,54 @@ impl BlockingClient {
     ///
     /// Returns an error when the host service rejects or cannot run the operation.
     pub fn remote(&self, add: bool, name: &str, url: Option<&str>) -> Result<String, String> {
-        let mut request = self.client.remote_request();
-        {
-            let mut p = request.get();
-            p.set_action(if add {
-                WireRemoteAction::Add
+        text(self.invoke(Action::Remote {
+            verb: if add {
+                RemoteVerb::Add
             } else {
-                WireRemoteAction::Remove
-            });
-            p.set_name(name);
-            p.set_url(url.unwrap_or(""));
-        }
-        text_result(
-            self.wait(request.send().promise)?
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_status(),
-        )
+                RemoteVerb::Remove
+            },
+            name: name.to_owned(),
+            url: url.unwrap_or("").to_owned(),
+        })?)
     }
 }
 
-fn parse_id(bytes: &[u8]) -> Result<PackageId, String> {
-    let raw: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| format!("app-host returned {}-byte package id", bytes.len()))?;
-    Ok(PackageId::from_bytes(raw))
+impl From<&InstallExpectation> for Expected {
+    fn from(expected: &InstallExpectation) -> Self {
+        Self {
+            root: *expected.package_root.as_bytes(),
+            publisher: expected.publisher,
+            app_id: expected.app_id.clone(),
+            version: expected.version.clone(),
+            size_bytes: expected.size_bytes,
+        }
+    }
 }
 
-fn text_result(value: Result<capnp::text::Reader<'_>, capnp::Error>) -> Result<String, String> {
-    value
-        .map_err(|e| e.to_string())?
-        .to_string()
-        .map_err(|e| e.to_string())
+fn unexpected(answer: &Answer) -> String {
+    format!("app-host answered {answer:?}")
+}
+
+fn installed(answer: Answer) -> Result<PackageId, String> {
+    match answer {
+        Answer::Installed(id) => Ok(PackageId::from_bytes(id)),
+        other => Err(unexpected(&other)),
+    }
+}
+
+fn text(answer: Answer) -> Result<String, String> {
+    match answer {
+        Answer::Text(text) => Ok(text),
+        other => Err(unexpected(&other)),
+    }
+}
+
+fn catalogue(answer: Result<Answer, String>) -> Result<String, CatalogueError> {
+    match answer? {
+        Answer::Catalogue(Catalogue::Rows(rows)) => Ok(rows),
+        Answer::Catalogue(Catalogue::Refused { refusal, detail }) => {
+            Err(CatalogueError::Refused { refusal, detail })
+        }
+        other => Err(CatalogueError::Failed(unexpected(&other))),
+    }
 }

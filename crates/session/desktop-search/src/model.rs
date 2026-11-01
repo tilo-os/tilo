@@ -42,12 +42,30 @@ pub enum Target {
         room: String,
         invocation: String,
     },
+    /// Search `source` from now on, or stop: the person's own choice, kept
+    /// with their settings by the host ([`crate::preferences`]).
+    Prefer { source: String, enabled: bool },
 }
 
 /// The provider name of what the desktop itself publishes (its chrome's and
 /// its desk's actions): a row the desktop runs on itself, by address, as
 /// every other caller of the action protocol does.
 pub const DESKTOP_APP: &str = "tilo.desktop";
+
+/// The resource of the desktop's chrome above the windows: what its own
+/// commands are published on.
+pub const CHROME_RESOURCE: &str = "desktop:chrome";
+
+/// The chrome's action that opens or closes who is here (the people
+/// panel).
+pub const SHOW_COLLABORATORS: &str = "toggle-collaborators";
+
+/// The desktop command that goes to workspace `id` (`desktop.workspace:id`).
+pub const WORKSPACE_COMMAND_PREFIX: &str = "desktop.workspace:";
+
+/// The desktop command that lists every application, each by its name: the
+/// catalogue behind "All apps".
+pub const ALL_APPS_COMMAND: &str = "desktop.all-apps";
 
 /// The action every framework app publishes to show the item at an anchor
 /// (`tilo_app::framework`'s `open`), and its parameter.
@@ -61,8 +79,9 @@ pub struct ActionTarget {
     pub resource_kind: String,
     pub resource_label: String,
     pub spec: ActionSpec,
-    /// The argument the row already carries, as `(parameter, value)`: an
-    /// app's `open` invoked for one search hit carries the hit's anchor, so
+    /// The argument the row runs with, as `(parameter, value)`: choosing a
+    /// prompted action fills in the value the person typed, and an app's
+    /// `open` invoked for one search hit carries the hit's anchor, so
     /// choosing the row runs it without asking.
     pub preset: Option<(String, String)>,
 }
@@ -176,12 +195,23 @@ pub struct Hit {
     /// The row's own picture, when its source gives one (an app's hit, an
     /// action's declared icon); else its kind's.
     pub icon: Option<ui::icons::Icon>,
+    /// Faces laid out beside the row: who is there, who is in a call.
+    pub faces: Vec<ui::search::RowFace>,
+    /// What choosing the row gets you, when it is worth saying ("Open",
+    /// "Join"); the kind's own outcome otherwise.
+    pub outcome: Option<String>,
     pub target: Target,
 }
 
 /// A source of hits for one domain (applications, windows, actions, …).
 pub trait Source {
     fn id(&self) -> &str;
+    /// What people call it, for the row that switches it off and on again
+    /// ([`crate::providers::Switches`]). A source that does not say is
+    /// listed by its id.
+    fn name(&self) -> String {
+        self.id().to_owned()
+    }
     /// Top of this source's score scale; see [`system::merged_strength`].
     fn max_score(&self) -> i32 {
         system::MAX_PROVIDER_SCORE
@@ -202,6 +232,9 @@ pub trait Source {
 impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     fn id(&self) -> &str {
         (**self).id()
+    }
+    fn name(&self) -> String {
+        (**self).name()
     }
     fn max_score(&self) -> i32 {
         (**self).max_score()

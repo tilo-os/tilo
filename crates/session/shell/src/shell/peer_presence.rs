@@ -2585,9 +2585,9 @@ mod two_sessions {
             .collect()
     }
 
-    /// `spawn` is the removed legacy JSON-socket constructor; the typed
-    /// Cap'n Proto broker under test opens its own socket the same way
-    /// production does, just with no peer-sync bridge to Iroh.
+    /// `spawn` is the removed legacy JSON-socket constructor; the broker
+    /// under test opens its own socket the same way production does, just
+    /// with no peer-sync bridge to Iroh.
     fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))

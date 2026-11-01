@@ -1106,7 +1106,6 @@ fn subscribe(runtime: &mut crate::workspace::WorkspaceRuntime, seed: u8) -> Queu
     let (disconnect, disconnected) = tokio::sync::mpsc::channel(1);
     runtime.add_subscriber(crate::workspace::Subscriber {
         device_public_key: device(seed),
-        role: crate::auth::PeerRole::Device,
         tx,
         disconnect,
     });

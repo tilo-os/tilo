@@ -248,11 +248,6 @@ fn historical_basis(
             }
             admissions.insert(canonical_bytes(proof).map_err(|_| MediaPolicyError::Malformed)?);
         }
-        let mut delegations = BTreeSet::new();
-        for delegation in &row.workspace_delegations {
-            delegations
-                .insert(canonical_bytes(delegation).map_err(|_| MediaPolicyError::Malformed)?);
-        }
         for entry in row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
                 return Err(MediaPolicyError::Binding);
@@ -260,7 +255,7 @@ fn historical_basis(
             revocations.push(entry);
         }
         certificates.insert(device, row.device_cert.user_public_key);
-        rows.insert(device, (row.device_cert, admissions, delegations));
+        rows.insert(device, (row.device_cert, admissions));
     }
     if !certificates.values().any(|root| *root == owner_key)
         || roster

@@ -32,6 +32,18 @@ pub enum CalculatorEffect {
     /// Show 3D graph.
     #[effect(view, idempotent)]
     ShowGraph3d,
+    /// Show unit conversion.
+    #[effect(view, idempotent)]
+    ShowConvert,
+    /// Use degrees.
+    #[effect(view, idempotent)]
+    UseDegrees,
+    /// Use radians.
+    #[effect(view, idempotent)]
+    UseRadians,
+    /// Show or hide the graph's formula panel.
+    #[effect(view)]
+    TogglePanel,
     /// Recall calculation.
     #[effect(view, row, idempotent)]
     Open {

@@ -11,7 +11,6 @@ crates/sdk/ui-core/src/widget/chart.rs pixel_const 1
 crates/sdk/ui-core/src/widget/chart_legend.rs pixel_const 5
 crates/sdk/ui-core/src/widget/checkbox.rs pixel_const 2
 crates/sdk/ui-core/src/widget/color_picker.rs pixel_const 9
-crates/sdk/ui-core/src/widget/command_palette.rs pixel_const 13
 crates/sdk/ui-core/src/widget/context_menu.rs pixel_const 2
 crates/sdk/ui-core/src/widget/data_table.rs pixel_const 4
 crates/sdk/ui-core/src/widget/date_indexed_scrollbar.rs pixel_const 5
@@ -20,7 +19,7 @@ crates/sdk/ui-core/src/widget/document_viewport.rs pixel_const 6
 crates/sdk/ui-core/src/widget/drag.rs pixel_const 1
 crates/sdk/ui-core/src/widget/dropdown.rs pixel_const 5
 crates/sdk/ui-core/src/widget/filter_menu.rs pixel_const 4
-crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3
+crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 2
 crates/sdk/ui-core/src/widget/gauge.rs pixel_const 1
 crates/sdk/ui-core/src/widget/group_row.rs pixel_const 1
 crates/sdk/ui-core/src/widget/group_row_canvas.rs pixel_const 1

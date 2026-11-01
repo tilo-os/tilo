@@ -1,4 +1,4 @@
-//! Bringing a chosen, pasted or dropped file into the room's shared
+//! Bringing a chosen, pasted or dropped file into the workspace's shared
 //! content: read within the attachment limit, stored, checked, and
 //! described for the composer.
 
@@ -55,7 +55,7 @@ pub(super) fn store_attachment(
         Ok(blob) => blob,
         Err(error) => {
             eprintln!("chat: content store refused an attachment: {error}");
-            return fail("there is no room to keep it here; free some space and try again");
+            return fail("there is no workspace to keep it here; free some space and try again");
         }
     };
     if content.read(&blob).as_deref() != Some(bytes) {

@@ -10,13 +10,8 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase typing_after_switching_to_graph_2d
     {
         let mut app = hosted();
-        press_bar(&mut app, "calculator.mode:1");
-        assert_eq!(
-            ui::window_toolbar::declared()
-                .and_then(|toolbar| toolbar.views)
-                .map(|views| views.chosen),
-            Some("calculator.mode:1".to_owned())
-        );
+        press_mode(&mut app, Mode::Graph2d);
+        assert_eq!(chosen_view().as_deref(), Some("Graph 2D"));
         app.harness().type_text("x+1");
         app.settle();
         assert_eq!(
@@ -32,7 +27,7 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase typing_after_pressing_the_formula
     {
         let mut app = hosted();
-        press_bar(&mut app, "calculator.mode:1");
+        press_mode(&mut app, Mode::Graph2d);
         click(&mut app, "calculator.graph.field:2d:0");
         app.harness().type_text("2*x");
         app.settle();
@@ -56,7 +51,7 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase typing_after_switching_to_graph_3d
     {
         let mut app = hosted();
-        press_bar(&mut app, "calculator.mode:2");
+        press_mode(&mut app, Mode::Graph3d);
         let surface = |app: &mut TestApp<CalculatorShell>| {
             app.state()
                 .surfaces
@@ -93,7 +88,7 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase switching_to_calculator_mode_takes_typing_too
     {
         let mut app = hosted();
-        press_bar(&mut app, "calculator.mode:0");
+        press_mode(&mut app, Mode::Calc);
         app.harness().type_text("1+2");
         app.settle();
         assert_eq!(calculator(&mut app).1.value.as_deref(), Some("1+2"));

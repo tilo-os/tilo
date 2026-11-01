@@ -57,7 +57,6 @@ CISCO_ENVIRONMENTS = {
 # Shipped images whose final stage installs from live Fedora repositories
 # rather than the frozen snapshot. Every entry must exist.
 LIVE_REPOSITORY_IMAGES = {
-    "crates/hosting/tilo-room-service/container/Containerfile": "the room service, on fedora-minimal",
     "os/Containerfile.legacy-guest": "the Linux legacy VM guest, on the mirrored fedora-bootc base",
 }
 CISCO_REPO_REMOVAL = f"rm -f /etc/yum.repos.d/{CISCO_REPO}.repo"

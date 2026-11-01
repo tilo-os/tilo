@@ -1,8 +1,8 @@
 //! Transport-neutral characterization tests for collaboration governance.
 //!
-//! These intentionally exercise the state shared by Cap'n Proto and peer
+//! These intentionally exercise the state shared by the wire and peer
 //! ingress. Transport tests should prove framing and routing; policy belongs
-//! here so retiring an RPC dialect cannot silently retire its guarantees.
+//! here so retiring a transport cannot silently retire its guarantees.
 
 #![allow(
     clippy::unwrap_used,

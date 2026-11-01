@@ -108,6 +108,8 @@ struct Head {
     presents: Option<String>,
     /// It draws nothing where it stands and attaches to the view it stands in.
     attaches: bool,
+    /// Why the gallery cannot show it, when it cannot: `#[component(not_in_gallery = "…")]`.
+    not_in_gallery: Option<String>,
 }
 
 /// What a field is.
@@ -182,9 +184,15 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
                 head.presents = Some(value()?);
             } else if meta.path.is_ident("attaches") {
                 head.attaches = true;
+            } else if meta.path.is_ident("not_in_gallery") {
+                let reason = value()?;
+                if reason.trim().is_empty() {
+                    return Err(meta.error("say why the gallery cannot show it"));
+                }
+                head.not_in_gallery = Some(reason);
             } else {
                 return Err(meta.error(
-                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"`, `presents = \"..\"` and `attaches`",
+                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"`, `presents = \"..\"`, `attaches` and `not_in_gallery = \"..\"`",
                 ));
             }
             Ok(())
@@ -377,6 +385,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     let label = option_tokens(head.label.as_deref());
     let presents = option_tokens(head.presents.as_deref());
     let attaches = head.attaches;
+    let not_in_gallery = option_tokens(head.not_in_gallery.as_deref());
     // A component of no parts reads nothing into its props.
     let binding = if reads.is_empty() {
         quote!(let _ = source; let props)
@@ -402,6 +411,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
                         label: #label,
                         presents: #presents,
                         attaches: #attaches,
+                        not_in_gallery: #not_in_gallery,
                     },
                 }
             }

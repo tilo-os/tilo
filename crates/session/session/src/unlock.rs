@@ -34,6 +34,12 @@ pub enum Verdict {
 /// session's loop.
 pub trait PasswordVerifier: Send + Sync {
     fn verify(&self, user: &str, password: &str) -> Verdict;
+
+    /// Whether a check can be made here at all. A session whose verifier
+    /// cannot take one does not lock: it could not be left again.
+    fn available(&self) -> bool {
+        true
+    }
 }
 
 /// The helper as a verifier: `program[0]` the executable, then leading
@@ -82,6 +88,12 @@ impl PasswordVerifier for HelperVerifier {
             _ => Verdict::Unavailable,
         }
     }
+
+    fn available(&self) -> bool {
+        self.program
+            .first()
+            .is_some_and(|program| Path::new(program).is_file())
+    }
 }
 
 /// Nothing can check a password here: nothing unlocks.
@@ -91,6 +103,10 @@ pub struct Unavailable;
 impl PasswordVerifier for Unavailable {
     fn verify(&self, _user: &str, _password: &str) -> Verdict {
         Verdict::Unavailable
+    }
+
+    fn available(&self) -> bool {
+        false
     }
 }
 
@@ -151,5 +167,23 @@ mod tests {
         let silent = fake_helper(dir.path(), "exec sleep 1000000\n")
             .with_timeout(Duration::from_millis(150));
         assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
+    }
+
+    /// A session that cannot check a password says so before it locks,
+    /// rather than locking a screen nobody can leave.
+    #[test]
+    fn a_verifier_says_whether_it_can_check_a_password_at_all() {
+        assert!(!Unavailable.available());
+        let dir = tempfile::tempdir().unwrap();
+        let helper = fake_helper(dir.path(), "read -r pw\nexit 1\n");
+        assert!(helper.available());
+        assert!(
+            !HelperVerifier::new(vec!["/nonexistent/tilo-unlock-helper".to_owned()]).available()
+        );
+        assert_eq!(
+            installed().available(),
+            Path::new(UNLOCK_HELPER).is_file(),
+            "the installed helper is the one place a password is checked"
+        );
     }
 }

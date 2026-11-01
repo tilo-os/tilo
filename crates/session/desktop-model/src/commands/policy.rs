@@ -212,7 +212,10 @@ pub fn may_command(
         | DesktopCommand::MoveStrip { strip, .. } => may_manage_strip(standing, authors, *strip),
         DesktopCommand::OpenTab { .. }
         | DesktopCommand::OpenApp { .. }
-        | DesktopCommand::DuplicateTab { .. } => write(standing),
+        | DesktopCommand::DuplicateTab { .. }
+        // A window that comes back is a window opened: whoever closes and
+        // opens here may undo a close of their own.
+        | DesktopCommand::ReopenClosed { .. } => write(standing),
         DesktopCommand::CloseTab { location }
         | DesktopCommand::ReorderTab { location, .. }
         | DesktopCommand::MoveTab { location, .. }

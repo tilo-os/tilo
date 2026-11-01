@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::shell::certified_action_session::CertifiedActionSession;
+use crate::shell::collab_app_broker::LaunchScope;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::collab_broker_capnp::LaunchScope;
 
 /// [`ActionHost`] over the live application broker.
 #[derive(Clone)]
@@ -374,8 +374,8 @@ impl ActionHost for BrokerActionHost {
 )]
 mod tests {
     use super::*;
+    use crate::shell::collab_app_broker::{PublishedAction, PublishedInput, PublishedSurface};
     use crate::shell::collab_broker::CrdtRoute;
-    use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     use tilo_actions::ActionAddress;
     use tilo_actions::remote::ReceiptStatus;
@@ -415,7 +415,7 @@ mod tests {
     /// files app publishing a cancellable job and a write-gated action.
     fn host() -> (
         BrokerActionHost,
-        tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_app_broker::InvocationEnvelope>,
     ) {
         host_with(Vec::new())
     }
@@ -425,7 +425,7 @@ mod tests {
         extra: Vec<PublishedAction>,
     ) -> (
         BrokerActionHost,
-        tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_app_broker::InvocationEnvelope>,
     ) {
         let mut workspace = Workspace::new(WorkspaceId(41), "Remote room");
         workspace.set_owner("a1".repeat(32));
@@ -531,16 +531,15 @@ mod tests {
             calls: std::sync::atomic::AtomicUsize::new(0),
             on_ui_thread: std::sync::atomic::AtomicBool::new(false),
         });
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                    WorkspaceTree::default().shared(),
-                )),
-                tilo_action_broker::services::HostServices {
-                    local_person: Some(service.clone()),
-                    ..Default::default()
-                },
-            );
+        let broker = crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority(
+            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                WorkspaceTree::default().shared(),
+            )),
+            tilo_action_broker::services::HostServices {
+                local_person: Some(service.clone()),
+                ..Default::default()
+            },
+        );
         let host = BrokerActionHost::new(broker);
         let caller = Caller::local_person("displayed-person").in_room("room");
         let request = refresh(tilo_actions::InvocationId::new());
@@ -581,16 +580,15 @@ mod tests {
         }
         let service = Arc::new(Refuse(AtomicUsize::new(0)));
         let tree = WorkspaceTree::default().shared();
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                    tree,
-                )),
-                tilo_action_broker::services::HostServices {
-                    local_person: Some(service.clone()),
-                    ..Default::default()
-                },
-            );
+        let broker = crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority(
+            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                tree,
+            )),
+            tilo_action_broker::services::HostServices {
+                local_person: Some(service.clone()),
+                ..Default::default()
+            },
+        );
         let host = BrokerActionHost::new(broker.clone());
         let native = Caller::local_person("displayed-person").in_room("room");
         assert!(now(host.query(&native, CatalogueQuery::default())).is_ok());

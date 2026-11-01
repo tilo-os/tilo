@@ -27,7 +27,7 @@ pub(super) fn matches(
     partition: &Partition,
 ) -> io::Result<bool> {
     use cap_primitives::fs::OpenOptionsExt as _;
-    let pin = PinnedRoot::open_absolute(root)?;
+    let pin = PinnedDirectory::open_absolute(root)?;
     let directory = match crate::nofollow::metadata_nofollow(&pin.file, Path::new(DIRECTORY)) {
         Ok(metadata) => pin.open_child(std::ffi::OsStr::new(DIRECTORY), &metadata)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -98,7 +98,7 @@ pub(super) fn publish(
     Ok(())
 }
 
-fn delivery_directory(root: &Arc<PinnedRoot>) -> io::Result<Arc<PinnedRoot>> {
+fn delivery_directory(root: &Arc<PinnedDirectory>) -> io::Result<Arc<PinnedDirectory>> {
     use cap_primitives::fs::{DirBuilderExt, DirOptions};
     root.validate_destination()?;
     match crate::nofollow::metadata_nofollow(&root.file, Path::new(DIRECTORY)) {

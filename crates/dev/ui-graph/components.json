@@ -1,5 +1,5 @@
 {
-  "format": 3,
+  "format": 4,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -4827,7 +4827,8 @@
       ],
       "semantics": {
         "role": "Group",
-        "label": "place"
+        "label": "place",
+        "not_in_gallery": "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
       }
     },
     {

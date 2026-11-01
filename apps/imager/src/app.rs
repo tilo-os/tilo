@@ -47,6 +47,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::icons::Icon;
+use ui::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{ParagraphAlign, TextRenderer};
@@ -104,8 +105,6 @@ pub(crate) enum Command {
     WriteAnother,
     /// Let go of the drive just written, so it can be taken out.
     Eject,
-    /// The owner SSH key on Confirm changed: kept on this machine as typed.
-    SshKey(String),
     PrepareMedium,
     RetryPreparedMedium,
     ReviewChangedPreparedFiles,
@@ -138,7 +137,7 @@ pub struct ImagerApp {
     profile: InstallProfile,
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
     wifi_psk: String,
-    ssh_public_key: String,
+    ssh_public_key: LocalState<String>,
     windows_preparation: Option<crate::windows_media::WindowsMedia>,
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -234,7 +233,7 @@ impl ImagerApp {
             action: Action::Flash,
             profile: InstallProfile::default(),
             wifi_psk: String::new(),
-            ssh_public_key: String::new(),
+            ssh_public_key: LocalState::new(String::new()),
             windows_preparation: None,
             progress: Progress::default(),
             ejected: false,
@@ -452,8 +451,8 @@ impl ImagerApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn ssh_key_for_test(&self) -> &str {
-        &self.ssh_public_key
+    pub(crate) fn ssh_key_for_test(&self) -> String {
+        self.ssh_public_key.with(Clone::clone)
     }
 
     #[cfg(test)]
@@ -887,7 +886,7 @@ impl ImagerApp {
         .current(self.stepper_current());
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             let sink = Rc::clone(&self.commands);
-            stepper = stepper.on_station(move |index| {
+            stepper = stepper.on_station_view(move |index| {
                 sink.borrow_mut().push(Command::Station(index));
             });
         }
@@ -1068,7 +1067,7 @@ impl ImagerApp {
                 .message(DROP_MESSAGE)
                 .icon(Icon::Download)
                 .with_action(self.button("imager.browse", DROP_ACTION, Command::PickFile))
-                .on_files(move |files| {
+                .on_files_view(move |files| {
                     if let Some(file) = files.into_iter().next() {
                         sink.borrow_mut().push(Command::Dropped(file));
                     }
@@ -1369,7 +1368,6 @@ impl ImagerApp {
                 &self.wifi_psk,
                 &self.ssh_public_key,
                 self.control_actions.as_ref(),
-                &self.commands,
             )));
         }
         let (warning, consequence) = self.confirm_warning();
@@ -2115,10 +2113,11 @@ impl ImagerApp {
         }
         // Checked before the identity lookup, so a setup machine without an
         // identity does not hide the missing passphrase behind that error.
+        let ssh_public_key = self.ssh_public_key.with(Clone::clone);
         if !self.profile.wifi_ssid.trim().is_empty() && self.wifi_psk.is_empty() {
             return Err("A Wi-Fi password is required when a network name is set.".into());
         }
-        crate::handoff::validate_bringup_ssh_key(&self.ssh_public_key)?;
+        crate::handoff::validate_bringup_ssh_key(&ssh_public_key)?;
         self.writer_refusal().map_err(|(_, reason)| reason)?;
         // Stage Wi-Fi, the owner SSH key, and enrollment for any image the
         // operator configured on Confirm. Official media still embeds only the
@@ -2131,7 +2130,7 @@ impl ImagerApp {
                 crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?;
             if let Some(stage) = staged.as_ref()
                 && let Err(error) =
-                    crate::handoff::install_bringup_ssh_key(stage.path(), &self.ssh_public_key)
+                    crate::handoff::install_bringup_ssh_key(stage.path(), &ssh_public_key)
             {
                 let _ = std::fs::remove_dir_all(stage.path());
                 return Err(error);
@@ -2141,7 +2140,7 @@ impl ImagerApp {
             crate::handoff::stage_access_handoff(
                 &self.profile,
                 &self.wifi_psk,
-                &self.ssh_public_key,
+                &ssh_public_key,
                 !src.installable,
             )?
             .map(|stage| stage.root)
@@ -2991,7 +2990,7 @@ impl ImagerApp {
             }
             ImagerEffect::SetSshKey { value } => {
                 crate::handoff::validate_bringup_ssh_key(&value)?;
-                self.ssh_public_key = value;
+                self.ssh_public_key.set(value);
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -3201,12 +3200,6 @@ impl ImagerApp {
             }
             Command::Rescan => {
                 self.do_rescan();
-            }
-            Command::SshKey(value) => {
-                if self.step == Step::Confirm && self.offers_write_setup() {
-                    self.ssh_public_key = value;
-                    self.dirty = true;
-                }
             }
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
@@ -4613,7 +4606,7 @@ mod tests {
         present(&mut app, &doc);
         app.wifi_psk = "correct-horse".into();
         let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
-        app.ssh_public_key = key.into();
+        app.ssh_public_key.set(key.into());
         assert!(!app.profile.enroll_local_identity);
         let error = app
             .begin_write(&app.target().unwrap().dev_path(), "sdb")
@@ -4859,7 +4852,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            host.with_widget::<ImagerApp, _>(|app| app.ssh_public_key.clone())
+            host.with_widget::<ImagerApp, _>(|app| app.ssh_public_key.with(Clone::clone))
                 .unwrap(),
             "ssh-"
         );

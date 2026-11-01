@@ -10,12 +10,13 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use smithay::utils::{Logical, Rectangle};
-use tilo_compositor::{Compositor, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _};
+use tilo_compositor::{
+    Compositor, LayoutRect, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _,
+};
 use tilo_surface_host::desktop;
 
-fn output() -> Vec<Rectangle<i32, Logical>> {
-    vec![Rectangle::new((0, 0).into(), (1280, 800).into())]
+fn output() -> Vec<LayoutRect> {
+    vec![LayoutRect::new((0, 0).into(), (1280, 800).into())]
 }
 
 fn window(id: u64, app: &str) -> WindowInfo {
@@ -46,8 +47,8 @@ fn windows_open_side_by_side_where_their_tabs_are_laid_out() {
     let second = window(2, "org.mozilla.firefox");
     let size2 = policy.initial_size(&second, &outputs).unwrap();
     let mapped = [
-        (first.clone(), Rectangle::new(at, size.into())),
-        (second.clone(), Rectangle::new((0, 0).into(), size2.into())),
+        (first.clone(), LayoutRect::new(at, size.into())),
+        (second.clone(), LayoutRect::new((0, 0).into(), size2.into())),
     ];
     let arranged = policy.arrange(&mapped, &outputs).unwrap();
     assert_eq!(arranged.len(), 2);
@@ -90,7 +91,7 @@ fn a_window_waits_in_its_place_until_it_shows_a_buffer() {
     policy.withdrawn(&second);
     policy
         .arrange(
-            &[(first.clone(), Rectangle::new(at, size.into()))],
+            &[(first.clone(), LayoutRect::new(at, size.into()))],
             &outputs,
         )
         .unwrap();
@@ -133,8 +134,8 @@ fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
     let size = policy.initial_size(&first, &outputs).unwrap();
     let size2 = policy.initial_size(&second, &outputs).unwrap();
     let mapped = [
-        (first.clone(), Rectangle::new((0, 0).into(), size.into())),
-        (second.clone(), Rectangle::new((0, 0).into(), size2.into())),
+        (first.clone(), LayoutRect::new((0, 0).into(), size.into())),
+        (second.clone(), LayoutRect::new((0, 0).into(), size2.into())),
     ];
     policy.arrange(&mapped, &outputs).unwrap();
     assert_eq!(policy.focused(), Some(2));
@@ -162,4 +163,79 @@ fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
     policy.arrange(&mapped, &outputs).unwrap();
     assert_eq!(policy.focused(), Some(2));
     assert!(!asks(2));
+}
+
+/// A window's own asking to cover the screen is answered by the desktop: the
+/// tab fills its strip or covers its display and gives it back, and the
+/// compositor is told the desktop took it rather than covering the window on
+/// the display itself.
+#[test]
+fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
+    use tilo_compositor::{ResizeEdges, WindowRequest};
+    let _settled = ui::motion::testing::settled();
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let first = window(1, "org.gnome.Terminal");
+    let size = policy.initial_size(&first, &outputs).unwrap();
+    let at = policy.place(&first, size, &outputs);
+    let mapped = [(first.clone(), LayoutRect::new(at, size.into()))];
+    policy.arrange(&mapped, &outputs).unwrap();
+    let maximized = || {
+        host.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.active_workspace()
+                    .and_then(|workspace| {
+                        workspace
+                            .strips
+                            .iter()
+                            .flat_map(|strip| &strip.window_groups)
+                            .next()
+                    })
+                    .is_some_and(|group| group.maximized)
+            })
+        })
+    };
+    let covering = || host.with_policy(|policy| policy.layout().fullscreen);
+    assert!(!maximized(), "a window opens at its width");
+    assert!(
+        !policy.request(&first, &WindowRequest::Maximize(true)),
+        "its strip answers the asking"
+    );
+    assert!(maximized(), "and fills it");
+    assert!(
+        !policy.request(
+            &first,
+            &WindowRequest::Fullscreen {
+                on: true,
+                output: None
+            }
+        ),
+        "the whole display is the desktop's to give too"
+    );
+    assert_eq!(covering(), Some(1), "the window covers its display");
+    assert!(
+        !policy.request(
+            &first,
+            &WindowRequest::Fullscreen {
+                on: false,
+                output: None
+            }
+        ),
+        "and giving it back is answered here too"
+    );
+    assert_eq!(covering(), None, "the display is the desktop's again");
+    assert!(
+        !policy.request(&first, &WindowRequest::Maximize(false)),
+        "as is the strip"
+    );
+    assert!(!maximized(), "the window is its own width again");
+    // A tab has no free geometry: a move or a resize asks for nothing.
+    let edges = ResizeEdges {
+        right: true,
+        ..ResizeEdges::default()
+    };
+    for request in [WindowRequest::Move, WindowRequest::Resize(edges)] {
+        assert!(!policy.request(&first, &request));
+        assert!(!maximized());
+    }
 }

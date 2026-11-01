@@ -14,9 +14,14 @@
 //! in, [`catalogue`] is `None`.
 //!
 //! Recents are the person's own and stay on the device ([`EmojiRecents`]):
-//! a workspace emoji (`:name:`) is remembered like any other.
+//! a workspace emoji (`:name:`) is remembered like any other. A program hands
+//! over where they live ([`keep_recents_in`]); one that keeps nothing else
+//! gets [`DeviceRecents`] in its state directory, which every live window
+//! installs as it starts.
 
 use std::cell::RefCell;
+use std::io::Read as _;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::deferred::Deferred;
@@ -351,9 +356,76 @@ pub trait RecentsStore {
     fn save(&self, items: &[String]);
 }
 
+/// The recents as a private file in the person's state directory
+/// (`$XDG_STATE_HOME/tilo/emoji-recents.json`): what a program that keeps
+/// nothing else gets, so the emoji someone picked yesterday lead today's
+/// picker. Only the emoji are written, most recent first.
+pub struct DeviceRecents {
+    path: PathBuf,
+}
+
+/// Most a kept file may hold: room for many times the cap, never a disk.
+const KEPT_LIMIT: u64 = 8 * 1024;
+
+impl DeviceRecents {
+    /// The recents of this device, where the state directory is known.
+    #[must_use]
+    pub fn on_the_device() -> Option<Self> {
+        let base = tilo_paths::state_dir()?;
+        Some(Self::at(base.join("tilo").join("emoji-recents.json")))
+    }
+
+    /// The recents kept in `path`, whose directory is made when saving.
+    #[must_use]
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl RecentsStore for DeviceRecents {
+    fn load(&self) -> Vec<String> {
+        let Ok(file) = tilo_files::native::private::read(&self.path) else {
+            return Vec::new();
+        };
+        let mut bytes = Vec::new();
+        if file.take(KEPT_LIMIT + 1).read_to_end(&mut bytes).is_err()
+            || bytes.len() as u64 > KEPT_LIMIT
+        {
+            return Vec::new();
+        }
+        serde_json::from_slice(&bytes).unwrap_or_default()
+    }
+
+    fn save(&self, items: &[String]) {
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        let Ok(bytes) = serde_json::to_vec(items) else {
+            return;
+        };
+        if let Err(error) = tilo_files::native::private::directory(parent)
+            .and_then(|()| tilo_files::native::private::write_atomic(&self.path, &bytes))
+        {
+            tracing::debug!(%error, "emoji recents are not kept on this device");
+        }
+    }
+}
+
 thread_local! {
     static RECENTS: RefCell<Option<EmojiRecents>> = const { RefCell::new(None) };
     static STORE: RefCell<Option<Box<dyn RecentsStore>>> = const { RefCell::new(None) };
+}
+
+/// Keep the recents in [`DeviceRecents::on_the_device`], unless the program
+/// handed its own store over already. A program calls this once as it starts;
+/// every picker then opens with the emoji used last time.
+pub fn keep_recents_on_the_device() {
+    if STORE.with(|kept| kept.borrow().is_some()) {
+        return;
+    }
+    if let Some(store) = DeviceRecents::on_the_device() {
+        keep_recents_in(Box::new(store));
+    }
 }
 
 /// Keep the recents in `store` from now on, reading what it holds.
@@ -450,5 +522,42 @@ mod tests {
     #[test]
     fn a_name_without_a_catalogue_is_the_emoji_itself() {
         assert_eq!(emoji_name(":party_parrot:"), ":party_parrot:");
+    }
+
+    /// A program that keeps its recents where the toolkit does has them
+    /// again next time: the same emoji, in the same order, in a file only the
+    /// person can read.
+    #[test]
+    fn the_recents_kept_on_the_device_come_back_next_time() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("state/tilo/emoji-recents.json");
+        let store = DeviceRecents::at(&path);
+        assert!(
+            store.load().is_empty(),
+            "a device with nothing kept has no recents"
+        );
+
+        let used = vec!["👍".to_owned(), ":party_parrot:".to_owned()];
+        store.save(&used);
+        assert_eq!(
+            DeviceRecents::at(&path).load(),
+            used,
+            "what was picked comes back in the order it was picked"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("the kept file")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "only the person reads their recents");
+        }
+
+        std::fs::write(&path, b"{ not recents").expect("damage the kept file");
+        assert!(
+            store.load().is_empty(),
+            "an unreadable file reads as no recents, never a failure"
+        );
     }
 }

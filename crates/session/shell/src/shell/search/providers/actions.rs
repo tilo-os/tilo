@@ -71,8 +71,8 @@ struct CatalogueState {
     external_tree_revision: u64,
     locale: String,
     peer_sync: bool,
-    /// Whether this device can issue an invitation into the active workspace
-    /// ([`crate::shell::invite_policy`]): the `peer.invite` rows are offered
+    /// Whether the person at the screen may invite into the active workspace
+    /// ([`ChromeState::may_invite_here`]): the `peer.invite` rows are offered
     /// only then, as the invite composer is.
     invite_offered: bool,
     collab: bool,
@@ -348,9 +348,7 @@ impl ActionsProvider {
             external_tree_revision,
             locale: crate::shell::i18n::current_locale(),
             peer_sync: ctx.chrome.peer_sync_enabled,
-            invite_offered: ctx.chrome.peer_sync_enabled
-                && crate::shell::invite_policy::active_invite_route(ctx.chrome)
-                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
+            invite_offered: ctx.chrome.may_invite_here(),
             collab: ctx.chrome.collab_available(),
             active_workspace,
             states: [ctx.chrome.dnd(), ctx.chrome.axis_navigation_enabled()],
@@ -2338,15 +2336,15 @@ pub(crate) mod tests {
     /// governs, where the issuer would refuse.
     #[test]
     fn invite_rows_follow_the_invitation_policy() {
-        use crate::shell::invite_policy::{InviteRoute, native_governor, tests::grant_invite};
+        use crate::shell::native_workspace_owner::grant_invite;
         use crate::shell::state::person_id_of;
 
         let (_directory, owner, room, _now, _key) =
             crate::shell::native_workspace_owner::test_enrolled_owner();
-        let governor = person_id_of(
-            native_governor(Some(owner.clone()), room)
-                .expect("the room's admitted governor")
-                .person,
+        let inviter = person_id_of(
+            owner
+                .with_current(room, |view| Ok(view.owner()))
+                .expect("the room's admitted governor"),
         )
         .expect("person id");
         let other = person_id_of(
@@ -2364,9 +2362,7 @@ pub(crate) mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.room() == room)
                 .expect("the enrolled room's workspace");
-            for person in [&governor, &other] {
-                grant_invite(workspace, person);
-            }
+            grant_invite(workspace, &inviter);
             let local = workspace.id;
             tree.desktop.active = local;
         }
@@ -2377,21 +2373,18 @@ pub(crate) mod tests {
         );
         chrome.borrow_mut().peer_sync_enabled = true;
         let offers = |id: &str| row(&rows_for(&provider, &chrome, ""), id).is_some();
-        let route = || crate::shell::invite_policy::active_invite_route(&chrome.borrow());
 
-        chrome.borrow_mut().act_as(governor);
-        assert_eq!(
-            route(),
-            Some(InviteRoute::Host),
-            "the person governing the room's host may invite"
+        chrome.borrow_mut().act_as(inviter);
+        assert!(
+            chrome.borrow().may_invite_here(),
+            "the person the room's policy lets invite may"
         );
         assert!(offers("peer.invite"), "so the palette offers the composer");
 
         chrome.borrow_mut().act_as(other);
-        assert_eq!(
-            route(),
-            Some(InviteRoute::ViaGovernor),
-            "another person's host governs the room for this one"
+        assert!(
+            !chrome.borrow().may_invite_here(),
+            "another person the policy does not name may not, whoever hosts the room"
         );
         assert!(!offers("peer.invite"), "so no invite row is offered");
         assert!(!offers("peer.invite.named"), "named or not");

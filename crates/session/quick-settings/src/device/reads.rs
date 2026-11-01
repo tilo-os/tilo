@@ -2,11 +2,12 @@
 //! found.
 //!
 //! The reads go through the OS (`NetworkManager`, `BlueZ`, the power daemon,
-//! the brightness service, the audio graph) and some take seconds, so they
-//! only ever run on a worker ([`super::refresh`]). [`DeviceReads`] is the
-//! seam: the desktop reads the OS ([`OsReads`]), a test reads stand-ins.
+//! the brightness service) and some take seconds, so they only ever run on a
+//! worker ([`super::refresh`]). [`DeviceReads`] is the seam: the desktop
+//! reads the OS ([`OsReads`]), a test reads stand-ins. The sound is not read
+//! here: the audio service owns the graph, and the session hands the panel
+//! what it reads ([`super::DeviceHost::sound`]).
 
-use media::audio::default_node::{self, DefaultNode, VolumeState};
 use os_actions as qs;
 use tilo_power_mgmt::{BatterySnapshot, BatteryTime};
 
@@ -22,9 +23,6 @@ pub trait DeviceReads: Send + Sync {
     fn brightness(&self) -> Option<f32>;
     /// Every monitor whose brightness can be set, named for display.
     fn displays(&self) -> Vec<DisplayBrightness>;
-    /// Whether the default sink is a real output.
-    fn output_device(&self) -> bool;
-    fn volume(&self) -> Option<VolumeState>;
     /// Whether Bluetooth is on; `None` without an adapter.
     fn bluetooth(&self) -> Option<bool>;
     fn power(&self) -> Option<qs::PowerProfile>;
@@ -49,7 +47,19 @@ pub trait DeviceReads: Send + Sync {
     /// # Errors
     /// Why the scan failed.
     fn scan_wifi(&self) -> Result<(), String>;
-    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>>;
+    /// The Wi-Fi network profiles `NetworkManager` keeps, in reach or not.
+    fn saved_networks(&self) -> Vec<qs::SavedNetworkProfile> {
+        Vec::new()
+    }
+    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>>;
+    /// The Bluetooth devices in reach that are not paired, strongest first.
+    fn nearby_bluetooth(&self) -> Vec<qs::NearbyBtDevice> {
+        Vec::new()
+    }
+    /// Whether `BlueZ` is looking for devices now.
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        None
+    }
     /// How many firmware updates are offered; `None` without fwupd.
     fn firmware_updates(&self) -> Option<usize>;
     /// Which controls the machine has hardware for, beyond what the other
@@ -70,17 +80,6 @@ impl DeviceReads for OsReads {
         display_brightness(
             qs::BrightnessService::global().rescan_blocking(),
             settings_store::hardware::DisplayHardwareSnapshot::load(),
-        )
-    }
-
-    fn output_device(&self) -> bool {
-        default_node::has_output_device()
-    }
-
-    fn volume(&self) -> Option<VolumeState> {
-        qs::log_get(
-            "get_volume_state",
-            default_node::volume_state(DefaultNode::Sink),
         )
     }
 
@@ -132,8 +131,27 @@ impl DeviceReads for OsReads {
         qs::scan_wifi()
     }
 
-    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
-        qs::log_get("list_bt_devices", qs::bluez::paired_devices())
+    fn saved_networks(&self) -> Vec<qs::SavedNetworkProfile> {
+        qs::log_get(
+            "list_saved_network_profiles",
+            qs::list_saved_network_profiles(),
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|profile| profile.kind == "802-11-wireless")
+        .collect()
+    }
+
+    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
+        qs::log_get("list_bt_devices", qs::list_bt_devices())
+    }
+
+    fn nearby_bluetooth(&self) -> Vec<qs::NearbyBtDevice> {
+        qs::log_get("nearby_bluetooth", qs::nearby_bluetooth()).unwrap_or_default()
+    }
+
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        qs::log_get("scanning_bluetooth", qs::scanning_bluetooth())
     }
 
     fn firmware_updates(&self) -> Option<usize> {
@@ -153,9 +171,6 @@ impl DeviceReads for OsReads {
 pub(crate) struct FastReading {
     pub(crate) brightness: Option<f32>,
     pub(crate) displays: Option<Vec<DisplayBrightness>>,
-    /// Whether the default sink is a real output with a readable level.
-    pub(crate) volume_available: Option<bool>,
-    pub(crate) volume: Option<VolumeState>,
     pub(crate) bluetooth: Option<bool>,
     /// A successful `BlueZ` state query proves that an adapter exists.
     pub(crate) bluetooth_available: bool,
@@ -175,12 +190,9 @@ impl FastReading {
     /// Read everything through `reads`, once each.
     pub(crate) fn read(reads: &dyn DeviceReads) -> Self {
         let bluetooth = reads.bluetooth();
-        let volume = reads.output_device().then(|| reads.volume()).flatten();
         Self {
             brightness: reads.brightness(),
             displays: Some(reads.displays()),
-            volume_available: Some(volume.is_some()),
-            volume,
             bluetooth_available: bluetooth.is_some(),
             bluetooth,
             power: reads.power(),
@@ -210,10 +222,6 @@ impl FastReading {
                 self.brightness = None;
                 self.displays = None;
             }
-            Reader::Volume => {
-                self.volume = None;
-                self.volume_available = None;
-            }
         }
     }
 
@@ -223,8 +231,6 @@ impl FastReading {
         Self {
             brightness: None,
             displays: Some(Vec::new()),
-            volume_available: Some(false),
-            volume: None,
             bluetooth: None,
             bluetooth_available: false,
             power: None,
@@ -253,7 +259,6 @@ pub(crate) enum QsField {
     Power,
     Vpn,
     Brightness,
-    Volume,
 }
 
 impl QsField {
@@ -267,7 +272,6 @@ impl QsField {
             Self::Power => Reader::Power,
             Self::Vpn => Reader::Vpns,
             Self::Brightness => Reader::Brightness,
-            Self::Volume => Reader::Volume,
         }
     }
 
@@ -289,18 +293,16 @@ pub(crate) enum Reader {
     Power,
     Vpns,
     Brightness,
-    Volume,
 }
 
 impl Reader {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Radios,
         Self::Bluetooth,
         Self::Wired,
         Self::Power,
         Self::Vpns,
         Self::Brightness,
-        Self::Volume,
     ];
 
     pub(crate) const fn index(self) -> usize {
@@ -316,7 +318,6 @@ impl Reader {
             Self::Power => FieldReading::Power(reads.power()),
             Self::Vpns => FieldReading::Vpns(reads.vpns()),
             Self::Brightness => FieldReading::Brightness(reads.brightness(), reads.displays()),
-            Self::Volume => FieldReading::Volume(reads.volume()),
         }
     }
 }
@@ -330,7 +331,6 @@ pub(crate) enum FieldReading {
     Power(Option<qs::PowerProfile>),
     Vpns(Option<Vec<qs::VpnConnectionInfo>>),
     Brightness(Option<f32>, Vec<DisplayBrightness>),
-    Volume(Option<VolumeState>),
 }
 
 impl FieldReading {
@@ -342,7 +342,6 @@ impl FieldReading {
             Self::Power(_) => Reader::Power,
             Self::Vpns(_) => Reader::Vpns,
             Self::Brightness(..) => Reader::Brightness,
-            Self::Volume(_) => Reader::Volume,
         }
     }
 }
@@ -387,6 +386,8 @@ pub(crate) enum ReadBack {
     Field(QsField),
     /// The accessories, which are `BlueZ`'s.
     Accessories,
+    /// The networks and the saved profiles, which are `NetworkManager`'s.
+    Networks,
 }
 
 /// A write the panel made, as it ended.
@@ -398,14 +399,32 @@ pub(crate) struct WriteDone {
     pub(crate) result: Result<(), String>,
 }
 
+/// What the panel lists of Bluetooth: the paired accessories, the devices
+/// in reach, and whether `BlueZ` is looking for more.
+#[derive(Debug)]
+pub(crate) struct BluetoothReading {
+    pub(crate) paired: Option<Vec<qs::BtDeviceInfo>>,
+    pub(crate) nearby: Vec<qs::NearbyBtDevice>,
+    pub(crate) scanning: Option<bool>,
+}
+
+/// What the panel lists of Wi-Fi: the networks in reach as
+/// `NetworkManager` knows them, and the profiles it keeps to join them
+/// again.
+#[derive(Debug)]
+pub(crate) struct WifiReading {
+    pub(crate) networks: Result<Vec<qs::WifiNetworkInfo>, String>,
+    pub(crate) saved: Vec<qs::SavedNetworkProfile>,
+}
+
 /// What a worker hands back.
 #[derive(Debug)]
 pub(crate) enum QsReading {
     Fast(Box<FastReading>),
     Field(FieldReading),
     Firmware(Option<usize>),
-    WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
-    BtDevices(Option<Vec<qs::bluez::DeviceInfo>>),
+    WifiNetworks(WifiReading),
+    BtDevices(BluetoothReading),
     WifiJoin(WifiJoinResult),
     Wrote(WriteDone),
 }

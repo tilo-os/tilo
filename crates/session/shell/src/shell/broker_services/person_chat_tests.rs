@@ -33,7 +33,7 @@ fn person_bridge_refuses_replica_fallback_without_private_transport() {
         super::super::super::native_workspace_owner::test_enrolled_owner();
     let certificate = owner
         .with_current(room, |view| {
-            assert_ne!(view.device(), view.governor(), "fixture must be a replica");
+            assert_ne!(view.device(), view.room_host(), "fixture must be a replica");
             Ok(view.device().clone())
         })
         .unwrap();
@@ -207,7 +207,7 @@ fn person_bridge_never_acknowledges_failed_private_persistence() {
 
 fn private_owner_fixture() -> (
     tempfile::TempDir,
-    tilo_joined_room::NativeWorkspaceOwner,
+    tilo_peer_state::owner::NativeWorkspaceOwner,
     crate::shell::state::RoomId,
     tilo_user_identity::DeviceCert,
 ) {
@@ -216,33 +216,34 @@ fn private_owner_fixture() -> (
     tree.persist_path = Some(directory.path().join("state.json"));
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-    let certificate = tilo_joined_room::testing::certificate(
+    let certificate = tilo_peer_state::owner::testing::certificate(
         &ed25519_dalek::SigningKey::from_bytes(&[62; 32]),
         &key,
         "Private owner host",
     );
     let mut governor =
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+            .unwrap();
+    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
     enroll_contact(&owner, &mut governor, room, std::time::SystemTime::now());
     (directory, owner, room, certificate)
 }
 fn enroll_contact(
-    owner: &tilo_joined_room::NativeWorkspaceOwner,
-    governor: &mut tilo_joined_room::testing::governor::TestGovernor,
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    governor: &mut tilo_peer_state::owner::testing::governor::TestGovernor,
     room: tilo_desktop_model::RoomId,
     now: std::time::SystemTime,
 ) {
     use tilo_peer_state::join;
     let key = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
-    let certificate = tilo_joined_room::testing::certificate(
+    let certificate = tilo_peer_state::owner::testing::certificate(
         &ed25519_dalek::SigningKey::from_bytes(&[74; 32]),
         &key,
         "Conversation peer",
     );
-    let ns = tilo_joined_room::testing::ns(now).unwrap();
+    let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.governor().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -275,7 +276,7 @@ fn enroll_contact(
             .receive(
                 room,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.governor().device_public_key,
+                    governor.room_host().device_public_key,
                 ),
                 message,
                 now,
@@ -287,7 +288,7 @@ fn enroll_contact(
             .direct_contacts(
                 room,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.governor().clone(),
+                    caller: governor.room_host().clone(),
                 },
                 now
             )

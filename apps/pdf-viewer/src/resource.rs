@@ -318,7 +318,7 @@ impl PdfMarkup {
     #[action(writes = comments)]
     pub fn import_pages(
         &mut self,
-        #[param("The page they go after; the start when none")] after: Option<String>,
+        #[param("The page they go after; after the last page when none")] after: Option<String>,
         #[param("The pages, each with the id it is addressed by")] pages: Vec<PagePlanEntry>,
     ) -> Result<(), Refusal> {
         if pages.is_empty() || pages.len() > MAX_IMPORTED_PAGES {

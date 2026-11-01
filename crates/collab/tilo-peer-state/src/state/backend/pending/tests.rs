@@ -48,7 +48,7 @@ fn bounded_pending_counts_actual_signed_deferred_message() {
     let mut restored = StatePeer::restore(
         &bytes,
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         peer.certificates(),
         RevocationList::new(),
         now,
@@ -86,7 +86,7 @@ fn bounded_pending_preserves_exact_count_and_declared_byte_denials() {
         StatePeer::restore(
             &bytes,
             peer.room(),
-            peer.authority().clone(),
+            peer.owner_certificates()[0].clone(),
             peer.certificates(),
             RevocationList::new(),
             now

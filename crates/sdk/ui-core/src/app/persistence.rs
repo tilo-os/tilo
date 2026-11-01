@@ -322,7 +322,9 @@ impl App {
         // Release component callback loans before requesting writer work. Owners
         // already collected still progress if another live component refuses entry.
         for owner in owners {
-            owner.tick();
+            if let Err(error) = owner.tick() {
+                tracing::error!(%error, "a record could not be offered for saving");
+            }
         }
         traversal
     }
@@ -332,7 +334,9 @@ impl App {
     #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
         if let Some(set) = self.persistence.records.as_mut() {
-            set.flush(&mut self.state.doc);
+            if let Err(error) = set.flush(&mut self.state.doc) {
+                tracing::error!(%error, "record persistence failed");
+            }
             if let (Some(saver), Some(room)) = (
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),

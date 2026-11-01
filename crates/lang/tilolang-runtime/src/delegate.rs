@@ -7,7 +7,7 @@
 //! action's own app as a child of the task. The runtime neither decides nor runs it; the
 //! invocation's answer is what the program gets.
 
-use crate::ids::{ActionId, AppId, FieldId};
+use crate::ids::{ActionId, AppId, FieldId, ModuleHash};
 use crate::meta::EffectClass;
 use crate::value::{ResourceRef, Value};
 
@@ -24,6 +24,13 @@ pub enum Invocation {
         class: EffectClass,
         /// It destroys something (`destructive action`).
         destructive: bool,
+        /// The module of the code that invokes it: the view's or the block's author, so the
+        /// app it goes to can record whose code asked. `None` for an invocation no code of
+        /// this runtime made.
+        author: Option<ModuleHash>,
+        /// The resource it is invoked on: the subject an action of another app names as the
+        /// resource whose door takes the child invocation.
+        subject: Option<ResourceRef>,
     },
     /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`.
     Edit {

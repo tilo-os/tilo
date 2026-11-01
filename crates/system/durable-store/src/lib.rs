@@ -369,6 +369,17 @@ pub trait DurableStore {
         Ok(Vec::new())
     }
 
+    /// Every [`StorageKey::RoomIndex`] the store holds, as its `package` and
+    /// `workspace` components, sorted. Lets a host read which records the
+    /// workspaces on this device keep without knowing their names first. A
+    /// store that cannot enumerate its keys answers with none.
+    ///
+    /// # Errors
+    /// A failure reading the backing storage.
+    fn room_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {

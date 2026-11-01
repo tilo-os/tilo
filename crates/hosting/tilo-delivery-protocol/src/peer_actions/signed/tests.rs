@@ -179,19 +179,6 @@ fn full_replay_window_refuses_rather_than_forgets() {
 }
 
 #[test]
-fn only_effect_free_reads_may_be_unsigned() {
-    let invocation = tilo_actions::InvocationId(Uuid::from_u128(4));
-    assert!(!ActionMessage::CatalogueRefresh { scope: None }.requires_signature());
-    assert!(!ActionMessage::Status { invocation }.requires_signature());
-    for message in [
-        invoke(&key(1), "a").message,
-        ActionMessage::Cancel { invocation },
-    ] {
-        assert!(message.requires_signature());
-    }
-}
-
-#[test]
 fn signed_frames_extend_the_v2_envelope_after_every_frozen_variant() {
     let device = key(1);
     let signed = SignedDirectedAction::sign(&invoke(&device, "a"), NOW, &device).unwrap();
@@ -209,5 +196,77 @@ fn signed_frames_extend_the_v2_envelope_after_every_frozen_variant() {
             action: signed,
             source_certificate: b"{}".to_vec(),
         }
+    );
+}
+
+/// A device key that only signs through a pending future, as a browser's
+/// non-extractable key does; `answer` replaces its signature when set.
+struct HeldKey {
+    key: ed25519_dalek::SigningKey,
+    answer: Option<Result<[u8; 64], tilo_relay_client::SignError>>,
+}
+
+impl tilo_relay_client::DeviceSigner for HeldKey {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> tilo_relay_client::SignFuture<'_> {
+        let answer = self
+            .answer
+            .clone()
+            .unwrap_or_else(|| Ok(ed25519_dalek::Signer::sign(&self.key, &message).to_bytes()));
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            answer
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_held_key_signs_the_same_statement_as_the_key_in_memory() {
+    let device = key(1);
+    let action = invoke(&device, "notes.txt");
+    let in_memory = SignedDirectedAction::sign(&action, NOW, &device).unwrap();
+    let held = HeldKey {
+        key: device.clone(),
+        answer: None,
+    };
+    let signed = SignedDirectedAction::sign_with(&action, NOW, &held)
+        .await
+        .unwrap();
+    // Ed25519 is deterministic: one statement, one signature, one wire.
+    assert_eq!(wire(&signed), wire(&in_memory));
+    let received = decoded(&wire(&signed));
+    received.verify(&action.source).unwrap();
+    assert_eq!(received.action(), &action);
+}
+
+#[tokio::test]
+async fn a_held_key_signs_only_its_own_actions_and_its_failures_are_refused() {
+    let device = key(1);
+    let other = HeldKey {
+        key: key(2),
+        answer: None,
+    };
+    assert_eq!(
+        SignedDirectedAction::sign_with(&invoke(&device, "a"), NOW, &other).await,
+        Err(ActionSignatureError::Source)
+    );
+    let failing = HeldKey {
+        key: device.clone(),
+        answer: Some(Err(tilo_relay_client::SignError("key gone".into()))),
+    };
+    assert_eq!(
+        SignedDirectedAction::sign_with(&invoke(&device, "a"), NOW, &failing).await,
+        Err(ActionSignatureError::Signer)
+    );
+    let wrong = HeldKey {
+        key: device.clone(),
+        answer: Some(Ok([7; 64])),
+    };
+    assert_eq!(
+        SignedDirectedAction::sign_with(&invoke(&device, "a"), NOW, &wrong).await,
+        Err(ActionSignatureError::Signer)
     );
 }

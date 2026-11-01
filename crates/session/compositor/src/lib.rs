@@ -22,10 +22,13 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod a11y;
 pub mod backdrop;
 pub mod backend;
 pub mod capture;
 pub mod clipboard_history;
+pub mod color_filter;
+mod color_management;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -38,24 +41,32 @@ pub mod host;
 pub mod idle;
 pub mod input;
 pub mod keys;
+mod layer;
 mod lock;
 pub mod output;
 mod output_management;
 mod output_power;
 mod pacing;
+mod pointer_lock;
 pub mod policy;
 mod power;
 mod present;
 mod protocols;
+pub mod remote_input;
 pub mod render;
 mod requests;
 pub mod selection;
+pub mod settings_bridge;
 mod snapshot;
 mod state;
+pub mod sticky_keys;
+pub mod switch_scan;
 mod tablet;
 mod text_input;
+mod toplevel_icon;
 mod touch;
 mod window_frame;
+mod x11_windows;
 mod xdnd;
 mod xdnd_bridge;
 mod xwayland;
@@ -68,28 +79,32 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
 
+use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::text_input::TextInputSeat;
 
+pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
 pub use backdrop::{BackdropImage, BackdropRequest};
+pub use backend::drm::access_keys::Assists;
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
+pub use color_filter::ColorFilter;
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use effects::{WindowEffect, WindowPicture};
-pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
-pub use idle::{IdleConfig, SessionTransition};
+pub use host::{CursorIcon, HostDrag, HostFrame, HostLayer, Region, SurfaceHost};
+pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
     TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
-pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 
 /// What the person is in the middle of, as the compositor sees it: an
 /// arranging change moves nothing under a gesture or while they type
@@ -109,9 +124,19 @@ impl Underway {
         self.gesture || self.typing
     }
 }
-pub use selection::Selection;
+pub use policy::{
+    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
+    WindowRequest,
+};
+pub use selection::{Selection, TEXT_MIME};
+/// The quarter turns an output is shown at.
+pub use smithay::utils::Transform;
 pub use state::State;
+pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
+pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
+pub use x11_windows::{Identity as X11Identity, X11Icon};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]
@@ -166,6 +191,21 @@ pub struct LoopData {
     pub state: State,
     /// The backend that created the sources.
     pub backend: Box<dyn Backend>,
+    /// The session's own X11 connection and what it learned about each X11
+    /// window, once Xwayland runs.
+    pub(crate) x11_windows: Option<x11_windows::X11Windows>,
+}
+
+/// What the loop tells of each turn of its wait.
+///
+/// Something watching the process for a main loop that has stopped uses it to
+/// tell an idle loop, which waits for events however long, from one that is
+/// stuck between its waits.
+pub trait LoopTurns: Send + Sync {
+    /// The loop is about to wait for events.
+    fn parking(&self);
+    /// The wait returned; the turn's work begins.
+    fn unparked(&self);
 }
 
 /// A running compositor: the Wayland display, its state and a backend.
@@ -173,6 +213,21 @@ pub struct Compositor {
     event_loop: EventLoop<'static, LoopData>,
     display: Display<State>,
     data: LoopData,
+    /// It runs in a window of a desktop it did not start: that desktop owns
+    /// idle, blanking, locking and suspend, so this one runs no idle timers.
+    hosted: bool,
+    /// The outputs as Settings and the session last read them
+    /// ([`Compositor::display_snapshot`]).
+    displays: settings_bridge::Published,
+    /// Told of every turn of the loop's wait, when someone watches for a loop
+    /// that has stopped.
+    turns: Option<Arc<dyn LoopTurns>>,
+    /// The person's accessibility settings as they apply now.
+    a11y: A11y,
+    /// The typing and pointing assists for input handed to
+    /// [`Compositor::input`]; a backend's own devices filter theirs before
+    /// they get there.
+    keys: AccessKeys,
 }
 
 impl Compositor {
@@ -200,11 +255,27 @@ impl Compositor {
             .map_err(io)?;
         state.loop_handle = Some(event_loop.handle());
         let backend = make_backend(&event_loop.handle(), &mut state)?;
-        Ok(Self {
+        let mut compositor = Self {
             event_loop,
             display,
-            data: LoopData { state, backend },
-        })
+            data: LoopData {
+                state,
+                backend,
+                x11_windows: None,
+            },
+            hosted: false,
+            displays: settings_bridge::Published::default(),
+            turns: None,
+            a11y: A11y::default(),
+            keys: AccessKeys::default(),
+        };
+        compositor.publish_displays();
+        Ok(compositor)
+    }
+
+    /// Tell `turns` of every turn of the loop's wait, or no one.
+    pub fn watch_turns(&mut self, turns: Option<Arc<dyn LoopTurns>>) {
+        self.turns = turns;
     }
 
     /// A compositor whose outputs have no display (see [`backend::headless`]).
@@ -227,9 +298,11 @@ impl Compositor {
     /// A compositor in a window of the desktop it runs inside (see
     /// [`backend::nested`]).
     pub fn nested(policy: Box<dyn WindowPolicy>, config: &NestedConfig) -> Result<Self, Error> {
-        Self::new(policy, |handle, state| {
+        let mut compositor = Self::new(policy, |handle, state| {
             Ok(Box::new(NestedBackend::start(handle, state, config)?))
-        })
+        })?;
+        compositor.set_hosted(true);
+        Ok(compositor)
     }
 
     /// Run until `stop` holds or the backend is done: wait for clients, devices and due frames,
@@ -254,15 +327,36 @@ impl Compositor {
         /// The longest the loop sleeps with nothing due, so a caller's own
         /// checks still run.
         const IDLE: Duration = Duration::from_millis(250);
-        self.data.backend.next_deadline().map_or(IDLE, |at| {
-            at.saturating_duration_since(std::time::Instant::now())
-                .min(IDLE)
-        })
+        let now = std::time::Instant::now();
+        let backend = self.data.backend.next_deadline(&self.data.state);
+        // A running visual alert fades frame by frame.
+        let alert = a11y::flashing(&self.data.state, now)
+            .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
+        backend
+            .into_iter()
+            .chain(self.keys.next_deadline())
+            .chain(alert)
+            .min()
+            .map_or(IDLE, |at| at.saturating_duration_since(now).min(IDLE))
     }
 
     /// Add an output the backend simulates.
     pub fn add_output(&mut self, config: &OutputConfig) -> Result<(), Error> {
         self.data.backend.add_output(&mut self.data.state, config)?;
+        self.publish_displays();
+        Ok(())
+    }
+
+    /// Drop an output the backend simulates, as unplugging its cable does:
+    /// it leaves the layout, clients stop seeing it and the desktop hears
+    /// the outputs it has now and places its windows on those left.
+    pub fn remove_output(&mut self, name: &str) -> Result<(), Error> {
+        self.data
+            .backend
+            .remove_output(&mut self.data.state, name)?;
+        self.sync_power();
+        self.publish_displays();
+        self.display.flush_clients()?;
         Ok(())
     }
 
@@ -271,6 +365,7 @@ impl Compositor {
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
         host.outputs_changed(&self.data.state.hosted_outputs());
         self.data.state.hosts.push(host);
+        self.data.state.mark_redraw_all();
     }
 
     /// Connect a client over a socket pair; the returned end is the
@@ -312,6 +407,57 @@ impl Compositor {
         self.data.state.locked()
     }
 
+    /// Whether the session locked itself — idle, a key or a command — rather
+    /// than a lock client holding it: its own lock screen is what the person
+    /// sees, and what it puts up again when that leaves the screen.
+    pub fn session_locked(&self) -> bool {
+        self.data.state.idle.session.is_locked()
+    }
+
+    /// Whether the session's own lock screen is drawing now. While the
+    /// session is locked, this is the screen the person unlocks on.
+    pub fn lock_screen_drawn(&self) -> bool {
+        self.data.state.lock_screen_drawn()
+    }
+
+    /// Whether a surface of the session's own takes the keyboard now: a
+    /// palette, the overview or the shortcut guide, which see keys before
+    /// any client does.
+    #[must_use]
+    pub fn host_takes_keys(&self) -> bool {
+        self.data
+            .state
+            .hosts
+            .iter()
+            .any(|host| host.wants_keyboard())
+    }
+
+    /// Whether a fullscreen window is up: it owns its display, and with it
+    /// the controller in the person's hands.
+    #[must_use]
+    pub fn fullscreen_window(&self) -> bool {
+        self.data.state.fullscreen()
+    }
+
+    /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
+    /// on it (a controller's presses, a device's hotplug) ends the wait
+    /// rather than waiting for the next turn. Dropping the watch stops it.
+    ///
+    /// What the descriptor says is read by the caller's own source, not
+    /// here: this only ends the wait.
+    pub fn watch_input(&mut self, fd: std::os::fd::OwnedFd) -> Result<InputWatch, Error> {
+        let handle = self.event_loop.handle();
+        let token = handle
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            })
+            .map_err(io)?;
+        Ok(InputWatch {
+            handle: handle.clone(),
+            token,
+        })
+    }
+
     /// Listen for clients on a fresh `wayland-N` socket in
     /// `$XDG_RUNTIME_DIR` and return its name (for `WAYLAND_DISPLAY`).
     pub fn listen(&mut self) -> Result<String, Error> {
@@ -338,31 +484,166 @@ impl Compositor {
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
             timeout.min(due.saturating_duration_since(std::time::Instant::now()))
         });
-        self.event_loop
+        if let Some(turns) = &self.turns {
+            turns.parking();
+        }
+        let dispatched = self
+            .event_loop
             .dispatch(Some(timeout), &mut self.data)
-            .map_err(io)?;
+            .map_err(io);
+        if let Some(turns) = &self.turns {
+            turns.unparked();
+        }
+        dispatched?;
         self.data.state.repeat_keys();
+        let ticked = Instant::now();
+        let due = self.keys.tick(ticked);
+        for event in due {
+            self.data.state.note_typing(&event, ticked);
+            self.data.state.handle_input(event);
+        }
+        if self.keys.take_alert() {
+            self.flash();
+        }
+        // The visual alert fades frame by frame, so every frame it covers
+        // is a new one to draw.
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
         self.display.dispatch_clients(&mut self.data.state)?;
+        self.sync_text_input();
         self.data.state.refresh();
+        // A constraint or an inhibitor takes effect for what is focused and
+        // under the pointer now, so it is settled once the clients' requests
+        // and this turn's focus changes were handled.
+        self.data.state.sync_pointer_constraint();
+        self.data.state.sync_shortcut_inhibit();
+        if let Some(x11) = self.data.x11_windows.as_mut() {
+            // The X server's own focus follows the session's, and X clients
+            // hear how dense the display is and which pointer to draw.
+            x11.follow_keyboard(&self.data.state);
+            x11.publish_x_hints(&mut self.data.state);
+        }
         self.configure_from_clients();
         if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
             self.put_back(&undo);
         }
         self.data.state.tick_idle();
         self.sync_power();
+        self.publish_displays();
+        self.publish_output_colors();
         self.display.flush_clients()?;
+        self.data.state.lift_lock_of_departed_client();
         Ok(())
     }
 
     /// Magnify the whole scene `zoom` times about the pointer, which stays
-    /// on what it points at; 1 (or less) turns the magnifier off.
+    /// on what it points at; 1 (or less) turns the magnifier off. The
+    /// settings in force follow, so the step a shortcut takes and what they
+    /// hold is one zoom, not two.
     pub fn set_zoom(&mut self, zoom: f64) {
-        self.data.state.zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
+        let zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
+        self.data.state.zoom = zoom;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the zoom steps are whole numbers of a small range"
+        )]
+        {
+            self.a11y.magnifier.zoom = zoom.min(f64::from(u8::MAX)) as u8;
+        }
+        self.data.state.mark_redraw_all();
     }
 
     /// The magnifier's zoom; 1 is off.
     pub fn zoom(&self) -> f64 {
         self.data.state.zoom
+    }
+
+    /// Apply the person's accessibility settings: typing and pointing
+    /// assists, the pointer's theme, size and crosshair, the colour filter,
+    /// the magnifier and visual alerts. Everything applies live, and to
+    /// outputs and devices that appear later.
+    pub fn set_a11y(&mut self, a11y: A11y) -> Result<(), Error> {
+        let now = Instant::now();
+        let released = self.keys.configure(&a11y.assists, now);
+        let LoopData { state, backend, .. } = &mut self.data;
+        backend.set_assists(state, &a11y.assists);
+        state.zoom = a11y.magnifier.factor();
+        state.cursor.set_theme(&a11y.cursor.theme);
+        state.cursor.set_size(a11y.cursor.size);
+        for event in released {
+            state.handle_input(event);
+        }
+        self.a11y = a11y;
+        self.seed_visuals();
+        if let Some(x11) = self.data.x11_windows.as_mut() {
+            // X clients draw their own pointers: they hear the theme at once.
+            x11.publish_x_hints(&mut self.data.state);
+        }
+        self.data.state.mark_redraw_all();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Bring every output's visuals in line with the settings, outputs a
+    /// backend found on its own since the last frame included.
+    fn seed_visuals(&self) {
+        for output in self.data.state.space.outputs() {
+            a11y::seed(output, &self.a11y);
+        }
+    }
+
+    /// The accessibility settings in force.
+    #[must_use]
+    pub fn a11y(&self) -> &A11y {
+        &self.a11y
+    }
+
+    /// Whether a text field waits for typing, and whether the person is
+    /// typing on the glass: what the on-screen keyboard follows.
+    #[must_use]
+    pub fn text_entry(&self) -> TextEntry {
+        self.data.state.text_entry()
+    }
+
+    /// The text field the person is typing into, as dictation names it: its
+    /// identity and the revision of what its client last committed, or why
+    /// dictated text may not be written there.
+    pub fn dictation_field(&self) -> Result<TextField, TextFieldRefusal> {
+        self.data.state.dictation_field()
+    }
+
+    /// Insert committed text into `field` once, if the person is still
+    /// typing into that same revision of it. The text goes through the
+    /// trusted input method, never as keystrokes.
+    pub fn insert_dictation(&mut self, field: TextField, text: &str) -> TextInsertion {
+        self.data.state.insert_dictation(field, text)
+    }
+
+    /// Where the focused text field's caret stands in the desk, in logical
+    /// coordinates, from the cursor rectangle its client reported; `None`
+    /// when no field takes text or it never said where its caret is.
+    #[must_use]
+    pub fn text_caret(&self) -> Option<TextCaret> {
+        self.data.state.text_caret()
+    }
+
+    /// Insert `text` into the field the person is typing into, whatever that
+    /// field asks of its content: an emoji keeps none of its secret. The
+    /// text goes through the trusted input method, never as keystrokes.
+    ///
+    /// Answers whether the field declared its content secret, which decides
+    /// whether the text is remembered; `None` when no field takes text now.
+    pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
+        self.data.state.insert_active_text(text)
+    }
+
+    /// Flash every output: a visual alert for what a person who cannot hear
+    /// the alert sound would otherwise miss.
+    pub fn flash(&mut self) {
+        a11y::flash_all(&self.data.state, Instant::now());
+        self.data.state.mark_redraw_all();
     }
 
     /// How held keys repeat, for clients (the seat's repeat info) and
@@ -378,7 +659,7 @@ impl Compositor {
     /// Switch the panels whose wanted power changed and write the gamma
     /// ramps that changed.
     fn sync_power(&mut self) {
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         backend.sync_power(state);
         backend.sync_gamma(state);
     }
@@ -404,6 +685,7 @@ impl Compositor {
             Some(effect) => self.data.state.effects.insert(id, effect),
             None => self.data.state.effects.remove(&id),
         };
+        self.data.state.mark_redraw_all();
     }
 
     /// How every window is framed (its corners, its shadow, its edge) from
@@ -411,6 +693,7 @@ impl Compositor {
     /// [`WindowFrame::square`] through [`Compositor::set_window_frame_for`].
     pub fn set_window_frame(&mut self, frame: WindowFrame) {
         self.data.state.frame = frame;
+        self.data.state.mark_redraw_all();
     }
 
     /// Frame the window `id` with `frame` instead of the desktop's, or as
@@ -420,6 +703,7 @@ impl Compositor {
             Some(frame) => self.data.state.window_frames.insert(id, frame),
             None => self.data.state.window_frames.remove(&id),
         };
+        self.data.state.mark_redraw_all();
     }
 
     /// The windows that closed and are still drawn from the last buffer
@@ -440,6 +724,7 @@ impl Compositor {
     /// frame on.
     pub fn release_snapshot(&mut self, id: u64) {
         self.data.state.release_snapshot(id);
+        self.data.state.mark_redraw_all();
     }
 
     /// Night light's colour temperature, while it is on.
@@ -447,9 +732,20 @@ impl Compositor {
         self.data.state.gamma.night_light()
     }
 
-    /// Apply idle transitions a session request caused, at once.
+    /// Apply idle transitions a session request caused, at once: what the
+    /// session asked for is the person's, and their devices follow it.
     fn apply_idle(&mut self, transitions: Vec<SessionTransition>) -> Result<(), Error> {
-        self.data.state.apply_idle(transitions);
+        self.apply_idle_by(transitions, LockedBy::Person)
+    }
+
+    /// Apply idle transitions, `locked_by` saying whose the lock is when one
+    /// is among them.
+    fn apply_idle_by(
+        &mut self,
+        transitions: Vec<SessionTransition>,
+        locked_by: LockedBy,
+    ) -> Result<(), Error> {
+        self.data.state.apply_idle(transitions, locked_by);
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
@@ -457,12 +753,39 @@ impl Compositor {
 
     /// When the displays dim, blank, and the session locks or suspends
     /// with no input. Applied to the current idle episode: a shorter
-    /// timeout can fire at the next dispatch.
+    /// timeout can fire at the next dispatch. A hosted session runs no idle
+    /// timers whatever it is given: the desktop it runs in owns idle.
     pub fn set_idle_config(&mut self, config: IdleConfig) {
+        let config = if self.hosted {
+            IdleConfig::never()
+        } else {
+            config
+        };
         let session = &mut self.data.state.idle.session;
         session.set_blank_timeout(config.blank_timeout);
         session.set_lock_timeout(config.lock_timeout);
         session.set_suspend_timeout(config.suspend_timeout);
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start;
+    /// setting it drops every idle timer the session was given.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+        if hosted {
+            self.set_idle_config(IdleConfig::never());
+        }
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start.
+    #[must_use]
+    pub const fn hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// The idle timeouts the session runs on now.
+    #[must_use]
+    pub fn idle_config(&self) -> IdleConfig {
+        self.data.state.idle.session.config()
     }
 
     /// The panel's backlight, which the idle dim lowers; without one the
@@ -479,11 +802,61 @@ impl Compositor {
         std::mem::take(&mut self.data.state.idle.events)
     }
 
+    /// Whether the lock the session has is the idle timer's rather than the
+    /// person's: theirs is the one their other devices follow, while the idle
+    /// timer's lock stays on this device.
+    #[must_use]
+    pub fn lock_by_idle(&self) -> bool {
+        self.data.state.lock_by_idle()
+    }
+
+    /// How long since the person last touched this device.
+    #[must_use]
+    pub fn input_idle(&self) -> std::time::Duration {
+        self.data
+            .state
+            .idle
+            .session
+            .input_idle_for(std::time::Instant::now())
+    }
+
+    /// Whether the person was using this device, here or on one of their
+    /// devices nearby, when the idle lock would have fired.
+    #[must_use]
+    pub fn in_use(&self) -> bool {
+        self.data
+            .state
+            .idle
+            .session
+            .in_use(std::time::Instant::now())
+    }
+
+    /// The person used another of their devices at `at`: idle time here
+    /// counts from then, so neither device locks while they are on the other.
+    pub fn note_use_elsewhere(&mut self, at: std::time::Instant) {
+        self.data.state.idle.session.note_use_elsewhere(at);
+    }
+
     /// Something outside the compositor (a download, a remote session, a
     /// keep-awake lease) holds the machine awake: it does not suspend when
     /// idle, though the screen still dims, blanks and locks.
     pub fn hold_awake(&mut self, held: bool) {
         self.data.state.idle.suspend_held = held;
+    }
+
+    /// Something outside the compositor says the person is there without
+    /// touching anything (an app's `Inhibit IDLE`, a presentation): nothing
+    /// dims, blanks, locks or suspends while it holds, and the idle period
+    /// restarts when it lets go.
+    pub fn hold_idle(&mut self, held: bool) {
+        self.data.state.idle.held = held;
+    }
+
+    /// The suspend the idle timers decided on will not happen after all (a
+    /// hold appeared between the tick that decided it and now): the idle
+    /// period restarts rather than a sleep that never came.
+    pub fn cancel_suspend(&mut self) {
+        self.data.state.idle.session.cancel_suspend();
     }
 
     /// Lock now (a key or a command): reported as
@@ -536,14 +909,18 @@ impl Compositor {
     }
 
     /// The machine is about to sleep: lock first when `lock_on_sleep`.
-    pub fn prepare_for_sleep(&mut self, lock_on_sleep: bool) -> Result<(), Error> {
+    pub fn prepare_for_sleep(
+        &mut self,
+        lock_on_sleep: bool,
+        locked_by: LockedBy,
+    ) -> Result<(), Error> {
         let transitions = self
             .data
             .state
             .idle
             .session
             .prepare_for_sleep(std::time::Instant::now(), lock_on_sleep);
-        self.apply_idle(transitions)
+        self.apply_idle_by(transitions, locked_by)
     }
 
     /// The machine woke: light the panels, keep the lock.
@@ -681,7 +1058,7 @@ impl Compositor {
 
     /// Put outputs back after a reverted change.
     fn put_back(&mut self, undo: &[OutputChange]) {
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         if let Err(error) = backend.configure_checked(state, undo, false) {
             tracing::warn!(%error, "reverting a display change failed");
         }
@@ -693,10 +1070,64 @@ impl Compositor {
         self.data.state.output_infos()
     }
 
+    /// The monitors of the displays a fullscreen window owns: the bar there
+    /// steps aside and leaves the display to the window.
+    pub fn fullscreen_monitors(&self) -> Vec<String> {
+        self.data.state.fullscreen_monitors()
+    }
+
+    /// The outputs as Settings reads them: each one's connector, modes,
+    /// scale, place and what its sink and the pipeline driving it can do.
+    /// Updated by [`Compositor::publish_displays`], which the loop runs on
+    /// every pass; `None` before any output exists.
+    pub fn display_snapshot(&self) -> Option<&settings_store::hardware::DisplayHardwareSnapshot> {
+        self.displays.snapshot()
+    }
+
+    /// A counter that changes exactly when the published displays do, for a
+    /// reader that watches them without copying the snapshot every pass.
+    pub fn displays_generation(&self) -> u64 {
+        self.displays.generation()
+    }
+
+    /// Take the outputs as they are now for Settings and the session: what
+    /// changed since the last pass is written where Settings reads it.
+    pub fn publish_displays(&mut self) {
+        let state = &self.data.state;
+        let outputs: Vec<(smithay::output::Output, bool)> = state
+            .space
+            .outputs()
+            .map(|output| (output.clone(), true))
+            .chain(
+                state
+                    .disabled_outputs
+                    .iter()
+                    .map(|output| (output.clone(), false)),
+            )
+            .collect();
+        let backend = &*self.data.backend;
+        let capabilities = backend.output_capabilities();
+        self.displays
+            .refresh(&outputs, &capabilities, backend.describe());
+    }
+
+    /// The outputs a fullscreen window owns, by connector name: the shell's
+    /// bar there steps aside and leaves the display to the window, on the
+    /// same displays as [`Compositor::fullscreen_monitors`].
+    pub fn fullscreen_outputs(&self) -> Vec<String> {
+        self.data.state.fullscreen_outputs()
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
-    /// switched off by a tool or turned off).
+    /// switched off by a tool or turned off); `false` when no output is
+    /// there to light.
     pub fn output_lit(&self, name: &str) -> bool {
-        self.data.state.output_power.lit(name)
+        self.data
+            .state
+            .space
+            .outputs()
+            .any(|output| output.name() == name)
+            && self.data.state.output_power.lit(name)
     }
 
     /// Apply (or test) the display configurations clients sent and tell
@@ -773,6 +1204,7 @@ impl Compositor {
         self.set_input_config(settings.input.clone());
         self.set_keyboard_layout(&settings.keyboard);
         self.set_idle_config(settings.idle);
+        self.set_a11y(settings.a11y.clone())?;
         Ok(())
     }
 
@@ -788,7 +1220,16 @@ impl Compositor {
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
         }
+        // Which display is primary is told to the desk after the outputs are
+        // as the configuration asked, so it is resolved against the displays
+        // that are lit now.
+        self.data.state.set_primary_output(config.primary.clone());
         Ok(())
+    }
+
+    /// Show the pointer at the person's size, in logical pixels.
+    pub fn set_cursor_size(&mut self, size: u32) {
+        self.data.state.cursor.set_size(size);
     }
 
     /// Type with the person's keyboard layout.
@@ -813,13 +1254,26 @@ impl Compositor {
         }
     }
 
+    /// The layout the keyboard types in now, as XKB names it; `None` without
+    /// a keyboard.
+    pub fn keyboard_layout(&mut self) -> Option<String> {
+        let LoopData { state, .. } = &mut self.data;
+        let keyboard = state.seat.get_keyboard()?;
+        Some(keyboard.with_xkb_state(state, |context| {
+            context.xkb().lock().map_or_else(
+                |_| String::new(),
+                |xkb| xkb.layout_name(xkb.active_layout()).to_owned(),
+            )
+        }))
+    }
+
     /// Apply the person's input preferences (pointer, touchpad, tablets,
     /// accessibility filters) to the backend's devices, now and as they are
     /// plugged in. Backends without devices of their own ignore them.
     pub fn set_input_config(&mut self, config: InputConfig) {
         let (delay, rate) = config.key_repeat_params();
         self.set_key_repeat(KeyRepeat { delay, rate });
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         backend.set_input_config(state, config);
     }
 
@@ -875,20 +1329,63 @@ impl Compositor {
     }
 
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
+    /// Route one input event (see [`InputEvent`]) through the person's
+    /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
-        self.data.state.handle_input(event);
+        let now = Instant::now();
+        let events = self.keys.filter(event, now);
+        for event in events {
+            self.data.state.note_typing(&event, now);
+            self.data.state.handle_input(event);
+        }
+        if self.keys.take_alert() {
+            self.flash();
+        }
         self.start_asked_drags();
+        self.sync_text_input();
         // Input wakes blanked panels at once.
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
     }
 
+    /// Keep the text fields the person can type into on the keyboard's
+    /// focus: clients hear about the field that has it and the input method
+    /// that serves it.
+    fn sync_text_input(&self) {
+        let seat = &self.data.state.seat;
+        let handle = seat.text_input();
+        let focused = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if handle.focus() == focused {
+            return;
+        }
+        handle.leave();
+        let enter = focused.is_some();
+        handle.set_focus(focused);
+        if enter {
+            handle.enter();
+        }
+        handle.done(false);
+    }
+
     /// Draw a frame on every output that can take one and tell clients it
     /// was shown.
     pub fn render(&mut self) -> Result<(), Error> {
+        self.sync_text_input();
+        self.seed_visuals();
+        // The visual alert fades frame by frame, so each frame it covers is
+        // a new one to draw.
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
+        let mut drew = false;
         for host in &mut self.data.state.hosts {
-            host.prepare_frame();
+            drew |= host.prepare_frame();
+        }
+        if drew {
+            self.data.state.mark_redraw_all();
         }
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.
@@ -907,15 +1404,107 @@ impl Compositor {
         Ok(self.data.backend.read_back(&mut self.data.state, target)?)
     }
 
+    /// What `region` of the output `name` shows now — its top-left corner
+    /// and size in that output's physical pixels, as shown — read back as
+    /// rows of R, G, B, A.
+    ///
+    /// # Errors
+    /// The display is gone or asleep, or nothing could be rendered.
+    pub fn read_back_region(
+        &mut self,
+        name: &str,
+        region: (i32, i32, i32, i32),
+    ) -> Result<Screenshot, Error> {
+        let (x, y, width, height) = region;
+        self.read_back(&capture::Target::Output {
+            name: name.to_owned(),
+            region: smithay::utils::Rectangle::new(
+                (x, y).into(),
+                (width.max(1), height.max(1)).into(),
+            ),
+        })
+    }
+
+    /// What `target` shows now, drawn to fit `max` — its widest and tallest
+    /// frame — read back as rows of R, G, B, A: one frame of the stream a
+    /// wireless display is sent.
+    ///
+    /// # Errors
+    /// The target is gone or asleep, the session is locked, or nothing could
+    /// be rendered.
+    pub fn read_back_scaled(
+        &mut self,
+        target: &capture::Target,
+        max: (u32, u32),
+    ) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .read_back_scaled(&mut self.data.state, target, max)?)
+    }
+
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
-        Ok(self.data.backend.screenshot(name)?)
+        Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
+    }
+
+    /// Route one input event from another device — a portal
+    /// `RemoteDesktop` or `InputCapture` session, a share, a remote-typing
+    /// link — through the firewall ([`remote_input`]): it reaches the seat
+    /// only while the person allows it.
+    pub fn input_remote(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.data.state.handle_remote_input(event);
+        self.start_asked_drags();
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Cut every remote input: nothing from another device reaches the seat
+    /// until the person allows it again ([`Compositor::allow_remote_input`]).
+    /// The person's own Ctrl+Alt+Escape does this too.
+    pub fn cut_remote_input(&mut self) {
+        self.data.state.remote_input.cut();
+    }
+
+    /// Let remote input in again, after a cut.
+    pub fn allow_remote_input(&mut self) {
+        self.data.state.remote_input.allow();
+    }
+
+    /// Whether remote input is cut.
+    #[must_use]
+    pub fn remote_input_cut(&self) -> bool {
+        self.data.state.remote_input.is_cut()
+    }
+
+    /// Mark every window of `app_id` as private, or no longer: screenshots,
+    /// recordings and share streams show a placeholder where they are,
+    /// while the person's own display keeps showing them as they are.
+    pub fn protect_app(&mut self, app_id: &str, private: bool) {
+        self.data.state.capture.protection.app(app_id, private);
     }
 
     /// The processes whose clients disconnected since the last look: the
     /// apps that exited.
     pub fn take_exited_pids(&mut self) -> Vec<u32> {
         self.data.state.take_exited_pids()
+    }
+
+    /// The areas the layer surfaces on `output` keep for themselves at its
+    /// edges, as logical rectangles `(x, y, w, h)`: what the desktop keeps
+    /// windows and the desk itself out of (the bar's height along the top).
+    pub fn reserved(&self, output: &str) -> Vec<(i32, i32, i32, i32)> {
+        self.data
+            .state
+            .space
+            .outputs()
+            .find(|known| known.name() == output)
+            .map(|output| self.data.state.layer_reserved(output))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+            .collect()
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,
@@ -929,6 +1518,37 @@ impl Compositor {
             .collect()
     }
 
+    /// The colour the client of the window `id` says its content is in: the
+    /// image description it attached through `wp_color_management_v1`, or
+    /// `None` when it attached none. A share stream tags its frames with it.
+    #[must_use]
+    pub fn window_color(
+        &self,
+        id: u64,
+    ) -> Option<(
+        neighbour_wire::colorimetry::Colorimetry,
+        Option<neighbour_wire::hdr_metadata::Hdr10Metadata>,
+    )> {
+        self.data.state.window_color(id)
+    }
+
+    /// What the X11 window `id` says about its program: its process, class,
+    /// desktop start-up and icon. `None` for a Wayland window.
+    pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
+        let x11 = self.data.x11_windows.as_ref()?;
+        let window = self.data.state.space.elements().find(|window| {
+            state::describe(&self.data.state.display, &self.data.state.icons, window)
+                .is_some_and(|info| info.id == id)
+        })?;
+        x11.identity(window.x11_surface()?.window_id())
+    }
+
+    /// Ask the window with `id` to close, as its own close button would: the
+    /// client decides what closing means, and does it.
+    pub fn close_window(&mut self, id: u64) {
+        self.data.state.close_window(id);
+    }
+
     /// Whether a client keeps the session from idling (idle-inhibit).
     pub fn idle_inhibited(&self) -> bool {
         self.data.state.idle_inhibited()
@@ -937,6 +1557,21 @@ impl Compositor {
     /// The window with keyboard focus.
     pub fn focused_window(&self) -> Option<WindowInfo> {
         self.data.state.focused_window()
+    }
+
+    /// The identifier the focused window can be captured under, when it has
+    /// focus and can be captured at all: a capture that names no window
+    /// takes this one.
+    #[must_use]
+    pub fn focused_shareable_window(&self) -> Option<String> {
+        let focused = self.focused_window()?.id;
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .find(|(_, info)| info.id == focused)
+            .map(|(identifier, _)| identifier)
     }
 
     /// An activation token for something the session itself did (the
@@ -952,6 +1587,20 @@ impl Compositor {
     #[must_use]
     pub fn waker(&self) -> std::task::Waker {
         std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
+    }
+}
+
+/// A descriptor [`Compositor::watch_input`] polled for the loop: its
+/// readiness ends the wait, and dropping the watch stops the polling.
+#[derive(Debug)]
+pub struct InputWatch {
+    handle: LoopHandle<'static, LoopData>,
+    token: smithay::reexports::calloop::RegistrationToken,
+}
+
+impl Drop for InputWatch {
+    fn drop(&mut self) {
+        self.handle.remove(self.token);
     }
 }
 

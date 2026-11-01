@@ -507,11 +507,11 @@ mod tests {
             "prose keeps its start: {cut}"
         );
         assert!(cut.ends_with('\u{2026}'));
-        let path = "~/src/tilo/crates/sdk/ui-core/src/widget/command_palette.rs";
+        let path = "~/src/tilo/crates/sdk/ui-core/src/action_palette/host.rs";
         let width = f64::from(tr.measure_style(path, None, &style).0) / 2.0;
         let cut = elide_middle(&mut tr, path, &style, width);
         assert!(
-            cut.starts_with("~/") && cut.ends_with("palette.rs"),
+            cut.starts_with("~/") && cut.ends_with("host.rs"),
             "a path keeps both ends: {cut}"
         );
     }

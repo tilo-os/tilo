@@ -158,6 +158,7 @@ pub struct Tray {
     runtime: Mutex<Option<tokio::runtime::Handle>>,
     rasteriser: IconRasteriser,
     owner_resolver: OwnerResolver,
+    host: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Tray {
@@ -178,7 +179,22 @@ impl Tray {
             runtime: Mutex::default(),
             rasteriser,
             owner_resolver,
+            host: Mutex::default(),
         })
+    }
+
+    /// What redraws the host's bar: an item registering, changing or going
+    /// away is read off the loop, so without this the bar would only show
+    /// it on its next pass.
+    pub fn set_host_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.host.lock_recover() = Some(wake);
+    }
+
+    fn wake_host(&self) {
+        let wake = self.host.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 
     /// What turns an item's named icon into pixels.
@@ -247,23 +263,32 @@ impl Tray {
 
     /// Insert or replace the item with `item.key`.
     pub fn upsert(&self, item: TrayItem) {
-        let mut state = self.lock();
-        if let Some(existing) = state.items.iter_mut().find(|known| known.key == item.key) {
-            *existing = item;
-        } else {
-            state.items.push(item);
+        {
+            let mut state = self.lock();
+            if let Some(existing) = state.items.iter_mut().find(|known| known.key == item.key) {
+                *existing = item;
+            } else {
+                state.items.push(item);
+            }
+            state.revision = state.revision.wrapping_add(1);
         }
-        state.revision = state.revision.wrapping_add(1);
+        self.wake_host();
     }
 
     /// Forget `key`; `true` when it was known.
     pub fn remove(&self, key: &str) -> bool {
-        let mut state = self.lock();
-        let before = state.items.len();
-        state.items.retain(|item| item.key != key);
-        let removed = state.items.len() != before;
+        let removed = {
+            let mut state = self.lock();
+            let before = state.items.len();
+            state.items.retain(|item| item.key != key);
+            let removed = state.items.len() != before;
+            if removed {
+                state.revision = state.revision.wrapping_add(1);
+            }
+            removed
+        };
         if removed {
-            state.revision = state.revision.wrapping_add(1);
+            self.wake_host();
         }
         removed
     }

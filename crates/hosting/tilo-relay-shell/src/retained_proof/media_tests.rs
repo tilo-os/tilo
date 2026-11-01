@@ -15,6 +15,14 @@ use web_time::{Duration, SystemTime};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "so.tilo.chat";
+/// The certificate of the owner's device `key` signs for.
+fn own_device(peer: &StatePeer, key: &SigningKey) -> DeviceCert {
+    peer.owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+        .unwrap()
+}
+
 fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[101; 32]);
     let key = SigningKey::from_bytes(&[102; 32]);
@@ -149,7 +157,7 @@ fn retained_room_rejects_malformed_present_media_policy() {
     let mut room = peer.admitted_room().unwrap().clone();
     room.put(ROOT, media::FIELD, "not policy bytes").unwrap();
     let body = postcard::to_allocvec(&message(&mut room)).unwrap();
-    let authority = RetentionAuthority::new(ROOM, peer.authority().clone()).unwrap();
+    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
     assert!(
         verify_room(
             &authority,
@@ -220,7 +228,7 @@ fn retained_snapshot_rejects_mismatched_exact_channel() {
         .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
-    let authority = RetentionAuthority::new(ROOM, peer.authority().clone()).unwrap();
+    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
     let verify_room = |message: &NeighbourMsg| {
         verify_room(
             &authority,
@@ -304,12 +312,12 @@ fn member(root_seed: u8, device_seed: u8) -> DeviceCert {
 fn members() -> (StatePeer, SigningKey, SystemTime) {
     let (original, key, now) = fixture();
     let members = [member(110, 111), member(120, 121), member(101, 103)];
-    let roster = std::iter::once(original.authority().clone())
+    let roster = std::iter::once(original.owner_certificates()[0].clone())
         .chain(members.iter().cloned())
         .collect::<Vec<_>>();
     let mut room = room::candidate(
         None,
-        &seed_room(ROOM, original.authority(), &roster).unwrap(),
+        &seed_room(ROOM, &original.owner_certificates()[0], &roster).unwrap(),
     )
     .unwrap();
     let caps = room.get(ROOT, "members").unwrap().unwrap().1;
@@ -323,7 +331,7 @@ fn members() -> (StatePeer, SigningKey, SystemTime) {
     }
     let mut peer = StatePeer::new(
         ROOM,
-        original.authority().clone(),
+        original.owner_certificates()[0].clone(),
         roster,
         RevocationList::new(),
         now,
@@ -355,7 +363,7 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
     let (mut peer, key, now) = members();
     install_policy(&mut peer, &key, now);
     let mut revocation = tilo_user_identity::RevocationEntry {
-        user_public_key: peer.authority().user_public_key,
+        user_public_key: peer.owner(),
         revoked_device_public_key: [99; 32],
         revoked_at_ns: 10,
         reason: tilo_user_identity::RevocationReason::Retired,
@@ -367,7 +375,7 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
         .publish_governed_revocations(&[revocation], &key, now)
         .unwrap();
     let before = peer.admitted_room().unwrap().clone();
-    let authority = RetentionAuthority::new(ROOM, peer.authority().clone()).unwrap();
+    let authority = RetentionAuthority::new(ROOM, own_device(&peer, &key)).unwrap();
     let mut current = before;
     let proof = verify_room(
         &authority,
@@ -379,21 +387,24 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
     )
     .unwrap();
     let ids = current.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-    let id = hex::encode(peer.authority().device_public_key);
-    let mut row: serde_json::Value =
-        serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
-    assert!(
-        !row["revocations"].as_array().unwrap().is_empty(),
-        "the fence is published before it is stripped"
-    );
-    row["revocations"] = serde_json::Value::Array(Vec::new());
-    current
-        .put(
-            &ids,
-            id,
-            ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-        )
-        .unwrap();
+    // Every owner device's row carries the owner's revocations: strip them all.
+    for cert in peer.owner_certificates() {
+        let id = hex::encode(cert.device_public_key);
+        let mut row: serde_json::Value =
+            serde_json::from_slice(&room::governance_of(Some(&current)).identities[&id]).unwrap();
+        assert!(
+            !row["revocations"].as_array().unwrap().is_empty(),
+            "the fence is published before it is stripped"
+        );
+        row["revocations"] = serde_json::Value::Array(Vec::new());
+        current
+            .put(
+                &ids,
+                id,
+                ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            )
+            .unwrap();
+    }
     // A malicious pinned writer supplies a self-consistent higher counter.
     let mut changed = media::parse(&current).unwrap().unwrap();
     changed.authorization_revision += 1;

@@ -32,7 +32,7 @@ mod layout;
 mod paint;
 mod window_bar;
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -115,14 +115,13 @@ fn empty_state() -> EmptyState {
         .with_action_id("hex.open")
 }
 
-/// A segmented strip over `labels` whose picks land in `pick`.
-fn strip(id: &str, labels: &[&str], pick: &Rc<Cell<Option<usize>>>) -> ToggleGroup {
-    let pick = Rc::clone(pick);
+/// A segmented strip over `labels`: the strip keeps the segment the person
+/// picks, and the view reads it ([`Editor::apply_strip_picks`]).
+fn strip(id: &str, labels: &[&str]) -> ToggleGroup {
     ToggleGroup::new(labels.iter().map(|l| Segment::new(*l)).collect(), 0)
         .with_id(id)
         .control_size(ControlSize::Small)
         .with_style(SegmentedStyle::Segmented)
-        .on_change(move |index| pick.set(Some(index)))
 }
 
 // The bools below are independent view flags (redraw-pending,
@@ -160,9 +159,9 @@ pub(crate) struct Editor {
     drawer: SidebarDrawer,
     /// The window bar's toggle of the inspector.
     inspector_entry: ui::framework::BarCommands<()>,
-    /// The endianness strip in the inspector, and the pick.
+    /// The endianness strip in the inspector, and the segment it shows.
     endian_group: ToggleGroup,
-    endian_pick: Rc<Cell<Option<usize>>>,
+    endian_shown: usize,
     /// The zero-state, shown while no file is open.
     empty: EmptyState,
     /// How far the inspector's properties are scrolled.
@@ -231,7 +230,6 @@ pub(crate) type Shared = Rc<RefCell<Editor>>;
 
 impl Editor {
     pub(crate) fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
-        let endian_pick = Rc::new(Cell::new(None));
         Self {
             model: HexModel::new(bytes),
             file_name: file_name.into(),
@@ -247,8 +245,8 @@ impl Editor {
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
             inspector_entry: ui::framework::BarCommands::new(),
-            endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
-            endian_pick,
+            endian_group: strip("hex.endian", &ENDIAN_LABELS).fill(),
+            endian_shown: 0,
             empty: empty_state(),
             inspector_scroll: 0.0,
             scrollbar: ui::widget::scrollbar::Scrollbar::vertical(),
@@ -612,19 +610,22 @@ impl Editor {
         Rect::new(status.x0 + inset, status.y0, status.x0 + inset, status.y1)
     }
 
-    /// Apply what the inspector's strip picked since the last event.
+    /// Apply the segment the inspector's strip shows, once it moves.
     fn apply_strip_picks(&mut self) {
-        if let Some(index) = self.endian_pick.take() {
-            let want = if index == 0 {
-                Endian::Little
-            } else {
-                Endian::Big
-            };
-            if self.model.endian() != want {
-                self.model.toggle_endian();
-            }
-            self.dirty = true;
+        let index = self.endian_group.selected();
+        if index == self.endian_shown {
+            return;
         }
+        self.endian_shown = index;
+        let want = if index == 0 {
+            Endian::Little
+        } else {
+            Endian::Big
+        };
+        if self.model.endian() != want {
+            self.model.toggle_endian();
+        }
+        self.dirty = true;
     }
 
     /// Hand a pointer event to the inspector's strip; true when it took it.

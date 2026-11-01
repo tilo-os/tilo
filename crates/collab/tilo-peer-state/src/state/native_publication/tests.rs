@@ -13,7 +13,7 @@ use web_time::Duration;
 
 fn native(peer: &StatePeer) -> TransportOrigin {
     TransportOrigin::RetainedNativePublication {
-        publisher: peer.authority().device_public_key,
+        publisher: peer.owner_certificates()[0].device_public_key,
     }
 }
 fn revocation(target: [u8; 32]) -> tilo_user_identity::RevocationEntry {
@@ -34,7 +34,7 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
     let later = now + Duration::from_secs(301);
     let mut browser = StatePeer::new(
         host.room(),
-        host.authority().clone(),
+        host.owner_certificates()[0].clone(),
         vec![cert],
         RevocationList::new(),
         later,
@@ -49,7 +49,7 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
     let mut live_rejected_document = false;
     for message in messages {
         let result = live.receive_from(
-            TransportOrigin::RelayDelta(host.authority().device_public_key),
+            TransportOrigin::RelayDelta(host.owner_certificates()[0].device_public_key),
             message.clone(),
             later,
         );
@@ -83,7 +83,7 @@ fn native_publication_preserves_original_member_author_and_exact_retry() {
         receiver
             .clone()
             .receive_from_report(
-                TransportOrigin::RelayDelta(receiver.authority().device_public_key),
+                TransportOrigin::RelayDelta(receiver.owner_certificates()[0].device_public_key),
                 message.clone(),
                 now
             )
@@ -129,13 +129,13 @@ fn native_publication_rechecks_publisher_and_original_author_revocations() {
     // active other device, then the retained packet is rechecked against it.
     for target in [
         member_cert.device_public_key,
-        baseline.authority().device_public_key,
+        baseline.owner_certificates()[0].device_public_key,
     ] {
         let mut receiver = baseline.clone();
         let (sender, cert) = if target == member_cert.device_public_key {
             (
-                receiver.authority().device_public_key,
-                receiver.authority().clone(),
+                receiver.owner_certificates()[0].device_public_key,
+                receiver.owner_certificates()[0].clone(),
             )
         } else {
             (member_cert.device_public_key, member_cert.clone())
@@ -216,7 +216,7 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
 #[test]
 fn native_publication_current_pinned_governor_expiry_is_mandatory() {
     let (peer, key, _, other, now) = crate::admission_tests::seeded();
-    let mut authority = peer.authority().clone();
+    let mut authority = peer.owner_certificates()[0].clone();
     authority.expires_at_ns = Some(now_ns(now + Duration::from_secs(1)));
     tilo_user_identity::sign_device_cert(&mut authority, &SigningKey::from_bytes(&[1; 32]))
         .unwrap();
@@ -277,7 +277,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
             receiver = StatePeer::restore(
                 &receiver.durable().unwrap(),
                 receiver.room(),
-                receiver.authority().clone(),
+                receiver.owner_certificates()[0].clone(),
                 receiver.certificates(),
                 RevocationList::new(),
                 now,
@@ -291,7 +291,9 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(member_cert.clone()),
-                    revocations: vec![revocation(receiver.authority().device_public_key)],
+                    revocations: vec![revocation(
+                        receiver.owner_certificates()[0].device_public_key,
+                    )],
                 },
                 now,
             )
@@ -340,7 +342,7 @@ fn native_publication_streaming_cut_accepts_complete_out_of_order_original_packe
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
-    let publisher = receiver.authority().device_public_key;
+    let publisher = receiver.owner_certificates()[0].device_public_key;
     let old_heads = receiver.document_heads("test.app", "tab:1");
     let incomplete = receiver
         .begin_native_publication_cut(publisher, now)
@@ -367,7 +369,7 @@ fn native_publication_streaming_cut_accepts_complete_out_of_order_original_packe
 #[test]
 fn native_publication_streaming_cut_rolls_back_on_governor_revocation() {
     let (receiver, _, _, member_cert, now) = crate::admission_tests::seeded();
-    let publisher = receiver.authority().device_public_key;
+    let publisher = receiver.owner_certificates()[0].device_public_key;
     let before = receiver.durable().unwrap();
     let cut = receiver
         .begin_native_publication_cut(publisher, now)
@@ -389,7 +391,7 @@ fn native_publication_streaming_cut_rolls_back_on_governor_revocation() {
 #[test]
 fn native_publication_streaming_cut_checks_expiry_at_push_and_finish() {
     let (peer, _, _, other, now) = crate::admission_tests::seeded();
-    let mut authority = peer.authority().clone();
+    let mut authority = peer.owner_certificates()[0].clone();
     authority.expires_at_ns = Some(now_ns(now + Duration::from_secs(1)));
     tilo_user_identity::sign_device_cert(&mut authority, &SigningKey::from_bytes(&[1; 32]))
         .unwrap();
@@ -448,7 +450,7 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
     assert_eq!(receiver.pending_count(), 1);
     let before = pending_stamp(receiver.core.pending.front().unwrap()).unwrap();
     let result = receiver
-        .begin_native_publication_cut(receiver.core.authority.device_public_key, now)
+        .begin_native_publication_cut(receiver.owner_certificates()[0].device_public_key, now)
         .unwrap()
         .push(
             NeighbourMsg::IdentityHello {
@@ -473,7 +475,7 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
     }
     assert!(
         receiver
-            .begin_native_publication_cut(receiver.core.authority.device_public_key, now)
+            .begin_native_publication_cut(receiver.owner_certificates()[0].device_public_key, now)
             .is_err()
     );
 }
@@ -482,7 +484,7 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
 fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
     let (mut author, governor, member, cert, now) = crate::admission_tests::seeded();
     let receiver = author.clone();
-    let publisher = receiver.core.authority.device_public_key;
+    let publisher = receiver.owner_certificates()[0].device_public_key;
     let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "governor-parent", "parent").unwrap();
@@ -506,7 +508,7 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
         .push(
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(receiver.core.authority.clone()),
+                cert: Box::new(receiver.owner_certificates()[0].clone()),
                 revocations: vec![revocation(cert.device_public_key)],
             },
             now,
@@ -527,7 +529,7 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
 #[test]
 fn native_publication_streaming_cut_requires_complete_room_history() {
     let (receiver, _, _, _, now) = crate::admission_tests::seeded();
-    let publisher = receiver.core.authority.device_public_key;
+    let publisher = receiver.owner_certificates()[0].device_public_key;
     let original = receiver.durable().unwrap();
     let mut room = receiver.admitted_room().unwrap().clone();
     let before = room.get_heads();

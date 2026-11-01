@@ -1,7 +1,7 @@
-//! A device whose session has no secret store: the rooms it hosts itself
-//! are sealed all the same, and their keys come from its own room host, so
-//! its apps write there. A room hosted elsewhere needs this device's own
-//! channel state, and says so once instead of being asked about forever.
+//! A device whose session has no secret store holds no channel keys: the
+//! room host it runs keeps none of its own to lend it, so its apps seal
+//! nothing in any sealed room, the ones it hosts included, and it says so
+//! instead of being asked about forever.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use crate::shell::channel_encryption::ChannelAccess;
 
 #[test]
 #[serial_test::serial]
-fn a_device_with_no_secret_store_writes_in_the_sealed_room_it_hosts() {
+fn a_device_with_no_secret_store_seals_nothing_in_the_room_it_hosts() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
@@ -30,21 +30,27 @@ fn a_device_with_no_secret_store_writes_in_the_sealed_room_it_hosts() {
     let (_, room) = hosted_workspace(&p, &[], "Garden");
     assert_eq!(p.hosted_rooms(), vec![room]);
 
-    // The notes app gets the note's keys from Ada's own host and writes.
+    // The notes app gets no keys: this device's channel service has no
+    // secret store, and the host it writes to runs no channel service of
+    // its own to seal in its stead.
     p.open_notes_first(room);
-    until(&[&p], "the note's keys from Ada's own host", || {
-        p.holds_note(room).then_some(())
-    });
-    p.write_note(room, "Plant the tulips");
-    let written = p.note_writes(room);
-    let sealed = &written.last().expect("the note was written").payload;
+    let access = p.note_access(room);
+    assert!(
+        matches!(access, ChannelAccess::NoSecretStore),
+        "a device with no secret store holds no keys of its own: {access:?}"
+    );
+    assert!(
+        !p.holds_note(room),
+        "the room's host lends this device no keys"
+    );
+    assert!(
+        p.note_writes(room).is_empty(),
+        "nothing was sealed in the room"
+    );
     let host = p.host_state_root();
-    until(&[&p], "Ada's host to keep the sealed write", || {
-        holds(&host, sealed).then_some(())
-    });
     assert!(
         !holds(&host, b"Plant the tulips"),
-        "the host keeps only ciphertext"
+        "no write reached the host at all"
     );
     drop(p);
 }
