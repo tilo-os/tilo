@@ -4,25 +4,43 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
-description = "A call's media frames: what one device's stream is, how its frames are sealed under the channel's content keys, and which devices may send them."
+description = "A call's media lane between two devices: the frames one device sends, how they are sealed under the channel's content keys, who may send them, and the connections they travel on."
 
 [lib]
 name = "tilo_call_lane"
 path = "src/lib.rs"
 
-# The seal, and nothing of the carrier: the peers a lane reaches, the endpoint
-# it runs on and the jitter buffer are the session's, not this crate's.
 [dependencies]
 # The channel's per-epoch content keys, and the per-stream keys derived from
 # them; key material never leaves that crate.
 channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+# A call is a channel of an app's record, named by its id.
+collab-types = { version = "0.1.0", path = "../collab-types" }
 # The counter-nonce AEAD the frames are sealed with.
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+# The tilo-voice/1 object profile: the frame's header, the datagram bundle
+# rule and the bundling a sender repeats earlier frames with. Only the
+# profile, not its relay feature.
+tilo-moq = { version = "0.1.0", path = "../../hosting/tilo-moq" }
+# A lane is a connection on the session's endpoint.
+iroh.workspace = true
+bytes.workspace = true
+# The handshake both devices say each other's call on.
+serde.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+tokio = { workspace = true, features = ["sync"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 thiserror.workspace = true
 
 [dev-dependencies]
 # The tests build real MLS groups, as a channel's members do.
 collab-types = { version = "0.1.0", path = "../collab-types" }
+# The tone is real Opus, as a call's microphone sends it.
+opus = "0.4"
+# A receiver's playout is the call's own jitter buffer.
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media" }
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true
