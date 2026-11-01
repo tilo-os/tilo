@@ -514,6 +514,42 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     );
 }
 
+/// A run of the session's agent placed on the canvas is the shell's own resource, so its place
+/// stands as the conversation over it (shell.md §8.1) and keeps no well.
+#[test]
+fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
+    let r = room();
+    let meta = r.host.package(APP).unwrap().meta;
+    let arrangement = scenario(&r, APP, "a conversation on the canvas");
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    for words in [
+        "Tidy the launch notes: pin the checklist and drop the old draft title.",
+        "I will look for the launch notes first.",
+        "find(notes.Note, ",
+        "Launch checklist",
+        "The checklist is pinned and the old draft is called Launch day now.",
+    ] {
+        assert!(says(&view, words), "the run's place says {words:?}");
+    }
+    let wells = nodes(&view, "ui.WindowWell");
+    assert_eq!(wells.len(), 1, "only the terminal keeps a well: {wells:#?}");
+    assert_eq!(
+        wells[0].props.get("place"),
+        Some(&Value::Text("x-terminal".to_owned()))
+    );
+}
+
 #[test]
 fn resources_standing_as_content_stand_on_the_spaces_canvas() {
     let mut r = room();

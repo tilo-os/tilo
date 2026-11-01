@@ -63,21 +63,12 @@ view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, foc
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool) {
-    let shown = placed_resource(p.record)
     ui.WindowFrame(name: .some(place_title(p)), focused: focused, fill) {
         controls: {
             frame_buttons(a, p)
         }
         body: {
-            if let r = shown {
-                if meta(r).opens {
-                    show(r, fill)
-                } else {
-                    ui.WindowWell(place: p.key, min: 12rem, fill)
-                }
-            } else {
-                ui.WindowWell(place: p.key, min: 12rem, fill)
-            }
+            place_view(p, fill)
         }
     }
 }

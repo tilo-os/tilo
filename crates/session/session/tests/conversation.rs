@@ -347,10 +347,11 @@ fn pressing_a_reference_places_its_resource_on_the_canvas() {
 }
 
 /// A run placed on the canvas is a place like any other: the arrangement's `place` action names
-/// the run's resource, the shell shows it, and what stands in the place is the conversation over
-/// it, with no desk surface raised.
+/// the run's resource, and the place is the shell's, through the run's one view, the
+/// conversation. (The shell's canvas draws that place as the conversation:
+/// `tilolang-tilo`'s `shell_record::a_placed_run_stands_on_the_canvas_as_its_conversation`.)
 #[test]
-fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
+fn a_run_placed_on_the_canvas_is_the_shells_conversation_place() {
     let _settled = ui::motion::testing::settled();
     let runs = Arc::new(AgentRuns::new(None));
     let mut session = session(&runs);
@@ -380,19 +381,10 @@ fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
     let place = placed(&session).unwrap();
     assert_eq!(place.shows, "so.tilo.shell", "the shell shows a run");
     assert_eq!(place.view, "conversation", "through its conversation");
-
-    for words in [
-        "Tidy the launch notes",
-        "Looking for the launch notes first",
-        "find(notes.Note, \"launch\")",
-        "Launch checklist",
-        "Two launch notes: the checklist and the day plan",
-    ] {
-        until(&mut session, |session| says(session, words));
-    }
-    assert_ne!(
-        desk(&session).here,
-        "conversation",
-        "the place draws it, not the desk's surface"
-    );
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("it is a step of the record's history");
+    assert_eq!((who.as_str(), verb.as_str()), (PERSON, "place"));
 }
