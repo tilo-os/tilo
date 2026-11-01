@@ -370,6 +370,11 @@ pub(super) struct ActionRuntime {
     )>,
     pub(super) action_directory_snapshot:
         Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
+    /// The directory the last revision named, set aside when a pass made it
+    /// stale: re-derived to the same snapshot, it keeps that revision and
+    /// its cursors.
+    pub(super) action_directory_retired:
+        Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     pub(super) local_document_directory_pins:
         Vec<std::rc::Weak<super::action_directory_snapshot::LocalDocumentDirectoryPin>>,
     pub(super) bound_invocations: std::collections::HashMap<
@@ -476,6 +481,7 @@ impl ActionRuntime {
             bound_broker_route_for_test: None,
             action_directory_stamp: None,
             action_directory_snapshot: None,
+            action_directory_retired: None,
             local_document_directory_pins: Vec::new(),
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),

@@ -62,6 +62,7 @@ impl App {
                 self.actions.action_directory_stamp = None;
                 self.actions.action_directory_snapshot = None;
                 self.actions.action_directory_cursors.clear();
+                self.actions.action_directory_retired = None;
                 return Err(error);
             }
         };
@@ -73,8 +74,7 @@ impl App {
         }
         // Generations are updated at mutation boundaries; reading Automerge
         // heads here would commit an open transaction and split an undo unit.
-        self.actions.action_directory_snapshot = None;
-        self.actions.action_directory_cursors.clear();
+        self.retire_action_directory();
         let revision = format!("v5:{}", uuid::Uuid::new_v4());
         self.actions.action_directory_stamp = Some((std::rc::Rc::new(witness), revision.clone()));
         Ok(revision)
