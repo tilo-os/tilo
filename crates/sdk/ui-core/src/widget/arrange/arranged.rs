@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::units::{At, Fit};
 use crate::presence::PresenceCtx;
@@ -327,6 +327,27 @@ impl<L: Layout> Arranged<L> {
             }
         }
         changed
+    }
+
+    /// Lay the child at `index` out again `by` from where the arrangement placed it: a layer
+    /// that stands where something drawn inside a sibling says (a window's controls on the
+    /// trailing end of its app's header row, which only that row's layout knows).
+    pub(crate) fn offset_child(&mut self, tree: &TaffyTree<()>, index: usize, by: Vec2) {
+        let start = Point::new(self.rect.x0, self.rect.y0);
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        let Some(wrapper) = slot.wrapper else {
+            return;
+        };
+        let placed = tree.layout(wrapper).copied().unwrap_or_default();
+        if let Some(inner) = Self::inner_node(tree, wrapper) {
+            let at = Point::new(
+                start.x + f64::from(placed.location.x),
+                start.y + f64::from(placed.location.y),
+            ) + by;
+            slot.element.apply_layout(tree, inner, at);
+        }
     }
 
     fn inner_node(tree: &TaffyTree<()>, wrapper: NodeId) -> Option<NodeId> {

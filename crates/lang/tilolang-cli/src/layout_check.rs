@@ -382,7 +382,8 @@ fn check_app(
                 if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
                     continue;
                 }
-                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty)
+                else {
                     continue;
                 };
                 staged.open(resource);
@@ -414,7 +415,13 @@ fn check_app(
                     &format!("{}, then {} shown", scenario.name, view.name),
                 )?;
             }
-            press_stage(&mut check, &meta, &packages, &scenario.name, root.as_deref())?;
+            press_stage(
+                &mut check,
+                &meta,
+                &packages,
+                &scenario.name,
+                root.as_deref(),
+            )?;
         }
     }
     let unreached = meta
@@ -808,4 +815,207 @@ pub fn render(report: &Report) -> String {
         report.elapsed_ms % 1000 / 100,
     );
     out
+}
+
+/// The shell's traditional desktop as a person sees it, staged from its own scenario through
+/// the UI host's path: windows standing with their apps' content, one bar per window, and the
+/// trailing parts of the top bar at its edge.
+#[cfg(test)]
+mod traditional_desktop {
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use ui::kurbo::Rect;
+    use ui::widget::Widget;
+
+    use super::stage;
+
+    fn packages() -> (String, Rc<stage::Packages>) {
+        let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+        let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
+        let dirs = tilolang::source::dependency_order(&shell, &search).expect("the shell resolves");
+        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+            .expect("the shell compiles");
+        let app = built.last().expect("the shell").compiled.meta.app.clone();
+        let packages = Rc::new(stage::Packages(Rc::new(
+            built.into_iter().map(|b| b.compiled).collect(),
+        )));
+        (app, packages)
+    }
+
+    /// Every widget under `root` named `name`, with its rect, in drawing order.
+    fn all<'a>(root: &'a dyn Widget, name: &str, out: &mut Vec<&'a dyn Widget>) {
+        if root.name() == name {
+            out.push(root);
+        }
+        for child in root.children() {
+            all(child, name, out);
+        }
+    }
+
+    fn named<'a>(root: &'a dyn Widget, name: &str) -> Vec<&'a dyn Widget> {
+        let mut out = Vec::new();
+        all(root, name, &mut out);
+        out
+    }
+
+    #[test]
+    fn its_windows_show_their_apps_content_under_one_bar_each() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "the traditional desktop",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let root = staged.harness().root_widget();
+        let frames = named(root, "WindowFrame");
+        assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
+        for frame in frames {
+            let window = frame.get_rect();
+            // The window shows its resource through its type's own view, filling it.
+            let shells = named(frame, "NavShell");
+            let [shell] = shells[..] else {
+                panic!("one app window in each frame, not {}", shells.len());
+            };
+            let content = shell.get_rect();
+            assert!(
+                content.height() > window.height() * 0.8,
+                "the app's window fills the frame: {content:?} in {window:?}"
+            );
+            // The frame's controls stand in the app's own header row, at its trailing end,
+            // so the window has one bar: no bar of the frame's above the app's.
+            assert!(
+                (content.y0 - window.y0).abs() < 1.0,
+                "no bar of the frame's stands over the app's header: {content:?} in {window:?}"
+            );
+            let buttons = named(frame, "Button");
+            let close = buttons
+                .iter()
+                .map(|b| b.get_rect())
+                .max_by(|a, b| a.x1.total_cmp(&b.x1))
+                .expect("the frame's close");
+            assert!(
+                close.y1 < window.y0 + 64.0 && window.x1 - close.x1 < 24.0,
+                "the close stands at the end of the window's bar: {close:?} in {window:?}"
+            );
+            let overlapping: Vec<Rect> = buttons
+                .iter()
+                .map(|b| b.get_rect())
+                .filter(|b| *b != close && b.intersect(close).area() > 0.0)
+                .collect();
+            assert!(
+                overlapping.is_empty(),
+                "the app's header keeps room for the frame's controls: {overlapping:?}"
+            );
+        }
+    }
+
+    /// The controls under `root` outside any window, with their names: the shell's own.
+    fn shell_controls(root: &dyn Widget, out: &mut Vec<(String, Rect)>) {
+        if root.name() == "WindowFrame" {
+            return;
+        }
+        if matches!(root.name(), "Button" | "MenuButton" | "Badge" | "Avatar") {
+            out.push((root.name().to_owned(), root.get_rect()));
+        }
+        for child in root.children() {
+            shell_controls(child, out);
+        }
+    }
+
+    #[test]
+    fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
+            let staged = stage::Staged::over(
+                &app,
+                &packages,
+                "the traditional desktop",
+                (width, height),
+                ui::Theme::light().with_text_scale(text),
+                None,
+            )
+            .expect("the scenario stages");
+            let mut controls = Vec::new();
+            shell_controls(staged.harness().root_widget(), &mut controls);
+            let at = format!("{width}×{height} text {text}");
+            // The bar is the band the system menu stands in; the dock's are lower down.
+            let menu = controls
+                .iter()
+                .map(|(_, r)| *r)
+                .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
+                .expect("the system menu");
+            let bar: Vec<&(String, Rect)> = controls
+                .iter()
+                .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
+                .collect();
+            let badges: Vec<Rect> = bar
+                .iter()
+                .filter(|(n, _)| n == "Badge")
+                .map(|(_, r)| *r)
+                .collect();
+            let [badge] = badges[..] else {
+                panic!("the bell's one badge at {at}: {bar:?}");
+            };
+            let pressed: Vec<Rect> = bar
+                .iter()
+                .filter(|(n, _)| n != "Badge")
+                .map(|(_, r)| *r)
+                .collect();
+            for r in &pressed {
+                assert!(
+                    r.x0 >= 0.0 && r.x1 <= f64::from(width),
+                    "{r:?} stays on the output at {at}"
+                );
+                // One row: every part shares the system menu's band.
+                assert!(
+                    (r.center().y - menu.center().y).abs() < 2.0,
+                    "{r:?} stands in the one row at {at}"
+                );
+                for other in &pressed {
+                    assert!(
+                        r == other || r.intersect(*other).area() <= 0.0,
+                        "{r:?} presses into {other:?} at {at}"
+                    );
+                }
+            }
+            assert!(
+                badge.x1 <= f64::from(width),
+                "the badge {badge:?} stays on the output at {at}"
+            );
+            // The count stands beside the bell, over no control.
+            let under: Vec<&Rect> = pressed
+                .iter()
+                .filter(|r| r.intersect(badge).area() > 0.0)
+                .collect();
+            assert!(
+                under.is_empty(),
+                "the badge {badge:?} covers {under:?} at {at}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let failed = stage::Staged::over(
+            &app,
+            &packages,
+            "no such scenario",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        );
+        let Err(why) = failed else {
+            panic!("a scenario that does not run is an error");
+        };
+        assert!(why.contains("no such scenario"), "{why}");
+    }
 }

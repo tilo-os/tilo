@@ -196,13 +196,18 @@ action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
 }
 
 /// The person's desk as a window shows it: the top bar over the preset they picked, and the
-/// preset switch beside the bar's actions. The bar reads `desk`, this package's other root, as
+/// preset switch beside the bar's actions — or, for the traditional desktop, the whole screen:
+/// its frames on the desk under the desk's own bar and dock, as the session shows them on an
+/// output. The bar reads `desk`, this package's other root, as
 /// any view reads a root of the package it uses. A change of the arrangement runs the preset
 /// body; a change of the desk reading runs the bar.
 view desk_view(a: Arrangement) {
     let v = viewing
     if v.showing == .desktop {
-        traditional_desktop(a)
+        layers(fill) {
+            traditional_desktop(a, fill)
+            desk(root Desk, fill)
+        }
     } else {
         ui.NavShell(content_kind: .page) {
             actions: {
@@ -272,8 +277,10 @@ view bar_part(d: Desk, part: BarPart) {
         }
     } else if part.slot == .tasks {
         if not space.compact {
-            for t in d.tasks {
-                ui.Button(t.title, icon: .bot, role: .bar)
+            row(gap: .tight, align: .center) {
+                for t in d.tasks {
+                    ui.Button(t.title, icon: .bot, role: .bar)
+                }
             }
         }
     } else if part.slot == .people {

@@ -143,6 +143,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
             x: 100.0,
             y: 100.0,
             width: 400.0,
+            height: None,
         },
         Box::new(WindowWell::new(key.clone())),
     ));

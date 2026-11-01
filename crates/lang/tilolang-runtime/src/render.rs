@@ -24,6 +24,11 @@ const MAX_VIEW_DEPTH: usize = 32;
 const FOREIGN_VIEW: &str = "view:";
 /// The kind of a node that renders a block's source (`embed(source, author: who)`).
 pub(crate) const EMBED: &str = "embed";
+/// The kind of a node that draws a resource through its type's default view (`show(r)`): a
+/// call of that view, which package's it is known only once the resource is.
+const SHOW: &str = "show";
+/// The property of a `show` node holding the resource it draws.
+const SHOWN: &str = "of";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
 /// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
@@ -355,13 +360,13 @@ impl Core {
             .collect();
         // A call of another package's view: its boundary renders it where it stands, and this
         // node is the fragment the boundary's tree goes in.
-        if let (Some(target), Some(boundaries)) =
-            (n.kind.strip_prefix(FOREIGN_VIEW), hook.as_deref_mut())
+        if let Some(boundaries) = hook.as_deref_mut()
+            && let Some(call) = self.view_call(&n.kind, &n.props)
         {
-            return self.foreign_view(cx, n, key, events, target, walk, boundaries);
+            return Self::foreign_view(cx, n, key, events, call?, walk, boundaries);
         }
         // A view call's keys are the same at every call site, so they go under the call's key.
-        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW);
+        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW) || n.kind == SHOW;
         let below = Walk {
             level: walk.level.saturating_add(1),
             prefix: if calls {
@@ -400,8 +405,8 @@ impl Core {
             anchor: n.anchor.clone(),
             children,
         };
-        if let Some(target) = n.kind.strip_prefix(FOREIGN_VIEW) {
-            self.resolve_foreign(cx, target, &mut node, acc)?;
+        if let Some(call) = self.view_call(&n.kind, &node.props) {
+            self.resolve_foreign(cx, call?, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
         } else {
@@ -428,18 +433,16 @@ impl Core {
     /// The fragment a call of another package's view stands for: its props without the
     /// arguments passed, and the tree its boundary renders for it.
     fn foreign_view(
-        &self,
         cx: &Build<'_>,
         n: &NodeBuild,
         key: String,
         events: std::collections::BTreeMap<String, Retained>,
-        target: &str,
+        (vt, args): (ViewTarget, Vec<Value>),
         walk: Walk<'_>,
         boundaries: &mut dyn Boundaries,
     ) -> Result<UiNode, RuntimeError> {
-        let (vt, args) = self.call_of(target, &n.props)?;
         let mut props = n.props.clone();
-        props.retain(|name, _| !name.starts_with(ARG_PREFIX));
+        props.retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
         let children = boundaries.boundary(Stub {
             key: &key,
             target: Rc::new(vt),
@@ -674,6 +677,47 @@ impl Core {
         Ok((vt, around))
     }
 
+    /// The view a node of kind `kind` calls and its arguments, when it calls one: another
+    /// package's view by name (`view:<app>:<view id>`), or a resource's type's default view
+    /// (`show(r)`).
+    fn view_call(
+        &self,
+        kind: &str,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Option<Result<(ViewTarget, Vec<Value>), RuntimeError>> {
+        if let Some(target) = kind.strip_prefix(FOREIGN_VIEW) {
+            return Some(self.call_of(target, props));
+        }
+        (kind == SHOW).then(|| self.shown_view(props))
+    }
+
+    /// The default view of the type of the resource a `show` node draws, called on it. A type
+    /// without one is an error: a shell asks `meta(r).opens` before it shows a resource.
+    fn shown_view(
+        &self,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(ViewTarget, Vec<Value>), RuntimeError> {
+        let Some(Value::Ref(shown)) = props.get(SHOWN) else {
+            return Err(RuntimeError::Package(
+                "`show` was given no resource to draw".into(),
+            ));
+        };
+        let ty = &shown.target.ty;
+        let view = self.registry.borrow().default_view(ty).ok_or_else(|| {
+            RuntimeError::Package(format!(
+                "`show`: the type `{ty}` has no default view to draw it with"
+            ))
+        })?;
+        let vt = self.view_target(&view)?;
+        if vt.params.len() != 1 {
+            return Err(RuntimeError::Package(format!(
+                "`show`: the default view {view} of `{ty}` takes {} arguments, not the resource alone",
+                vt.params.len()
+            )));
+        }
+        Ok((vt, vec![Value::Ref(shown.clone())]))
+    }
+
     /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's
     /// `arg.<name>` properties.
     pub(crate) fn call_of(
@@ -720,11 +764,11 @@ impl Core {
     fn resolve_foreign(
         &self,
         cx: &Build<'_>,
-        target: &str,
+        (vt, args): (ViewTarget, Vec<Value>),
         node: &mut UiNode,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
-        let (vt, args) = self.call_of(target, &node.props)?;
+        node.props.remove(SHOWN);
         let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
         let root = acc.absorb(nested);
         "fragment".clone_into(&mut node.kind);

@@ -14,9 +14,9 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
 // `DynAction::apply` is the action protocol's.
-use ui::tilo_actions::Action as _;
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
+use ui::tilo_actions::Action as _;
 
 /// The compiled packages an instance loads: the app and what it uses, the app last.
 pub struct Packages(pub Rc<Vec<Compiled>>);
@@ -105,19 +105,24 @@ impl Staged {
         let mut record = ui::automerge::AutoCommit::new();
 
         instance.sync(Some(&record));
-        // The package's own root resources — a person's record kept beside its main root
-        // (`root shell: Shell`) — are made and its migrations run, as the live session does
-        // when a window opens: a scenario that seeds them through a migration shows them.
-        // Making a root queues a change; `sync` after the origin's say-so runs the migrations,
-        // and each queued change is committed into the record as the door commits an app's.
+        // The package's own root resources — every layer it has (the shell's `Desk` beside its
+        // arrangement) and a person's record kept beside them (`root shell: Shell`) — are made
+        // and its migrations run, as the live session does when a window opens: a scenario
+        // that seeds another layer than the one laid out, or seeds a root through a migration,
+        // shows them. Making a root queues a change; `sync` after the origin's say-so runs the
+        // migrations, and each queued change is committed into the record as the door commits
+        // an app's.
         if let Some(host) = instance.host() {
-            for root in host
-                .package(app)
-                .map(|package| package.meta.named_roots)
-                .unwrap_or_default()
-            {
-                host.root_record(app, &root.ty)
-                    .map_err(|error| format!("a named root could not be made: {error}"))?;
+            let meta = host.package(app).map(|package| package.meta);
+            let roots = meta.iter().flat_map(|meta| {
+                meta.roots
+                    .iter()
+                    .cloned()
+                    .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
+            });
+            for ty in roots {
+                host.root_record(app, &ty)
+                    .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
         instance.set_origin(true);
@@ -139,6 +144,9 @@ impl Staged {
         settle(&mut instance, &mut record)?;
         instance.stage(Some(scenario));
         settle(&mut instance, &mut record)?;
+        if let Some(why) = instance.take_stage_failure() {
+            return Err(format!("the scenario \"{scenario}\" failed: {why}"));
+        }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
         window.receive();

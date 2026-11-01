@@ -78,6 +78,11 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
+    // A resource drawn through its type's default view, as its own package draws it, whatever
+    // its type: what a shell composes a place from when it knows the resource by id alone
+    // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
+    // (`meta(r).opens`).
+    prim_of("show", &["of"], &[]),
 ];
 
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it

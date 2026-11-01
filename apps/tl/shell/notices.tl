@@ -55,13 +55,7 @@ view notices(d: Desk) {
 /// The count is the desk's own (`Desk.unread`), so the centre and the bar's bell never
 /// disagree.
 fn unread_line(d: Desk) -> Text {
-    if d.unread == 0 {
-        "All read"
-    } else if d.unread == 1 {
-        "1 unread"
-    } else {
-        "{d.unread} unread"
-    }
+    if d.unread == 0 { "All read" } else if d.unread == 1 { "1 unread" } else { "{d.unread} unread" }
 }
 
 /// One sender's notices, under its name: each with its title, what it says and its actions.

@@ -31,7 +31,7 @@ action open_into(strip: Text, place: Text, shows: Text, after: Text = "", shown_
 /// resource and its view, attributed and undoable, and `shows` follows from the resource's app.
 action place_found(text: Text, x: Int, y: Int, shown_as: Text = "") (icon: .map_pin, label: "Place what you find") {
     require text != "" "Type something to find and place"
-    outside("session.arrange", "place-found \{\"text\":\"{text}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"}")
+    outside("session.arrange", "place-found \{\"text\":\"{text}\",\"x\":{x},\"y\":{y},\"view\":\"{shown_as}\"\}")
 }
 
 /// Moves the place `place` into the row `row`, before the place `before` or last: within a row,

@@ -70,17 +70,17 @@ view dock_run(s: Shell, d: Desk) {
     }
 }
 
-/// One dock item: its glyph, its badge, and the mark that it wants the person.
+/// One dock item: its glyph, with its badge over the glyph's top trailing corner — the count of
+/// what is new, or the mark that it wants the person — as a dock has always badged an app.
 view dock_tile(s: Shell, d: Desk, item: DockItem) {
-    stack(gap: .tight, align: .center) {
+    layers {
         ui.Button(item.title, icon: item.icon, icon_only: true, role: .plain) {
             on press: dock_open(s, item)
         }
         if item.badge > 0 {
-            ui.Badge(count: item.badge, tone: if item.attention { .warning } else { .neutral })
-        }
-        if item.attention {
-            ui.Badge(dot: true, tone: .warning)
+            ui.Badge(count: item.badge, tone: if item.attention { .warning } else { .neutral }, at: .top_trailing)
+        } else if item.attention {
+            ui.Badge(dot: true, tone: .warning, at: .top_trailing)
         }
     }
 }
