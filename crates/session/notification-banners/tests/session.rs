@@ -115,7 +115,12 @@ fn the_session_asks_the_banners_to_focus_their_newest() {
     // The session runs it, as a person's palette or an agent would, and the
     // banners answer on their own actions socket.
     let id = session
-        .ask_surface("notification-banners", &resource, &action, None)
+        .ask_surface(
+            "notification-banners",
+            &resource,
+            &action,
+            ui::tilo_actions::remote::InvokeArgument::None,
+        )
         .expect("the banners are running");
     let mut ended = None;
     while ended.is_none() {

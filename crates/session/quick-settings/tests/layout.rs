@@ -23,8 +23,8 @@ fn staged(scenario: &str) -> HeadlessApp<QuickSettingsApp> {
     HeadlessApp::<QuickSettingsApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-/// The panel on a desktop: the scenario's readings lent by a host that
-/// records what it is asked to do.
+/// The panel on a desktop: the scenario's readings, and the host it records
+/// what it is asked to do on.
 fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
     let host = Rc::new(FixtureHost::new(scenarios::readings(Some(scenario))));
     let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();

@@ -21,7 +21,7 @@
               outlives every call made into it"
 )]
 
-use std::rc::Rc;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -30,10 +30,10 @@ use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_quick_settings::QuickSettingsState;
-use tilo_quick_settings::host::FixtureHost;
 use tilo_session::mount::shell::{FOCUS, OVERLAYS, WINDOW_MENU};
-use tilo_session::{Options, QuickSettings, Session};
+use tilo_session::surfaces::Surface;
+use tilo_session::{Options, Session, quick_settings};
+use tilo_test_env::ScopedEnv;
 
 /// One display's refresh: how often the session asks its clients for their
 /// next frame.
@@ -105,11 +105,11 @@ fn desk_tree() -> DesktopTree {
 
 /// A headless session showing `tree`, with a turn taken so its desk has laid
 /// the windows out.
-fn session_with(tree: DesktopTree, quick_settings: Option<QuickSettings>) -> Session {
+fn session_with(tree: DesktopTree, panel: Option<Surface>) -> Session {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings,
+            surfaces: panel.into_iter().collect(),
             collab: false,
             ..Options::default()
         },
@@ -121,21 +121,35 @@ fn session_with(tree: DesktopTree, quick_settings: Option<QuickSettings>) -> Ses
     session
 }
 
-/// The session with quick settings mounted over a stand-in device.
+/// The session with no quick settings app installed.
 fn session() -> Session {
     session_with(desk_tree(), None)
 }
 
-/// The same, with the quick settings panel the session shows over the
-/// device's own backend.
-fn session_with_quick_settings() -> Session {
-    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
-    session_with(
+/// The panel's app for this package's tests: the surface probe the session
+/// package ships, standing in for a view that draws the panel and staying up
+/// while the session keeps it.
+fn panel_binary() -> PathBuf {
+    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
+}
+
+/// The environment its stand-in app reads, held for the test's life: it
+/// draws nothing, and stays up until the session stops it.
+fn panel_environment() -> ScopedEnv {
+    let mut environment = ScopedEnv::new();
+    environment.set("SURFACE_PROBE_STAY", "1");
+    environment
+}
+
+/// The session with the quick settings panel installed and its app running
+/// while the stack has the popover up.
+fn session_with_quick_settings() -> (Session, ScopedEnv) {
+    let environment = panel_environment();
+    let session = session_with(
         desk_tree(),
-        Some(QuickSettings::Lent(
-            Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
-        )),
-    )
+        Some(quick_settings::surface_of(panel_binary())),
+    );
+    (session, environment)
 }
 
 /// The arguments of an invocation, as JSON spells them.
@@ -314,7 +328,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
 
 #[test]
 fn escape_closes_the_topmost_surface_that_answers_it() {
-    let mut session = session_with_quick_settings();
+    let (mut session, _panel) = session_with_quick_settings();
     session
         .invoke(
             WINDOW_MENU,
@@ -361,7 +375,7 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
 
 #[test]
 fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
-    let mut session = session_with_quick_settings();
+    let (mut session, _panel) = session_with_quick_settings();
     let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
 
     open(&mut session, "quick-settings", None);
@@ -419,7 +433,7 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
 
 #[test]
 fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
-    let mut session = session_with_quick_settings();
+    let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
     assert!(session.quick_settings_open());
 
@@ -444,7 +458,7 @@ fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
 
 #[test]
 fn a_dismissing_press_does_not_reopen_what_it_closed() {
-    let mut session = session_with_quick_settings();
+    let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
     // The person's finger goes down on the bar, outside the panel: the panel
     // closes, and the bar's own toggle — raised by that same press — must not

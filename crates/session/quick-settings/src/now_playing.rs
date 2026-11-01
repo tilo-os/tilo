@@ -32,8 +32,6 @@ pub struct NowPlaying {
     pub players: Vec<MediaPlayer>,
     /// Where its sound can play, the current one marked.
     pub outputs: Vec<MediaOutput>,
-    /// The speaker group it plays on, and how that stands.
-    pub speakers: Option<String>,
     /// The session another of the person's devices hands this one, which
     /// the card offers to continue here.
     pub offer: Option<MediaOffer>,
@@ -59,22 +57,6 @@ pub struct MediaOffer {
     pub source: HandoffSource,
     /// Where it stopped, in milliseconds.
     pub position_ms: f64,
-    pub playing: bool,
-}
-
-/// What plays here, as another of the person's devices continues it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlayingSource {
-    /// The session the hand-over names: the player and its source.
-    pub session_id: String,
-    /// The app that plays it, by package id.
-    pub app_id: String,
-    pub title: String,
-    /// The stream it plays from.
-    pub url: String,
-    /// Where it is, in milliseconds.
-    pub position_ms: u64,
-    /// It plays rather than stands paused.
     pub playing: bool,
 }
 
@@ -135,7 +117,6 @@ impl NowPlaying {
                     current: false,
                 },
             ],
-            speakers: None,
             offer: None,
         }
     }

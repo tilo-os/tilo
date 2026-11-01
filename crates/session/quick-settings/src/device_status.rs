@@ -1,4 +1,4 @@
-//! Quick Settings' reading of the shell's one device status.
+//! Quick Settings' reading of the desktop's one device status.
 
 use crate::QuickSettingsState;
 

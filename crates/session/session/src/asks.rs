@@ -13,7 +13,7 @@ use tilo_desktop::desktop_host::{
 use tilo_desktop::overlays::Slot;
 use ui::shortcut_table::ShortcutAction;
 
-use crate::keys::{Invocation, QUICK_SETTINGS};
+use crate::keys::Invocation;
 use crate::{
     AppLists, Magnify, SessionCommand, Shared, identity, mount, workspace_settings, workspaces,
 };
@@ -74,7 +74,6 @@ impl Shared {
         for choice in self.handle.take_host_choices() {
             self.host_action(&choice);
         }
-        mount::quick_settings::answer(self);
         self.follow_sheets();
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
@@ -220,13 +219,15 @@ impl Shared {
                     }
                 }
             }
+            // The panel's own pages: it is asked for them once it runs, which
+            // is a pass after the stack has it up.
             ShortcutAction::Notifications => {
                 self.show_quick_settings();
-                invocations.push(Invocation::new(QUICK_SETTINGS, "show-notifications"));
+                self.panel_asks.borrow_mut().push("show-notifications");
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings();
-                invocations.push(Invocation::new(QUICK_SETTINGS, "paste"));
+                self.panel_asks.borrow_mut().push("paste");
             }
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(DESK_RESOURCE, "search"));

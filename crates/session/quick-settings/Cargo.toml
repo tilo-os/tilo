@@ -19,21 +19,31 @@ test-support = []
 # The sound the audio service reads and publishes, and the client side of
 # its lines for what plays.
 audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
+# What the radios, the links and the networks are, as the connectivity
+# service publishes them.
+connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 parking_lot.workspace = true
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
-tilo-power-mgmt = { path = "../../system/power" }
+# The readings the power service publishes are the battery's and the sleep
+# policy's own shapes.
+tilo-power-mgmt = { path = "../../system/power", features = ["service"] }
 tracing.workspace = true
 # A framework app: the panel's resource, effects and views.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The audio service the session hosts, as a test's own: a card in memory.
+audio = { package = "tilo-audio-service", path = "../audio-service", features = ["service"] }
 image = { workspace = true, features = ["png"] }
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
 tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
+tilo-service = { path = "../service" }
 # The session that starts the panel, and the headless presentation it runs.
 tilo-session = { path = "../session" }
 tilo-test-env = { path = "../../dev/test-env" }

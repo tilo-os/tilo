@@ -5,8 +5,6 @@
 
 use std::rc::Rc;
 
-use tilo_quick_settings::device::{DeviceHost, Wake};
-use tilo_quick_settings::host::PanelHost;
 use ui::application::ComponentRunnerInputs;
 
 use crate::BeforeDesk;
@@ -42,9 +40,6 @@ pub struct Options {
     /// the well its place leaves it. `None`, the default, until the desktop's own bar and its
     /// tests move onto it.
     pub shell: Option<tilo_surface_host::shell_part::ShellLayer>,
-    /// What quick settings reads of the device and carries out on it;
-    /// without it, the bar's status cluster opens nothing.
-    pub quick_settings: Option<QuickSettings>,
     /// The controllers in the room, which drive the desktop; without one, a
     /// controller does nothing here.
     pub controllers: Option<controllers::Source>,
@@ -234,16 +229,6 @@ impl ActionPlane {
     }
 }
 
-/// Where quick settings reads the device from.
-pub enum QuickSettings {
-    /// The device host of this machine (or of a stand-in one), made with
-    /// the session loop's wake: its readings land on the loop, what the
-    /// panel asks of the desktop comes back to the session.
-    Device(Box<dyn FnOnce(Wake) -> DeviceHost>),
-    /// A host lent as it is: a screenshot's stand-in readings.
-    Lent(Rc<dyn PanelHost>),
-}
-
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot, a session in a window) carries out
 /// nothing.
@@ -333,7 +318,6 @@ impl Default for Options {
             presentation: ComponentRunnerInputs::from_native_process,
             shell: None,
             sync: None,
-            quick_settings: None,
             controllers: None,
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),

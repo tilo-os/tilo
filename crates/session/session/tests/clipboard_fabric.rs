@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{OutputConfig, Selection};
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -30,9 +29,7 @@ use tilo_device_fabric::{
     DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession,
     PersonalFabricAction,
 };
-use tilo_quick_settings::device::Device;
-use tilo_quick_settings::device::testing::{Kept, Machine};
-use tilo_session::{DeviceHost, Options, QuickSettings, Session};
+use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -162,21 +159,10 @@ impl FabricLink for FakeLink {
 }
 
 fn session(link: &FakeLink) -> Session {
-    let reads = Machine::laptop();
     let fabric: SharedLink = Arc::new(link.clone());
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                )
-            }))),
             fabric: Some(fabric),
             ..Options::default()
         },
@@ -213,24 +199,22 @@ fn copy(session: &mut Session, text: &str) {
         .expect("the app copies");
 }
 
-/// The Clipboard section, open in quick settings.
-fn open_clipboard(session: &mut Session) {
-    if !session.quick_settings_open() {
-        session
-            .invoke(CHROME_RESOURCE, "quick-settings", &serde_json::Map::new())
-            .expect("open quick settings");
-    }
+/// The history as the session publishes it: each copy's text and where it was
+/// copied.
+fn history(session: &Session) -> Vec<(String, Option<String>)> {
     session
-        .invoke(
-            tilo_session::QUICK_SETTINGS,
-            "open-section",
-            &serde_json::from_value(serde_json::json!({ "section": "clipboard" }))
-                .expect("arguments"),
-        )
-        .expect("open the Clipboard section");
-    for _ in 0..3 {
-        step(session);
-    }
+        .read(CLIPBOARD_RESOURCE)
+        .expect("the session publishes the clipboard")
+        .as_array()
+        .expect("the history is a list")
+        .iter()
+        .map(|copy| {
+            (
+                copy["text"].as_str().unwrap_or_default().to_owned(),
+                copy["from"].as_str().map(str::to_owned),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -261,21 +245,24 @@ fn a_copy_is_offered_to_the_person_s_other_devices_and_theirs_joins_the_clipboar
     // What they copied on their laptop joins the history here, saying which
     // device it came from.
     link.shared_from("laptop", "made there", ui::time::unix_now_ms());
-    open_clipboard(&mut session);
     when(&mut session, |session| {
-        session
-            .accessible_labels()
+        history(session)
             .iter()
-            .any(|label| label.contains("made there"))
+            .any(|(text, _)| text == "made there")
     });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label.contains("made there")),
-        "their copy is listed: {labels:?}"
+    let listed = history(&session);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["made there", "made here"],
+        "their copy is listed, newest first: {listed:?}"
     );
-    assert!(
-        labels.iter().any(|label| label == "2 copies"),
-        "the section counts what they shared: {labels:?}"
+    assert_eq!(
+        listed[0].1.as_deref(),
+        Some("laptop"),
+        "and says where it was copied: {listed:?}"
     );
 
     // Their copy is theirs: it is not offered back to the fabric.

@@ -6,11 +6,16 @@
 use ui::icons::Icon;
 use ui::prelude::Invoke;
 
+use connectivity::model::{
+    Accessory, Bluetooth, Link, LinkKind, Nearby, Network, SavedNetwork, Vpn, VpnProfile, Wifi,
+    WifiNetwork,
+};
+
 use crate::hosted::{HostedActions, HostedRow};
 use crate::resource::QuickSettings;
 use crate::{
-    BtDevice, HandoffTarget, NotificationRow, NotificationsView, PowerProfile, QsSection,
-    QuickSettingsState, SoundOutput, WifiNetwork, WifiPasswordPrompt,
+    HandoffTarget, NotificationRow, NotificationsView, PowerProfile, QsSection, QuickSettingsState,
+    SoundOutput, WifiPasswordPrompt,
 };
 
 pub const NAMES: &[&str] = &[
@@ -71,64 +76,82 @@ const HEADPHONES: &str = "00:1B:66:A1:B2:C3";
 pub fn readings(name: Option<&str>) -> QuickSettingsState {
     let mut state = QuickSettingsState::fixture();
     state.brightness = 0.7;
-    state.radios.wifi_available = true;
-    state.radios.wifi_enabled = true;
-    state.wifi = true;
-    state.status.link = Some(os_actions::LinkStatus {
-        kind: os_actions::LinkKind::Wifi,
-        name: Some("Home".into()),
-        signal: 4,
-    });
+    state.network = Network {
+        wifi: Wifi {
+            available: true,
+            on: true,
+            hardware_blocked: false,
+            networks: vec![
+                network("Home", 4, true, true),
+                network("Office", 3, false, true),
+                network("Cafe guest", 2, false, false),
+                WifiNetwork {
+                    secure: false,
+                    ..network("Library", 1, false, false)
+                },
+            ],
+        },
+        saved: vec![
+            SavedNetwork {
+                name: "Home".into(),
+                id: "home".into(),
+                autoconnect: true,
+                ..SavedNetwork::default()
+            },
+            SavedNetwork {
+                name: "Grandma's".into(),
+                id: "grandma".into(),
+                autoconnect: false,
+                ..SavedNetwork::default()
+            },
+        ],
+        link: Some(Link {
+            kind: LinkKind::Wifi,
+            name: Some("Home".into()),
+            signal: 4,
+        }),
+        ..Network::default()
+    };
+    state.status.link = state.network.link.clone();
     state.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
         present: true,
         percent: 76,
         state: tilo_power_mgmt::BatteryState::Discharging,
     });
     state.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(214));
-    state.bluetooth_available = true;
-    state.bluetooth = true;
-    state.bt_devices = vec![
-        BtDevice {
-            name: "Studio headphones".into(),
-            address: HEADPHONES.into(),
-            battery: 80,
-            connected: true,
-        },
-        BtDevice {
-            name: "Keyboard".into(),
-            address: "00:1B:66:D4:E5:F6".into(),
-            battery: 0,
+    state.bluetooth = Bluetooth {
+        available: true,
+        on: true,
+        accessories: vec![
+            Accessory {
+                name: "Studio headphones".into(),
+                address: HEADPHONES.into(),
+                battery: Some(80),
+                connected: true,
+            },
+            Accessory {
+                name: "Keyboard".into(),
+                address: "00:1B:66:D4:E5:F6".into(),
+                battery: None,
+                connected: false,
+            },
+        ],
+        nearby: vec![Nearby {
+            name: "Kitchen speaker".into(),
+            address: "00:1B:66:77:88:99".into(),
+            signal: Some(-62),
+        }],
+        ..Bluetooth::default()
+    };
+    state.vpn = Vpn {
+        profiles: vec![VpnProfile {
+            name: "Work".into(),
+            id: "7c1e3a5e-0d61-4f3c-9b1a-2d6f9f0e1a11".into(),
+            kind: "wireguard".into(),
             connected: false,
-        },
-    ];
-    state.wifi_networks = vec![
-        network("Home", 4, true, true),
-        network("Office", 3, false, true),
-        network("Cafe guest", 2, false, false),
-        WifiNetwork {
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            ..network("Library", 1, false, false)
-        },
-    ];
-    state.saved_networks = vec![
-        crate::SavedNetwork {
-            name: "Home".into(),
-            profile: "home".into(),
-            autoconnect: true,
-        },
-        crate::SavedNetwork {
-            name: "Grandma's".into(),
-            profile: "grandma".into(),
-            autoconnect: false,
-        },
-    ];
-    state.vpns = vec![os_actions::VpnConnectionInfo {
-        name: "Work".into(),
-        uuid: "7c1e3a5e-0d61-4f3c-9b1a-2d6f9f0e1a11".into(),
-        active: false,
-        kind: "wireguard".into(),
-    }];
+        }],
+        ..Vpn::default()
+    };
     state.power_profiles = vec![
         PowerProfile::Saver,
         PowerProfile::Balanced,
@@ -284,7 +307,7 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
         }
         Some("wifi-hidden") => {
             // The form under the networks: a short list keeps it in view.
-            state.wifi_networks.truncate(2);
+            state.network.wifi.networks.truncate(2);
             state.wifi_hidden = Some(crate::HiddenNetworkPrompt::new());
         }
         Some("notifications") => {
@@ -312,12 +335,11 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
     state
 }
 
-fn network(ssid: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
+fn network(name: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
     WifiNetwork {
-        ssid: ssid.into(),
+        name: name.into(),
         signal,
         secure: true,
-        security: os_actions::WifiSecurity::Wpa2,
         connected,
         known,
     }

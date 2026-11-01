@@ -2,8 +2,8 @@
 //! link, volume and capture streams, as last read. The shell reads them
 //! (`shell::status`); this is the reading and what it says.
 
+use connectivity::model::{Link, LinkKind};
 use media::audio::default_node::VolumeState;
-use os_actions::{LinkKind, LinkStatus};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
 use crate::i18n::{t, t_args};
@@ -16,7 +16,7 @@ pub struct SystemStatus {
     pub battery: Option<BatterySnapshot>,
     /// Time to empty or to full, when the battery reports its rate.
     pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
-    pub link: Option<LinkStatus>,
+    pub link: Option<Link>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed by the audio service from
     /// `PipeWire`'s server security PID to the kernel executable, and read
@@ -108,7 +108,7 @@ impl SystemStatus {
 }
 
 /// `0` when offline or wired (a cable has no bars), `1..=4` on Wi-Fi.
-pub fn link_bars(link: &LinkStatus) -> u8 {
+pub fn link_bars(link: &Link) -> u8 {
     match link.kind {
         LinkKind::Wifi => link.signal.clamp(1, 4),
         _ => 0,
@@ -210,7 +210,7 @@ mod tests {
             let s = SystemStatus {
                 battery: Some(battery(64, BatteryState::Charging)),
                 battery_time: None,
-                link: Some(LinkStatus {
+                link: Some(Link {
                     kind: LinkKind::Wifi,
                     name: Some("Cafe WiFi".into()),
                     signal: 3,
@@ -229,18 +229,18 @@ mod tests {
 
         // Phase `a_wired_link_has_no_bars`.
         {
-            let wired = LinkStatus {
+            let wired = Link {
                 kind: LinkKind::Wired,
                 name: Some("eth0".into()),
                 signal: 4,
             };
             assert_eq!(link_bars(&wired), 0);
-            assert_eq!(link_bars(&LinkStatus::offline()), 0);
+            assert_eq!(link_bars(&Link::default()), 0);
         }
 
         // Phase `a_connected_radio_always_shows_at_least_one_bar`.
         {
-            let weak = LinkStatus {
+            let weak = Link {
                 kind: LinkKind::Wifi,
                 name: Some("Far".into()),
                 signal: 0,

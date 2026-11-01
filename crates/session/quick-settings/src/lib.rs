@@ -12,36 +12,41 @@
 //!
 //! The app's resource is the panel ([`QuickSettings`]): which page shows
 //! and what is open, changed by its actions. What it does to the device is
-//! its effects ([`QsEffect`]). The desktop that shows it lends it a
-//! [`host::PanelHost`] that reads the device into [`QuickSettingsState`]
-//! and carries the effects out; a screenshot or a test lends a fixture.
+//! its effects ([`QsEffect`]), which the session's published resources
+//! carry out ([`verbs`]) on what they publish ([`readings`]); a screenshot
+//! or a test lends a fixture instead.
 
 // The derives below name the resource crate by its own name.
 use ui::tilo_resource;
 
 pub mod actions;
-pub mod device;
 mod device_status;
 pub mod effect;
 mod faces;
 pub mod host;
 pub mod hosted;
 mod i18n;
+mod live;
+mod media;
 mod now_playing;
-mod prepare;
+pub(crate) mod readings;
 pub mod resource;
 pub mod scenarios;
+pub(crate) mod session;
+mod sound;
 mod state;
 pub mod status;
+mod verbs;
 mod view;
 
 pub use effect::QsEffect;
 pub use faces::subline;
-pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource};
-pub use prepare::prepare;
+pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying};
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 
-pub use state::{DisplayBrightness, PasteOrigin, QuickSettingsState, focused_display_first};
+pub use state::{
+    DisplayBrightness, PasteOrigin, QuickSettingsState, RadioChange, focused_display_first,
+};
 pub use status::SystemStatus;
 
 /// The clipboard history as Quick Settings shows it: the Clipboard row's
@@ -238,34 +243,6 @@ pub struct SoundStream {
     pub muted: bool,
 }
 
-/// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
-/// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
-/// `connected` flags the active-radio dot. `security` is the scanned
-/// authentication mode, which decides whether a passphrase may be shared
-/// with the person's other devices without scanning again.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WifiNetwork {
-    pub ssid: String,
-    pub signal: u8,
-    pub secure: bool,
-    pub security: os_actions::WifiSecurity,
-    pub connected: bool,
-    /// This machine has joined it before: it connects without asking.
-    pub known: bool,
-}
-
-/// A network profile `NetworkManager` keeps, so the machine joins it again
-/// without a password typed and without being asked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SavedNetwork {
-    pub name: String,
-    /// The profile's `NetworkManager` UUID: what forgetting it, or turning
-    /// its autoconnect off, names.
-    pub profile: String,
-    /// It joins by itself whenever it is in reach.
-    pub autoconnect: bool,
-}
-
 /// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
 /// None)` fails for every protected network not seen before — every
 /// network on first boot — and there's nowhere else to type a passphrase
@@ -346,28 +323,6 @@ impl Default for HiddenNetworkPrompt {
     }
 }
 
-/// A Bluetooth device entry in the drill-in list. `connected` flags the active-radio dot.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BtDevice {
-    pub name: String,
-    /// Stable `BlueZ` address used only for local actions and ephemeral
-    /// exact-device handoff. It is never replicated in personal-fabric state.
-    pub address: String,
-    pub battery: u8,
-    pub connected: bool,
-}
-
-/// A Bluetooth device in reach that is not paired yet, as the Bluetooth
-/// section lists it while it looks.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BtNearby {
-    pub name: String,
-    /// `BlueZ`'s address: what pairing it names.
-    pub address: String,
-    /// Signal while it is in reach, in dBm.
-    pub signal: Option<i16>,
-}
-
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.
 #[derive(
     Clone,
@@ -389,6 +344,17 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
+    /// The name the power service publishes the profile by, and takes it
+    /// back as.
+    #[must_use]
+    pub(crate) const fn published(self) -> &'static str {
+        match self {
+            PowerProfile::Saver => "power-saver",
+            PowerProfile::Balanced => "balanced",
+            PowerProfile::Performance => "performance",
+        }
+    }
+
     pub fn label(self) -> String {
         crate::i18n::t(match self {
             PowerProfile::Saver => "qs-power-saver",
@@ -398,84 +364,9 @@ impl PowerProfile {
     }
 }
 
-/// Take the brightness service's levels into the sliders, by connector, as
-/// the service announces a change, whoever made it. Without per-display
-/// sliders the built-in panel's level is the one slider's. Returns whether
-/// a slider moved.
-pub fn follow_brightness_levels(
-    state: &mut crate::QuickSettingsState,
-    levels: &[os_actions::MonitorLevel],
-) -> bool {
-    let before = (state.brightness.to_bits(), state.displays.clone());
-    for display in &mut state.displays {
-        if let Some(level) = levels.iter().find(|l| l.connector == display.connector) {
-            display.level = level.level;
-        }
-    }
-    let first = match state.displays.first() {
-        Some(display) => Some(display.level),
-        None => levels
-            .iter()
-            .find(|l| l.kind == os_actions::BrightnessKind::Backlight)
-            .map(|l| l.level),
-    };
-    if let Some(level) = first {
-        state.brightness = level;
-    }
-    before != (state.brightness.to_bits(), state.displays.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn level(
-        connector: &str,
-        level: f32,
-        kind: os_actions::BrightnessKind,
-    ) -> os_actions::MonitorLevel {
-        os_actions::MonitorLevel {
-            connector: connector.into(),
-            level,
-            kind,
-        }
-    }
-
-    #[test]
-    fn a_backlight_change_moves_its_slider_and_nothing_else() {
-        use os_actions::BrightnessKind::{Backlight, Ddc};
-        let mut state = crate::QuickSettingsState::default();
-        assert!(follow_brightness_levels(
-            &mut state,
-            &[level("eDP-1", 0.7, Backlight)]
-        ));
-        assert!(
-            (state.brightness - 0.7).abs() < f32::EPSILON,
-            "the one slider"
-        );
-
-        state.displays = vec![
-            crate::DisplayBrightness {
-                connector: "eDP-1".into(),
-                name: "Built-in display".into(),
-                level: 0.7,
-            },
-            crate::DisplayBrightness {
-                connector: "DP-2".into(),
-                name: "Dell U2720Q".into(),
-                level: 0.5,
-            },
-        ];
-        let levels = [level("eDP-1", 0.25, Backlight), level("DP-2", 0.5, Ddc)];
-        assert!(follow_brightness_levels(&mut state, &levels));
-        assert!((state.displays[0].level - 0.25).abs() < f32::EPSILON);
-        assert!((state.displays[1].level - 0.5).abs() < f32::EPSILON);
-        assert!((state.brightness - 0.25).abs() < f32::EPSILON);
-        assert!(
-            !follow_brightness_levels(&mut state, &levels),
-            "already shown"
-        );
-    }
 
     #[test]
     fn power_profile_label_matches_variant() {
@@ -484,5 +375,3 @@ mod tests {
         assert_eq!(PowerProfile::Performance.label(), "Performance");
     }
 }
-
-pub mod radio;

@@ -6,12 +6,11 @@
 //! reach the player through the same door.
 
 use ui::LocalState;
-use ui::TextRole;
 use ui::framework::ViewCx;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, Column, Container, Dropdown, Element, MediaTransport, Text, TransportActions,
-    TransportFeed, TransportState,
+    Button, Column, Container, Dropdown, Element, MediaTransport, TransportActions, TransportFeed,
+    TransportState,
 };
 
 use crate::effect::QsEffect;
@@ -19,10 +18,10 @@ use crate::i18n::{t, t_args};
 use crate::now_playing::NowPlaying;
 use crate::resource::QuickSettings;
 
-use crate::host::Readings;
+use crate::readings::Readings;
 
-/// What the card reads: the transport's feed, followed on every reading so
-/// the playhead moves without building the card again, and the choices
+/// What the card reads: the transport's feed, shown the song on every sync
+/// so the playhead moves without building the card again, and the choices
 /// around it, which do build it again.
 #[derive(Clone)]
 pub(crate) struct Parts {
@@ -37,7 +36,6 @@ struct Choices {
     player: String,
     outputs: Vec<(String, String)>,
     output: String,
-    speakers: Option<String>,
     /// The handoff to continue here: its request, and the line that says
     /// what it is.
     offer: Option<(String, String)>,
@@ -76,7 +74,6 @@ impl Choices {
             player,
             outputs,
             output,
-            speakers: playing.speakers.clone(),
             offer: playing.offer.as_ref().map(|offer| {
                 let line = t_args(
                     "qs-now-playing-offer",
@@ -119,16 +116,17 @@ fn transport_state(playing: &NowPlaying) -> TransportState {
 
 impl Parts {
     pub(crate) fn new(readings: &Readings) -> Self {
-        let transport = TransportFeed::new();
-        let shown = transport.clone();
-        readings.watch(move |state| {
-            if let Some(playing) = &state.now_playing {
-                shown.show(transport_state(playing));
-            }
-        });
         Self {
-            transport,
+            transport: TransportFeed::new(),
             choices: readings.project(|state| state.now_playing.as_ref().map(Choices::of)),
+        }
+    }
+
+    /// Show `playing` on the transport: on every sync, so a playhead another
+    /// process moved reaches the band without the card being built again.
+    pub(crate) fn show(&self, playing: Option<&NowPlaying>) {
+        if let Some(playing) = playing {
+            self.transport.show(transport_state(playing));
         }
     }
 }
@@ -154,13 +152,6 @@ pub(super) fn card(cx: &ViewCx<QuickSettings>, parts: &Parts) -> Element {
             .with_rhythm(Rhythm::Related)
             .with_id("qs-now-playing")
             .push(Box::new(MediaTransport::new(&transport, controls)));
-        if let Some(speakers) = &choices.speakers {
-            card = card.push(Box::new(
-                Text::new(speakers)
-                    .with_role(TextRole::Caption)
-                    .with_id("qs-now-playing-speakers"),
-            ));
-        }
         if let Some((request, label)) = &choices.offer {
             card = card.push(Box::new(actions.bind_effect_invocation(
                 Button::new("qs-now-playing-resume", label),

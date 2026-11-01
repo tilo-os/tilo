@@ -68,6 +68,7 @@ fn panel_binary() -> PathBuf {
 fn a_panel_publishes_its_accessibility_tree() {
     let assistive = Assistive::start();
     let mut session = session_with(&[panel()]);
+    session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
     let names = assistive.until_it_sees(&mut session, "Brightness");
 
@@ -92,6 +93,7 @@ fn the_reader_speaks_the_focused_panel_control() {
     let spoken = Spoken::start();
     let assistive = Assistive::start();
     let mut session = session_with(&[panel()]);
+    session.start_surface(&panel()).expect("the panel starts");
     shown(&mut session);
     assistive.until_it_sees(&mut session, "Volume");
     assert!(

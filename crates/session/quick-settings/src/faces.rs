@@ -1,14 +1,15 @@
 //! What each part of the panel shows, read from the device's readings as
 //! plain values. The view builds its widgets from these and nothing else,
 //! and each part is built again only when its face changes
-//! ([`crate::host::Readings::project`]).
+//! ([`crate::readings::Readings::project`]).
 
+use connectivity::model::{Accessory, LinkKind, Nearby, SavedNetwork, WifiNetwork};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use ui::icons::Icon;
 
 use crate::effect::QsEffect;
 use crate::i18n::{t, t_args};
-use crate::{PowerProfile, QsSection, QuickSettingsState, WifiNetwork};
+use crate::{PowerProfile, QsSection, QuickSettingsState, RadioChange};
 
 /// What a slider sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -152,20 +153,14 @@ pub(crate) fn available(control: QuickSettingsControl, state: &QuickSettingsStat
         // It renders as Wi-Fi when a radio exists and as a wired-network
         // affordance on Ethernet-only machines; no network hardware means
         // no inert tile.
-        QuickSettingsControl::Wifi => {
-            state.radios.wifi_available
-                || state
-                    .wired
-                    .as_ref()
-                    .is_some_and(|wired| wired.device.is_some())
-        }
-        QuickSettingsControl::Bluetooth => state.bluetooth_available,
+        QuickSettingsControl::Wifi => state.wifi_available() || state.wired_available(),
+        QuickSettingsControl::Bluetooth => state.bluetooth.available,
         QuickSettingsControl::NightLight | QuickSettingsControl::DoNotDisturb => true,
         QuickSettingsControl::AirplaneMode => {
-            state.radios.wifi_available || state.radios.wwan_available
+            state.network.wifi.available || state.network.mobile.available
         }
-        QuickSettingsControl::Vpn => !state.vpns.is_empty(),
-        QuickSettingsControl::MobileData => state.radios.wwan_available,
+        QuickSettingsControl::Vpn => !state.vpn.profiles.is_empty(),
+        QuickSettingsControl::MobileData => state.network.mobile.available,
         QuickSettingsControl::RotationLock => state.rotation_available,
         QuickSettingsControl::PowerMode => state.power_profiles.contains(&PowerProfile::Saver),
     }
@@ -178,13 +173,7 @@ pub(crate) fn section_of(
 ) -> Option<QsSection> {
     match control {
         // The wired link is listed here too, on a machine without a radio.
-        QuickSettingsControl::Wifi
-            if state.radios.wifi_available
-                || state
-                    .wired
-                    .as_ref()
-                    .is_some_and(|wired| wired.device.is_some()) =>
-        {
+        QuickSettingsControl::Wifi if state.wifi_available() || state.wired_available() => {
             Some(QsSection::Wifi)
         }
         QuickSettingsControl::Bluetooth => Some(QsSection::Bluetooth),
@@ -234,7 +223,7 @@ pub(crate) fn control_named(name: &str) -> Option<QuickSettingsControl> {
 
 fn tile_label(control: QuickSettingsControl, state: &QuickSettingsState) -> String {
     match control {
-        QuickSettingsControl::Wifi if !state.radios.wifi_available => t("qs-wired-network"),
+        QuickSettingsControl::Wifi if !state.wifi_available() => t("qs-wired-network"),
         QuickSettingsControl::Wifi => t("qs-wifi"),
         _ => control_label(control),
     }
@@ -242,8 +231,8 @@ fn tile_label(control: QuickSettingsControl, state: &QuickSettingsState) -> Stri
 
 pub(crate) fn tile_icon(control: QuickSettingsControl, state: &QuickSettingsState) -> Icon {
     match control {
-        QuickSettingsControl::Wifi if !state.radios.wifi_available => Icon::EthernetPort,
-        QuickSettingsControl::Wifi if !state.wifi => Icon::WifiOff,
+        QuickSettingsControl::Wifi if !state.wifi_available() => Icon::EthernetPort,
+        QuickSettingsControl::Wifi if !state.network.wifi.on => Icon::WifiOff,
         QuickSettingsControl::Wifi => Icon::Wifi,
         QuickSettingsControl::Bluetooth => Icon::Bluetooth,
         QuickSettingsControl::Vpn => Icon::Shield,
@@ -258,15 +247,17 @@ pub(crate) fn tile_icon(control: QuickSettingsControl, state: &QuickSettingsStat
 
 fn tile_on(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
     match control {
-        QuickSettingsControl::Wifi if !state.radios.wifi_available => {
-            state.wired.as_ref().is_some_and(|wired| wired.connected)
-        }
-        QuickSettingsControl::Wifi => state.wifi,
-        QuickSettingsControl::Bluetooth => state.bluetooth,
-        QuickSettingsControl::Vpn => state.vpns.iter().any(|vpn| vpn.active),
+        QuickSettingsControl::Wifi if !state.wifi_available() => state
+            .network
+            .wired
+            .as_ref()
+            .is_some_and(|wired| wired.connected),
+        QuickSettingsControl::Wifi => state.network.wifi.on,
+        QuickSettingsControl::Bluetooth => state.bluetooth.on,
+        QuickSettingsControl::Vpn => state.vpn.profiles.iter().any(|vpn| vpn.connected),
         QuickSettingsControl::NightLight => state.night_light,
-        QuickSettingsControl::AirplaneMode => state.radios.airplane_mode,
-        QuickSettingsControl::MobileData => state.radios.wwan_enabled,
+        QuickSettingsControl::AirplaneMode => state.network.airplane_mode,
+        QuickSettingsControl::MobileData => state.network.mobile.on,
         QuickSettingsControl::DoNotDisturb => state.do_not_disturb,
         QuickSettingsControl::RotationLock => state.rotation_lock,
         QuickSettingsControl::PowerMode => state.power_profile == PowerProfile::Saver,
@@ -276,7 +267,7 @@ fn tile_on(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
 /// What a press on `control`'s tile does.
 fn tile_switch(control: QuickSettingsControl, state: &QuickSettingsState) -> Option<QsEffect> {
     let on = tile_on(control, state);
-    if state.radio_change_pending
+    if state.radio_change_pending()
         && matches!(
             control,
             QuickSettingsControl::Wifi | QuickSettingsControl::AirplaneMode
@@ -285,22 +276,21 @@ fn tile_switch(control: QuickSettingsControl, state: &QuickSettingsState) -> Opt
         return None;
     }
     Some(match control {
-        QuickSettingsControl::Wifi if !state.radios.wifi_available => {
-            QsEffect::SetWired { on: !on }
-        }
+        QuickSettingsControl::Wifi if !state.wifi_available() => QsEffect::SetWired { on: !on },
         QuickSettingsControl::Wifi => QsEffect::SetWifi { on: !on },
         QuickSettingsControl::Bluetooth => QsEffect::SetBluetooth { on: !on },
         // On: the active profile goes off. Off: the first comes on; the
         // section lists every profile with its own switch.
         QuickSettingsControl::Vpn => {
             let profile = state
-                .vpns
+                .vpn
+                .profiles
                 .iter()
-                .find(|profile| profile.active)
-                .or_else(|| state.vpns.first())?;
+                .find(|profile| profile.connected)
+                .or_else(|| state.vpn.profiles.first())?;
             QsEffect::SetVpn {
-                profile: profile.name.clone(),
-                on: !profile.active,
+                profile: profile.id.clone(),
+                on: !profile.connected,
             }
         }
         QuickSettingsControl::NightLight => QsEffect::SetNightLight { on: !on },
@@ -324,27 +314,27 @@ fn tile_switch(control: QuickSettingsControl, state: &QuickSettingsState) -> Opt
 }
 
 /// The network Wi-Fi is on: the observed link when it is Wi-Fi or offline,
-/// else (wired, or not observed yet) the last scan's.
+/// else (wired, or not observed yet) the one the radio reports joined.
 fn wifi_subline(state: &QuickSettingsState) -> String {
     match &state.status.link {
-        Some(link) if link.kind == os_actions::LinkKind::Wifi => link
+        Some(link) if link.kind == LinkKind::Wifi => link
             .name
             .clone()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| t("qs-connected")),
-        Some(link) if link.kind == os_actions::LinkKind::Offline => t("qs-not-connected"),
+        Some(link) if link.kind == LinkKind::Offline => t("qs-not-connected"),
         _ => state
-            .wifi_networks
-            .iter()
-            .find(|network| network.connected)
-            .map_or_else(|| t("qs-not-connected"), |network| network.ssid.clone()),
+            .network
+            .wifi
+            .connected()
+            .map_or_else(|| t("qs-not-connected"), |network| network.name.clone()),
     }
 }
 
 /// The line under `control`'s tile: its state in words.
 #[must_use]
 pub fn subline(control: QuickSettingsControl, state: &QuickSettingsState) -> String {
-    if state.radio_change_pending
+    if state.radio_change_pending()
         && matches!(
             control,
             QuickSettingsControl::Wifi | QuickSettingsControl::AirplaneMode
@@ -352,54 +342,60 @@ pub fn subline(control: QuickSettingsControl, state: &QuickSettingsState) -> Str
     {
         // The change under way, until the machine answers: never the
         // request shown as if it had happened.
-        return match (control, state.radio_change) {
-            (QuickSettingsControl::Wifi, Some(os_actions::RadioChange::Wifi(on)))
-            | (QuickSettingsControl::AirplaneMode, Some(os_actions::RadioChange::Airplane(on))) => {
-                t(if on {
-                    "qs-turning-on"
-                } else {
-                    "qs-turning-off"
-                })
-            }
+        return match (control, state.radio_change()) {
+            (QuickSettingsControl::Wifi, Some(RadioChange::Wifi(on)))
+            | (QuickSettingsControl::AirplaneMode, Some(RadioChange::Airplane(on))) => t(if on {
+                "qs-turning-on"
+            } else {
+                "qs-turning-off"
+            }),
             _ => t("display-confirm-applying"),
         };
     }
     let on_off = |on: bool| t(if on { "qs-on" } else { "qs-off" });
     match control {
-        QuickSettingsControl::Wifi if !state.radios.wifi_available => state
+        QuickSettingsControl::Wifi if !state.wifi_available() => state
+            .network
             .wired
             .as_ref()
             .and_then(|wired| wired.device.as_deref())
             .map_or_else(
                 || t("qs-not-connected"),
                 |device| {
-                    if state.wired.as_ref().is_some_and(|wired| wired.connected) {
+                    if state
+                        .network
+                        .wired
+                        .as_ref()
+                        .is_some_and(|wired| wired.connected)
+                    {
                         device.to_owned()
                     } else {
                         t("qs-cable-unplugged")
                     }
                 },
             ),
-        QuickSettingsControl::Wifi if state.wifi => wifi_subline(state),
+        QuickSettingsControl::Wifi if state.network.wifi.on => wifi_subline(state),
         QuickSettingsControl::Wifi
-            if state.radios.wifi_hardware_blocked || state.wifi_problem.is_some() =>
+            if state.network.wifi.hardware_blocked || state.network.problem.is_some() =>
         {
             wifi_off_message(state)
         }
-        QuickSettingsControl::Bluetooth if state.bluetooth => state
-            .bt_devices
+        QuickSettingsControl::Bluetooth if state.bluetooth.on => state
+            .bluetooth
+            .accessories
             .iter()
             .find(|device| device.connected)
             .map_or_else(|| t("qs-not-connected"), |device| device.name.clone()),
         QuickSettingsControl::Wifi | QuickSettingsControl::Bluetooth => t("qs-off"),
         QuickSettingsControl::Vpn => state
-            .vpns
+            .vpn
+            .profiles
             .iter()
-            .find(|vpn| vpn.active)
+            .find(|vpn| vpn.connected)
             .map_or_else(|| t("qs-off"), |vpn| vpn.name.clone()),
         QuickSettingsControl::NightLight => on_off(state.night_light),
-        QuickSettingsControl::AirplaneMode => on_off(state.radios.airplane_mode),
-        QuickSettingsControl::MobileData => on_off(state.radios.wwan_enabled),
+        QuickSettingsControl::AirplaneMode => on_off(state.network.airplane_mode),
+        QuickSettingsControl::MobileData => on_off(state.network.mobile.on),
         QuickSettingsControl::DoNotDisturb => t(if state.do_not_disturb {
             "qs-do-not-disturb-on"
         } else {
@@ -416,10 +412,10 @@ pub fn subline(control: QuickSettingsControl, state: &QuickSettingsState) -> Str
 
 /// What the Wi-Fi tile and section say about a radio that is off.
 pub(crate) fn wifi_off_message(state: &QuickSettingsState) -> String {
-    if state.radios.wifi_hardware_blocked {
-        crate::radio::WifiProblem::HardwareSwitch.reason()
-    } else if let Some(problem) = state.wifi_problem {
-        problem.reason()
+    if state.network.wifi.hardware_blocked {
+        t("qs-wifi-problem-hardware-switch")
+    } else if let Some(problem) = &state.network.problem {
+        problem.clone()
     } else {
         t("qs-wifi-off")
     }
@@ -579,7 +575,7 @@ pub(crate) fn ordered_networks(networks: &[WifiNetwork]) -> Vec<&WifiNetwork> {
             .cmp(&a.connected)
             .then(b.known.cmp(&a.known))
             .then(b.signal.cmp(&a.signal))
-            .then_with(|| a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     order
 }
@@ -599,7 +595,7 @@ pub(crate) fn offered_modes(state: &QuickSettingsState) -> Vec<PowerProfile> {
 /// A network as the Wi-Fi section lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NetworkFace {
-    pub ssid: String,
+    pub name: String,
     pub signal: u8,
     pub secure: bool,
     pub connected: bool,
@@ -623,7 +619,7 @@ pub(crate) enum Item {
     Network(NetworkFace),
     /// A saved network this machine cannot see now; it can still be
     /// forgotten, or kept from joining by itself.
-    Saved(crate::SavedNetwork),
+    Saved(SavedNetwork),
     /// The way into a network that broadcasts no name: the row that asks
     /// for its name and password, or the form itself once it is up.
     Hidden {
@@ -635,15 +631,16 @@ pub(crate) enum Item {
         /// The cable's address while it is up, else the device's name.
         detail: Option<String>,
     },
-    Accessory(crate::BtDevice),
+    Accessory(Accessory),
     /// "Look for devices", or "Stop looking" while the panel is looking.
     LookForDevices {
         looking: bool,
     },
     /// A Bluetooth device in reach, which a press pairs.
-    Nearby(crate::BtNearby),
+    Nearby(Nearby),
     Profile {
         name: String,
+        id: String,
         active: bool,
     },
     Battery {
@@ -668,7 +665,7 @@ pub(crate) enum Item {
     Microphone(crate::SoundInput),
     /// One application's stream, and the outputs it can move to.
     Stream(StreamFace),
-    /// A Devices row, which the desktop describes.
+    /// A Devices row, as the session publishes it.
     Device(crate::hosted::HostedRow),
     /// The clipboard's copies, which the section filters as the person
     /// types.
@@ -707,7 +704,7 @@ pub(crate) fn section(section: QsSection, state: &QuickSettingsState) -> Vec<Ite
 
 fn wifi(state: &QuickSettingsState) -> Vec<Item> {
     let mut items = Vec::new();
-    if let Some(wired) = &state.wired {
+    if let Some(wired) = &state.network.wired {
         items.push(Item::Wired {
             connected: wired.connected,
             detail: if wired.connected {
@@ -717,26 +714,26 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
             },
         });
     }
-    if !state.radios.wifi_available {
+    if !state.wifi_available() {
         // A machine on a cable: there is no radio to switch.
-    } else if state.radio_change_pending {
+    } else if let Some(change) = state.radio_change() {
         let on = matches!(
-            state.radio_change,
-            Some(os_actions::RadioChange::Wifi(true) | os_actions::RadioChange::Airplane(false))
+            change,
+            RadioChange::Wifi(true) | RadioChange::Airplane(false)
         );
         items.push(Item::Message(t(if on {
             "qs-turning-on"
         } else {
             "qs-turning-off"
         })));
-    } else if !state.wifi {
+    } else if !state.network.wifi.on {
         // The tile the section opens under turns the radio on.
         items.push(Item::Message(wifi_off_message(state)));
     } else {
         items.extend(wifi_on(state));
     }
     items.push(Item::Settings {
-        label: t(if state.radios.wifi_available {
+        label: t(if state.wifi_available() {
             "qs-wifi-settings"
         } else {
             "qs-network-settings"
@@ -751,8 +748,8 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
 /// hidden.
 fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
     let mut items = Vec::new();
-    for network in ordered_networks(&state.wifi_networks) {
-        let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
+    for network in ordered_networks(&state.network.wifi.networks) {
+        let joining = state.wifi_joining.as_deref() == Some(network.name.as_str());
         let value = if joining {
             Some(t("qs-connecting"))
         } else if network.connected {
@@ -765,16 +762,16 @@ fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
         let press = (!network.connected && state.wifi_joining.is_none()).then(|| {
             if network.secure && !network.known {
                 QsEffect::AskWifiPassword {
-                    network: network.ssid.clone(),
+                    network: network.name.clone(),
                 }
             } else {
                 QsEffect::JoinWifi {
-                    network: network.ssid.clone(),
+                    network: network.name.clone(),
                 }
             }
         });
         items.push(Item::Network(NetworkFace {
-            ssid: network.ssid.clone(),
+            name: network.name.clone(),
             signal: network.signal,
             secure: network.secure,
             connected: network.connected,
@@ -783,18 +780,16 @@ fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
             asking: state
                 .wifi_password
                 .clone()
-                .filter(|prompt| prompt.ssid == network.ssid),
+                .filter(|prompt| prompt.ssid == network.name),
             profile: state
-                .saved_networks
-                .iter()
-                .find(|saved| saved.name == network.ssid)
-                .map(|saved| saved.profile.clone()),
+                .saved_network(&network.name)
+                .map(|saved| saved.id.clone()),
         }));
     }
-    if state.wifi_networks.is_empty() {
-        items.push(Item::Message(t(if state.wifi_scanning {
+    if state.network.wifi.networks.is_empty() {
+        items.push(Item::Message(t(if state.wifi_scanning() {
             "qs-wifi-scanning"
-        } else if state.wifi_scan_error.is_some() {
+        } else if state.network.problem.is_some() {
             "qs-wifi-scan-failed"
         } else {
             "qs-wifi-none"
@@ -802,14 +797,17 @@ fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
     }
     // Saved networks this machine cannot see: the only place they can be
     // forgotten from, or kept from joining by themselves.
-    let mut unseen: Vec<crate::SavedNetwork> = state
-        .saved_networks
+    let mut unseen: Vec<SavedNetwork> = state
+        .network
+        .saved
         .iter()
         .filter(|saved| {
             !state
-                .wifi_networks
+                .network
+                .wifi
+                .networks
                 .iter()
-                .any(|network| network.ssid == saved.name)
+                .any(|network| network.name == saved.name)
         })
         .cloned()
         .collect();
@@ -823,23 +821,23 @@ fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
 
 fn bluetooth(state: &QuickSettingsState) -> Vec<Item> {
     let mut items = Vec::new();
-    if state.bluetooth {
+    if state.bluetooth.on {
         // Connected first, then by name: what is in use is what a person
         // came to change.
-        let mut devices = state.bt_devices.clone();
+        let mut devices = state.bluetooth.accessories.clone();
         devices.sort_by(|a, b| {
             b.connected
                 .cmp(&a.connected)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        if devices.is_empty() && state.bt_nearby.is_empty() {
+        if devices.is_empty() && state.bluetooth.nearby.is_empty() {
             items.push(Item::Message(t("qs-bluetooth-empty")));
         }
         items.extend(devices.into_iter().map(Item::Accessory));
         items.push(Item::LookForDevices {
-            looking: state.bt_scanning,
+            looking: state.bluetooth.discovering,
         });
-        items.extend(state.bt_nearby.iter().cloned().map(Item::Nearby));
+        items.extend(state.bluetooth.nearby.iter().cloned().map(Item::Nearby));
     } else {
         items.push(Item::Message(t("qs-bluetooth-off")));
     }
@@ -852,11 +850,13 @@ fn bluetooth(state: &QuickSettingsState) -> Vec<Item> {
 
 fn vpn(state: &QuickSettingsState) -> Vec<Item> {
     let mut items: Vec<Item> = state
-        .vpns
+        .vpn
+        .profiles
         .iter()
         .map(|profile| Item::Profile {
             name: profile.name.clone(),
-            active: profile.active,
+            id: profile.id.clone(),
+            active: profile.connected,
         })
         .collect();
     if items.is_empty() {
@@ -1047,12 +1047,11 @@ mod tests {
     use super::*;
     use crate::{SoundInput, SoundOutput, SoundStream};
 
-    fn network(ssid: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
+    fn network(name: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
         WifiNetwork {
-            ssid: ssid.into(),
+            name: name.into(),
             signal,
             secure: true,
-            security: os_actions::WifiSecurity::Wpa2,
             connected,
             known,
         }
@@ -1062,14 +1061,13 @@ mod tests {
     fn no_brightness_slider_without_anything_to_dim() {
         let mut state = QuickSettingsState::fixture();
         state.brightness_available = false;
-        state.available.brightness = false;
         let ids: Vec<String> = Sliders::of(&state)
             .rows
             .into_iter()
             .map(|row| row.id)
             .collect();
         assert_eq!(ids, ["qs-volume"]);
-        state.available.brightness = true;
+        state.brightness_available = true;
         let ids: Vec<String> = Sliders::of(&state)
             .rows
             .into_iter()
@@ -1089,7 +1087,7 @@ mod tests {
         ];
         let order: Vec<&str> = ordered_networks(&networks)
             .into_iter()
-            .map(|network| network.ssid.as_str())
+            .map(|network| network.name.as_str())
             .collect();
         assert_eq!(
             order,
@@ -1100,8 +1098,9 @@ mod tests {
     #[test]
     fn a_protected_network_never_seen_asks_for_its_password_and_a_known_one_joins() {
         let mut state = QuickSettingsState::fixture();
-        state.radios.wifi_available = true;
-        state.wifi_networks = vec![
+        state.network.wifi.available = true;
+        state.network.wifi.on = true;
+        state.network.wifi.networks = vec![
             network("Home", 3, false, true),
             network("Cafe", 2, false, false),
         ];
@@ -1128,9 +1127,9 @@ mod tests {
     #[test]
     fn a_radio_change_under_way_says_so_and_takes_no_second_press() {
         let mut state = QuickSettingsState::fixture();
-        state.radios.wifi_available = true;
-        state.radio_change_pending = true;
-        state.radio_change = Some(os_actions::RadioChange::Wifi(true));
+        state.network.wifi.available = true;
+        state.network.wifi.on = false;
+        state.network.pending = vec!["set-wifi".into()];
         assert_eq!(subline(QuickSettingsControl::Wifi, &state), "Turning on…");
         let wifi = tiles(&state)
             .into_iter()

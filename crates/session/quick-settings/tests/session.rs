@@ -15,14 +15,32 @@
 )]
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_compositor::{OutputConfig, Screenshot};
+use audio::sound::{Graph, Read, SoundService};
+use connectivity::Connectivity;
+use connectivity::device::{Change, Device, Readings};
+use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use serde_json::{Map, Value, json};
+use tilo_actions::{DoorError, ResourceSpec};
+use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
+use tilo_service::Started;
 use tilo_session::surfaces::{Anchor, Keyboard, Layer, Surface};
-use tilo_session::{Options, Session};
+use tilo_session::{ActionPlane, Machine, Options, Service, Session};
 
 const WIDTH: i32 = 800;
 const HEIGHT: i32 = 600;
+/// The pointer's primary button, as the compositor names it.
+const BTN_LEFT: u32 = 0x110;
+/// The desk's overlay stack, which the bar's tray press opens the panel in.
+const OVERLAYS: &str = "desktop:overlays";
+/// The battery, as the power service publishes it.
+const BATTERY: &str = "power:battery";
+/// The network, as the connectivity service publishes it.
+const NETWORK: &str = "network";
+/// The notification centre, as the session publishes it.
+const NOTIFICATIONS: &str = "session:notifications";
 /// How long the panel may take to show its window.
 const OPENING: Duration = Duration::from_secs(90);
 /// One display's refresh: how often the session asks its clients for their
@@ -122,7 +140,12 @@ fn the_session_asks_the_panel_to_show_the_notifications() {
     // The session runs it, as a person's palette or an agent would, and the
     // panel answers on its own actions socket.
     let id = session
-        .ask_surface("quick-settings", &resource, &action, None)
+        .ask_surface(
+            "quick-settings",
+            &resource,
+            &action,
+            tilo_actions::remote::InvokeArgument::None,
+        )
         .expect("the panel is running");
     let mut ended = None;
     while ended.is_none() {
@@ -147,6 +170,176 @@ fn the_session_asks_the_panel_to_show_the_notifications() {
 
     let frame = drawn(&mut session, &desk);
     save(&frame, "session-quick-settings-notifications");
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    assert!(
+        session.quick_settings_open(),
+        "the panel is up in the stack"
+    );
+
+    // The panel reads the session's services through the plane it was
+    // started with: what it offers is what those devices can do.
+    assert_eq!(
+        until_ready(session, "toggle-wifi"),
+        "Wi-Fi",
+        "the network's radio is the panel's Wi-Fi control"
+    );
+    assert_eq!(
+        until_ready(session, "set-volume"),
+        "Volume",
+        "the sound card's sink is the panel's volume control"
+    );
+
+    // The battery the session publishes is the charge the panel shows: a
+    // pack that moves redraws it.
+    let at_42 = settled(session);
+    save(&at_42, "session-quick-settings-battery-42");
+    laptop.pack.charge_to(84);
+    let at_84 = changed(session, &at_42);
+    save(&at_84, "session-quick-settings-battery-84");
+
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn the_notification_key_asks_the_panel_for_the_page_it_shows() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    let controls = settled(session);
+
+    // The notification key opens the panel and asks it for its notifications:
+    // that page is one of the panel's own actions, run in the app, and the
+    // frame it draws moves to the kept notifications.
+    until_ready(session, "show-notifications");
+    let ended = ask_ended(session, "show-notifications", None);
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel showed its notifications: {ended:?}"
+    );
+    let notifications = changed(session, &controls);
+    save(&notifications, "session-quick-settings-notifications");
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn the_wifi_tile_is_the_published_networks_action() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    assert_eq!(
+        session.read(NETWORK).expect("the network is published")["wifi"]["on"],
+        json!(false),
+        "the radios start with Wi-Fi off"
+    );
+
+    // A press on the tile is the panel's effect, which is one action of the
+    // session's network: the service carries it out and the reading moves.
+    ask(session, "toggle-wifi", None);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        session.settle_services();
+        pump(session);
+        if session.read(NETWORK).expect("the network is published")["wifi"]["on"] == json!(true) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the network never turned Wi-Fi on: {:?}",
+            session.read(NETWORK)
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn the_quiet_tile_is_the_published_centres_switch() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "set-do-not-disturb");
+    assert!(
+        session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published")["quiet"]
+            .is_null(),
+        "nothing holds notifications back to start with"
+    );
+
+    // A press on the tile is the panel's effect, which is one action of the
+    // session's notification centre: the centre holds them and says so.
+    let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": true })));
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the tile's press is carried out: {ended:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        session.settle_services();
+        pump(session);
+        let centre = session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published");
+        if !centre["quiet"].is_null() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the centre never held notifications back: {centre:?}"
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
+#[test]
+fn a_press_outside_the_panel_closes_it() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+
+    // A press beside the panel takes the person elsewhere, and the panel
+    // goes with the slot it was placed in.
+    press(session, 40.0, f64::from(HEIGHT) / 2.0);
+    let deadline = Instant::now() + OPENING;
+    while session.quick_settings_open() || session.surfaces().running("quick-settings") {
+        assert!(
+            Instant::now() < deadline,
+            "the panel stayed up: {:?}",
+            session.surfaces().names()
+        );
+        pump(session);
+    }
+}
+
+#[test]
+fn the_panel_opens_the_same_way_in_a_windowed_session() {
+    let mut laptop = session_of_device(&[panel()], Machine::Window);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    ask(session, "toggle-wifi", None);
+    let deadline = Instant::now() + OPENING;
+    loop {
+        session.settle_services();
+        pump(session);
+        if session.read(NETWORK).expect("the network is published")["wifi"]["on"] == json!(true) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a session in a window reads the same services: {:?}",
+            session.read(NETWORK)
+        );
+    }
     session.stop_surface("quick-settings");
 }
 
@@ -178,6 +371,389 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     let x = u32::try_from(x).unwrap();
     let y = u32::try_from(y).unwrap();
     frame.pixel(x, y).expect("a pixel of the frame")
+}
+
+/// The panel open on the desk, its app running: what the bar's tray press
+/// does, which is to open the stack's quick-settings slot.
+fn open_the_panel(session: &mut Session) {
+    session
+        .invoke(
+            OVERLAYS,
+            "open",
+            &arguments(&json!({ "slot": "quick-settings" })),
+        )
+        .expect("the panel opens");
+    pump(session);
+    let deadline = Instant::now() + OPENING;
+    while !session.surfaces().running("quick-settings") {
+        assert!(
+            Instant::now() < deadline,
+            "the panel did not start: {:?}",
+            session.surfaces().names()
+        );
+        pump(session);
+    }
+}
+
+/// A press at `(x, y)` on the desk, wherever that lands.
+fn press(session: &mut Session, x: f64, y: f64) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .expect("the pointer moves");
+    pump(session);
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .expect("the button");
+        pump(session);
+    }
+}
+
+/// `value` as an action's arguments.
+fn arguments(value: &Value) -> Map<String, Value> {
+    match value {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    }
+}
+
+/// The action `action` the panel publishes, as the session reads its
+/// catalogue: what it offers, with the label it offers it under.
+fn offered(session: &Session, action: &str) -> Option<ui::collaboration::ExportedAction> {
+    session
+        .surfaces()
+        .published("quick-settings")
+        .into_iter()
+        .find(|offered| offered.action == action)
+}
+
+/// Run the session until the panel offers `action` as one it can run now, and
+/// say how it labels it.
+///
+/// A control is offered before the reading behind it arrives: the panel draws
+/// nothing for Wi-Fi until the network says what it has, and says so. A person
+/// presses a tile they can see, so what waits here is that reading.
+fn until_ready(session: &mut Session, action: &str) -> String {
+    let deadline = Instant::now() + OPENING;
+    loop {
+        if let Some(offered) = offered(session, action)
+            && offered.contract.availability.is_available()
+        {
+            return offered.action_label;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the panel never offered {action} as one it can run (running: {}, names: {:?}): {:?}",
+            session.surfaces().running("quick-settings"),
+            session.surfaces().names(),
+            session
+                .surfaces()
+                .published("quick-settings")
+                .iter()
+                .map(|offered| (
+                    offered.action.clone(),
+                    offered.contract.availability.clone()
+                ))
+                .collect::<Vec<_>>()
+        );
+        session.settle_services();
+        pump(session);
+    }
+}
+
+/// Ask the panel to run `action`, as a person's press or an agent does, and
+/// wait for it to answer.
+fn ask(session: &mut Session, action: &str, arguments: Option<Value>) {
+    let _ended = ask_ended(session, action, arguments);
+}
+
+/// Ask the panel to run `action`, and say how it ended.
+fn ask_ended(
+    session: &mut Session,
+    action: &str,
+    arguments: Option<Value>,
+) -> ui::tilo_actions::InvocationUpdate {
+    let Some(offered) = offered(session, action) else {
+        panic!("the panel does not offer {action}");
+    };
+    let (resource, action) = (offered.resource.clone(), offered.action);
+    // The arguments a press carries, as the action's named ones: what the
+    // panel's published contract checks them against.
+    let argument = arguments.map_or(
+        ui::tilo_actions::remote::InvokeArgument::None,
+        |arguments| match arguments {
+            Value::Object(object) => ui::tilo_actions::remote::InvokeArgument::Json(object),
+            other => ui::tilo_actions::remote::InvokeArgument::Text(other.to_string()),
+        },
+    );
+    let id = session
+        .ask_surface("quick-settings", &resource, &action, argument)
+        .expect("the panel is running");
+    let deadline = Instant::now() + OPENING;
+    loop {
+        if let Some(state) = session.surfaces().outcome(id)
+            && !matches!(
+                state.update,
+                ui::tilo_actions::InvocationUpdate::Accepted { .. }
+            )
+        {
+            return state.update.clone();
+        }
+        assert!(Instant::now() < deadline, "the panel did not answer");
+        pump(session);
+    }
+}
+
+/// A directory for the plane's socket that only this user reaches: the broker
+/// refuses to serve one anybody else could open.
+fn private_home() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("a directory to serve the plane in");
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the plane's directory is this user's");
+    root
+}
+
+/// A laptop's radios in memory: the connectivity service reads and changes
+/// them, as it would the machine's own.
+#[derive(Default)]
+struct Radios {
+    readings: Mutex<Readings>,
+}
+
+impl Device for Radios {
+    fn read(&self) -> Readings {
+        self.readings.lock().expect("the radios").clone()
+    }
+
+    fn change(&self, change: &Change) -> Result<(), String> {
+        match change {
+            Change::Wifi(on) => self.readings.lock().expect("the radios").network.wifi.on = *on,
+            Change::Bluetooth(on) => {
+                self.readings.lock().expect("the radios").bluetooth.on = *on;
+            }
+            other => return Err(format!("{other:?} is not part of this laptop")),
+        }
+        Ok(())
+    }
+}
+
+/// A sound card in memory: one pair of speakers, in use.
+struct Card {
+    graph: Mutex<AudioGraph>,
+}
+
+impl Graph for Card {
+    fn read(&self) -> Read {
+        Read {
+            graph: self.graph.lock().expect("the card").clone(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn control(&self) -> &dyn GraphControl {
+        self
+    }
+}
+
+impl GraphControl for Card {
+    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
+        for sink in &mut self.graph.lock().expect("the card").sinks {
+            sink.is_default = sink.id == node_id;
+        }
+        Ok(())
+    }
+
+    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
+        for sink in &mut self.graph.lock().expect("the card").sinks {
+            if sink.id == node_id {
+                sink.volume = Some(perceptual);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A battery in the person's hands, as the power service publishes it: the
+/// test drains it, and the session and the panel read the new charge.
+#[derive(Clone, Default)]
+struct Pack {
+    charge: Arc<Mutex<Charge>>,
+}
+
+#[derive(Default)]
+struct Charge {
+    percent: u8,
+    moved: bool,
+}
+
+impl Pack {
+    /// Charge the pack to `percent`, as a machine would as it runs.
+    fn charge_to(&self, percent: u8) {
+        let mut charge = self.charge.lock().expect("the pack");
+        charge.percent = percent;
+        charge.moved = true;
+    }
+}
+
+impl Service for Pack {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![ResourceSpec::new(BATTERY, BATTERY, "Battery")]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        let charge = self.charge.lock().expect("the pack");
+        (resource == BATTERY).then(|| {
+            json!({
+                "present": true,
+                "percentage": charge.percent,
+                "state": "discharging",
+                "minutes_left": null,
+            })
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+            resource, action,
+        )))
+    }
+
+    fn poll(&mut self) -> bool {
+        let mut charge = self.charge.lock().expect("the pack");
+        std::mem::replace(&mut charge.moved, false)
+    }
+}
+
+/// A session hosting a laptop in memory — the radios, the sound card and the
+/// battery the panel shows — with its services on the socket the panel reads
+/// them through, so the app it starts is an app of this session.
+struct Laptop {
+    session: Session,
+    pack: Pack,
+    /// The plane's directory, held until the device is dropped: the socket
+    /// the panel reaches the session's services on lives in it, so a test
+    /// keeps the whole device and never moves the session out of it.
+    _root: tempfile::TempDir,
+}
+
+/// A headless session on the device in memory, drawing on `machine`.
+fn session_of_device(surfaces: &[Surface], machine: Machine) -> Laptop {
+    let radios = Arc::new(Radios::default());
+    {
+        let mut readings = radios.readings.lock().expect("the radios");
+        readings.network.wifi.available = true;
+        readings.bluetooth.available = true;
+    }
+    let mut connectivity = Connectivity::new(radios, None).expect("a connectivity service");
+    connectivity.settle();
+    let card: Arc<dyn Graph> = Arc::new(Card {
+        graph: Mutex::new(AudioGraph {
+            sinks: vec![AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".into(),
+                description: "Speakers".into(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..AudioGraph::default()
+        }),
+    });
+    let mut sound = SoundService::new(card, None).expect("a sound service");
+    sound.settle();
+    let pack = Pack::default();
+    pack.charge_to(42);
+    let root = private_home();
+    let socket = root.path().join("actions.sock");
+    let services: Vec<Box<dyn Service>> = vec![
+        Box::new(connectivity),
+        Box::new(sound),
+        Box::new(pack.clone()),
+    ];
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            surfaces: surfaces.to_vec(),
+            services,
+            action_plane: ActionPlane::At(socket),
+            machine,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    Laptop {
+        session,
+        pack,
+        _root: root,
+    }
+}
+
+/// The frame once the desk and the panel show nothing new: the same picture
+/// twice running, with the panel drawn in it.
+fn settled(session: &mut Session) -> Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        if frame.rgba == last.rgba {
+            return frame;
+        }
+        last = frame;
+        assert!(Instant::now() < deadline, "the panel never settled");
+    }
+}
+
+/// The frame once it shows a change on `before`: the desk settled again with
+/// something else on it.
+fn changed(session: &mut Session, before: &Screenshot) -> Screenshot {
+    let deadline = Instant::now() + OPENING;
+    loop {
+        let frame = settled(session);
+        if frame.rgba != before.rgba {
+            return frame;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the panel shows nothing new: {:?}",
+            session.surfaces().names()
+        );
+    }
 }
 
 /// A headless session that starts `surfaces` with it.

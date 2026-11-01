@@ -2,11 +2,10 @@
 //! shows, which section is open in place, whether it was opened to paste or
 //! is being arranged — and its actions move between them.
 //!
-//! The panel is this device's own and is gone with the session: the desktop
-//! mounts it as a private window over a record kept in memory
-//! ([`crate::prepare`]), so nothing about it is written to disk or reaches
-//! another device. Opening a section is a change *about* the panel, not
-//! content anyone undoes (`housekeeping`).
+//! The panel is this device's own and is gone with the session: the session
+//! runs it as a surface of its own over a record kept in memory, so nothing
+//! about it is written to disk or reaches another device. Opening a section
+//! is a change *about* the panel, not content anyone undoes (`housekeeping`).
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::prelude::*;

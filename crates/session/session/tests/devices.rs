@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -39,15 +38,10 @@ use tilo_device_fabric::{
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
     WakeInterfaceKind, WakeRoute,
 };
-use tilo_quick_settings::device::Device;
-use tilo_quick_settings::device::testing::{Kept, Machine};
-use tilo_quick_settings::hosted::{ASK_KEY, HostedActions, ROUTE_KEY, SOUND_KEY};
-use tilo_quick_settings::{QsEffect, RowPart};
+use tilo_quick_settings::RowPart;
+use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_session::surfaces::Surface;
-use tilo_session::{
-    AppActions, AppLists, DeviceHost, Lists, Options, QuickSettings, Session, WakeInterfaces,
-    WakeSeams,
-};
+use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeSeams};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -460,7 +454,6 @@ impl tilo_session::Service for Player {
 /// what plays.
 struct Harness {
     session: Session,
-    device: Rc<RefCell<Option<DeviceHost>>>,
     /// What the player publishes, as the fixture hands it what plays.
     playing: Rc<RefCell<Option<serde_json::Value>>>,
     /// Whether that moved since the session read it.
@@ -479,10 +472,7 @@ fn session_with(
     packets: Option<Arc<Packets>>,
     interfaces: Option<Arc<FixedInterfaces>>,
 ) -> Harness {
-    let reads = Machine::laptop();
     let fabric: SharedLink = Arc::new(link.clone());
-    let held: Rc<RefCell<Option<DeviceHost>>> = Rc::default();
-    let given = Rc::clone(&held);
     let playing: Rc<RefCell<Option<serde_json::Value>>> = Rc::default();
     let moved: Rc<Cell<bool>> = Rc::default();
     let session = Session::headless(
@@ -492,18 +482,6 @@ fn session_with(
                 playing: Rc::clone(&playing),
                 moved: Rc::clone(&moved),
             })],
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                let device = DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                );
-                *given.borrow_mut() = Some(device.clone());
-                device
-            }))),
             search: tilo_session::SearchOptions {
                 lists: Lists::fixed(AppLists {
                     applications: vec![AppEntry {
@@ -537,21 +515,27 @@ fn session_with(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    let device = held.borrow().clone().expect("the panel's device host");
     Harness {
         session,
-        device: Rc::new(RefCell::new(Some(device))),
         playing,
         moved,
     }
 }
 
 impl Harness {
-    fn device(&self) -> DeviceHost {
-        self.device
-            .borrow()
-            .clone()
-            .expect("the panel's device host")
+    /// The person's devices as the session publishes them, once it has: the
+    /// reading the Quick Settings app and everything else read.
+    fn reading(&self) -> Option<DevicesReading> {
+        self.session
+            .read(tilo_session::DEVICES_RESOURCE)
+            .map(|published| serde_json::from_value(published).expect("the devices reading parses"))
+    }
+
+    /// The Devices section's rows, as the published reading lists them.
+    fn rows(&self) -> Vec<tilo_quick_settings::hosted::HostedRow> {
+        self.reading()
+            .map(|reading| reading.rows())
+            .unwrap_or_default()
     }
 
     /// What plays here: a browser stream, playing at 1:12, as the audio
@@ -583,22 +567,6 @@ impl Harness {
             self.step();
         }
     }
-
-    /// Press a row of the panel itself: what the person's click in the panel
-    /// asks of the session.
-    fn press_in_panel(&mut self, row: &str, part: RowPart) {
-        self.session
-            .invoke(
-                tilo_session::QUICK_SETTINGS,
-                QsEffect::PRESS_DEVICE.id,
-                &serde_json::from_value(serde_json::json!({ "row": row, "part": part }))
-                    .expect("arguments"),
-            )
-            .expect("press the device's row in the panel");
-        for _ in 0..3 {
-            self.step();
-        }
-    }
 }
 
 #[test]
@@ -606,30 +574,25 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
-    harness
-        .session
-        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
-        .expect("open quick settings");
     harness.playing();
     for _ in 0..40 {
         harness.step();
         // The rows come before what the player published is read, so the
         // wait is for the row that answers with it.
         if harness
-            .device()
-            .state()
-            .device_rows
+            .rows()
             .iter()
             .any(|row| row.key == "laptop" && row.actions != HostedActions::None)
         {
             break;
         }
     }
-    let state = harness.device().state();
+    let reading = harness
+        .reading()
+        .expect("the session publishes its devices");
+    let rows = reading.rows();
     assert_eq!(
-        state
-            .device_rows
-            .iter()
+        rows.iter()
             .skip(1)
             .map(|row| (row.key.as_str(), row.title.as_str(), row.detail.as_str()))
             .collect::<Vec<_>>(),
@@ -637,42 +600,25 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
         "one row per device other than this one, under the sound it can take"
     );
     assert!(
-        state.device_rows[0]
-            .key
-            .starts_with(tilo_quick_settings::hosted::SOUND_KEY),
+        rows[0].key.starts_with(SOUND_KEY),
         "the sound this device can send comes first: {:?}",
-        state.device_rows[0]
+        rows[0]
     );
     assert_eq!(
-        state.device_rows[1].actions,
+        rows[1].actions,
         HostedActions::Select("Play Clair de lune here".into()),
         "the row says what pressing it does"
     );
-    assert_eq!(state.personal_devices, Some(2), "this one counts too");
+    assert_eq!(reading.count(), 2, "this one counts too");
     assert_eq!(
-        state
-            .handoff_targets
-            .as_deref()
-            .expect("the fabric's devices")
+        reading
+            .targets()
             .iter()
             .map(|target| (target.id.as_str(), target.online, target.local))
             .collect::<Vec<_>>(),
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
     );
-    let published: tilo_quick_settings::hosted::DevicesReading = serde_json::from_value(
-        harness
-            .session
-            .read(tilo_session::DEVICES_RESOURCE)
-            .expect("the session publishes its devices"),
-    )
-    .expect("a reading");
-    assert_eq!(
-        published.rows(),
-        state.device_rows,
-        "the panel lists the reading the session publishes"
-    );
-    assert_eq!(published.count(), 2, "the reading counts this device too");
 }
 
 /// How long a lock or unlock followed from the person's other devices may take
@@ -798,55 +744,18 @@ fn pressing_another_device_sends_it_what_plays_here() {
     assert!(!has_video);
 }
 
-/// A press in the panel is the session's published verb: the panel asks for
-/// the press and the session carries out the same hand-over it does when
-/// anyone else presses the row.
-#[test]
-fn a_press_in_the_panel_is_the_session_s_published_verb() {
-    let _settled = ui::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
-    open_devices(&mut harness);
-    harness.playing();
-    for _ in 0..4 {
-        harness.step();
-    }
-    harness.press_in_panel("laptop", RowPart::Action);
-
-    let sent = link.sent();
-    assert_eq!(
-        sent.len(),
-        1,
-        "one hand-over, as a press on the verb: {sent:?}"
-    );
-    let (target, action) = sent.first().expect("the hand-over");
-    assert_eq!(target, &laptop(), "the device pressed");
-    assert!(
-        matches!(action, PersonalFabricAction::ResumeMedia { .. }),
-        "what plays here is sent to it: {action:?}"
-    );
-}
-
 #[test]
 fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let _settled = ui::motion::testing::settled();
     let host = Rc::new(Host::default());
     let link = FakeLink::joined(false);
     let mut harness = session(&link, Rc::clone(&host));
-    harness
-        .session
-        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
-        .expect("open quick settings");
     for _ in 0..4 {
         harness.step();
     }
     harness.press("laptop", RowPart::Row);
 
     assert!(link.sent().is_empty(), "nothing plays: nothing is sent");
-    assert!(
-        !harness.session.quick_settings_open(),
-        "the panel closes on the way to Settings"
-    );
     let workspace = harness.session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.room().to_string())
@@ -950,25 +859,14 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
         Some(Arc::clone(&packets)),
         Some(interfaces),
     );
-    harness
-        .session
-        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
-        .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
-        if harness
-            .device()
-            .state()
-            .device_rows
-            .iter()
-            .any(|row| row.key == "desk")
-        {
+        if harness.rows().iter().any(|row| row.key == "desk") {
             break;
         }
     }
-    let state = harness.device().state();
-    let row = state
-        .device_rows
+    let rows = harness.rows();
+    let row = rows
         .iter()
         .find(|row| row.key == "desk")
         .expect("the sleeping device's row");
@@ -1054,25 +952,14 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
         Some(Arc::clone(&packets)),
         Some(interfaces),
     );
-    harness
-        .session
-        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
-        .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
-        if harness
-            .device()
-            .state()
-            .device_rows
-            .iter()
-            .any(|row| row.key == "desk")
-        {
+        if harness.rows().iter().any(|row| row.key == "desk") {
             break;
         }
     }
-    let state = harness.device().state();
-    let row = state
-        .device_rows
+    let rows = harness.rows();
+    let row = rows
         .iter()
         .find(|row| row.key == "desk")
         .expect("the sleeping device's row");
@@ -1091,36 +978,30 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
 }
 
-/// Open quick settings and step until the Devices section has its rows.
+/// Step until the session publishes the Devices section's rows: the reading is
+/// the session's, so it has its rows with no panel open.
 fn open_devices(harness: &mut Harness) {
-    harness
-        .session
-        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
-        .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
-        if harness.device().state().device_rows.len() > 1 {
+        if harness.rows().len() > 1 {
             return;
         }
     }
     panic!("the Devices section has its rows");
 }
 
-/// The row `key` names, as the panel was fed it.
+/// The row `key` names, as the session publishes it.
 fn row(harness: &Harness, key: &str) -> tilo_quick_settings::hosted::HostedRow {
     harness
-        .device()
-        .state()
-        .device_rows
-        .iter()
+        .rows()
+        .into_iter()
         .find(|row| row.key == key)
-        .cloned()
         .unwrap_or_else(|| panic!("the row {key} is in the section"))
 }
 
 /// The one row whose key starts with `prefix`.
 fn the_row(harness: &Harness, prefix: &str) -> tilo_quick_settings::hosted::HostedRow {
-    let rows = harness.device().state().device_rows;
+    let rows = harness.rows();
     let found = rows
         .iter()
         .filter(|row| row.key.starts_with(prefix))
@@ -1189,9 +1070,7 @@ fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
     // send again is a fresh one, and none is picked.
     assert!(
         !harness
-            .device()
-            .state()
-            .device_rows
+            .rows()
             .iter()
             .any(|row| row.key.starts_with(SOUND_KEY) && row.selected),
         "no sound is picked after sending one"
@@ -1220,12 +1099,7 @@ fn a_route_is_stopped_from_its_row() {
         "a route nobody answered is called off: {action:?}"
     );
     assert!(
-        !harness
-            .device()
-            .state()
-            .device_rows
-            .iter()
-            .any(|row| row.key == route),
+        !harness.rows().iter().any(|row| row.key == route),
         "the stopped route is no longer listed"
     );
 }
@@ -1290,9 +1164,7 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
     );
     assert!(
         !harness
-            .device()
-            .state()
-            .device_rows
+            .rows()
             .iter()
             .any(|row| row.key.starts_with(ASK_KEY)),
         "an answered ask is gone"

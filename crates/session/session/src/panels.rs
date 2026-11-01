@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, OutputInfo, SurfaceHost};
-use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_surface_host::{AppHost, Placement, Published};
 use ui::host_operation::ResourceOperationStart;
@@ -22,21 +21,6 @@ fn bar_height() -> i32 {
     height
 }
 
-/// The rect the stack places a surface at, as a placement at `scale`.
-fn placed(place: Rect, scale: f64) -> Placement {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a placed surface is at most a few thousand logical pixels"
-    )]
-    let (x, y, w, h) = (
-        place.x0.round() as i32,
-        place.y0.round() as i32,
-        place.width().round() as i32,
-        place.height().round() as i32,
-    );
-    placement(x, y, w, h, scale)
-}
-
 /// A rectangle in logical pixels as a placement at `scale`.
 fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     Placement {
@@ -46,137 +30,6 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
             u32::try_from(h.max(1)).unwrap_or(1),
         ),
         scale,
-    }
-}
-
-/// An app the bar opens under its right end, or beside the caret that asked
-/// for it: it shows while the stack has its surface up, stands where the
-/// stack places it, and a press anywhere else closes it — the session's
-/// reader of presses outside the overlays does that, so nothing here
-/// decides it.
-pub(crate) struct Popover {
-    host: AppHost,
-    overlays: Overlays,
-}
-
-impl Popover {
-    pub(crate) fn new(app: ui::App, overlays: Overlays, scale: f64) -> Self {
-        let place = overlays.place(Slot::QuickSettings);
-        let start = place.map_or_else(
-            || placement(0, 0, 1, 1, scale),
-            |place| placed(place, scale),
-        );
-        Self {
-            host: AppHost::new(app, start),
-            overlays,
-        }
-    }
-
-    /// Whether the stack has this popover up.
-    fn open(&self) -> bool {
-        self.overlays.is_open(Slot::QuickSettings)
-    }
-}
-
-impl Published for Popover {
-    fn resources(&mut self) -> Vec<ResourceSpec> {
-        self.host.resources()
-    }
-
-    fn revision(&self) -> Option<u64> {
-        Published::revision(&self.host)
-    }
-
-    fn invoke(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        self.host.invoke(address, arguments)
-    }
-
-    fn accessible_labels(&mut self) -> Vec<String> {
-        if self.open() {
-            self.host.accessible_labels()
-        } else {
-            Vec::new()
-        }
-    }
-}
-
-impl SurfaceHost for Popover {
-    fn layers(&self) -> Vec<HostLayer> {
-        if self.open() {
-            self.host.layers()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Whether what the panel shows is a secret — its Wi-Fi passphrase field
-    /// with a value in it — and so never leaves the display in a capture.
-    fn withholds_captures(&self) -> bool {
-        self.open() && self.host.withholds_captures()
-    }
-
-    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        self.open() && self.host.accepts_pointer(x, y)
-    }
-
-    fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.host.pointer_motion(x, y);
-    }
-
-    fn pointer_leave(&mut self) {
-        self.host.pointer_leave();
-    }
-
-    fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.host.pointer_button(button, pressed);
-    }
-
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.host.pointer_axis(horizontal, vertical);
-    }
-
-    fn wants_keyboard(&self) -> bool {
-        self.overlays.target() == tilo_desktop::overlays::Target::Surface(Slot::QuickSettings)
-    }
-
-    fn key(&mut self, key: &HostKey) {
-        self.host.key(key);
-    }
-
-    fn prepare_frame(&mut self) -> bool {
-        // It stands where the stack places it: under the bar's trailing end,
-        // or beside the caret that asked for it.
-        if let Some(place) = self.overlays.place(Slot::QuickSettings) {
-            let scale = self.host.placement().scale;
-            let place = placed(place, scale);
-            if self.host.placement() != place {
-                self.host.set_placement(place);
-            }
-        }
-        // Kept current while hidden too: what it offers follows the
-        // readings it was lent, open or not. Nothing is drawn unless
-        // something changed.
-        self.host.prepare_frame()
-    }
-
-    fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.host.next_deadline()
-    }
-
-    fn cursor(&self) -> tilo_compositor::CursorIcon {
-        self.host.cursor()
-    }
-
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
-        self.host.backdrops()
-    }
-
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
-        self.host.set_backdrops(images);
     }
 }
 

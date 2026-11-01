@@ -598,7 +598,7 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, DeviceHost, Options, QuickSettings, SessionConfig, Vpn,
+        ActionPlane, Options, SessionConfig, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
@@ -613,7 +613,6 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         // to work in a workspace as an agent; a session in another
         // desktop's window serves none.
         agent_door: owned.then(tilo_session::agent_door::path).flatten(),
-        quick_settings: owned.then(|| QuickSettings::Device(Box::new(DeviceHost::os))),
         // A session in another desktop's window dims none of the window's
         // machine: the display it draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),
@@ -626,11 +625,11 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         } else {
             tilo_session::no_session_actions
         },
-        // The lock screen and the on-screen keyboard are the session's own
-        // apps: the screen is started when the session locks, and the
-        // keyboard whenever the person may want it, under the hands they
-        // type with.
-        surfaces: surfaces(),
+        // The lock screen, the on-screen keyboard and quick settings are the
+        // session's own apps: the screen is started when the session locks,
+        // the keyboard whenever the person may want it, under the hands they
+        // type with, and quick settings while the stack has its popover up.
+        surfaces: surfaces(owned),
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
@@ -641,15 +640,22 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     }
 }
 
-/// The surface apps the session starts itself: its lock screen and its
-/// on-screen keyboard, each when what it shows is wanted. A machine without
-/// either loses that surface, never the session.
+/// The surface apps the session starts itself: its lock screen, its on-screen
+/// keyboard, and, on a machine of its own, quick settings. Each runs when what
+/// it shows is wanted; a machine without one loses that surface, never the
+/// session.
 #[cfg(target_os = "linux")]
-fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
+fn surfaces(owned: bool) -> Vec<tilo_session::surfaces::Surface> {
     let mut surfaces = lock_screen();
     match tilo_session::keyboard::surface() {
         Ok(keyboard) => surfaces.push(keyboard),
         Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
+    }
+    if owned {
+        match tilo_session::quick_settings::surface() {
+            Ok(panel) => surfaces.push(panel.person(tilo_session::unlock::login_user())),
+            Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
+        }
     }
     surfaces
 }

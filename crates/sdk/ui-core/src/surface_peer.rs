@@ -154,7 +154,9 @@ impl SurfacePeer {
             incoming,
             received: VecDeque::new(),
             connected: true,
-            wake: Arc::default(),
+            // The reader's own handle, not a new one: the wake installed on
+            // this peer is the one that reader calls as each message arrives.
+            wake,
         }
     }
 
@@ -393,6 +395,46 @@ mod tests {
                 correlation: 7,
                 query: CatalogueQuery::default(),
             }
+        );
+    }
+
+    /// What the session says wakes the app: a resting surface is woken for
+    /// each message, and answers it on the frame the wake asks for.
+    #[test]
+    fn a_message_from_the_session_wakes_the_app_that_installed_a_wake() {
+        let (app, mut session) = UnixStream::pair().expect("a socket");
+        session
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("a timeout");
+        let mut peer = SurfacePeer::of(app);
+        let (woken, wake) = mpsc::channel();
+        peer.set_wake(Box::new(move || {
+            let _ = woken.send(());
+        }));
+        let asked = RemoteActionMessage::CatalogueRequest {
+            correlation: 11,
+            query: CatalogueQuery::default(),
+        };
+        let body = RemoteActionFrame::new(asked).encode().expect("encodes");
+        FRAMING.write(&mut session, &body).expect("written");
+        wake.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the app is woken for what the session said");
+        peer.poll();
+        let body = FRAMING
+            .read(&mut session)
+            .expect("a read")
+            .expect("an answer");
+        let frame = RemoteActionFrame::decode(&body).expect("decoded");
+        assert!(
+            matches!(
+                frame.message,
+                RemoteActionMessage::CatalogueResponse {
+                    correlation: 11,
+                    ..
+                }
+            ),
+            "the woken app answers what it was asked: {:?}",
+            frame.message
         );
     }
 

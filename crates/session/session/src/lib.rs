@@ -95,6 +95,7 @@ mod press_outside;
 mod projection;
 mod projection_video;
 mod questions;
+pub mod quick_settings;
 mod records;
 mod rotation;
 pub mod run;
@@ -128,6 +129,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
@@ -159,20 +161,18 @@ pub use lists::{AppLists, Lists};
 pub use mount::vpn::Vpn;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
-pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
+pub use options::{ActionPlane, Machine, Options, no_session_actions};
 use options::{open_engine, start_collaboration};
 pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use setup::BeforeDesk;
-pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
-pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
 use desk::running_apps;
 use keys::{GuideKeys, Invocations, PressedChords};
-use mount::panels::{KeyContext, mount_controls, mount_device, mount_setup};
+use mount::panels::{KeyContext, mount_controls, mount_setup};
 use mount::services::{mount_services, start_action_plane};
 use notifications::mount_banners;
 use panels::Held;
@@ -232,9 +232,12 @@ struct Shared {
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether this session shows quick settings at all: its panel is
-    /// mounted, and the bar's status keys open it.
+    /// Whether this session shows quick settings at all: its app is one of the
+    /// surface apps it runs, and the bar's status keys open its slot.
     quick_settings: bool,
+    /// What the keys asked the panel to show before it ran — the notifications,
+    /// the clipboard opened to paste — waiting for its app to be up.
+    panel_asks: RefCell<Vec<&'static str>>,
     /// What stands over the windows: its menus, quick settings, the picker
     /// and the rest, and which of them holds the keyboard.
     overlays: Overlays,
@@ -266,8 +269,6 @@ struct Shared {
     /// It runs in a window of a desktop it did not start (see
     /// [`Options::machine`]).
     hosted: bool,
-    /// The device behind quick settings, when the session reads one.
-    device: Option<DeviceHost>,
     /// The person's device fabric, while this session runs on one.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The device VPN, while this session runs on a machine with the helper:
@@ -276,20 +277,10 @@ struct Shared {
     vpn: Option<mount::vpn::Routes>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
-    /// The session's displays as the panel was last fed them.
-    displays: mount::displays::Displays,
-    /// The machine's charge and what holds it awake, as the panel was last fed
-    /// them.
-    panel_power: mount::panel_power::PanelPower,
     /// The session another of the person's devices handed this one, as the
     /// now-playing card shows it, until they continue it here: published
     /// beside the person's devices.
     handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
-    /// The services' revision and the speaker group session the panel last
-    /// took what plays from: its reading carries the players' covers, so it
-    /// is read only when one of the services published something or the
-    /// sound moved onto or off a speaker group.
-    media_fed: std::cell::Cell<Option<(u64, Option<[u8; 16]>)>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -348,8 +339,6 @@ struct Shared {
     /// The daemon's notifications on the desktop, as the session publishes
     /// the centre they are kept in.
     notifications: Rc<RefCell<notifications::SessionNotifications>>,
-    /// The notification centre as the quick settings panel was last fed it.
-    notice_fed: RefCell<Option<tilo_quick_settings::hosted::NotificationCentre>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
@@ -367,12 +356,8 @@ struct Shared {
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     personal: Option<RefCell<workspaces::Personal>>,
-    /// The copies the person can paste again, and what the Clipboard section
-    /// was last fed of them.
+    /// The copies the person can paste again.
     clipboard: Rc<mount::clipboard::Clipboard>,
-    /// What the panel's Clipboard section was last fed, so what did not
-    /// change is not fed again.
-    clipboard_view: RefCell<Option<tilo_quick_settings::ClipboardView>>,
     /// The person's arrangement, as their own record: what is open where,
     /// with history and undo (shell.md §2). The desk places its windows
     /// from it.
@@ -668,6 +653,10 @@ pub struct Session {
     /// How often the keyboard's app was started on the display it stands on,
     /// so one that keeps exiting is given up on rather than started for ever.
     keyboard_starts: u32,
+    /// Where quick settings' app stands, while its slot is up, and how often
+    /// it was started at that place: one that keeps exiting is given up on.
+    quick_settings_run: quick_settings::Run,
+    quick_settings_starts: u32,
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The apps this session started, told to the portal: which of them run
@@ -1159,7 +1148,7 @@ impl Session {
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             clock: Rc::clone(&clock),
-            status_panel: options.quick_settings.is_some(),
+            status_panel: quick_settings::installed(&options.surfaces),
             sync: sync.clone(),
             notices: notices.clone(),
             overlays: Rc::clone(&desk_overlays),
@@ -1185,9 +1174,6 @@ impl Session {
         let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &handle, &options);
-
-        let (device, quick_settings) =
-            mount_device(&mut compositor, &mut doors, &mut options, &overlays);
 
         // The sheets, over the desktop and its panels.
         let mount::sheets::Sheets {
@@ -1434,7 +1420,8 @@ impl Session {
             drives: options.drives,
             asks,
             intents,
-            quick_settings,
+            quick_settings: quick_settings::installed(&options.surfaces),
+            panel_asks: RefCell::new(Vec::new()),
             overlays,
             doors,
             invocations,
@@ -1446,14 +1433,10 @@ impl Session {
             window_shares,
             agent_runs,
             hosted: !options.machine.is_owned(),
-            device,
             fabric,
             vpn,
             devices: mount::devices::Devices::default(),
-            displays: mount::displays::Displays::default(),
-            panel_power: mount::panel_power::PanelPower::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
-            media_fed: std::cell::Cell::new(None),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,
@@ -1491,14 +1474,12 @@ impl Session {
             asker,
             agent_door: RefCell::new(agent_door),
             folder_import: RefCell::new(None),
-            notice_fed: RefCell::new(None),
             sync,
             engine,
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
             clipboard: Rc::new(mount::clipboard::Clipboard::new()),
-            clipboard_view: RefCell::new(None),
             arrangement,
             underway: busy,
             kept_arrangement: RefCell::new(None),
@@ -1595,6 +1576,8 @@ impl Session {
             keyboard_preference: options.config.on_screen_keyboard,
             keyboard_run: keyboard::Run::default(),
             keyboard_starts: 0,
+            quick_settings_run: quick_settings::Run::Down,
+            quick_settings_starts: 0,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
@@ -1684,10 +1667,14 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
-            // The lock screen is started when the session locks and the
-            // on-screen keyboard when the person may need it: what their
-            // windows show is never the desk's to open.
-            if surface.lock || surface.name == keyboard::SURFACE {
+            // The lock screen is started when the session locks, the
+            // on-screen keyboard when the person may need it and quick
+            // settings while its slot is up: what their windows show is never
+            // the desk's to open.
+            if surface.lock
+                || surface.name == keyboard::SURFACE
+                || surface.name == quick_settings::SURFACE
+            {
                 continue;
             }
             let workspace = self.shared.active_workspace_id();
@@ -1829,7 +1816,7 @@ impl Session {
         name: &str,
         resource: &str,
         action: &str,
-        argument: Option<&str>,
+        argument: InvokeArgument,
     ) -> Option<u64> {
         self.surfaces.ask(name, resource, action, argument)
     }
@@ -2162,6 +2149,9 @@ impl Session {
         self.follow_owner_session()?;
         self.follow_lock()?;
         self.follow_keyboard();
+        // Quick settings runs while the stack has its slot up, where the
+        // stack placed it.
+        self.follow_quick_settings();
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor, self.capture_studio.as_mut());
         }
@@ -2255,9 +2245,7 @@ impl Session {
         // they copied there joins the clipboard here.
         if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
-            if self.shared.clipboard.sync_fabric(fabric.as_ref()) {
-                mount::quick_settings::feed_clipboard(&self.shared);
-            }
+            self.shared.clipboard.sync_fabric(fabric.as_ref());
             // What the person's devices sent this one, before this pass's
             // pumps: a route they asked for starts on the same pass it was
             // asked for on.
@@ -2659,7 +2647,7 @@ impl Session {
             locked,
             Instant::now(),
         );
-        mount::quick_settings::follow_dictation(&self.shared);
+        quick_settings::follow_dictation(&self.shared);
         // The picker's picks go into the field the person was typing in,
         // through the same text-input door dictation writes through.
         let origin = self

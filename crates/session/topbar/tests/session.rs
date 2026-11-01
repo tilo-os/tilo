@@ -117,7 +117,12 @@ fn the_session_asks_the_bar_for_its_profile_card() {
     // The session runs it, as a person's palette or an agent would, and the
     // bar answers on its own actions socket.
     let id = session
-        .ask_surface("topbar", &resource, &action, None)
+        .ask_surface(
+            "topbar",
+            &resource,
+            &action,
+            ui::tilo_actions::remote::InvokeArgument::None,
+        )
         .expect("the bar is running");
     let mut ended = None;
     while ended.is_none() {

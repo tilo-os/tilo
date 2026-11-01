@@ -836,8 +836,10 @@ impl SessionNotifications {
 /// The resource the notification centre is published under.
 pub const RESOURCE: &str = "session:notifications";
 
-/// What kind of resource [`RESOURCE`] is.
-pub const KIND: &str = "session.notifications";
+/// What kind of resource [`RESOURCE`] is: the session's own kind, as the
+/// clipboard is, so the grant the device's panel reads the session's own
+/// readings through reaches it.
+pub const KIND: &str = tilo_action_policy::roles::SESSION_KIND;
 
 /// What the centre resource offers: what a notification kept there does.
 #[derive(Clone, Debug, PartialEq, Effect)]

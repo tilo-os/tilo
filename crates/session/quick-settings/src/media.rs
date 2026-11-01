@@ -1,8 +1,7 @@
 //! The now-playing card, as the panel shows it: the audio service's
 //! `media` reading (the players, where each's playhead is, how long what it
 //! plays is, the cover it names and where its sound can go) folded into the
-//! card, the player the person chose to steer, and what another of their
-//! devices hands over.
+//! card, and the player the person chose to steer.
 //!
 //! Nothing here talks to a player: the card's presses are the panel's
 //! effects, the session hands them to the audio service's actions, and the
@@ -15,8 +14,7 @@ use audio::media::{Media as Reading, Output, Player};
 use media::handoff::HandoffSource;
 use ui::widget::TransportArt;
 
-use crate::i18n::t_args;
-use crate::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying, PlayingSource};
+use crate::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying};
 
 /// What the person is told when this device cannot open what the other
 /// device played.
@@ -30,12 +28,6 @@ pub(crate) struct Media {
     reading: Option<(Reading, Instant)>,
     /// The player the person chose to steer, by bus name.
     chosen: Option<String>,
-    /// The speaker group this device sends its sound to, when one is
-    /// playing.
-    speakers: Option<String>,
-    /// The session another of the person's devices hands this one, until
-    /// the person continues it here.
-    offer: Option<MediaOffer>,
     /// The cover made into a picture, with the cover it was made from, so
     /// an unchanged cover is the same picture.
     art: Option<(String, ui::vello::peniko::ImageData)>,
@@ -45,17 +37,6 @@ impl Media {
     /// Land what the audio service reads of the players, read at `now`.
     pub(crate) fn land(&mut self, reading: Reading, now: Instant) {
         self.reading = Some((reading, now));
-    }
-
-    /// The speaker group this device plays its sound on, if any.
-    pub(crate) fn set_speakers(&mut self, group: Option<String>) {
-        self.speakers = group;
-    }
-
-    /// Land the session another of the person's devices hands this one;
-    /// `None` clears it.
-    pub(crate) fn set_offer(&mut self, offer: Option<MediaOffer>) {
-        self.offer = offer;
     }
 
     /// Steer `bus` from now on, while it is a player the service reads.
@@ -71,31 +52,6 @@ impl Media {
         Ok(())
     }
 
-    /// The handoff `request` is about to be continued here: `true` when it
-    /// is one this device holds and can open, and the card stops offering
-    /// it.
-    pub(crate) fn resume(&mut self, request: &str) -> Result<(), String> {
-        let offer = self
-            .offer
-            .as_ref()
-            .filter(|offer| offer.request_id == request)
-            .ok_or_else(|| "no such handoff".to_owned())?;
-        match &offer.source {
-            // What the other device played off a stream or a file this
-            // device can open itself; its work in a workspace path or an
-            // app's own resource has to be brought over first, which is not
-            // this card's.
-            HandoffSource::RemoteStream { .. } | HandoffSource::LocalFile { .. } => {}
-            HandoffSource::Workspace { .. } | HandoffSource::AppResource { .. } => {
-                return Err(CANNOT_RESUME.to_owned());
-            }
-        }
-        // A resume is one request: the service answers it with the player
-        // that took the session, so the card stops offering it.
-        self.offer = None;
-        Ok(())
-    }
-
     /// The player the card steers: the one the person chose while it is
     /// still around, else whatever plays, else whatever is paused, else the
     /// first.
@@ -107,31 +63,6 @@ impl Media {
             .or_else(|| reading.players.iter().find(|player| player.playing))
             .or_else(|| reading.players.iter().find(|player| player.paused))
             .or_else(|| reading.players.first())
-    }
-
-    /// Whether something plays now.
-    pub(crate) fn playing(&self) -> bool {
-        self.front().is_some_and(|front| front.playing)
-    }
-
-    /// What plays here in front, when another of the person's devices can
-    /// continue it: its session, app, title, stream and playhead.
-    ///
-    /// Only a stream the other device can open as it is counts: a source
-    /// this device opened off a workspace or an app's own resource has to be
-    /// brought over first, which is not a hand-over.
-    pub(crate) fn playing_source(&self, now: Instant) -> Option<PlayingSource> {
-        let front = self.front()?;
-        let session_id = front.session_id.clone()?;
-        let url = front.url.clone()?;
-        Some(PlayingSource {
-            session_id,
-            app_id: front.app_id.clone()?,
-            title: front.headline(),
-            url,
-            position_ms: self.position_at(front, now),
-            playing: front.playing,
-        })
     }
 
     /// Where `player`'s playhead is at `now`: where the service read it,
@@ -183,8 +114,13 @@ impl Media {
 
     /// What the card shows at `now`: the player in front while anything
     /// plays or is paused, and the other device's session while one is
-    /// handed over; `None` otherwise.
-    pub(crate) fn now_playing(&mut self, now: Instant) -> Option<NowPlaying> {
+    /// handed over ([`offer`], as the session publishes it); `None`
+    /// otherwise.
+    pub(crate) fn now_playing(
+        &mut self,
+        now: Instant,
+        offer: Option<&MediaOffer>,
+    ) -> Option<NowPlaying> {
         let active = self.reading.as_ref().is_some_and(|(reading, _)| {
             reading
                 .players
@@ -192,10 +128,10 @@ impl Media {
                 .any(|player| player.playing || player.paused)
         });
         if !active {
-            return self.offer_card();
+            return self.offer_card(offer);
         }
         let Some(front) = self.front().cloned() else {
-            return self.offer_card();
+            return self.offer_card(offer);
         };
         let name = front.identity.clone();
         let title = front
@@ -257,12 +193,6 @@ impl Media {
             duration_ms,
             players,
             outputs,
-            speakers: self.speakers.as_ref().map(|group| {
-                t_args(
-                    "qs-now-playing-speakers",
-                    &[("group", group.as_str().into())],
-                )
-            }),
             offer: None,
         })
     }
@@ -286,8 +216,8 @@ impl Media {
 
     /// The card that only another device's session makes: what it played,
     /// where it stopped, and the offer to continue it here.
-    fn offer_card(&self) -> Option<NowPlaying> {
-        let offer = self.offer.clone()?;
+    fn offer_card(&self, offer: Option<&MediaOffer>) -> Option<NowPlaying> {
+        let offer = offer.cloned()?;
         Some(NowPlaying {
             title: offer.title.clone(),
             playing: offer.playing,
@@ -296,5 +226,21 @@ impl Media {
             offer: Some(offer),
             ..NowPlaying::default()
         })
+    }
+}
+
+/// Whether `request` is a hand-off this device can continue: what the other
+/// device played off a stream or a file it can open itself. Its work in a
+/// workspace path or an app's own resource has to be brought over first,
+/// which is not this card's.
+pub(crate) fn resumable(offer: &MediaOffer, request: &str) -> Result<(), String> {
+    if offer.request_id != request {
+        return Err("no such handoff".to_owned());
+    }
+    match &offer.source {
+        HandoffSource::RemoteStream { .. } | HandoffSource::LocalFile { .. } => Ok(()),
+        HandoffSource::Workspace { .. } | HandoffSource::AppResource { .. } => {
+            Err(CANNOT_RESUME.to_owned())
+        }
     }
 }

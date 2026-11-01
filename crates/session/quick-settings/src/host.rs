@@ -1,24 +1,21 @@
-//! What the panel needs from the desktop that shows it.
+//! What the panel needs from what shows it.
 //!
-//! The device's state and the things only the desktop can do (its radios
-//! through the OS, its clipboard history, its notifications, its device
-//! fabric) stay the desktop's. It lends the panel a [`PanelHost`]: plain
-//! readings in ([`PanelHost::attach`]), effects out ([`PanelHost::run`]).
-//! A screenshot or a test lends nothing and reads [`FixtureHost`] instead,
-//! so the panel renders headless with stand-in readings.
+//! The panel is a process of its own: what it shows arrives as the
+//! session's published readings ([`crate::live`]), and what a press does goes
+//! back to them. It reaches both through a [`PanelHost`]: readings in
+//! ([`PanelHost::attach`]), effects out ([`PanelHost::run`]). A screenshot or
+//! a test lends a [`FixtureHost`] instead, so the panel renders headless with
+//! stand-in readings.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::LocalState;
-
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 pub use crate::faces::visible_controls;
+pub use crate::readings::Feed;
 
-/// What the panel shows now, so the host reads what it lists: Wi-Fi's
-/// networks while that section is open, an accessory's devices while its
-/// page is, and so on.
+/// What the panel shows now, so what shows it reads what it lists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Showing {
     pub page: crate::Page,
@@ -43,10 +40,10 @@ impl Showing {
     }
 }
 
-/// The desktop's side of the panel.
+/// The panel's side of what shows it.
 pub trait PanelHost {
     /// Keep `feed` current: set it now, and again whenever a reading
-    /// changes. A panel mounted again attaches a new feed.
+    /// changes.
     fn attach(&self, feed: Feed);
     /// The panel shows `showing` now.
     fn showing(&self, showing: &Showing);
@@ -56,131 +53,13 @@ pub trait PanelHost {
     /// # Errors
     /// Why the device did not do it.
     fn run(&self, effect: QsEffect) -> Result<(), String>;
-    /// How tall the panel's card is laid out, in logical pixels: the host
-    /// draws the popover's surface that tall and takes a press below it as
-    /// one outside the panel.
-    fn laid_out(&self, _height: f64) {}
 }
 
-/// The host a desktop lends the panel when it mounts it
-/// ([`ui::application::HostContext::lend`]).
+/// A host a test hands the panel it runs (`HeadlessApp::for_person_with_lent`):
+/// the panel reads what it is fed and its effects are recorded, without a
+/// session to publish them.
 #[derive(Clone)]
 pub struct Lent(pub Rc<dyn PanelHost>);
-
-/// The panel's readings, as the host hands them over.
-#[derive(Clone)]
-pub struct Feed {
-    readings: Readings,
-}
-
-impl Feed {
-    /// The device as it reads now.
-    pub fn set(&self, state: &QuickSettingsState) {
-        self.readings.set(state);
-    }
-
-    /// The device as it reads now: what a readout of a level shows after a
-    /// key changed it.
-    #[must_use]
-    pub fn current(&self) -> QuickSettingsState {
-        self.readings.current()
-    }
-
-    /// Change the readings in place.
-    pub fn update(&self, change: impl FnOnce(&mut QuickSettingsState)) {
-        let mut state = self.readings.current();
-        change(&mut state);
-        self.readings.set(&state);
-    }
-}
-
-type Projection = Box<dyn Fn(&QuickSettingsState)>;
-
-/// The readings the view shows, and what each part of it reads of them:
-/// a part is built again only when what it reads moved, so a level that
-/// changes rebuilds its slider and nothing else.
-#[derive(Clone)]
-pub(crate) struct Readings {
-    inner: Rc<RefCell<ReadingsInner>>,
-}
-
-struct ReadingsInner {
-    current: QuickSettingsState,
-    projections: Vec<Projection>,
-}
-
-impl Readings {
-    pub(crate) fn new(initial: QuickSettingsState) -> Self {
-        Self {
-            inner: Rc::new(RefCell::new(ReadingsInner {
-                current: initial,
-                projections: Vec::new(),
-            })),
-        }
-    }
-
-    pub(crate) fn feed(&self) -> Feed {
-        Feed {
-            readings: self.clone(),
-        }
-    }
-
-    pub(crate) fn current(&self) -> QuickSettingsState {
-        self.inner.borrow().current.clone()
-    }
-
-    pub(crate) fn read<V>(&self, read: impl FnOnce(&QuickSettingsState) -> V) -> V {
-        read(&self.inner.borrow().current)
-    }
-
-    fn set(&self, state: &QuickSettingsState) {
-        let projections = {
-            let mut inner = self.inner.borrow_mut();
-            if inner.current == *state {
-                return;
-            }
-            inner.current.clone_from(state);
-            std::mem::take(&mut inner.projections)
-        };
-        for project in &projections {
-            project(state);
-        }
-        let mut inner = self.inner.borrow_mut();
-        let added = std::mem::replace(&mut inner.projections, projections);
-        inner.projections.extend(added);
-    }
-
-    /// Hand every change of the readings to `follow`, starting with the
-    /// readings now.
-    pub(crate) fn watch(&self, follow: impl Fn(&QuickSettingsState) + 'static) {
-        self.read(&follow);
-        self.inner.borrow_mut().projections.push(Box::new(follow));
-    }
-
-    /// What `read` reads of the readings, kept current: a part keyed on it
-    /// is built again when it moves.
-    pub(crate) fn project<K>(
-        &self,
-        read: impl Fn(&QuickSettingsState) -> K + 'static,
-    ) -> LocalState<K>
-    where
-        K: Clone + PartialEq + Send + Sync + 'static,
-    {
-        let state = LocalState::new(self.read(&read));
-        let writer = state.writer();
-        let kept = state.clone();
-        self.inner
-            .borrow_mut()
-            .projections
-            .push(Box::new(move |readings| {
-                let value = read(readings);
-                if kept.with(|shown| *shown != value) {
-                    writer.set(value);
-                }
-            }));
-        state
-    }
-}
 
 /// The host of a screenshot or a test: stand-in readings for each scenario,
 /// and effects recorded instead of carried out.

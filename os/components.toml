@@ -108,8 +108,8 @@ external_units = ["greetd.service"]
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "osk"]
-bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "osk"]
+packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
+bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
 # A dev image's session is the desktop `tilo-vm shot|input|control` and the
 # capture harnesses drive: it opens the test-control socket at
 # `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or where
@@ -141,6 +141,9 @@ files = [
   # program is named for the session rather than for its crate, which the
   # store also ships as an app.
   { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },
+  # Quick Settings is one too: the bar's tray press opens the desktop's
+  # overlay stack, and the stack's quick-settings slot starts this program.
+  { from = "tilo-quick-settings", to = "/usr/bin/tilo-quick-settings", mode = "0755" },
   { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
 ]
 

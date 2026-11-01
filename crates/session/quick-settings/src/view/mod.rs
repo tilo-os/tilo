@@ -13,20 +13,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::PresenceCtx;
-use ui::framework::{Effected, ViewCx};
-use ui::taffy::{NodeId, TaffyTree};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::framework::{Effected, Upkeep, ViewCx};
 use ui::tokens::Rhythm;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point};
-use ui::widget::{Column, Decorator, Disclosing, Element, Scrollable, Widget};
+use ui::widget::{Column, Element, Scrollable};
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::faces::{self, Item, RowFace, Sliders, TileFace};
-use crate::host::{FixtureHost, Lent, PanelHost, Readings, Showing};
+use crate::host::{FixtureHost, PanelHost, Showing};
+use crate::live::Live;
+use crate::readings::Readings;
 use crate::resource::{Page, QuickSettings};
 use crate::{NotificationsView, QsSection};
 
@@ -53,7 +49,7 @@ pub(crate) struct Parts {
 /// The accessories and the person's devices one can move to.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Accessory {
-    devices: Vec<crate::BtDevice>,
+    devices: Vec<connectivity::model::Accessory>,
     targets: Option<Vec<crate::HandoffTarget>>,
 }
 
@@ -100,7 +96,7 @@ impl Parts {
             sections: Rc::new(sections),
             notifications: readings.project(|state| state.notifications.clone()),
             accessory: readings.project(|state| Accessory {
-                devices: state.bt_devices.clone(),
+                devices: state.bluetooth.accessories.clone(),
                 targets: state.handoff_targets.clone(),
             }),
             arrangement: readings.project(Arrangement::of),
@@ -118,14 +114,18 @@ impl Parts {
     }
 }
 
-/// The host the desktop lent the panel; a screenshot's stand-in; or, for a
+/// What the panel reads and changes: the session's published resources when
+/// the session started it ([`Live`]); a screenshot's stand-in; or, for a
 /// panel run on its own, one with stand-in readings.
 fn host_of(cx: &ViewCx<QuickSettings>) -> Rc<dyn PanelHost> {
-    if let Some(Lent(host)) = cx.take_lent::<Lent>() {
+    if let Some(crate::host::Lent(host)) = cx.take_lent::<crate::host::Lent>() {
         return host;
     }
     if let Some(fixture) = cx.fixture::<FixtureHost>() {
         return fixture;
+    }
+    if let Some(host) = Live::of(cx.waker()) {
+        return host;
     }
     Rc::new(FixtureHost::new(QuickSettingsState::fixture()))
 }
@@ -138,6 +138,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
+    let synced = parts.now_playing.clone();
     let told = Rc::clone(&host);
     let page = cx.switch(&showing, move |cx, showing| {
         told.showing(showing);
@@ -148,15 +149,21 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         .with_padding_rhythm(Some(Rhythm::Section), Some(Rhythm::Section))
         .with_id("quick-settings")
         .push(page);
-    Box::new(
+    let panel = Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(Measured {
-                content,
-                host,
-                reported: None,
-            })),
+            .with_child(Box::new(content)),
+    ) as Element;
+    // The readings arrive on the worker; the transport band is this
+    // process's own, so it is shown what plays here, before the widgets
+    // sync.
+    cx.upkeep(
+        Upkeep::new().syncing(move || {
+            let playing = readings.read(|state| state.now_playing.clone());
+            synced.show(playing.as_ref());
+        }),
+        panel,
     )
 }
 
@@ -187,70 +194,4 @@ fn answer_effects(cx: &ViewCx<QuickSettings>, host: &Rc<dyn PanelHost>, readings
         Ok(Effected::done())
     })
     .status(move || readings.read(crate::effect::statuses));
-}
-
-/// The panel's content, telling the host how tall it lays out: the host
-/// draws the popover's surface that tall. While a section opens or closes
-/// the content is drawn taller or shorter than it is laid out, and the
-/// surface follows it frame by frame.
-struct Measured {
-    content: Column,
-    host: Rc<dyn PanelHost>,
-    reported: Option<f64>,
-}
-
-impl Measured {
-    /// Tell the host the card is `height` tall, when that changed.
-    fn report(&mut self, height: f64) {
-        if self
-            .reported
-            .is_none_or(|reported| (reported - height).abs() > 0.5)
-        {
-            self.reported = Some(height);
-            self.host.laid_out(height);
-        }
-    }
-}
-
-impl Decorator for Measured {
-    type Inner = Column;
-
-    fn inner(&self) -> &Column {
-        &self.content
-    }
-
-    fn inner_mut(&mut self) -> &mut Column {
-        &mut self.content
-    }
-
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.content.build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.content.apply_layout(tree, node, origin);
-        let height = Widget::get_rect(&self.content).height();
-        self.report(height);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.content.draw(scene, transform, text, theme, presence);
-        let grows = match Widget::disclosing(&self.content) {
-            Some(Disclosing::Grows(by)) => by,
-            _ => 0.0,
-        };
-        self.report(Widget::get_rect(&self.content).height() + grows);
-    }
 }

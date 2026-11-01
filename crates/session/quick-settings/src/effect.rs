@@ -1,8 +1,8 @@
 //! What Quick Settings does to the device: every switch, slider and row of
 //! the panel, published as the panel's effects. A press on a tile, the
 //! palette, a script and an agent on this desktop all reach the same effect,
-//! and the host that lent the panel its readings carries each one out
-//! ([`crate::host::PanelHost::run`]).
+//! and the resource that owns what it changes carries each one out
+//! ([`crate::verbs::of`]).
 //!
 //! Every effect changes this device only (`own_device`): its radios, its
 //! levels, its clipboard and its notifications.
@@ -556,20 +556,8 @@ const NOTHING_PLAYS: &str = "quick_settings_nothing_plays";
 /// already under way; and the effects search offers a person are named in
 /// the desktop's language.
 pub(crate) fn statuses(state: &crate::QuickSettingsState) -> Vec<EffectStatus> {
-    let probed = state.available;
-    let radios = &state.radios;
-    let can = crate::actions::QsActionAvailability {
-        brightness: state.can_set_brightness(),
-        // The audio service is what carries a volume change out, so its
-        // reading of an output is what makes the volume available.
-        volume: state.volume_available,
-        wifi: probed.wifi || radios.wifi_available,
-        power_profile: probed.power_profile || !state.power_profiles.is_empty(),
-        vpn: probed.vpn || !state.vpns.is_empty(),
-        bluetooth: probed.bluetooth || state.bluetooth_available,
-        airplane_mode: probed.airplane_mode || radios.wifi_available || radios.wwan_available,
-    };
-    let mut statuses = radio_statuses(can, state.radio_change_pending);
+    let can = crate::actions::QsActionAvailability::of(state);
+    let mut statuses = radio_statuses(can, state.radio_change_pending());
     statuses.extend(level_statuses(can));
     statuses.extend(media_statuses(state.now_playing.as_ref()));
     statuses
@@ -748,11 +736,7 @@ mod tests {
     /// under their names.
     #[test]
     fn effects_follow_what_the_device_can_do() {
-        let mut state = crate::QuickSettingsState::fixture();
-        state.available = crate::actions::QsActionAvailability {
-            brightness: false,
-            ..crate::actions::QsActionAvailability::all()
-        };
+        let mut state = crate::scenarios::readings(None);
         state.brightness_available = false;
         let offered = statuses(&state);
         assert!(offered.contains(&EffectStatus::labelled(QsEffect::SET_VOLUME, "Volume")));
@@ -767,8 +751,7 @@ mod tests {
                 .with_label("Brighter")
             )
         );
-        state.available = crate::actions::QsActionAvailability::all();
-        state.radio_change_pending = true;
+        state.network.pending = vec!["set-wifi".into()];
         assert!(
             statuses(&state).contains(
                 &EffectStatus::unavailable(QsEffect::SET_WIFI, RADIO_PENDING, "Applying…")

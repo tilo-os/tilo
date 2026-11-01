@@ -1,10 +1,9 @@
-//! The panels the session stands up beside the desk: quick settings over the
-//! device's own backend, the setup a person goes through once, and the keys'
-//! readout with the keys that answer wherever the keyboard is.
+//! The panels the session stands up beside the desk: the setup a person goes
+//! through once, and the keys' readout with the keys that answer wherever the
+//! keyboard is.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use tilo_compositor::Compositor;
 use tilo_desktop::overlays::Overlays;
@@ -13,37 +12,9 @@ use crate::controls::SessionControls;
 use crate::keys::{
     ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
 };
-use crate::panels::{Held, Popover, Readout, ReadoutPlace, ReadoutPlaces};
+use crate::panels::{Held, Readout, ReadoutPlace, ReadoutPlaces};
 use crate::setup::Setup;
-use crate::{BeforeDesk, DeviceHost, Doors, Options, PanelHost, QuickSettings, SessionCommand};
-
-/// Quick settings as a popover under the bar.
-pub(crate) fn mount_quick_settings(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    panel: Rc<dyn PanelHost>,
-    options: &Options,
-    overlays: &Overlays,
-) -> bool {
-    match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(Popover::new(
-                app,
-                overlays.clone(),
-                options.scale,
-            )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-            doors.add(surface);
-            true
-        }
-        Err(error) => {
-            tracing::warn!(%error, "quick settings not mounted");
-            false
-        }
-    }
-}
+use crate::{BeforeDesk, Doors, SessionCommand};
 
 /// A sheet lent `seat`, hosted over the desktop and its panels with its
 /// actions behind the door while it is up; the seat, when it mounted.
@@ -147,27 +118,4 @@ pub(crate) fn mount_controls(
         reveals,
     )));
     (commands, invocations, triggered, places, readout)
-}
-
-/// The device's own backend, when the session runs one, and the quick
-/// settings panel over it.
-pub(crate) fn mount_device(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    options: &mut Options,
-    overlays: &Overlays,
-) -> (Option<DeviceHost>, bool) {
-    let (device, panel) = match options.quick_settings.take() {
-        Some(QuickSettings::Device(make)) => {
-            let waker = compositor.waker();
-            let device = make(Arc::new(move || waker.wake_by_ref()));
-            let panel = device.panel();
-            (Some(device), Some(panel))
-        }
-        Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
-        None => (None, None),
-    };
-    let quick_settings = panel
-        .is_some_and(|panel| mount_quick_settings(compositor, doors, panel, options, overlays));
-    (device, quick_settings)
 }

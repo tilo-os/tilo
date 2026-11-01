@@ -547,15 +547,11 @@ fn the_power_menus_lock_starts_the_lock_screen() {
 fn the_lock_screens_transport_steers_whatever_plays() {
     let _settled = ui::motion::testing::settled();
     let home = private_home();
-    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
     let asked = Rc::new(RefCell::new(Vec::new()));
     let published = Publishing::default();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Lent(
-                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
-            )),
             services: vec![Box::new(PlayerService::new(
                 Rc::clone(&asked),
                 published.clone(),
@@ -894,15 +890,11 @@ impl Locked {
     /// and read the screen it drew with nothing playing.
     fn new() -> Self {
         let home = private_home();
-        let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
         let asked = Rc::new(RefCell::new(Vec::new()));
         let published = Publishing::default();
         let mut session = Session::headless(
             Options {
                 presentation: ui::headless::fixture_runner_inputs,
-                quick_settings: Some(QuickSettings::Lent(
-                    Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
-                )),
                 services: vec![Box::new(PlayerService::new(
                     Rc::clone(&asked),
                     published.clone(),
@@ -1024,7 +1016,12 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
             assert!(
                 locked
                     .session
-                    .ask_surface("lock", &transport, action, None)
+                    .ask_surface(
+                        "lock",
+                        &transport,
+                        action,
+                        tilo_actions::remote::InvokeArgument::None
+                    )
                     .is_some(),
                 "the lock screen app runs its own {action}"
             );

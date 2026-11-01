@@ -1,107 +1,37 @@
-//! The person's other devices in quick settings: the rows the Devices section
-//! lists, and what pressing one does with what plays here.
+//! The person's other devices in quick settings: what pressing one of the
+//! section's rows does with what plays here.
 //!
-//! The session publishes the reading ([`crate::devices`]): `session:devices`
-//! carries the person's devices as the fabric says they are, what plays here
-//! that one of them can take, the sounds that travel between them and the
-//! session one of them hands this one. One reading of it becomes the
-//! section's rows, the count on the root page, the devices an accessory can
-//! move to and the card's offer ([`land`]), and the panel is written only when
-//! that reading moved. A pressed row is one of that resource's actions, which
-//! the panel asks through the door: the session carries it out here
-//! ([`press`]), sending what plays here to that device or opening Settings
-//! where the device is managed.
+//! The panel reads `session:devices` itself, so the rows, the count on the
+//! root page and the card's offer are the published reading. A pressed row is
+//! one of that resource's verbs, which the session carries out here
+//! ([`press`]): sending what plays here to that device, answering a device
+//! asking for this one's sound, stopping a route, or opening Settings where
+//! the device is managed.
 //!
-//! The same section lists the sounds this device can send to another, the
-//! routes those sounds travel on, and the devices asking for this device's
-//! sound. The remote audio service owns all of it: the reading carries it,
-//! and the chosen sound lives here because a press names only the row it was
-//! made on.
+//! The sounding out, the routes those sounds travel on and the devices asking
+//! for this device's sound belong to the remote audio service. The chosen
+//! sound lives here because a press names only the row it was made on.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use serde_json::{Map, Value};
-use tilo_actions::ActionAddress;
-use tilo_desktop::overlays::Slot;
 use tilo_device_fabric::link::SharedLink;
 use tilo_device_fabric::{DeviceId, MediaSourceLocator, PersonalFabricAction};
-use tilo_quick_settings::device::SessionRequest;
-use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, ROUTE_KEY, SOUND_KEY};
-use tilo_quick_settings::{QsEffect, RowPart};
+use tilo_quick_settings::RowPart;
+use tilo_quick_settings::hosted::{ASK_KEY, ROUTE_KEY, SOUND_KEY};
 use tilo_speaker_service::remote_audio;
 
 use crate::{Shared, devices};
 
-/// What the panel was last fed of the person's devices, so the session's
-/// reading is read every pass but the panel is written only when what it
-/// shows moved.
+/// What a press on a row of the Devices section may use up: the sound picked
+/// for it, and the presses the loop carries out.
 #[derive(Default)]
 pub(crate) struct Devices {
-    fed: RefCell<Option<DevicesReading>>,
     /// The sound of this device's that a press on a device would send, as
     /// the reading carries it.
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
-    /// The presses the panel made on the rows, carried out by the loop.
+    /// The presses the published verb took, carried out by the loop.
     pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
-}
-
-/// Land the person's devices in the panel: the Devices section's rows, the
-/// count on the root page, the devices an accessory can move to and the
-/// session another device offers, as the session publishes them. Returns
-/// whether the panel shows that reading now.
-pub(crate) fn land(shared: &Shared) -> bool {
-    let Some(device) = &shared.device else {
-        return false;
-    };
-    if !shared.overlays.is_open(Slot::QuickSettings) {
-        return false;
-    }
-    let Some(reading) = shared
-        .services
-        .borrow()
-        .read(devices::RESOURCE)
-        .and_then(|reading| serde_json::from_value::<DevicesReading>(reading).ok())
-    else {
-        return false;
-    };
-    if shared.devices.fed.borrow().as_ref() == Some(&reading) {
-        return true;
-    }
-    let rows = reading.rows();
-    let count = reading.count();
-    let targets = reading.targets();
-    let offer = reading.offer.clone();
-    *shared.devices.fed.borrow_mut() = Some(reading);
-    device.handoff(offer);
-    device.update(|state| {
-        state.device_rows = rows;
-        state.personal_devices = Some(count);
-        state.handoff_targets = Some(targets);
-    });
-    true
-}
-
-/// What a press on a row of the Devices section asks of the session: the
-/// resource's own verb, which the loop carries out. Whether this was one of
-/// the panel's effects this session knows.
-pub(crate) fn follow(shared: &Shared, request: &SessionRequest) -> bool {
-    let SessionRequest::Effect(QsEffect::PressDevice { row, part }) = request else {
-        return false;
-    };
-    let mut arguments = Map::new();
-    arguments.insert("row".into(), Value::from(row.clone()));
-    arguments.insert(
-        "part".into(),
-        serde_json::to_value(part).unwrap_or(Value::Null),
-    );
-    let address = ActionAddress::new(devices::RESOURCE, "press");
-    if let Err(error) = shared.doors.invoke(&address, &arguments) {
-        // The rows are the reading, so a press that did not reach the session
-        // changes nothing the person sees.
-        tracing::debug!(%error, row, "the press on a device did not reach the session");
-    }
-    true
 }
 
 impl Shared {
@@ -186,7 +116,7 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     }
     .filter(|_| device.online && fabric.require_media().is_ok());
     let Some(source) = source else {
-        super::quick_settings::open_settings(shared, device.settings_link());
+        crate::quick_settings::open_settings(shared, device.settings_link());
         return;
     };
     let action = PersonalFabricAction::ResumeMedia {

@@ -563,7 +563,7 @@ pub(crate) fn host(
         Rc::clone(&intents),
         options.person.clone(),
         feeds,
-        options.quick_settings.is_none(),
+        !crate::quick_settings::installed(&options.surfaces),
         sync,
     ));
     let bar = TopBarChrome::from_tree(&tree)

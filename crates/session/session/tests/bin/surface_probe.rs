@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 
 use ui::collaboration::SessionResource;
 
-/// Where the app reports what it read and changed.
+/// Where the app reports what it read and changed. A probe started only to
+/// stand in for a view that draws a part of the shell reports nothing.
 const REPORT: &str = "SURFACE_PROBE_REPORT";
 /// The resource it reads.
 const RESOURCE: &str = "SURFACE_PROBE_RESOURCE";
@@ -28,8 +29,8 @@ const RESOURCE: &str = "SURFACE_PROBE_RESOURCE";
 const ACTION: &str = "SURFACE_PROBE_ACTION";
 const ARGUMENTS: &str = "SURFACE_PROBE_ARGUMENTS";
 /// Set when the probe stands in for a view that draws a part of the shell: it
-/// reports what it read and then stays up, as such a view does, until the
-/// session stops the process.
+/// reports what it read, if it was told where, and stays up as such a view
+/// does, until the session stops the process.
 const STAY: &str = "SURFACE_PROBE_STAY";
 
 /// How long the change may take to land: the session publishes the reading
@@ -42,15 +43,16 @@ const CHANGING: Duration = Duration::from_secs(10);
 const SETTLING: Duration = Duration::from_millis(250);
 
 fn main() {
-    let report = std::env::var(REPORT).expect("the file to report in");
     // What every surface app does before its window opens. From here on the
     // session's published resources are this app's, as they are any app's.
     ui::surface_services::connect();
-    // Written whole and then put in place, so the test reads a report or
-    // nothing rather than the middle of one.
-    let whole = format!("{report}.whole");
-    std::fs::write(&whole, read_and_change()).expect("the report is written");
-    std::fs::rename(&whole, &report).expect("the report is put in place");
+    if let Ok(report) = std::env::var(REPORT) {
+        // Written whole and then put in place, so the test reads a report or
+        // nothing rather than the middle of one.
+        let whole = format!("{report}.whole");
+        std::fs::write(&whole, read_and_change()).expect("the report is written");
+        std::fs::rename(&whole, &report).expect("the report is put in place");
+    }
     if std::env::var_os(STAY).is_some() {
         // A view drawing a part of the shell is up while that part is: it
         // ends when the session stops the process, never on its own.

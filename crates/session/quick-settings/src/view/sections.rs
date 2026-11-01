@@ -103,8 +103,8 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                     "qs-bluetooth-paired"
                 }))
                 .selected(device.connected);
-            if device.battery > 0 {
-                row = row.value(format!("{}%", device.battery));
+            if let Some(charge) = device.battery.filter(|charge| *charge > 0) {
+                row = row.value(format!("{charge}%"));
             }
             if device.connected
                 && let Some(binding) =
@@ -176,18 +176,18 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
         Item::Saved(saved) => {
             let auto = actions.bind_effect(
                 Toggle::from_state(&LocalState::new(saved.autoconnect))
-                    .with_id(&format!("qs-autoconnect-{}", saved.profile))
+                    .with_id(&format!("qs-autoconnect-{}", saved.id))
                     .with_accessible_name(&t("qs-wifi-autoconnect")),
                 QsEffect::SET_NETWORK_AUTOCONNECT.map({
-                    let profile = saved.profile.clone();
+                    let profile = saved.id.clone();
                     move |on: bool| (profile.clone(), on)
                 }),
             );
             let mut trailing = Row::new().no_wrap().with_rhythm(Rhythm::Related);
             trailing = trailing.push(Box::new(auto) as Element);
-            trailing = trailing.push(Box::new(forget_network(&actions, &saved.profile)) as Element);
+            trailing = trailing.push(Box::new(forget_network(&actions, &saved.id)) as Element);
             vec![Box::new(
-                ListRow::new(format!("qs-saved-network-{}", saved.profile), &saved.name)
+                ListRow::new(format!("qs-saved-network-{}", saved.id), &saved.name)
                     .icon(Icon::Wifi)
                     .secondary(t("qs-wifi-saved"))
                     .trailing(Box::new(trailing)),
@@ -200,12 +200,12 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 &QsEffect::AskHiddenNetwork,
             ))],
         },
-        Item::Profile { name, active } => {
+        Item::Profile { name, id, active } => {
             let switch = actions.bind_effect(
                 Toggle::from_state(&LocalState::new(*active)).with_accessible_name(name),
                 QsEffect::SET_VPN.map({
-                    let name = name.clone();
-                    move |on: bool| (name.clone(), on)
+                    let id = id.clone();
+                    move |on: bool| (id.clone(), on)
                 }),
             );
             vec![Box::new(
@@ -454,7 +454,7 @@ fn level_slider(id: &str, name: &str, muted: bool, level: f64) -> Slider {
 /// A network, and the password prompt under it while it asks for one.
 fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Element> {
     let actions = cx.actions();
-    let mut row = ListRow::new(format!("qs-network-{}", network.ssid), &network.ssid)
+    let mut row = ListRow::new(format!("qs-network-{}", network.name), &network.name)
         .signal(SignalLevel::from_bars(network.signal))
         .selected(network.connected);
     if network.secure {
@@ -472,7 +472,7 @@ fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Elemen
     });
     let mut rows = vec![row];
     if let Some(prompt) = &network.asking {
-        rows.push(password_prompt(cx, &network.ssid, prompt));
+        rows.push(password_prompt(cx, &network.name, prompt));
     }
     rows
 }

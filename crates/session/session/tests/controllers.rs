@@ -32,13 +32,13 @@ use std::time::Duration;
 use os_actions::{ForwardedGamepadEvent, GamepadButton};
 use settings_store::hardware::ShortcutConfig;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_quick_settings::QuickSettingsState;
-use tilo_quick_settings::host::FixtureHost;
 use tilo_session::controller_nav::NavDirection;
 use tilo_session::controllers::{ControllerId, ControllerWake, GamepadSources, Source};
-use tilo_session::{Options, PanelHost, QuickSettings, Session, SessionConfig};
+use tilo_session::surfaces::Surface as SurfaceSpec;
+use tilo_session::{Options, Session, SessionConfig, quick_settings};
 use tilo_sheets::Seat as _;
 use tilo_sheets::shortcut_guide::{Guide, Modality};
+use tilo_test_env::ScopedEnv;
 use ui::ControllerFamily;
 use ui::input::{ControllerButton, KeyLegend, KeyboardBinding, KeyboardModifier};
 use wayland_client::protocol::{
@@ -161,16 +161,32 @@ impl GamepadSources for Fake {
     }
 }
 
+/// The panel's app for this package's tests: the surface probe the session
+/// package ships, standing in for a view that draws the panel and staying up
+/// while the session keeps it. The environment it reads is held by the test
+/// for as long as its app may be started.
+fn panel() -> (SurfaceSpec, ScopedEnv) {
+    let mut environment = ScopedEnv::new();
+    environment.set("SURFACE_PROBE_STAY", "1");
+    (
+        quick_settings::surface_of(tilo_test_env::sibling_binary(
+            "tilo-session",
+            "tilo-surface-probe",
+        )),
+        environment,
+    )
+}
+
 /// A session with `fake` in the room, its presses read as the person's, and
 /// quick settings to open.
-fn session_with(fake: &Fake) -> Session {
-    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+fn session_with(fake: &Fake) -> (Session, ScopedEnv) {
+    let (panel, environment) = panel();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             config: SessionConfig::default(),
-            quick_settings: Some(QuickSettings::Lent(Rc::clone(&host) as Rc<dyn PanelHost>)),
+            surfaces: vec![panel],
             controllers: Some(Source::Lent(Box::new(fake.clone()))),
             ..Options::default()
         },
@@ -178,7 +194,7 @@ fn session_with(fake: &Fake) -> Session {
     )
     .expect("session");
     session.step(Duration::from_millis(1)).expect("step");
-    session
+    (session, environment)
 }
 
 /// Step the session until `done` holds.
@@ -545,7 +561,7 @@ delegate_noop!(Seen: ignore WlSurface);
 fn a_d_pad_moves_focus_a_activates_and_b_backs_out() {
     let _settled = ui::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
     let mut client = mapped(&mut session, "org.example.App");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].focused()
@@ -598,7 +614,7 @@ fn a_nintendo_pad_confirms_with_the_button_its_legend_calls_a() {
     let _settled = ui::motion::testing::settled();
     // Nintendo prints A east, where an Xbox pad has B.
     let fake = Fake::new(ControllerFamily::Nintendo);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
     let mut client = mapped(&mut session, "org.example.App");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].focused()
@@ -619,7 +635,7 @@ fn a_nintendo_pad_confirms_with_the_button_its_legend_calls_a() {
 fn the_guide_chord_moves_between_windows() {
     let _settled = ui::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
     let mut left = mapped(&mut session, "org.example.Left");
     let mut right = mapped(&mut session, "org.example.Right");
     pump(&mut session, &mut [&mut left, &mut right], |session, _| {
@@ -646,7 +662,7 @@ fn the_guide_chord_moves_between_windows() {
 fn a_bare_guide_tap_opens_quick_settings() {
     let _settled = ui::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
     assert!(!session.quick_settings_open());
 
     fake.press(GamepadButton::Guide);
@@ -661,7 +677,7 @@ fn a_bare_guide_tap_opens_quick_settings() {
 fn the_guide_explains_the_controller_that_opened_it() {
     let _settled = ui::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Nintendo);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
 
     // Start opens the guide, as it does from the controller alone.
     fake.press(GamepadButton::Start);
@@ -688,7 +704,7 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
     let _settled = ui::motion::testing::settled();
     let _turns = take_turns();
     let fake = Fake::new(ControllerFamily::Xbox);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
 
     // The guide's first keycap holds the keyboard when it opens, and every
     // row stands two: Tab walks to the keycap, Enter takes it.
@@ -729,7 +745,7 @@ fn a_controller_press_changes_a_shortcut_the_guide_waits_for() {
 fn the_menu_button_opens_the_window_in_fronts_menu() {
     let _settled = ui::motion::testing::settled();
     let fake = Fake::new(ControllerFamily::Xbox);
-    let mut session = session_with(&fake);
+    let (mut session, _panel) = session_with(&fake);
     let mut client = mapped(&mut session, "org.example.App");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].focused()

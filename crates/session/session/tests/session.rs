@@ -23,27 +23,21 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
+use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desk_verbs::{
     CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id,
 };
 use tilo_onboarding::OnboardingEffect;
-use tilo_quick_settings::QsEffect;
-use tilo_quick_settings::QuickSettingsState;
-use tilo_quick_settings::device::Device;
-use tilo_quick_settings::device::testing::{Kept, Machine};
-use tilo_quick_settings::host::FixtureHost;
-use tilo_quick_settings::scenarios;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-use tilo_session::{DeviceHost, Options, QuickSettings, Session};
+use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_surface_host::Published;
-use tilo_test_env::PrivateBus;
+use tilo_test_env::{PrivateBus, ScopedEnv};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -254,7 +248,7 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 
 fn session() -> Session {
     // Headless tests take no part in the collaboration plane: no endpoint, no
-    // room.
+    // workspace.
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -637,23 +631,27 @@ fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, false);
 }
 
-/// A session with quick settings over stand-in readings, whose effects the
-/// returned host records.
-fn session_with_quick_settings() -> (Session, Rc<FixtureHost>) {
-    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+/// A session with the quick settings panel installed: the surface probe this
+/// package ships stands in for its app, staying up while the session keeps
+/// it. The environment it reads is held for the test's life.
+fn session_with_quick_settings() -> (Session, ScopedEnv) {
+    let mut environment = ScopedEnv::new();
+    environment.set("SURFACE_PROBE_STAY", "1");
+    let panel = quick_settings::surface_of(tilo_test_env::sibling_binary(
+        "tilo-session",
+        "tilo-surface-probe",
+    ));
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Lent(
-                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
-            )),
+            surfaces: vec![panel],
             collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    (session, host)
+    (session, environment)
 }
 
 fn find_resource(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
@@ -732,16 +730,6 @@ impl Dials {
             })
             .collect();
         dials
-    }
-
-    /// What the display at `connector` is at now.
-    fn at(&self, connector: &str) -> Option<f32> {
-        self.0
-            .borrow()
-            .levels
-            .iter()
-            .find(|level| level.connector == connector)
-            .map(|level| level.level)
     }
 
     /// What the service asked of the display at `connector`, in percent.
@@ -839,8 +827,8 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            // No quick settings panel, and no device behind one: the keys
-            // reach the services the resources belong to.
+            // No quick settings app: the keys reach the services the
+            // resources belong to.
             services: vec![
                 Box::new(Audio::speakers(Rc::clone(&asked))),
                 Box::new(Wire::on(Rc::clone(&wireless))),
@@ -925,85 +913,6 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
         .filter(|call| *call == "volume-up")
         .count();
     assert_eq!(after, louder, "the release stops the repeat");
-}
-
-#[test]
-fn the_panels_brightness_is_the_sessions_displays_reading() {
-    let _settled = ui::motion::testing::settled();
-    let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
-    let reads = Machine::laptop();
-    let kept: Rc<RefCell<Option<DeviceHost>>> = Rc::new(RefCell::new(None));
-    let panel_kept = Rc::clone(&kept);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                let host = DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                );
-                *panel_kept.borrow_mut() = Some(host.clone());
-                host
-            }))),
-            backlights: Some(Box::new(dials.clone())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    let host = kept.borrow().clone().expect("the panel's device");
-    pump(&mut session, &mut [], |_, _| {
-        let state = host.state();
-        state.brightness_available && (state.brightness - 0.5).abs() < 0.001
-    });
-    let shown = host.state();
-    assert_eq!(
-        shown
-            .displays
-            .iter()
-            .map(|display| (display.connector.as_str(), display.name.as_str()))
-            .collect::<Vec<_>>(),
-        [("HEADLESS-1", "HEADLESS-1")]
-    );
-    assert!(
-        shown
-            .displays
-            .iter()
-            .any(|display| display.connector == "HEADLESS-1"),
-        "the slider is named for the display the service reads: {shown:?}"
-    );
-
-    // The slider is the session's displays to set: the panel asks them, and
-    // what it shows afterwards is their reading.
-    let panel = offering(&session, QsEffect::SET_BRIGHTNESS.id).expect("the slider is offered");
-    session
-        .invoke(
-            &panel,
-            QsEffect::SET_BRIGHTNESS.id,
-            &arguments(serde_json::json!({ "level": 0.9 })),
-        )
-        .expect("set the brightness");
-    pump(&mut session, &mut [], |_, _| {
-        (host.state().brightness - 0.9).abs() < 0.001
-    });
-    assert!(
-        dials
-            .at("HEADLESS-1")
-            .is_some_and(|level| (level - 0.9).abs() < 0.001),
-        "the display is at the level the person chose: {:?}",
-        dials.at("HEADLESS-1")
-    );
-
-    // A key moves it too, and the panel follows.
-    tap(&mut session, keys::BRIGHTNESS_DOWN);
-    pump(&mut session, &mut [], |_, _| {
-        (host.state().brightness - 0.8).abs() < 0.001
-    });
 }
 
 /// A service the session runs in its process: it publishes what plays,
@@ -1308,7 +1217,7 @@ fn the_power_menu_opens_by_its_published_verb() {
 #[test]
 fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     let _settled = ui::motion::testing::settled();
-    let (mut session, _host) = session_with_quick_settings();
+    let (mut session, _panel) = session_with_quick_settings();
     invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
     session.step(Duration::from_millis(1)).unwrap();
@@ -1537,56 +1446,15 @@ impl tilo_session::Service for Audio {
         Ok(tilo_service::Started::Accepted)
     }
 }
-
+/// The sound the session offers is the audio service's, and every change the
+/// person makes is the service's own action: the session writes none of it.
 #[test]
-fn a_session_without_an_audio_service_offers_no_sound_to_change() {
+fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
     let _settled = ui::motion::testing::settled();
-    let reads = Machine::laptop();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                )
-            }))),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    for action in [QsEffect::SET_VOLUME.id, QsEffect::TOGGLE_MUTED.id] {
-        assert!(
-            offering(&session, action).is_none(),
-            "nothing reads the sound, so {action} is not on offer"
-        );
-    }
-}
-
-#[test]
-fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
-    let _settled = ui::motion::testing::settled();
-    let machine = Machine::laptop();
-    let reads = machine.clone();
     let asked = Rc::new(RefCell::new(Vec::new()));
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                )
-            }))),
             services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
             ..Options::default()
         },
@@ -1594,48 +1462,28 @@ fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actio
     )
     .expect("session");
 
-    // The sound the service reads is the panel's from the moment it reads it,
-    // so its effects are on offer without anything opening the panel.
+    // The sound the service reads is on offer from the moment it reads it.
     pump(&mut session, &mut [], |session, _| {
-        offering(session, QsEffect::SET_VOLUME.id).is_some()
+        offering(session, "set-volume").is_some()
     });
 
-    // What the person does in the panel is the service's action to carry
-    // out, one per change, with the value they chose.
-    let panel = offering(&session, QsEffect::SET_VOLUME.id).unwrap();
+    // Each change is the service's action, with the value the person chose.
+    let sound = offering(&session, "set-volume").unwrap();
     session
         .invoke(
-            &panel,
-            QsEffect::SET_VOLUME.id,
+            &sound,
+            "set-volume",
             &arguments(serde_json::json!({ "level": 0.5 })),
         )
         .expect("set the volume");
     session
-        .invoke(&panel, QsEffect::TOGGLE_MUTED.id, &serde_json::Map::new())
+        .invoke(&sound, "toggle-muted", &serde_json::Map::new())
         .expect("mute");
-    let quiet = QsEffect::VOLUME_DOWN.id;
-    session
-        .invoke(&panel, quiet, &serde_json::Map::new())
-        .expect("quieter");
-    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 3);
+    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
     assert_eq!(
         *asked.borrow(),
-        // Quieter is the panel working out where the step lands and the
-        // service taking that level.
-        [
-            "set-volume level=0.5",
-            "toggle-muted",
-            "set-volume level=0.2"
-        ],
+        ["set-volume level=0.5", "toggle-muted"],
         "each change is the service's, in the order made"
-    );
-    assert!(
-        !machine
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("volume") || call.starts_with("mute")),
-        "the panel never writes the sound itself: {:?}",
-        machine.calls()
     );
 
     // The microphone's key is the service's too, and its answer on screen is
@@ -1658,100 +1506,6 @@ fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actio
         Some(serde_json::json!(40)),
         "the session reads the service's own sound"
     );
-}
-
-#[test]
-fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
-    let _settled = ui::motion::testing::settled();
-    let host = std::rc::Rc::new(FixtureHost::new(scenarios::readings(Some("controls"))));
-    let lent: std::rc::Rc<dyn tilo_session::PanelHost> = host.clone();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Lent(lent)),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-    session.step(Duration::from_millis(1)).unwrap();
-    let closed = session.compositor().screenshot("HEADLESS-1").unwrap();
-
-    // Its actions are there whether or not the panel is open: an agent sets
-    // the volume without opening anything.
-    let volume = QsEffect::SET_VOLUME.id;
-    let panel = publisher(&session, volume).expect("quick settings publishes its volume");
-    session
-        .invoke(
-            &panel,
-            volume,
-            &arguments(serde_json::json!({ "level": 0.25 })),
-        )
-        .expect("set the volume");
-    assert_eq!(host.ran(), [QsEffect::SetVolume { level: 0.25 }]);
-
-    invoke(&mut session, CHROME_RESOURCE, "quick-settings");
-    assert!(session.quick_settings_open());
-    session.step(Duration::from_millis(1)).unwrap();
-    let open = session.compositor().screenshot("HEADLESS-1").unwrap();
-    assert_ne!(open.rgba, closed.rgba, "the panel shows under the bar");
-}
-
-#[test]
-fn quick_settings_reads_the_device_and_its_power_menu_opens_the_sheet() {
-    use tilo_sheets::Seat as _;
-    let _settled = ui::motion::testing::settled();
-    let machine = Machine::laptop();
-    let reads = machine.clone();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                )
-            }))),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
-
-    // The device's readings land on the session's loop: the panel then
-    // offers turning Bluetooth off, which the machine has.
-    let bluetooth = QsEffect::SET_BLUETOOTH.id;
-    pump(&mut session, &mut [], |session, _| {
-        offering(session, bluetooth).is_some()
-    });
-    let panel = offering(&session, bluetooth).unwrap();
-    session
-        .invoke(
-            &panel,
-            bluetooth,
-            &arguments(serde_json::json!({ "on": false })),
-        )
-        .expect("turn Bluetooth off");
-    pump(&mut session, &mut [], |_, _| {
-        machine.calls().contains(&"bluetooth:false".to_owned())
-    });
-
-    // What only the desktop does comes back to the session: the power menu.
-    let menu = QsEffect::POWER_MENU.id;
-    session
-        .invoke(&panel, menu, &serde_json::Map::new())
-        .expect("power menu");
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .power_menu()
-            .is_some_and(|seat| seat.presentation().is_open())
-    });
 }
 
 #[test]
@@ -2700,165 +2454,76 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     );
 }
 
-/// A session whose quick settings reads a stand-in laptop, so the panel is
-/// fed as it is on a real one.
-fn session_reading_a_device() -> Session {
-    let machine = Machine::laptop();
-    let reads = machine;
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
-                DeviceHost::new(
-                    Device {
-                        reads: std::sync::Arc::new(reads.clone()),
-                        dispatcher: std::sync::Arc::new(reads),
-                        preferences: Box::new(Kept::default()),
-                    },
-                    wake,
-                )
-            }))),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+/// Whether the clipboard's reading lists a copy of `text`.
+fn copy_in_history(session: &Session, text: &str) -> bool {
+    session
+        .read(CLIPBOARD_RESOURCE)
+        .and_then(|history| history.as_array().cloned())
+        .is_some_and(|copies| {
+            copies
+                .iter()
+                .any(|copy| copy["text"].as_str() == Some(text))
+        })
 }
 
-/// The Clipboard section, open in quick settings.
-fn open_clipboard(session: &mut Session) {
-    if !session.quick_settings_open() {
-        invoke(session, CHROME_RESOURCE, "quick-settings");
-    }
+/// The key of the copy whose text is `text`, as the clipboard's reading
+/// lists it.
+fn copy_key(session: &Session, text: &str) -> String {
     session
-        .invoke(
-            tilo_session::QUICK_SETTINGS,
-            "open-section",
-            &arguments(serde_json::json!({ "section": "clipboard" })),
-        )
-        .expect("open the Clipboard section");
-    settle(session, 3);
+        .read(CLIPBOARD_RESOURCE)
+        .expect("the session publishes the clipboard")
+        .as_array()
+        .expect("the history is a list")
+        .iter()
+        .find(|copy| copy["text"].as_str() == Some(text))
+        .map(|copy| copy["key"].as_str().expect("a key").to_owned())
+        .expect("the text is in the history")
 }
 
-/// Pin `key` and clear the history: the pinned copy stays, a copy made after
-/// it does not, and the clipboard itself is left as it was.
-fn pin_and_clear_the_history(session: &mut Session, key: &str) {
-    let panel = tilo_session::QUICK_SETTINGS;
-    session
-        .invoke(
-            panel,
-            QsEffect::PIN_COPY.id,
-            &arguments(serde_json::json!({ "copy": key, "pinned": true })),
-        )
-        .expect("pin the copy");
-    session
-        .invoke(
-            panel,
-            QsEffect::CLEAR_CLIPBOARD.id,
-            &arguments(serde_json::json!({})),
-        )
-        .expect("clear the history");
-    settle(session, 3);
-    assert!(
-        session
-            .compositor()
-            .selection_formats(Selection::Clipboard)
-            .iter()
-            .any(|mime| mime == TEXT_MIME),
-        "clearing the history leaves the clipboard as it was"
-    );
-
-    // Another copy is added and then cleared: only the pinned one stays.
+/// A copy made here is in the device's history for the person's next login,
+/// and pasting it puts the bytes back on the clipboard and tells the app in
+/// front to paste with its own chord.
+#[test]
+fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
+    let _settled = ui::motion::testing::settled();
+    // A copy is kept whole: its second line pastes into the app in front.
+    let text = b"meeting notes\nsecond line";
+    let copy = std::str::from_utf8(text).expect("the text");
+    let mut session = session();
     session
         .compositor()
         .set_selection(
             Selection::Clipboard,
-            vec![(TEXT_MIME.to_owned(), b"a stray copy".to_vec())],
+            vec![(TEXT_MIME.to_owned(), text.to_vec())],
         )
-        .expect("another app copies");
-    settle(session, 3);
-    session
-        .invoke(
-            panel,
-            QsEffect::CLEAR_CLIPBOARD.id,
-            &arguments(serde_json::json!({})),
-        )
-        .expect("clear the history");
-    settle(session, 3);
-    let labels = format!("{:?}", session.accessible_labels());
-    assert!(labels.contains("meeting notes"), "{labels}");
-    assert!(!labels.contains("a stray copy"), "{labels}");
-}
+        .expect("the app copies");
+    pump(&mut session, &mut [], |session, _| {
+        copy_in_history(session, copy)
+    });
+    let key = copy_key(&session, copy);
+    drop(session);
 
-#[test]
-fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
-    let _settled = ui::motion::testing::settled();
-    let text = b"meeting notes\nsecond line";
-    let copy = Copy::new(TEXT_MIME, text.to_vec(), ui::time::unix_now_ms());
-    let key = copy.key();
-    {
-        let mut session = session_reading_a_device();
-        // An app copies: the copy joins the history and lists in quick
-        // settings with its first line.
-        session
-            .compositor()
-            .set_selection(
-                Selection::Clipboard,
-                vec![(TEXT_MIME.to_owned(), text.to_vec())],
-            )
-            .expect("the app copies");
-        open_clipboard(&mut session);
-        pump(&mut session, &mut [], |session, _| {
-            session
-                .accessible_labels()
-                .iter()
-                .any(|label| label.contains("meeting notes"))
-        });
-        let labels = session.accessible_labels();
-        assert!(
-            labels.iter().any(|label| label == "One copy"),
-            "the section counts the copy: {labels:?}"
-        );
-        assert!(
-            !labels.iter().any(|label| label.contains("second line")),
-            "a copy lists its first line: {labels:?}"
-        );
-
-        // Pinned, it survives clearing the history.
-        pin_and_clear_the_history(&mut session, &key);
-    }
-
-    // A new session — the person's next login — still has it: the history is
-    // in this device's settings, not in the session's memory.
-    let mut session = session_reading_a_device();
+    // A new session — the person's next login — still has the copy: the
+    // history is in this device's settings, not in the session's memory.
+    let mut session = crate::session();
+    assert_eq!(copy_key(&session, copy), key);
     let mut client = mapped(&mut session, "org.example.Terminal");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].seen.keyboard_focused
     });
-    open_clipboard(&mut session);
-    pump(&mut session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains("meeting notes"))
-    });
 
-    // Pasting it puts the bytes back on the clipboard and tells the terminal
-    // to paste, with the chord a terminal pastes with.
-    session
-        .invoke(
-            tilo_session::QUICK_SETTINGS,
-            QsEffect::PASTE_COPY.id,
-            &arguments(serde_json::json!({ "copy": key })),
-        )
-        .expect("paste the copy");
-    pump(&mut session, &mut [&mut client], |session, clients| {
+    invoke_with(
+        &mut session,
+        CLIPBOARD_RESOURCE,
+        "paste",
+        &serde_json::json!({ "copy": key }),
+    );
+    pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0]
             .seen
             .keys
             .iter()
             .any(|(keycode, pressed)| *keycode == 47 && *pressed)
-            && !session.quick_settings_open()
     });
     let seen: Vec<(u32, bool)> = client.seen.keys.clone();
     assert!(
