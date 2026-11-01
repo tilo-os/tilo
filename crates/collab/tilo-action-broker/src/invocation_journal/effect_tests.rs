@@ -35,7 +35,7 @@ fn fixture(
     );
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {
-        room: key.workspace.clone(),
+        workspace: key.workspace.clone(),
         operation: CommitOperation::EffectReceipt {
             invocation: key.invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),

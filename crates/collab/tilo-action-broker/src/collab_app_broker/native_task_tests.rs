@@ -329,7 +329,7 @@ impl Fixture {
             opening: std::sync::atomic::AtomicBool::new(false),
         });
         let membership = OwnerCommitRequest {
-            room: workspace_id().to_string(),
+            workspace: workspace_id().to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: native.certificate.clone(),
@@ -431,7 +431,7 @@ impl Fixture {
     }
     fn remove_agent(&self) {
         let removal = OwnerCommitRequest {
-            room: workspace_id().to_string(),
+            workspace: workspace_id().to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: self.native.certificate.clone(),

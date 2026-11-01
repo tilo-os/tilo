@@ -31,7 +31,7 @@ mod owner_commit_tests {
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId(5), "Durability boundary");
             workspace.set_owner(&principal);
-            let route = CrdtRoute::record("so.tilo.word-processor", workspace.workspace_id().to_string(), "tab:0000000000000001");
+            let route = CrdtRoute::record("so.tilo.word-processor", workspace.room().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let membership = tree.shared();
@@ -110,7 +110,7 @@ mod owner_commit_tests {
                 workspace.set_owner(&principal);
                 let route = CrdtRoute::record(
                     "so.tilo.word-processor",
-                    workspace.workspace_id().to_string(),
+                    workspace.room().to_string(),
                     "tab:0000000000000001",
                 );
                 let mut tree = WorkspaceTree::default();
@@ -388,7 +388,9 @@ mod owner_commit_tests {
             workspace: uuid::Uuid,
             cert: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
-            if workspace.to_string() != self.0.workspace_id() || !self.0.certificates().contains(cert) {
+            if workspace.to_string() != self.0.workspace_id()
+                || !self.0.certificates().contains(cert)
+            {
                 return Err("certificate outside actual owner authority".into());
             }
             self.0
@@ -400,7 +402,9 @@ mod owner_commit_tests {
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
         let mut workspace = crate::test_support::Workspace::in_room(
             crate::test_support::WorkspaceId(72),
-            uuid::Uuid::parse_str(owner.peer().workspace_id()).unwrap().into(),
+            uuid::Uuid::parse_str(owner.peer().workspace_id())
+                .unwrap()
+                .into(),
             "Actual owner barrier",
         );
         workspace.set_owner(principal_id_for_root(owner.peer().owner()));
@@ -434,7 +438,7 @@ mod owner_commit_tests {
                     let root = canonical_tempdir();
                     let mut fixture = owner_fixture_with_receipt_fault(root.path(), 1);
                     let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        room: fixture.route.cluster_id.clone(),
+                        workspace: fixture.route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
                             record: fixture.route.record_id.clone(),
@@ -499,7 +503,7 @@ mod owner_commit_tests {
             Box::pin(async move {
                 let mut receipt = response.await?;
                 match fault {
-                    1 => receipt.binding.room = uuid::Uuid::new_v4().to_string(),
+                    1 => receipt.binding.workspace = uuid::Uuid::new_v4().to_string(),
                     2 => {
                         receipt.binding.target =
                             tilo_peer_state::owner_commit::CommitTarget::Document {
@@ -961,7 +965,9 @@ mod owner_commit_tests {
             ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
-                if peer.workspace_id() != workspace.to_string() || !peer.certificates().contains(cert) {
+                if peer.workspace_id() != workspace.to_string()
+                    || !peer.certificates().contains(cert)
+                {
                     return Err("certificate not admitted by owner".into());
                 }
                 peer.permissions(cert.device_public_key, SystemTime::now())
@@ -1348,7 +1354,7 @@ mod owner_commit_tests {
             workspace.set_owner(principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.workspace_id().to_string(),
+                workspace.room().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();
@@ -1683,7 +1689,7 @@ mod owner_commit_tests {
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
             assert!(publisher.requires_owner_for(&f.route.cluster_id));
             let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-                room: f.route.cluster_id.clone(),
+                workspace: f.route.cluster_id.clone(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
                     record: f.route.record_id.clone(),
@@ -2039,7 +2045,7 @@ mod owner_commit_tests {
         );
         effect.completed_at = 100;
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: f.route.cluster_id.clone(),
+            workspace: f.route.cluster_id.clone(),
             operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
@@ -2225,7 +2231,7 @@ mod owner_commit_tests {
         );
         effect.completed_at = 100;
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: f.route.cluster_id.clone(),
+            workspace: f.route.cluster_id.clone(),
             operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).unwrap(),

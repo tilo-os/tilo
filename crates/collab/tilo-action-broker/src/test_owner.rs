@@ -282,7 +282,7 @@ impl SessionOwner {
 
     fn apply(&mut self, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
-        if request.room != self.peer.workspace_id() {
+        if request.workspace != self.peer.workspace_id() {
             return Err("owner namespace unavailable".into());
         }
         let now = SystemTime::now();
@@ -343,7 +343,7 @@ impl SessionOwner {
                 candidate.receive_from(
                     TransportOrigin::RelayDelta(self.key.verifying_key().to_bytes()),
                     NeighbourMsg::SyncResp {
-                        room: request.room.clone(),
+                        room: request.workspace.clone(),
                         changes,
                     },
                     now,

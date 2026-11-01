@@ -48,7 +48,7 @@ impl PreparedEffect {
         Ok(Self {
             version: 1,
             update,
-            workspace: request.room.clone(),
+            workspace: request.workspace.clone(),
             invocation: *invocation,
             redacted: redacted.clone(),
         })
@@ -56,7 +56,7 @@ impl PreparedEffect {
 
     pub(crate) fn request(&self) -> OwnerCommitRequest {
         OwnerCommitRequest {
-            room: self.workspace.clone(),
+            workspace: self.workspace.clone(),
             operation: CommitOperation::EffectReceipt {
                 invocation: self.invocation,
                 redacted: self.redacted.clone(),

@@ -10,7 +10,7 @@ pub(super) fn intent(
 ) -> Result<serde_json::Value, String> {
     let command = command(envelope)?.ok_or("checkpoint command absent")?;
     let request = tilo_peer_state::workspace_checkpoint::CheckpointRequest {
-        room: workspace.into(),
+        workspace: workspace.into(),
         invocation: envelope.invocation.0,
         caller: caller.clone(),
         command,

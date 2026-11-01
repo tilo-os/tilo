@@ -283,7 +283,7 @@ impl AppBrokerState {
         Ok((
             service,
             OwnerCommitRequest {
-                room: workspace.into(),
+                workspace: workspace.into(),
                 operation: CommitOperation::WorkspaceMembershipCommand {
                     invocation: uuid::Uuid::new_v4(),
                     caller: certificate.clone(),
@@ -460,7 +460,7 @@ impl AppBrokerState {
                 .iter()
                 .map(|workspace| {
                     (
-                        workspace.workspace_id().to_string(),
+                        workspace.room().to_string(),
                         membership_actions(workspace, now / 1_000_000_000),
                     )
                 })
@@ -587,7 +587,7 @@ impl AppBrokerState {
         service.health()?;
         service
             .checkpoint(tilo_peer_state::workspace_checkpoint::CheckpointRequest {
-                room: workspace.into(),
+                workspace: workspace.into(),
                 invocation: envelope.invocation.0,
                 caller,
                 command,
@@ -636,7 +636,7 @@ impl AppBrokerState {
         let caller = original.owner_person_certificate(self, workspace, envelope)?;
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {
-            room: workspace.into(),
+            workspace: workspace.into(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: envelope.invocation.0,
                 caller,
@@ -1219,7 +1219,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Hosted elsewhere",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().workspace_id().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -1293,7 +1293,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Made just now",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().workspace_id().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),
@@ -1352,7 +1352,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Made just now",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().workspace_id().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let service = Arc::new(ProjectedLaterMemberships {
                     workspace: workspace.clone(),
@@ -1403,7 +1403,7 @@ mod tests {
                         tilo_desktop_model::WorkspaceId(1),
                         "Discovery",
                     ));
-                let workspace = tree.desktop.workspaces.first().unwrap().workspace_id().to_string();
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
                 let tree = tree.shared();
                 let state = AppBrokerState::new_configured(
                     &Arc::new(super::super::FanoutState::new()),

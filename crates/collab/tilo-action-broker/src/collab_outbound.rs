@@ -511,7 +511,7 @@ mod tests {
         let owner = Arc::new(Recording::default());
         let publisher = PeerPublisher::with_optional_owner_commit(None, owner.clone());
         let request = OwnerCommitRequest {
-            room: "77777777-7777-4777-8777-777777777777".into(),
+            workspace: "77777777-7777-4777-8777-777777777777".into(),
             operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: uuid::Uuid::from_u128(1),
                 redacted: b"{}".to_vec(),

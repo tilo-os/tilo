@@ -21,15 +21,15 @@ pub struct PeerMediaGovernanceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
 
-/// The workspace a peer's workspace governs, read side: who may read, name and
-/// write its checkpoints, run its tasks and administer it, and the roots its
-/// effect history and checkpoints currently stand at.
+/// What a peer's workspace governs, read side: who may read, name and write
+/// its checkpoints, run its tasks and administer it, and the roots its effect
+/// history and checkpoints currently stand at.
 #[derive(Clone, Copy)]
 pub struct PeerWorkspace<'peer> {
     pub(crate) peer: &'peer StatePeer,
 }
 
-/// The workspace a peer's workspace governs, write side: effect receipts, checkpoint
+/// What a peer's workspace governs, write side: effect receipts, checkpoint
 /// and effect-history roots, task commands and membership commands.
 pub struct PeerWorkspaceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,

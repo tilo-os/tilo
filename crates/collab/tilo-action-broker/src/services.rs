@@ -173,7 +173,7 @@ const UNANSWERED: &str = "workspace authority did not answer";
 pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.workspace_id().to_string() == workspace_id)
+        .find(|workspace| workspace.room().to_string() == workspace_id)
 }
 
 impl dyn WorkspaceAuthority {
@@ -619,7 +619,7 @@ impl ObservedApplicationLaunch {
     pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
         self.app == app
             && self.package_root.as_deref() == root
-            && self.workspace == workspace.workspace_id().to_string()
+            && self.workspace == workspace.room().to_string()
     }
 
     /// Recheck the actual original caller, pending invocation and policy clock.
