@@ -72,12 +72,12 @@ struct Inner {
     /// Who sits here.
     person: String,
     host: Rc<NativeActivityHost>,
-    /// The records each room holds, read on a worker of its own.
-    rooms: RefCell<HashMap<String, Rc<Watched<Vec<DetachedRecordHistory>>>>>,
+    /// The records each workspace holds, read on a worker of its own.
+    records: RefCell<HashMap<String, Rc<Watched<Vec<DetachedRecordHistory>>>>>,
     /// Where the records are read from; `None` on a session that keeps no
     /// records store.
     store: Option<PathBuf>,
-    /// Moves whenever the records read for a room moved.
+    /// Moves whenever the records read for a workspace moved.
     records_moved: Arc<AtomicU64>,
     /// The workspace a change the model wrote back leaves the desk at, for
     /// the session to take up on its next pass.
@@ -119,7 +119,7 @@ impl Activity {
                 lists,
             }),
             person,
-            rooms: RefCell::default(),
+            records: RefCell::default(),
             store,
             records_moved: Arc::default(),
             restored: RefCell::default(),
@@ -183,7 +183,7 @@ impl Activity {
     }
 
     /// The resources the person opened from the history since this was last
-    /// taken, each with the room it was opened in.
+    /// taken, each with the workspace it was opened in.
     pub(crate) fn take_openings(&self) -> Vec<(RoomId, ui::HistoryResourceTarget)> {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
@@ -202,24 +202,25 @@ impl Activity {
             .map(Workspace::room)
     }
 
-    /// The records `room` holds, as the worker last read them: made when the
-    /// history is first read for the room, and following them from then on.
-    fn room_records(&self, room: RoomId) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
+    /// The records the workspace of `room` holds, as the worker last read
+    /// them: made when the history is first read for the workspace, and
+    /// following them from then on.
+    fn records_of(&self, room: RoomId) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
         let store = self.0.store.clone()?;
         let key = room.to_string();
-        if let Some(known) = self.0.rooms.borrow().get(&key) {
+        if let Some(known) = self.0.records.borrow().get(&key) {
             return Some(Rc::clone(known));
         }
         let directories = record_directories(&store, &key);
-        let by_room = key.clone();
-        let read = move || read_room_records(&store, &by_room);
+        let by_workspace = key.clone();
+        let read = move || read_workspace_records(&store, &by_workspace);
         let watch = Watched::start("tilo-activity-records", directories, read).ok()?;
         let moved = Arc::clone(&self.0.records_moved);
         watch.on_change(move || {
             moved.fetch_add(1, Ordering::AcqRel);
         });
         let watch = Rc::new(watch);
-        self.0.rooms.borrow_mut().insert(key, Rc::clone(&watch));
+        self.0.records.borrow_mut().insert(key, Rc::clone(&watch));
         Some(watch)
     }
 }
@@ -254,7 +255,7 @@ impl HistorySource for Activity {
         let Some(room) = Self::room_of(tree, workspace) else {
             return Vec::new();
         };
-        let Some(watch) = self.room_records(room) else {
+        let Some(watch) = self.records_of(room) else {
             return Vec::new();
         };
         let held = tree.workspace_records_held.get(&room);
@@ -310,23 +311,24 @@ impl HistorySource for Activity {
     }
 }
 
-/// The directories that change when a record `room` holds does: the room's
-/// index, where its app names the records it holds, and each record's, where
-/// the app writes the document. A record an app starts holding after this is
-/// read is picked up by its room's index; what the app writes into it after
-/// that is read when a session reads the history again.
-fn record_directories(store: &Path, room: &str) -> Vec<PathBuf> {
+/// The directories that change when a record a workspace holds does: the
+/// workspace's index, where its app names the records it holds, and each
+/// record's, where the app writes the document. A record an app starts
+/// holding after this is read is picked up by its workspace's index; what the
+/// app writes into it after that is read when a session reads the history
+/// again.
+fn record_directories(store: &Path, workspace: &str) -> Vec<PathBuf> {
     let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
     let indexes = match device.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
-            tracing::warn!(%error, "the room indexes of this device are not listed");
+            tracing::warn!(%error, "the workspace indexes of this device are not listed");
             return Vec::new();
         }
     };
     let mut directories = BTreeSet::new();
     for (package, index_room) in indexes {
-        if index_room != room {
+        if index_room != workspace {
             continue;
         }
         let Ok(directory) = app_state::workspace_index_directory(store, &package, &index_room)
@@ -341,22 +343,22 @@ fn record_directories(store: &Path, room: &str) -> Vec<PathBuf> {
     directories.into_iter().collect()
 }
 
-/// Every record `room` holds, as its apps' indexes name them, with the
+/// Every record a workspace holds, as its apps' indexes name them, with the
 /// document its app last wrote. One the index does not name is one no app of
 /// the workspace may open, so it is not read here.
-fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
+fn read_workspace_records(store: &Path, workspace: &str) -> Vec<DetachedRecordHistory> {
     let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
     let indexes = match device.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
-            tracing::warn!(%error, "the room indexes of this device are not listed");
+            tracing::warn!(%error, "the workspace indexes of this device are not listed");
             return Vec::new();
         }
     };
     let mut read = Vec::new();
     let mut seen = BTreeSet::new();
     for (package, index_room) in indexes {
-        if index_room != room {
+        if index_room != workspace {
             continue;
         }
         for checkout in named_in(device.as_ref(), &package, &index_room) {
@@ -364,7 +366,7 @@ fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
             if !seen.insert((package.clone(), id.clone())) {
                 continue;
             }
-            let document = document_of(device.as_ref(), &package, room, &id);
+            let document = document_of(device.as_ref(), &package, workspace, &id);
             read.push(DetachedRecordHistory {
                 app: package.clone(),
                 checkout,
@@ -375,9 +377,9 @@ fn read_room_records(store: &Path, room: &str) -> Vec<DetachedRecordHistory> {
     read
 }
 
-/// The records `package`'s index for `room` names, as the store holds it.
-fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCheckout> {
-    let Ok(Some(stored)) = store.read(&StorageKey::workspace_index(package, room)) else {
+/// The records `package`'s index for `workspace` names, as the store holds it.
+fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
+    let Ok(Some(stored)) = store.read(&StorageKey::workspace_index(package, workspace)) else {
         return Vec::new();
     };
     if stored.bytes.is_empty() {
@@ -390,22 +392,22 @@ fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCh
     match AutoCommit::load_with_options(&stored.bytes, options) {
         Ok(doc) => ui::record::index::discoverable_references(&doc),
         Err(error) => {
-            tracing::warn!(%error, package, room, "a room's index does not load");
+            tracing::warn!(%error, package, %workspace, "a workspace's index does not load");
             Vec::new()
         }
     }
 }
 
-/// The document `package` keeps for record `record` in `room`, as its app
-/// last committed it: `None` while the app holds changes it has not
+/// The document `package` keeps for record `record` in `workspace`, as its
+/// app last committed it: `None` while the app holds changes it has not
 /// committed, so the history shows none of them.
 fn document_of(
     store: &dyn DurableStore,
     package: &str,
-    room: &str,
+    workspace: &str,
     record: &str,
 ) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::record(package, room, record)) {
+    let stored = match store.read(&StorageKey::record(package, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
             tracing::debug!(%error, %package, %record, "a record is not read");
@@ -580,7 +582,7 @@ mod tests {
 
     /// The person at this desk.
     fn person() -> Caller {
-        Caller::local_person("ada").in_workspace("room")
+        Caller::local_person("ada").in_workspace("workspace")
     }
 
     /// A desk of one workspace with Notes open, its activity served from
