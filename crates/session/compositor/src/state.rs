@@ -732,7 +732,11 @@ impl State {
                     // A key no surface took the press of, let go: a surface that takes it now
                     // (a shell's switcher, which opened after Alt went down) hears it, so a
                     // held modifier's release reaches what it opened. Otherwise it goes on to
-                    // the client as any release does.
+                    // the client as any release does. A client holding the desktop's
+                    // shortcuts had the press, so it has the release too.
+                    if state.shortcut_inhibit.is_active() {
+                        return FilterResult::Forward;
+                    }
                     let locked = state.locked();
                     for index in (0..state.hosts.len()).rev() {
                         let claim = state
