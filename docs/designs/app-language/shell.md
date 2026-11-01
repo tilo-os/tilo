@@ -239,9 +239,9 @@ a panel beside the strips or the whole screen of the conversation shell.
 Each step deletes the Rust part it replaces once the tilolang one passes that part's tests,
 screenshots and frame budgets.
 
-1. *(landed; off by default)* The tilolang surface host and system resources, with the top
-   bar as a tilolang view. Before `shell_bar` is on by default, it still needs a bar per
-   display and to step aside for a fullscreen window.
+1. *(landed; `shell_bar` on by default)* The tilolang surface host and system resources, with
+   the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
+   on a display a fullscreen window owns (`Compositor::fullscreen_outputs`).
 2. The canvas composes views (§8, first point above): a package's views run inline in the
    shell's runtime, arrangement entries name a resource and a view, and the canvas places them
    from `find`.

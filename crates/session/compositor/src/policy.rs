@@ -91,7 +91,10 @@ pub trait WindowPolicy {
 
     /// Lay every mapped window out again (`windows` bottom first, with their
     /// current rectangles) after one mapped or went away, or the outputs
-    /// changed. `None` leaves every window where it is.
+    /// changed. `None` leaves every window where it is. A window made
+    /// fullscreen through a granted [`WindowPolicy::request`] covers its
+    /// display until it leaves fullscreen: the answer for it applies again
+    /// from then on.
     fn arrange(
         &mut self,
         _windows: &[(WindowInfo, Rectangle<i32, Logical>)],
