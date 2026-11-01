@@ -348,7 +348,7 @@ fn a_title_names_a_record_whatever_its_field_ids_are() {
         edits: vec![DynEdit::Edit {
             id: root.clone(),
             edit: Edit::new(
-                vec![Segment::Field(title_field.clone())],
+                vec![Segment::Field(title_field)],
                 EditOp::Replace {
                     text: String::new(),
                 },

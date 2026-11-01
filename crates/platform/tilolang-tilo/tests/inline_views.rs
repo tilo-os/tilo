@@ -110,23 +110,23 @@ fn room(title: &str) -> Room {
 fn unread_room() -> Room {
     let doc = AutoCommit::new();
     let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
-    let callee = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
+    let shown = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    let callee_hash = host
+    let shown_hash = host
         .runtime()
-        .load_foreign_package(&callee.wasm, callee.meta.clone())
+        .load_foreign_package(&shown.wasm, shown.meta.clone())
         .unwrap();
-    let caller =
-        tilolang::compile_package(CALLER, &IdsLock::new(), std::slice::from_ref(&callee.meta))
+    let composing =
+        tilolang::compile_package(CALLER, &IdsLock::new(), std::slice::from_ref(&shown.meta))
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
-    let caller_hash = tilolang_runtime::Runtime::module_hash(&caller.wasm);
-    host.load_compiled(&caller).unwrap();
+    let composing_hash = tilolang_runtime::Runtime::module_hash(&composing.wasm);
+    host.load_compiled(&composing).unwrap();
     Room {
         host,
-        callee: callee_hash,
-        caller: caller_hash,
-        callee_meta: callee.meta,
-        caller_meta: caller.meta,
+        callee: shown_hash,
+        caller: composing_hash,
+        callee_meta: shown.meta,
+        caller_meta: composing.meta,
     }
 }
 
@@ -180,10 +180,10 @@ impl Room {
 /// Every text the tree shows, in order.
 fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "text" || node.kind == "ui.Text" {
-            if let Some(Value::Text(t)) = node.props.get("value") {
-                out.push(t.clone());
-            }
+        if (node.kind == "text" || node.kind == "ui.Text")
+            && let Some(Value::Text(t)) = node.props.get("value")
+        {
+            out.push(t.clone());
         }
         for child in &node.children {
             walk(child, out);
