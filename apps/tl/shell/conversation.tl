@@ -34,6 +34,17 @@ view conversation(r: Run) {
     }
 }
 
+/// The run a place shows, when its record is one (`agent-run:<key>`, as the session publishes
+/// a run): the canvas draws it as its conversation. `.none` for any other record.
+fn placed_run(record: Text) -> Option<Run> {
+    let d = root Desk
+    let prefix = "agent-run:"
+    if record.find(prefix) == 0 {
+        let key = record.slice(prefix.len(), record.len())
+        d.runs.find(r -> r.key == key)
+    } else { .none }
+}
+
 /// Words in the conversation: the person's to the agent, or the agent's between its steps,
 /// under who said them.
 view said(r: Run, e: RunEntry) {
