@@ -49,9 +49,14 @@ pub mod transfer;
 pub mod workspace;
 
 use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
-/// Key in a record document for the room that owns this local replica.
+/// Key in a record document for the workspace that owns this local replica.
 /// `RecordId` is a user/application name; it is not an authority boundary.
-const ROOM: &str = "room";
+const WORKSPACE: &str = "workspace";
+/// The key this module wrote a record's workspace under while a workspace
+/// was still called a room. Every document written before then holds it, so
+/// it is read where it is (see [`stored_workspace`]) and never rewritten on
+/// load: a person's records are not changed behind their back.
+pub const LEGACY_WORKSPACE_KEY: &str = "room";
 /// Key, in a room's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
 /// Key, in a record's meta map, of the identities it was adopted from.
@@ -79,6 +84,29 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     }
 }
 
+/// The workspace a record document is stamped with, read from the one place
+/// every reader goes: the current key, or the one written before a workspace
+/// was called a workspace. Naming the same workspace under both keys is one
+/// stamp; naming two different ones, or a value that is not a name, is a
+/// document that cannot say which workspace it belongs to, and it is refused
+/// rather than guessed at.
+fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
+    let current = string_at(doc, meta, WORKSPACE);
+    let legacy = string_at(doc, meta, LEGACY_WORKSPACE_KEY);
+    match (current, legacy) {
+        (StringAt::Missing, StringAt::Missing) => StringAt::Missing,
+        (StringAt::Missing, kept) | (kept, StringAt::Missing) => kept,
+        (StringAt::Invalid, _) | (_, StringAt::Invalid) => StringAt::Invalid,
+        (StringAt::String(current), StringAt::String(legacy)) => {
+            if current == legacy {
+                StringAt::String(current)
+            } else {
+                StringAt::Invalid
+            }
+        }
+    }
+}
+
 /// Stamp a document with the identity of the record it holds. Idempotent:
 /// re-opening leaves an existing stamp alone, so a restart doesn't author
 /// a change graph entry that says nothing new.
@@ -86,17 +114,17 @@ pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) 
     let _ = init_scoped(doc, id, kind, home, None);
 }
 
-/// Bind a record document to `room`.  Unlike the historical [`init`], this
-/// never rewrites an existing identity or room: accepting a document stamped
-/// for another room would turn a matching record id into a cross-room alias.
-/// A room-less legacy document may be adopted exactly once after its identity
-/// has been checked.
+/// Bind a record document to `workspace`.  Unlike the historical [`init`],
+/// this never rewrites an existing identity or workspace: accepting a
+/// document stamped for another workspace would turn a matching record id
+/// into an alias across workspaces. A document that names no workspace yet
+/// may be adopted exactly once after its identity has been checked.
 pub fn init_scoped(
     doc: &mut AutoCommit,
     id: &RecordId,
     kind: &RecordKind,
     home: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> bool {
     // Primary custody is the checked package/room namespace, never a fake
     // record stamp. Keep this serialized internal id stable across hosts.
@@ -110,7 +138,7 @@ pub fn init_scoped(
     // as one; written with other pending operations, it is part of the
     // change those make, which names itself.
     let alone = doc.pending_ops() == 0;
-    let stamped = stamp_scoped(doc, id, kind, home, room);
+    let stamped = stamp_scoped(doc, id, kind, home, workspace);
     if alone && stamped && doc.pending_ops() != 0 {
         commit_genesis(doc);
     } else if alone && stamped && stamp_surface(doc).is_some() {
@@ -130,7 +158,7 @@ fn stamp_scoped(
     id: &RecordId,
     kind: &RecordKind,
     home: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> bool {
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
@@ -139,7 +167,7 @@ fn stamp_scoped(
     let existing_id = string_at(doc, &m, "id");
     let existing_kind = string_at(doc, &m, "kind");
     let existing_home = string_at(doc, &m, "home");
-    let existing_room = string_at(doc, &m, ROOM);
+    let existing_workspace = stored_workspace(doc, &m);
     let existing_refs = object_at(doc, &m, "refs", ObjType::List);
     if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
         || matches!(&existing_id, StringAt::Invalid)
@@ -147,9 +175,9 @@ fn stamp_scoped(
         || matches!(&existing_kind, StringAt::Invalid)
         || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
         || matches!(&existing_home, StringAt::Invalid)
-        || matches!(&existing_room, StringAt::Invalid)
-        || room.is_some_and(
-            |scope| matches!(&existing_room, StringAt::String(existing) if existing != scope),
+        || matches!(&existing_workspace, StringAt::Invalid)
+        || workspace.is_some_and(
+            |scope| matches!(&existing_workspace, StringAt::String(existing) if existing != scope),
         )
         || matches!(&existing_refs, ObjectAt::Invalid)
     {
@@ -161,15 +189,17 @@ fn stamp_scoped(
     if matches!(&existing_kind, StringAt::Missing) {
         let _ = doc.put(&m, "kind", kind.as_str());
     }
-    // Home is the room that minted the record; never rewritten on a later
-    // open, or the last room to open it would become the owner.
+    // Home is the workspace that minted the record; never rewritten on a
+    // later open, or the last workspace to open it would become the owner.
     if matches!(&existing_home, StringAt::Missing) {
         let _ = doc.put(&m, "home", home);
     }
-    if let Some(room) = room
-        && matches!(&existing_room, StringAt::Missing)
+    // A document that already names a workspace — under either key — keeps
+    // it: nothing here moves an old record's workspace to the new key.
+    if let Some(workspace) = workspace
+        && matches!(&existing_workspace, StringAt::Missing)
     {
-        let _ = doc.put(&m, ROOM, room);
+        let _ = doc.put(&m, WORKSPACE, workspace);
     }
     if matches!(&existing_refs, ObjectAt::Missing) {
         let _ = doc.put_object(&m, "refs", ObjType::List);
@@ -341,13 +371,18 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
     str_at(doc, &m, "home")
 }
 
-/// The workspace this local record replica is bound to.  Absent only for
-/// records written before records were scoped to a workspace; callers may
-/// adopt those once with [`init_scoped`], but must never treat an explicit
-/// different workspace as interchangeable.
+/// The workspace this local record replica is bound to: the key records are
+/// written with now, or the [`LEGACY_WORKSPACE_KEY`] a document written
+/// before then keeps. Absent only for records written before records were
+/// scoped to a workspace; callers may adopt those once with
+/// [`init_scoped`], but must never treat an explicit different workspace as
+/// interchangeable.
 pub fn workspace_scope(doc: &AutoCommit) -> Option<String> {
     let m = meta_ro(doc)?;
-    str_at(doc, &m, ROOM)
+    match stored_workspace(doc, &m) {
+        StringAt::String(workspace) => Some(workspace),
+        StringAt::Missing | StringAt::Invalid => None,
+    }
 }
 
 /// `None` only if the containing document's root/meta object is gone; see
@@ -2084,7 +2119,7 @@ fn primary_document(doc: &AutoCommit) -> bool {
             matches!(string_at(doc, &object, "id"), StringAt::Missing)
                 && matches!(string_at(doc, &object, "kind"), StringAt::Missing)
                 && !matches!(string_at(doc, &object, "home"), StringAt::Invalid)
-                && !matches!(string_at(doc, &object, ROOM), StringAt::Invalid)
+                && !matches!(stored_workspace(doc, &object), StringAt::Invalid)
                 && !matches!(
                     object_at(doc, &object, "refs", ObjType::List),
                     ObjectAt::Invalid
@@ -3937,7 +3972,8 @@ pub(crate) struct ReplicaIdentityStamp {
     workspace: String,
     metadata: bool,
     home: Option<String>,
-    room: Option<String>,
+    /// The workspace the document names, as [`workspace_scope`] reads it.
+    scope: Option<String>,
 }
 
 impl ReplicaIdentityStamp {
@@ -3956,7 +3992,7 @@ impl ReplicaIdentityStamp {
             workspace: workspace.to_string(),
             metadata,
             home: home(doc),
-            room: workspace_scope(doc),
+            scope: workspace_scope(doc),
         })
     }
 
@@ -3965,7 +4001,7 @@ impl ReplicaIdentityStamp {
             .map_err(|error| error.to_string())?;
         if record_metadata_present(doc)? != self.metadata
             || home(doc) != self.home
-            || workspace_scope(doc) != self.room
+            || workspace_scope(doc) != self.scope
         {
             return Err("conflicting record identity".into());
         }
@@ -4164,6 +4200,136 @@ mod tests {
             doc.commit();
             assert_eq!(doc.get_heads(), heads);
         }
+    }
+
+    /// A record written now names its workspace under the new key, and reads
+    /// back with that workspace after a save.
+    #[test]
+    fn a_record_written_now_names_its_workspace_under_the_new_key() {
+        let workspace = uuid::Uuid::new_v4().to_string();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.workspace-key"));
+        let mut doc = AutoCommit::new();
+        assert!(init_scoped(
+            &mut doc,
+            &checkout.id,
+            &checkout.kind,
+            &workspace,
+            Some(&workspace)
+        ));
+        let meta = meta_obj(&mut doc).unwrap();
+        assert_eq!(
+            str_at(&doc, &meta, WORKSPACE).as_deref(),
+            Some(workspace.as_str())
+        );
+        assert!(
+            matches!(
+                string_at(&doc, &meta, LEGACY_WORKSPACE_KEY),
+                StringAt::Missing
+            ),
+            "a new record does not also write the key it replaced"
+        );
+        assert_eq!(workspace_scope(&doc).as_deref(), Some(workspace.as_str()));
+        let saved = doc.save();
+        let reloaded = AutoCommit::load(&saved).unwrap();
+        assert_eq!(
+            workspace_scope(&reloaded).as_deref(),
+            Some(workspace.as_str()),
+            "the key is the document's, not the process's"
+        );
+    }
+
+    /// A record written before workspaces were called workspaces keeps its
+    /// workspace under the old key: it opens with that workspace and its
+    /// history, and opening it does not rewrite it.
+    #[test]
+    fn a_record_written_before_the_rename_opens_with_its_workspace_and_history() {
+        let workspace = uuid::Uuid::new_v4().to_string();
+        let package = "so.tilo.test-legacy-key";
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.legacy-note"));
+        // The document as the app of the time left it on disk.
+        let mut written = AutoCommit::new();
+        written.put(ROOT, "title", "Field notes").unwrap();
+        assert!(init_scoped(
+            &mut written,
+            &checkout.id,
+            &checkout.kind,
+            &workspace,
+            None
+        ));
+        let meta = meta_obj(&mut written).unwrap();
+        written.put(&meta, LEGACY_WORKSPACE_KEY, &workspace).unwrap();
+        written.commit();
+        let history = written.get_heads();
+
+        let backend = Rc::new(durable_store::MemoryStore::new());
+        let key = StorageKey::record(package, &workspace, checkout.id.storage_key());
+        backend
+            .write(&key, durable_store::WriteOp::Replace(written.save()), None)
+            .unwrap();
+
+        let mut owners = RecordOwners::with_store(Rc::clone(&backend) as Rc<dyn DurableStore>);
+        let store = owners.open(package, &workspace).unwrap();
+        store.try_open_record(&checkout).expect("it opens as before");
+        let (title, heads, current, legacy) = store
+            .read(&checkout.id, |doc| {
+                let meta = meta_ro(doc).unwrap();
+                (
+                    str_at(doc, &ROOT, "title"),
+                    doc.clone().get_heads(),
+                    str_at(doc, &meta, WORKSPACE),
+                    str_at(doc, &meta, LEGACY_WORKSPACE_KEY),
+                )
+            })
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Field notes"));
+        assert_eq!(
+            legacy.as_deref(),
+            Some(workspace.as_str()),
+            "its workspace reads"
+        );
+        assert_eq!(current, None, "reading it did not move the key");
+        assert_eq!(heads, history, "opening it is not a change");
+
+        // It saves, reads and takes edits like any record.
+        store
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "title", "Field notes, revised").unwrap();
+            })
+            .unwrap();
+        let edited = store
+            .read(&checkout.id, |doc| str_at(doc, &ROOT, "title"))
+            .unwrap();
+        assert_eq!(edited.as_deref(), Some("Field notes, revised"));
+    }
+
+    /// A document that names one workspace under the current key and another
+    /// under the old one cannot say which it belongs to, and is refused
+    /// rather than guessed at; the same workspace under both is one stamp.
+    #[test]
+    fn a_document_naming_two_workspaces_names_none() {
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.two-keys"));
+        let mut doc = AutoCommit::new();
+        assert!(init_scoped(
+            &mut doc,
+            &checkout.id,
+            &checkout.kind,
+            "a",
+            Some("a")
+        ));
+        let meta = meta_obj(&mut doc).unwrap();
+        doc.put(&meta, LEGACY_WORKSPACE_KEY, "b").unwrap();
+        doc.commit();
+        assert_eq!(workspace_scope(&doc), None);
+        assert!(!init_scoped(
+            &mut doc,
+            &checkout.id,
+            &checkout.kind,
+            "a",
+            Some("a")
+        ));
+        doc.put(&meta, LEGACY_WORKSPACE_KEY, "a").unwrap();
+        doc.commit();
+        assert_eq!(workspace_scope(&doc).as_deref(), Some("a"));
     }
 
     /// Two members of a room each create the record the room derives for

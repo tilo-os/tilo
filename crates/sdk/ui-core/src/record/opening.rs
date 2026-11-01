@@ -254,7 +254,7 @@ mod tests {
     use super::super::{RecordCheckout, RecordKind, RecordOpenError, RecordOwners, RecordStore};
 
     const PACKAGE: &str = "so.tilo.opening-test";
-    const ROOM: &str = "3f2b1c00-0000-4000-8000-0000000000e1";
+    const WORKSPACE: &str = "3f2b1c00-0000-4000-8000-0000000000e1";
 
     fn primary() -> RecordCheckout {
         RecordCheckout::package_primary(RecordKind::new("opening.test"))
@@ -272,12 +272,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", body).unwrap();
         let landing =
-            super::super::transfer::install_room_document(&store, PACKAGE, ROOM, &mut doc).unwrap();
+            super::super::transfer::install_room_document(&store, PACKAGE, WORKSPACE, &mut doc).unwrap();
         store.flush(None).unwrap();
         assert!(matches!(landing.durability(&*store), Durability::Durable));
         drop(store);
         let records = RecordOwners::new(root.to_path_buf())
-            .open(PACKAGE, ROOM)
+            .open(PACKAGE, WORKSPACE)
             .unwrap();
         (records, doc)
     }
@@ -361,7 +361,7 @@ mod tests {
     fn a_record_this_device_does_not_hold_opens_as_before() {
         let temp = tempfile::tempdir().unwrap();
         let records = RecordOwners::new(temp.path().to_path_buf())
-            .open(PACKAGE, ROOM)
+            .open(PACKAGE, WORKSPACE)
             .unwrap();
         assert!(!records.begin_opening(&primary()).unwrap());
         assert!(matches!(

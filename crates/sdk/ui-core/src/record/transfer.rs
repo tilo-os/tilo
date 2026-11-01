@@ -8,8 +8,11 @@
 //! workspace, with the source id kept in its `formerly` list as provenance.
 //! Nothing ever looks a record up through that list.
 //!
-//! The scope a document is stored under is still spelled `room`; it is stored
-//! data and a record keeps reading it.
+//! A record's workspace is stored under `workspace`; documents written
+//! before workspaces were called workspaces hold it under
+//! [`super::LEGACY_WORKSPACE_KEY`] and keep it there, so a document that is
+//! only read arrives as it was. A document this module writes names its
+//! workspace under the current key.
 //!
 //! Moving is transfer followed by [`retire`]: the source record gets one
 //! last change saying it left, which stays in its history the way a
@@ -263,8 +266,19 @@ pub fn adopt_fetched(
 }
 
 /// Identity keys a record's meta map may hold; anything else could claim
-/// more than the one record the document is.
-const IMPORTABLE_META: [&str; 7] = ["id", "kind", "home", super::ROOM, FORMERLY, "refs", "blobs"];
+/// more than the one record the document is. A record carries its workspace
+/// under one of two keys: the current one, or the one written before a
+/// workspace was called a workspace, which an older document still holds.
+const IMPORTABLE_META: [&str; 8] = [
+    "id",
+    "kind",
+    "home",
+    super::WORKSPACE,
+    super::LEGACY_WORKSPACE_KEY,
+    FORMERLY,
+    "refs",
+    "blobs",
+];
 
 /// Check `bytes` offered to become record `id` of `room` with their whole
 /// history, before anything keeps them: at most `max_bytes`, a complete
@@ -395,7 +409,16 @@ pub fn rehome(
         Origin::Record(checkout) => {
             let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
             doc.put(&meta, "id", target.as_str()).map_err(automerge)?;
-            doc.put(&meta, super::ROOM, to_room).map_err(automerge)?;
+            doc.put(&meta, super::WORKSPACE, to_room)
+                .map_err(automerge)?;
+            // The fork names its workspace under the current key only: the
+            // key it was minted under would name a second one.
+            if matches!(
+                super::string_at(&doc, &meta, super::LEGACY_WORKSPACE_KEY),
+                super::StringAt::Invalid | super::StringAt::String(_)
+            ) {
+                let _ = doc.delete(&meta, super::LEGACY_WORKSPACE_KEY);
+            }
             let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
                 ObjectAt::Object(list) => list,
                 ObjectAt::Missing => doc
@@ -673,7 +696,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{RecordOwners, RecordStore, workspace_scope};
+    use crate::record::{RecordOwners, RecordStore, str_at, workspace_scope};
     use automerge::ROOT;
 
     const PACKAGE: &str = "so.tilo.transfer-test";
@@ -910,6 +933,83 @@ mod tests {
         stamp_retired(&mut retired, &moved()).unwrap();
         let retired = arriving(&retired);
         assert!(validate_import(&retired, TO, &target, retired.len()).is_err());
+    }
+
+    /// A record's workspace is imported whether the document names it under
+    /// the current key or the one written before workspaces were called
+    /// workspaces: it keeps the workspace it names, and the key it names it
+    /// under. A key the import does not know is refused.
+    #[test]
+    fn a_document_imports_with_its_workspace_under_either_key() {
+        let kind = RecordKind::new("transfer.test");
+        for key in [
+            crate::record::WORKSPACE,
+            crate::record::LEGACY_WORKSPACE_KEY,
+        ] {
+            let target = RecordId::minted();
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "body", "a draft").unwrap();
+            assert!(crate::record::init_scoped(
+                &mut doc,
+                &target,
+                &kind,
+                FROM,
+                None
+            ));
+            let meta = meta_obj(&mut doc).unwrap();
+            doc.put(&meta, key, FROM).unwrap();
+            doc.commit();
+            let bytes = doc.save();
+            let (mut kept, identity) = validate_import(&bytes, FROM, &target, bytes.len()).unwrap();
+            assert_eq!(identity.id, target, "{key}");
+            assert_eq!(workspace_scope(&kept).as_deref(), Some(FROM), "{key}");
+            let kept_meta = meta_obj(&mut kept).unwrap();
+            assert_eq!(
+                str_at(&kept, &kept_meta, key).as_deref(),
+                Some(FROM),
+                "the document keeps the key it named its workspace under"
+            );
+            kept.put(&kept_meta, "alias", "uuid:other").unwrap();
+            let aliased = kept.save();
+            assert!(
+                validate_import(&aliased, FROM, &target, aliased.len()).is_err(),
+                "a meta key it does not know is refused"
+            );
+        }
+    }
+
+    /// Carried into another workspace, a record of an old document names its
+    /// new workspace under the current key only: the key it was minted under
+    /// would name a second one.
+    #[test]
+    fn a_moved_record_names_its_new_workspace_under_the_current_key() {
+        let kind = RecordKind::new("transfer.test");
+        let source = RecordCheckout::new(RecordId::minted(), kind.clone());
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "body", "a draft").unwrap();
+        assert!(crate::record::init_scoped(
+            &mut doc,
+            &source.id,
+            &kind,
+            FROM,
+            Some(FROM)
+        ));
+        let meta = meta_obj(&mut doc).unwrap();
+        doc.delete(&meta, crate::record::WORKSPACE).unwrap();
+        doc.put(&meta, crate::record::LEGACY_WORKSPACE_KEY, FROM)
+            .unwrap();
+        doc.commit();
+        assert_eq!(workspace_scope(&doc).as_deref(), Some(FROM));
+
+        let target = RecordId::minted();
+        let moved = rehome(&doc, &Origin::Record(source), FROM, TO, &target).unwrap();
+        assert_eq!(workspace_scope(&moved).as_deref(), Some(TO));
+        let moved_meta = meta_obj(&mut moved.clone()).unwrap();
+        assert_eq!(
+            str_at(&moved, &moved_meta, crate::record::LEGACY_WORKSPACE_KEY),
+            None,
+            "the old key does not stay behind naming the workspace it left"
+        );
     }
 
     #[test]

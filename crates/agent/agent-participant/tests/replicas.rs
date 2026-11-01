@@ -236,7 +236,7 @@ fn identity_only(page: &Replica) -> Vec<u8> {
                 .get(ROOT, "tilo:record")
                 .unwrap()
                 .is_some_and(|(_, record)| {
-                    ["home", "id", "kind", "room"]
+                    ["home", "id", "kind", "workspace"]
                         .iter()
                         .all(|key| prefix.get(&record, *key).unwrap().is_some())
                 });
